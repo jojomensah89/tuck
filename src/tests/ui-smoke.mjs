@@ -126,14 +126,14 @@ try {
     window.__emitNative('media',{active:true,trackId:'fixture-track',title:'Artwork color fixture',artist:'Synthetic test data',playing:false,positionMs:3000,durationMs:120000,artwork:canvas.toDataURL()});
   });
   await native.waitForTimeout(100);
-  await native.evaluate(()=>window.__emitNative('lyrics',{trackId:'fixture-track',requestId:window.__calls.findLast(call=>call.command==='lyrics_lookup').args.requestId,status:'synced',syncedLyrics:'[00:01]Previous fixture line\n[00:03]Current fixture line\n[00:05]Next fixture line'}));
+  await native.evaluate(()=>window.__emitNative('lyrics',{trackId:'fixture-track',requestId:window.__calls.findLast(call=>call.command==='lyrics_get').args.requestId,status:'synced',syncedLyrics:'[00:01]Previous fixture line\n[00:03]Current fixture line\n[00:05]Next fixture line'}));
   assert.equal(await native.locator('.lyric-line.current').textContent(),'Current fixture line');
   assert.match(await native.locator('#isl').getAttribute('style'),/--art-wash: rgba/);
   await native.locator('.lyric-line').last().click();
   assert.equal(await native.evaluate(()=>window.__calls.some(call=>call.command==='media_seek'&&call.args.ms===5000)),true);
   await native.screenshot({path:path.join(root,'artifacts','island-phase-two-media.png')});
   await native.evaluate(()=>{
-    const oldId=window.__calls.findLast(call=>call.command==='lyrics_lookup').args.requestId;
+    const oldId=window.__calls.findLast(call=>call.command==='lyrics_get').args.requestId;
     const track={active:true,artist:'Fixture',playing:false,positionMs:3000,durationMs:120000};
     window.__emitNative('media',{...track,trackId:'B',title:'B'});
     window.__emitNative('media',{...track,trackId:'fixture-track',title:'A again'});
@@ -152,11 +152,11 @@ try {
   await native.evaluate(()=>window.__emitNative('media',{active:true,trackId:'other',title:'Other fixture',artist:'Test',playing:true,positionMs:0,durationMs:10000}));
   assert.equal(await native.locator('.page.on').getAttribute('data-page'),'stats','Track changes must not steal a selected tool');
   await native.getByRole('button',{name:'Go to dictation page',exact:true}).click();
-  await native.evaluate(()=>window.__emitNative('dictation',{status:'review',transcript:'<b>Text, not markup</b>',modelReady:true}));
+  await native.evaluate(()=>window.__emitNative('dictation_state',{status:'review',transcript:'<b>Text, not markup</b>',modelReady:true}));
   assert.equal(await native.locator('.transcript').textContent(),'<b>Text, not markup</b>');
   assert.equal(await native.locator('.transcript b').count(),0);
   await native.getByRole('button',{name:'Go to clipboard page',exact:true}).click();
-  await native.evaluate(()=>window.__emitNative('clipboard-history',{enabled:true,items:[{id:'clip',text:'<img src=x>clipboard fixture',pinned:false,createdAt:Date.now()}]}));
+  await native.evaluate(()=>window.__emitNative('clipboard_history_changed',{enabled:true,items:[{id:'clip',text:'<img src=x>clipboard fixture',pinned:false,createdAt:Date.now()}]}));
   assert.equal(await native.locator('.clipboard-text img').count(),0);
   await native.locator('.clipboard-text').click();
   assert.equal(await native.evaluate(()=>window.__calls.some(call=>call.command==='clipboard_copy'&&call.args.id==='clip')),true);

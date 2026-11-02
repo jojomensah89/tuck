@@ -3,6 +3,7 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
+use tauri::{Emitter, Manager};
 
 const MAX_CACHE_ENTRIES: usize = 128;
 const DEFAULT_USER_AGENT: &str = "Tuck/0.1.0 (https://github.com/jojomensah89/tuck)";
@@ -175,17 +176,31 @@ pub fn lyrics_status() -> LyricsConfig {
 
 /// Enables or disables lyrics lookup. Restricted to main/settings window.
 #[tauri::command]
-pub fn lyrics_set_enabled(window: Option<tauri::Window>, enabled: bool) -> Result<(), String> {
-    check_authorized_window(window.as_ref())?;
+pub fn lyrics_set_enabled(window: tauri::Window, enabled: bool) -> Result<(), String> {
+    check_authorized_window(Some(&window))?;
+    let _preference = crate::service_preferences::write(window.app_handle(), "lyrics", enabled)?;
     let mut config = CONFIG.lock().map_err(|_| "Failed to lock lyrics config")?;
     config.enabled = enabled;
+    drop(config);
+    // Settings and island are separate windows.
+    window
+        .app_handle()
+        .emit("lyrics-settings", LyricsConfig { enabled })
+        .map_err(|_| "Could not notify lyrics setting")?;
     Ok(())
+}
+
+pub fn start(app: &tauri::AppHandle) {
+    let enabled = crate::service_preferences::read(app, "lyrics");
+    if let Ok(mut config) = CONFIG.lock() {
+        config.enabled = enabled;
+    }
 }
 
 /// Clears cached lyrics. Restricted to main/settings window.
 #[tauri::command]
-pub fn lyrics_clear_cache(window: Option<tauri::Window>) -> Result<(), String> {
-    check_authorized_window(window.as_ref())?;
+pub fn lyrics_clear_cache(window: tauri::Window) -> Result<(), String> {
+    check_authorized_window(Some(&window))?;
     let mut cache_guard = CACHE.lock().map_err(|_| "Failed to lock lyrics cache")?;
     *cache_guard = None;
     Ok(())
@@ -200,6 +215,13 @@ pub async fn lyrics_get(
     duration_ms: i64,
     track_id: Option<String>,
 ) -> Result<LyricsResponse, String> {
+    if title.trim().is_empty()
+        || title.len() > 2048
+        || artist.len() > 2048
+        || duration_ms > 3_600_000
+    {
+        return Err("Track metadata is unavailable or outside lyrics lookup limits".into());
+    }
     let seq = REQUEST_SEQ.fetch_add(1, Ordering::SeqCst);
 
     if let Some(ref tid) = track_id {
@@ -284,6 +306,14 @@ pub async fn lyrics_get(
             req = req.query(&[("duration", &dur_sec.to_string())]);
         }
 
+        // A queued worker must recheck opt-in immediately before network dispatch.
+        if !CONFIG
+            .lock()
+            .map_err(|_| "Lyrics settings unavailable")?
+            .enabled
+        {
+            return Err("Lyrics lookup was disabled".into());
+        }
         let response = match req.send() {
             Ok(resp) => resp,
             Err(e) => {
@@ -311,7 +341,7 @@ pub async fn lyrics_get(
                 .unwrap_or(5);
 
             if let Ok(mut rl) = RATE_LIMIT_UNTIL.lock() {
-                *rl = Some(Instant::now() + Duration::from_secs(retry_after_secs.max(2)));
+                *rl = Some(Instant::now() + Duration::from_secs(retry_after_secs.clamp(2, 3600)));
             }
 
             return Ok(LyricsResponse {
@@ -355,7 +385,16 @@ pub async fn lyrics_get(
             });
         }
 
-        let data: LrclibResponse = match response.json() {
+        use std::io::Read;
+        let mut bytes = Vec::new();
+        response
+            .take(512 * 1024 + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|_| "Could not read lyrics response")?;
+        if bytes.len() > 512 * 1024 {
+            return Err("Lyrics response exceeded its size limit".into());
+        }
+        let data: LrclibResponse = match serde_json::from_slice(&bytes) {
             Ok(d) => d,
             Err(e) => {
                 return Ok(LyricsResponse {

@@ -35,9 +35,13 @@ Coordinator combined validation: 22 frontend tests; 37 Rust tests; formatting an
 
 The full real-desktop visual/click-through smoke was blocked by an existing nusa.exe Notch overlay at the same screen position. Tuck's test process was closed; the existing application was left running. Radio hardware changes, Windows notification permission/package capability, cross-application drag completion and real provider billing remain manual unknowns, not passed tests.
 
+## Phase two (draft PR 6)
+
+Lyrics, clipboard history, CPU/RAM/GPU metrics, real audio visualization, offline dictation, local to-dos/reminders and system peeks have moved into the approved development scope. See [phase-two verification](phase-two-verification.md) for code coverage, actual observations and remaining review/manual gates. The original delivery evidence above describes v1, not the new integrated head.
+
 ## Deferred ideas from the guide
 
-These are explicitly tracked, not claimed implemented: plugin widgets; lyrics; clipboard history; weather/stocks/crypto/sports; CPU/RAM/disk/network stats; disk-space alerts; Caps/Num Lock HUD; active-app context; lock/unlock behavior; WASAPI audio-reactive equalizer; volume HUD; mic/camera indicators; meeting-app mute automation; Wi-Fi/VPN quality; Bluetooth peripheral battery; USB safe eject; battery health; GPU/VRAM; hardware temperatures/fan drivers; Windows Update/reboot alerts; Docker/WSL; Git/CI/deploy status; local development server discovery; macOS/Linux builds; signing certificate and updater/release pipeline. Calendar OAuth providers can extend the local ICS implementation later.
+These are explicitly tracked, not claimed implemented: plugin widgets; weather/stocks/crypto/sports; disk/network stats; disk-space alerts; Num Lock HUD; active-app context; lock/unlock behavior; mic/camera indicators; meeting-app mute automation; Wi-Fi/VPN quality; Bluetooth peripheral battery; USB safe eject; battery health; shared GPU memory detail; hardware temperatures/fan drivers; Windows Update/reboot alerts; Docker/WSL; Git/CI/deploy status; local development server discovery; macOS/Linux builds; signing certificate and updater/release pipeline. Calendar OAuth providers can extend the local ICS implementation later.
 
 ## Review and merge policy
 

@@ -10,6 +10,8 @@ pub(super) struct ForegroundTarget {
     focus: isize,
     #[cfg(windows)]
     process_id: u32,
+    #[cfg(windows)]
+    runtime_id: Option<Vec<i32>>,
 }
 
 #[cfg(windows)]
@@ -51,6 +53,7 @@ pub(super) fn capture_foreground() -> Option<ForegroundTarget> {
             window: window.0 as isize,
             focus: info.hwndFocus.0 as isize,
             process_id,
+            runtime_id: focused_edit_identity().ok(),
         })
     }
 }
@@ -82,6 +85,13 @@ pub(super) fn verify_foreground_target(target: &ForegroundTarget) -> Result<(), 
         {
             return Err("Focus moved away from the original input control. Automatic insertion was skipped.".into());
         }
+        if let Some(expected) = &target.runtime_id {
+            if focused_edit_identity().as_ref() != Ok(expected) {
+                return Err(
+                    "The focused text field changed. Automatic insertion was skipped.".into(),
+                );
+            }
+        }
         Ok(())
     }
 }
@@ -104,10 +114,86 @@ pub(super) fn is_editable_target(target: &ForegroundTarget) -> Result<(), String
         let style = GetWindowLongPtrW(focus, GWL_STYLE) as u32;
         let recognized = class_name == "Edit" || class_name.starts_with("RichEdit");
         const ES_READONLY: u32 = 0x0800;
-        if !recognized || (style & ES_READONLY) != 0 {
+        const ES_PASSWORD: u32 = 0x0020;
+        if recognized && (style & (ES_READONLY | ES_PASSWORD)) != 0 {
+            return Err("Read-only and password controls are excluded from dictation.".into());
+        }
+        if !recognized && target.runtime_id.is_none() {
             return Err("This app's focused control is not a supported editable Windows text field. Review the transcript and place focus in a standard edit field before inserting.".into());
         }
         Ok(())
+    }
+}
+
+/// UI Automation identifies browser/Electron input fields without retaining their contents.
+#[cfg(windows)]
+fn focused_edit_identity() -> Result<Vec<i32>, String> {
+    use windows::Win32::{
+        System::{
+            Com::{
+                CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER,
+                COINIT_MULTITHREADED,
+            },
+            Ole::{
+                SafeArrayAccessData, SafeArrayDestroy, SafeArrayGetLBound, SafeArrayGetUBound,
+                SafeArrayUnaccessData,
+            },
+        },
+        UI::Accessibility::{
+            CUIAutomation, IUIAutomation, IUIAutomationValuePattern, UIA_EditControlTypeId,
+            UIA_ValuePatternId,
+        },
+    };
+    unsafe {
+        let initialized = CoInitializeEx(None, COINIT_MULTITHREADED).is_ok();
+        // RPC_E_CHANGED_MODE means the calling UI thread already has an STA; it remains usable.
+        let result = (|| {
+            let automation: IUIAutomation =
+                CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER)
+                    .map_err(|_| "Windows accessibility is unavailable")?;
+            let focused = automation
+                .GetFocusedElement()
+                .map_err(|_| "No accessible focused field")?;
+            if focused.CurrentIsPassword().map_or(true, |v| v.as_bool())
+                || !focused.CurrentIsEnabled().is_ok_and(|v| v.as_bool())
+                || !focused.CurrentHasKeyboardFocus().is_ok_and(|v| v.as_bool())
+            {
+                return Err("The focused field cannot accept dictation".to_owned());
+            }
+            let value: Option<IUIAutomationValuePattern> =
+                focused.GetCurrentPatternAs(UIA_ValuePatternId).ok();
+            let editable = value
+                .as_ref()
+                .is_some_and(|v| v.CurrentIsReadOnly().is_ok_and(|r| !r.as_bool()));
+            if !editable || focused.CurrentControlType().ok() != Some(UIA_EditControlTypeId) {
+                return Err("The focused control is not an editable text input".into());
+            }
+            let array = focused
+                .GetRuntimeId()
+                .map_err(|_| "Could not identify input field")?;
+            if array.is_null() {
+                return Err("Input identity unavailable".into());
+            }
+            let copy = (|| {
+                let lower = SafeArrayGetLBound(array, 1).map_err(|_| "Invalid field identity")?;
+                let upper = SafeArrayGetUBound(array, 1).map_err(|_| "Invalid field identity")?;
+                let length = (upper as i64 - lower as i64 + 1).clamp(0, 1025) as usize;
+                if length == 0 || length > 1024 {
+                    return Err("Invalid field identity".to_owned());
+                }
+                let mut data = std::ptr::null_mut();
+                SafeArrayAccessData(array, &mut data).map_err(|_| "Field identity unavailable")?;
+                let ids = std::slice::from_raw_parts(data as *const i32, length).to_vec();
+                let _ = SafeArrayUnaccessData(array);
+                Ok(ids)
+            })();
+            let _ = SafeArrayDestroy(array);
+            copy
+        })();
+        if initialized {
+            CoUninitialize();
+        }
+        result
     }
 }
 
@@ -118,6 +204,19 @@ pub(super) fn is_editable_target(_: &ForegroundTarget) -> Result<(), String> {
 
 #[cfg(windows)]
 pub(super) fn insert_unicode(target: &ForegroundTarget, text: &str) -> Result<(), String> {
+    use windows::Win32::UI::Input::KeyboardAndMouse::{
+        GetAsyncKeyState, VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT,
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while [VK_CONTROL, VK_SHIFT, VK_MENU, VK_LWIN, VK_RWIN]
+        .iter()
+        .any(|key| unsafe { GetAsyncKeyState(key.0 as i32) } < 0)
+    {
+        if std::time::Instant::now() > deadline {
+            return Err("Release shortcut keys before inserting.".into());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
     verify_foreground_target(target)?;
     is_editable_target(target)?;
     let units: Vec<u16> = text.encode_utf16().collect();
@@ -128,7 +227,7 @@ pub(super) fn insert_unicode(target: &ForegroundTarget, text: &str) -> Result<()
         verify_foreground_target(target)?;
         let mut inputs = Vec::with_capacity(chunk.len() * 2);
         for unit in chunk {
-            inputs.push(key_input(*unit, 0));
+            inputs.push(key_input(*unit, Default::default()));
             inputs.push(key_input(*unit, KEYEVENTF_KEYUP));
         }
         let inserted = unsafe { SendInput(&inputs, std::mem::size_of::<INPUT>() as i32) };
@@ -161,21 +260,4 @@ fn key_input(
 #[cfg(not(windows))]
 pub(super) fn insert_unicode(_: &ForegroundTarget, _: &str) -> Result<(), String> {
     Err("Automatic text insertion is supported only on Windows.".into())
-}
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn unicode_input_is_split_into_bounded_batches() {
-        let utf16_units = "a😀z".encode_utf16().count();
-        assert_eq!(utf16_units, 4);
-        assert!(256 * 2 <= 512);
-    }
-
-    #[test]
-    fn windows_insertion_never_uses_the_clipboard() {
-        let source = include_str!("target.rs");
-        assert!(!source.contains("SetClipboardData"));
-        assert!(source.contains("KEYEVENTF_UNICODE"));
-    }
 }

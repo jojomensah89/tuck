@@ -17,6 +17,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+      - name: Prepare local speech build tools
+        shell: pwsh
+        run: |
+          python -m pip install libclang==18.1.1
+          $clangPath = python -c "import clang, pathlib; print(pathlib.Path(clang.__file__).parent / 'native')"
+          "LIBCLANG_PATH=$clangPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - run: bun install --frozen-lockfile
       - run: bun test
       - run: bun run build

@@ -5,6 +5,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter};
 
 const MAX_HISTORY_POINTS: usize = 60;
+#[cfg(windows)]
+#[path = "gpu_counters.rs"]
+mod gpu_counters;
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -25,6 +28,7 @@ pub struct RamStats {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct GpuStats {
+    pub adapter_id: String,
     pub name: String,
     pub vendor: String,
     pub usage_percent: Option<f32>,
@@ -97,7 +101,7 @@ pub fn telemetry_history() -> Result<Vec<TelemetryHistoryPoint>, String> {
 }
 
 #[cfg(windows)]
-#[allow(non_snake_case, dead_code)]
+#[allow(non_snake_case, dead_code, clippy::upper_case_acronyms)]
 mod native_windows {
     use super::*;
     use std::ffi::c_void;
@@ -339,6 +343,11 @@ mod native_windows {
                         // Arbitrarily summing per-engine percentages is mathematically invalid and causes false >100% spikes.
                         // When PDH utilization counters are not active, we provide None rather than a fabricated zero.
                         list.push(GpuStats {
+                            adapter_id: format!(
+                                "luid_0x{:08x}_0x{:08x}",
+                                (desc.AdapterLuid as u64 >> 32) as u32,
+                                desc.AdapterLuid as u32
+                            ),
                             name,
                             vendor: vendor.to_string(),
                             usage_percent: None,
@@ -363,6 +372,9 @@ mod native_windows {
             FreeLibrary(h_module);
         }
 
+        if list.iter().any(|gpu| gpu.vendor != "Microsoft") {
+            list.retain(|gpu| gpu.vendor != "Microsoft");
+        }
         list
     }
 }
@@ -372,6 +384,8 @@ pub fn start(app: AppHandle) {
     std::thread::spawn(move || {
         let mut prev_times: Option<(u64, u64, u64)> = None;
         let mut first_cycle = true;
+        #[cfg(windows)]
+        let mut gpu_counters = gpu_counters::GpuCounters::new();
 
         loop {
             std::thread::sleep(std::time::Duration::from_millis(1000));
@@ -380,7 +394,10 @@ pub fn start(app: AppHandle) {
             let (cpu, ram, gpus) = {
                 let cpu = native_windows::sample_cpu(&mut prev_times);
                 let ram = native_windows::sample_ram();
-                let gpus = native_windows::sample_gpus();
+                let mut gpus = native_windows::sample_gpus();
+                if let Some(counters) = gpu_counters.as_mut() {
+                    counters.sample(&mut gpus);
+                }
                 (cpu, ram, gpus)
             };
 
@@ -444,6 +461,27 @@ pub fn start(app: AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "Read-only live Windows hardware diagnostic"]
+    fn live_windows_telemetry() {
+        let mut previous = None;
+        let _ = native_windows::sample_cpu(&mut previous);
+        let mut counters = gpu_counters::GpuCounters::new();
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        let cpu = native_windows::sample_cpu(&mut previous).expect("CPU sample");
+        let ram = native_windows::sample_ram().expect("RAM sample");
+        let mut gpus = native_windows::sample_gpus();
+        if let Some(counters) = counters.as_mut() {
+            counters.sample(&mut gpus);
+        }
+        assert!((0.0..=100.0).contains(&cpu.usage_percent));
+        assert!(ram.total_bytes > 0 && ram.used_bytes <= ram.total_bytes);
+        println!(
+            "LIVE_TELEMETRY {}",
+            serde_json::json!({"cpu":cpu,"ram":ram,"gpus":gpus})
+        );
+    }
 
     #[test]
     fn test_telemetry_snapshot_default() {
@@ -488,6 +526,7 @@ mod tests {
                 usage_percent: 50.0,
             }),
             gpus: vec![GpuStats {
+                adapter_id: "fixture".into(),
                 name: "RTX 4070".into(),
                 vendor: "NVIDIA".into(),
                 usage_percent: Some(34.2),

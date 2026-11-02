@@ -38,7 +38,7 @@ impl Default for DictationSettings {
             toggle_shortcut: DEFAULT_TOGGLE.to_owned(),
             hold_to_talk_shortcut: DEFAULT_HOLD.to_owned(),
             review_before_insert: false,
-            partial_preview: false,
+            partial_preview: true,
         }
     }
 }
@@ -73,7 +73,6 @@ struct ActiveSession {
     stop: Arc<AtomicBool>,
     cancel: Arc<AtomicBool>,
     mode: RecordingMode,
-    target: Option<target::ForegroundTarget>,
 }
 
 struct Runtime {
@@ -94,6 +93,7 @@ pub struct DictationService {
     runtime: Mutex<Runtime>,
     model_busy: AtomicBool,
     registered_shortcuts: Mutex<Vec<Shortcut>>,
+    settings_operation: Mutex<()>,
 }
 
 impl Default for DictationService {
@@ -119,6 +119,7 @@ impl DictationService {
             }),
             model_busy: AtomicBool::new(false),
             registered_shortcuts: Mutex::new(Vec::new()),
+            settings_operation: Mutex::new(()),
         }
     }
 
@@ -207,11 +208,13 @@ impl DictationService {
                 .runtime
                 .lock()
                 .map_err(|_| "Dictation service unavailable")?;
+            if runtime.active.is_some() || runtime.downloading {
+                return Err("Dictation is already active".into());
+            }
             runtime.active = Some(ActiveSession {
                 stop: stop.clone(),
                 cancel: cancel.clone(),
                 mode: mode.clone(),
-                target: original_target.clone(),
             });
             runtime.status = "starting".into();
         }
@@ -229,7 +232,11 @@ impl DictationService {
                 }
                 match result {
                     Ok(mut text) => {
-                        text.truncate(MAX_TRANSCRIPT_BYTES);
+                        let mut limit = text.len().min(MAX_TRANSCRIPT_BYTES);
+                        while !text.is_char_boundary(limit) {
+                            limit -= 1;
+                        }
+                        text.truncate(limit);
                         service.finish_transcript(text, original_target);
                     }
                     Err(error) => service.finish_error(error),
@@ -431,9 +438,7 @@ impl DictationService {
                 if let Ok(mut runtime) = service.runtime.lock() {
                     runtime.downloading = false;
                     runtime.download_cancel = None;
-                    runtime.status = if result.is_ok() {
-                        "idle"
-                    } else if cancel.load(Ordering::Acquire) {
+                    runtime.status = if result.is_ok() || cancel.load(Ordering::Acquire) {
                         "idle"
                     } else {
                         "error"
@@ -465,15 +470,8 @@ impl DictationService {
         Ok(())
     }
 
-    fn apply_settings(&self, settings: DictationSettings) -> Result<(), String> {
-        validate_settings(&settings)?;
-        let app = self.app()?;
-        persist_settings(&app, &settings)?;
-        if let Ok(mut current) = self.settings.write() {
-            *current = settings;
-        }
-        self.emit_state();
-        Ok(())
+    pub fn shutdown(&self) {
+        let _ = self.cancel();
     }
 }
 
@@ -506,18 +504,18 @@ pub fn register_shortcuts(app: &AppHandle, service: &Arc<DictationService>) -> R
         .map_err(|_| "Dictation service unavailable")?
         .clone();
     for shortcut in &previous {
-        let _ = shortcuts.unregister(shortcut);
+        let _ = shortcuts.unregister(*shortcut);
     }
-    if let Err(error) = shortcuts.register(toggle.clone()) {
+    if let Err(error) = shortcuts.register(toggle) {
         for prior in &previous {
-            let _ = shortcuts.register(prior.clone());
+            let _ = shortcuts.register(*prior);
         }
         return Err(format!("Could not register toggle shortcut: {error}"));
     }
-    if let Err(error) = shortcuts.register(hold.clone()) {
-        let _ = shortcuts.unregister(&toggle);
+    if let Err(error) = shortcuts.register(hold) {
+        let _ = shortcuts.unregister(toggle);
         for prior in &previous {
-            let _ = shortcuts.register(prior.clone());
+            let _ = shortcuts.register(*prior);
         }
         return Err(format!("Could not register hold-to-talk shortcut: {error}"));
     }
@@ -628,12 +626,26 @@ pub fn dictation_set_settings(
     service: State<'_, Arc<DictationService>>,
     settings: DictationSettings,
 ) -> Result<DictationSnapshot, String> {
+    let _operation = service
+        .settings_operation
+        .lock()
+        .map_err(|_| "Dictation settings unavailable")?;
     validate_settings(&settings)?;
-    persist_settings(&app, &settings)?;
-    if let Ok(mut current) = service.settings.write() {
-        *current = settings;
+    let previous = service.settings();
+    *service
+        .settings
+        .write()
+        .map_err(|_| "Dictation settings unavailable")? = settings.clone();
+    if let Err(error) =
+        register_shortcuts(&app, &service).and_then(|_| persist_settings(&app, &settings))
+    {
+        *service
+            .settings
+            .write()
+            .map_err(|_| "Dictation settings unavailable")? = previous;
+        let _ = register_shortcuts(&app, &service);
+        return Err(error);
     }
-    register_shortcuts(&app, &service)?;
     service.emit_state();
     Ok(service.snapshot())
 }
@@ -669,7 +681,11 @@ pub fn dictation_hold_stop(service: State<'_, Arc<DictationService>>) -> Result<
 
 #[tauri::command]
 pub fn dictation_cancel(service: State<'_, Arc<DictationService>>) -> Result<(), String> {
-    service.cancel()
+    if service.snapshot().status == "review" {
+        service.discard_review()
+    } else {
+        service.cancel()
+    }
 }
 
 #[tauri::command]
@@ -699,7 +715,7 @@ mod tests {
         assert_eq!(settings.toggle_shortcut, DEFAULT_TOGGLE);
         assert_eq!(settings.hold_to_talk_shortcut, DEFAULT_HOLD);
         assert!(!settings.review_before_insert);
-        assert!(!settings.partial_preview);
+        assert!(settings.partial_preview);
     }
 
     #[test]

@@ -48,7 +48,7 @@ All DTO fields use camelCase.
 | `dictation_review_insert` | none | inserts a review transcript only if original foreground/edit target still matches |
 | `dictation_review_discard` | none | discards the in-memory review transcript |
 
-`DictationSettings` has `toggleShortcut`, `holdToTalkShortcut`, `reviewBeforeInsert`, and `partialPreview`. Defaults are `Ctrl+Shift+Space`, `Ctrl+Alt+Space`, immediate insertion, and no partial preview. Shortcut settings are syntax-validated, capped at 64 bytes, must differ, and are stored as bounded JSON in app config. Hotkey registration is global; it does not depend on window focus.
+`DictationSettings` has `toggleShortcut`, `holdToTalkShortcut`, `reviewBeforeInsert`, and `partialPreview`. Defaults are `Ctrl+Shift+Space`, `Ctrl+Alt+Space`, immediate insertion, and partial preview. Shortcut settings are syntax-validated, capped at 64 bytes, must differ, and are stored as bounded JSON in app config. Hotkey registration is global; it does not depend on window focus.
 
 `DictationSnapshot` has `status`, `modelInstalled`, `modelDownloadedBytes`, `transcript`, `message`, and `settings`. Status is `idle`, `starting`, `recording`, `transcribing`, `downloadingModel`, `cancelling`, `review`, `modelMissing`, or `error`.
 
@@ -63,9 +63,9 @@ The app emits the final transcript once and retains it in memory only when revie
 
 ## Insertion safety and limitations
 
-Tuck captures the foreground window and focused child at invocation. It only automatically types into a still-foreground standard Windows `Edit` or `RichEdit*` control, rejects the app's own process and read-only edit controls, and rechecks both foreground and focus before each bounded batch. It sends UTF-16 with Windows `SendInput` using Unicode input flags. This avoids modifying the clipboard, so clipboard contents set concurrently by the user are never restored over. It never sends Enter or otherwise submits the target.
+Tuck captures the foreground window and focused child at invocation. It automatically types into a still-foreground standard Windows `Edit`/`RichEdit*` control or an accessible UI Automation Edit control with a writable Value pattern. It rejects the app's own process, read-only/password controls and moved input identities, and rechecks foreground/focus before each bounded batch. It sends UTF-16 with Windows `SendInput` using Unicode input flags. This avoids modifying the clipboard, so clipboard contents set concurrently by the user are never restored over. It never sends Enter or otherwise submits the target.
 
-Many applications expose browser, Electron, accessibility, terminal, password and custom editor controls through nonstandard window classes. These are deliberately unsupported for automatic insertion in this implementation and return a review reason; Windows input injection can also fail against elevated or protected applications. The current implementation does not detect every password field and does not claim universal editability. UI Automation patterns, elevated process integrity checks and richer target support require follow-up work before claiming support for those controls. Manual user action remains required to re-focus a supported edit control before review insertion.
+Many applications expose browser, Electron, accessibility, terminal, password and custom editor controls through nonstandard window classes. Accessible editable browser/Electron controls are now checked through UI Automation; other unsupported controls return a review reason; Windows input injection can also fail against elevated or protected applications. The current implementation does not detect every password field and does not claim universal editability. Protected/elevated applications and custom controls still require live verification; there is no claim of universal input support. Manual user action remains required to re-focus a supported edit control before review insertion.
 
 ## Clipboard history commands
 

@@ -1,17 +1,17 @@
 use super::{DictationService, EVENT_PARTIAL};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{SampleFormat, Stream, StreamConfig};
-use crossbeam_channel::{bounded, unbounded, Receiver, Sender};
+use crossbeam_channel::{bounded, Receiver, Sender};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
 
 const TARGET_RATE: u32 = 16_000;
 const MAX_SECONDS: usize = 120;
-const PREVIEW_INTERVAL: Duration = Duration::from_secs(7);
+const PREVIEW_INTERVAL: Duration = Duration::from_secs(3);
 
 pub(super) fn record_and_transcribe(
     service: &DictationService,
@@ -39,7 +39,7 @@ fn record_and_transcribe_inner(
         return Err("Dictation cancelled".into());
     }
 
-    let (audio_tx, audio_rx) = unbounded::<Vec<f32>>();
+    let (audio_tx, audio_rx) = bounded::<Vec<f32>>(256);
     let (error_tx, error_rx) = bounded::<String>(1);
     let (stream, sample_rate) = open_input_stream(audio_tx, error_tx)?;
     stream.play().map_err(|e| format!("Could not start microphone capture: {e}. Check Windows microphone privacy settings and the selected input device."))?;
@@ -57,9 +57,10 @@ fn record_and_transcribe_inner(
             samples.zeroize();
             return Err("Dictation cancelled".into());
         }
-        if error_rx.try_recv().is_ok() {
+        if let Ok(error) = error_rx.try_recv() {
             drop(stream);
-            return Err("Microphone capture stopped unexpectedly. Check Windows microphone privacy settings and the input device.".into());
+            zeroize_pending_audio(&audio_rx);
+            return Err(format!("Microphone capture interrupted: {error}"));
         }
         match audio_rx.recv_timeout(Duration::from_millis(100)) {
             Ok(mut block) => {
@@ -80,7 +81,8 @@ fn record_and_transcribe_inner(
         }
         if preview && started.elapsed() >= next_preview && samples.len() >= sample_rate as usize * 2
         {
-            let preview_audio = resample_to_16k(&samples, sample_rate);
+            let start = samples.len().saturating_sub(sample_rate as usize * 15);
+            let preview_audio = Zeroizing::new(resample_to_16k(&samples[start..], sample_rate));
             if !cancel.load(Ordering::Acquire) {
                 if let Ok(text) = transcribe(&context, &preview_audio, cancel.clone()) {
                     let text = text.trim();
@@ -135,7 +137,7 @@ fn zeroize_pending_audio(receiver: &Receiver<Vec<f32>>) {
     }
 }
 
-#[derive(serde::Serialize)]
+#[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct PartialTranscript {
     text: String,
@@ -206,7 +208,10 @@ where
                 let value = frame.iter().cloned().map(&convert).sum::<f32>() / channels as f32;
                 mono.push(value.clamp(-1.0, 1.0));
             }
-            let _ = tx.send(mono);
+            if let Err(error) = tx.try_send(mono) {
+                let mut dropped = error.into_inner(); dropped.zeroize();
+                let _ = error_tx.try_send("Microphone buffer overflow. Disable partial previews on slower hardware.".into());
+            }
         },
         move |error| { let _ = callback_error.try_send(error.to_string()); },
         None,
@@ -229,9 +234,9 @@ fn resample_to_16k(input: &[f32], source_rate: u32) -> Vec<f32> {
         let last = (end.ceil() as usize).min(input.len());
         let mut total = 0.0f32;
         let mut weight = 0.0f64;
-        for index in first..last {
+        for (index, value) in input.iter().enumerate().take(last).skip(first) {
             let overlap = (end.min(index as f64 + 1.0) - start.max(index as f64)).max(0.0);
-            total += input[index] * overlap as f32;
+            total += value * overlap as f32;
             weight += overlap;
         }
         output.push(if weight > 0.0 {
@@ -271,9 +276,7 @@ fn transcribe(
     if cancel.load(Ordering::Acquire) {
         return Err("Dictation cancelled".into());
     }
-    let count = state
-        .full_n_segments()
-        .map_err(|e| format!("Could not read transcription segments: {e}"))?;
+    let count = state.full_n_segments();
     let mut output = String::new();
     for index in 0..count {
         if cancel.load(Ordering::Acquire) {
@@ -281,9 +284,13 @@ fn transcribe(
             return Err("Dictation cancelled".into());
         }
         let segment = state
-            .full_get_segment_text(index)
-            .map_err(|e| format!("Could not read transcription segment: {e}"))?;
-        output.push_str(&segment);
+            .get_segment(index)
+            .ok_or("Could not read transcription segment")?;
+        output.push_str(
+            &segment
+                .to_str_lossy()
+                .map_err(|e| format!("Could not read transcription text: {e}"))?,
+        );
     }
     Ok(output)
 }
@@ -304,7 +311,9 @@ mod tests {
     fn multichannel_audio_is_averaged_by_the_capture_callback_contract() {
         let stereo = [0.5f32, -0.5, 0.25, 0.25];
         let mono: Vec<f32> = stereo
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|frame| frame.iter().sum::<f32>() / 2.0)
             .collect();
         assert_eq!(mono, vec![0.0, 0.25]);

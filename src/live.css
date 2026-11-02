@@ -45,6 +45,8 @@
 .live-spectrum { position: absolute; height: 16px; left: 70px; right: 70px; bottom: 0; display: flex; gap: 2px; align-items: end; opacity: .6; pointer-events: none; }
 .with-lyrics .live-spectrum { right: 55%; left: 18px; }
 .live-spectrum i { flex: 1; height: 100%; background: var(--accent); border-radius: 2px 2px 0 0; transform: scaleY(var(--level, 0)); transform-origin: bottom; transition: transform .1s linear; }
+.wide-spectrum { display: flex; flex: 1; min-height: 0; align-items: center; gap: 3px; padding: 8px 0; mask-image: linear-gradient(to right, transparent, #000 5%, #000 95%, transparent); }
+.wide-spectrum i { flex: 1; height: 100%; border-radius: 3px; background: linear-gradient(to top, var(--art-wash, #ffffff30), var(--accent) 60%, white); transform: scaleY(var(--level, 0)); transition: transform .12s cubic-bezier(.15,.7,.3,1); }
 .live-page input, .live-page select { font: inherit; color: inherit; background: #ffffff10; border: 1px solid #ffffff30; border-radius: 6px; padding: 6px; min-width: 0; }
 .page.todos form { display: flex; gap: 6px; }
 .page.todos input[type="text"] { flex: 1; width: 80px; }
@@ -52,6 +54,6 @@
 .todo-row { display: flex; gap: 8px; align-items: center; padding: 4px 0; font-size: 12px; }
 .todo-row span { flex: 1; overflow-wrap: anywhere; }
 @media (prefers-reduced-motion: reduce) {
-  .live-spectrum { display: none; }
+  .live-spectrum, .wide-spectrum { visibility: hidden; }
   .lyric-line { transition: none; }
 }

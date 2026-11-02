@@ -31,6 +31,7 @@ pub(super) fn download(
         .map_err(|e| format!("Could not create model directory: {e}"))?;
     let temporary = parent.join(format!("{MODEL_FILE}.part"));
     let response = reqwest::blocking::Client::builder()
+        .https_only(true)
         .connect_timeout(std::time::Duration::from_secs(15))
         .timeout(std::time::Duration::from_secs(600))
         .build()
@@ -47,9 +48,9 @@ pub(super) fn download(
         return Err("The model server reported a file larger than the 100 MiB limit".into());
     }
     let mut reader = response;
+    let cleanup = TemporaryModelFile(temporary.clone());
     let mut output = std::fs::File::create(&temporary)
         .map_err(|e| format!("Could not create temporary model file: {e}"))?;
-    let cleanup = TemporaryModelFile(temporary.clone());
     let mut hash = Sha256::new();
     let mut received = 0u64;
     let mut buffer = [0u8; 64 * 1024];
@@ -97,7 +98,7 @@ pub(super) fn download(
     }
     std::fs::rename(&temporary, &path)
         .map_err(|e| format!("Could not install verified model: {e}"))?;
-    std::mem::forget(cleanup);
+    drop(cleanup);
     Ok(())
 }
 

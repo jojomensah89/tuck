@@ -1,6 +1,6 @@
 # Phase two frontend integration
 
-Frontend is implemented on the coordinator branch after both Luna frontend attempts stopped without edits. Windows native service integration remains required before this feature set is ready to merge.
+Frontend was implemented by the coordinator after both Luna frontend attempts stopped without edits. Native service wiring and adapters are now integrated in draft PR 6; final review and live-verification gates are tracked in phase-two-verification.md.
 
 ## Delivered
 
@@ -10,7 +10,7 @@ Interaction preferences are local and bounded to a 500x210 maximum within the ex
 
 ## Adapter contract to align during integration
 
-See src/live-services.ts for exact TypeScript interfaces. These are provisional until aligned with the native PRs; native mismatches must be fixed on the integrated branch.
+See src/live-services.ts for exact TypeScript interfaces. These are frontend adapter names. src/live-services.ts translates them to the actual native commands and DTOs on the integration branch; see the native module documents for wire signatures.
 
 | Service | Commands | Event |
 | --- | --- | --- |

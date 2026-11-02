@@ -1,11 +1,4 @@
-#[path = "../src/lyrics.rs"]
-mod lyrics;
-
-#[path = "../src/telemetry.rs"]
-mod telemetry;
-
-#[path = "../src/visualizer.rs"]
-mod visualizer;
+use tuck_lib::{lyrics, telemetry, visualizer};
 
 use tuck_lib::media::{MediaSessionInfo, MediaState};
 

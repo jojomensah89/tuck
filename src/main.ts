@@ -349,7 +349,9 @@ function onMediaUpdate(payload: MediaState): void {
   }
 
   syncTransportButtons();
-  for (const id of ['play', 'prev', 'next']) ($(id) as HTMLButtonElement).disabled = !mediaState.active;
+  ($('play') as HTMLButtonElement).disabled = !mediaState.active || mediaState.canPlayPause === false;
+  ($('prev') as HTMLButtonElement).disabled = !mediaState.active || mediaState.canSkipPrev === false;
+  ($('next') as HTMLButtonElement).disabled = !mediaState.active || mediaState.canSkipNext === false;
   live.media(mediaState, currentPosition());
   renderCompact();
 }
@@ -373,7 +375,7 @@ function tick(): void {
   const trackSlider = $('track');
   trackSlider.setAttribute('aria-valuenow', String(Math.round(pct)));
   trackSlider.setAttribute('aria-valuetext', `${formatMs(pos)} of ${formatMs(mediaState.durationMs)}`);
-  trackSlider.setAttribute('aria-disabled', String(!mediaState.active || mediaState.durationMs <= 0));
+  trackSlider.setAttribute('aria-disabled', String(!mediaState.active || mediaState.canSeek === false || mediaState.durationMs <= 0));
 }
 
 setInterval(tick, 200);
@@ -398,7 +400,7 @@ $('prev').onclick = (e) => {
 };
 
 function seekTo(ms: number): void {
-  if (!mediaState.active || mediaState.durationMs <= 0) return;
+  if (!mediaState.active || mediaState.canSeek === false || mediaState.durationMs <= 0) return;
   mediaState.positionMs = Math.max(0, Math.min(mediaState.durationMs, ms));
   mediaReceivedAt = performance.now();
   tick();
@@ -747,10 +749,11 @@ function setupQuickActions(): void {
 
 function showAnnouncement(text:string):void {
   $('statusMessage').textContent=text;
-  if(state==='open')return;
+  const returnOpen = state === 'open';
+  if(returnOpen && (pageIndex !== 0 || keyboardMode))return;
   announcement={text:text.slice(0,180),until:Date.now()+3500};
   window.clearTimeout(closeTimer);setState('peek');
-  closeTimer=window.setTimeout(()=>{announcement=null;setState(hoverInside?'peek':'idle');},3500);
+  closeTimer=window.setTimeout(()=>{announcement=null;setState(returnOpen && (hoverInside || livePreferences.pinned) ? 'open' : hoverInside?'peek':'idle');},3500);
 }
 window.addEventListener('tuck-activity',event=>{
   const detail=(event as CustomEvent).detail;
@@ -780,8 +783,13 @@ void listenToEvent<boolean>('fullscreen', (hidden) => {
 });
 void listenToEvent<MediaState>('media', (payload) => onMediaUpdate(payload));
 void listenToEvent<PowerState>('power', (payload) => {
+  const previous = powerState;
   powerState = payload;
   renderPower();
+  if (livePreferences.desktopPeeks && previous.statusKnown && payload.statusKnown && previous.acConnected !== payload.acConnected) showAnnouncement(payload.acConnected ? 'Charger connected' : 'Charger disconnected');
+});
+void listenToEvent<{title: string; text: string}>('desktop-peek', payload => {
+  if (livePreferences.desktopPeeks && typeof payload?.title === 'string' && typeof payload.text === 'string') showAnnouncement(`${payload.title}: ${payload.text}`);
 });
 void listenToEvent<Meter[]>('usage', (payload) => onUsageUpdate(payload));
 

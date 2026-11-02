@@ -1,8 +1,15 @@
+pub mod clipboard_history;
+pub mod desktop_signals;
+pub mod dictation;
 pub mod extensions;
 pub mod installed_usage;
+pub mod lyrics;
 pub mod media;
+mod service_preferences;
 pub mod system;
+pub mod telemetry;
 pub mod usage;
+pub mod visualizer;
 
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -24,10 +31,21 @@ fn set_hit(hit_state: State<'_, Arc<system::HitState>>, w: u32, h: u32) {
 }
 
 pub fn run() {
+    let dictation_service = Arc::new(dictation::DictationService::new());
+    let clipboard_service = Arc::new(clipboard_history::ClipboardHistoryService::new());
+    let dictation_setup = dictation_service.clone();
+    let clipboard_setup = clipboard_service.clone();
     let hit_state = Arc::new(system::HitState::default());
     let hit_state_setup = hit_state.clone();
 
     tauri::Builder::default()
+        .manage(dictation_service)
+        .manage(clipboard_service)
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(dictation::handle_shortcut)
+                .build(),
+        )
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_autostart::init(
@@ -37,6 +55,36 @@ pub fn run() {
         .manage(hit_state)
         .invoke_handler(tauri::generate_handler![
             set_hit,
+            dictation::dictation_get_state,
+            dictation::dictation_set_settings,
+            dictation::dictation_model_download,
+            dictation::dictation_model_download_cancel,
+            dictation::dictation_model_remove,
+            dictation::dictation_toggle,
+            dictation::dictation_hold_start,
+            dictation::dictation_hold_stop,
+            dictation::dictation_cancel,
+            dictation::dictation_review_insert,
+            dictation::dictation_review_discard,
+            clipboard_history::clipboard_get_state,
+            clipboard_history::clipboard_set_enabled,
+            clipboard_history::clipboard_set_persistence,
+            clipboard_history::clipboard_delete,
+            clipboard_history::clipboard_clear,
+            clipboard_history::clipboard_pin,
+            clipboard_history::clipboard_copy,
+            lyrics::lyrics_status,
+            lyrics::lyrics_set_enabled,
+            lyrics::lyrics_get,
+            lyrics::lyrics_clear_cache,
+            telemetry::telemetry_now,
+            telemetry::telemetry_history,
+            visualizer::visualizer_status,
+            visualizer::visualizer_set_enabled,
+            visualizer::visualizer_set_reduced_motion,
+            visualizer::visualizer_spectrum,
+            media::media_sessions,
+            media::media_select_session,
             installed_usage::installed_usage_enabled,
             installed_usage::set_installed_usage_enabled,
             installed_usage::refresh_installed_usage,
@@ -69,6 +117,13 @@ pub fn run() {
         ])
         .setup(move |app| {
             let handle = app.handle().clone();
+            // Missing shortcut availability must not prevent the island from launching.
+            if let Err(error) = dictation::start(handle.clone(), &dictation_setup) {
+                eprintln!("Dictation startup: {error}");
+            }
+            if let Err(error) = clipboard_history::start(handle.clone(), &clipboard_setup) {
+                eprintln!("Clipboard startup: {error}");
+            }
 
             // Setup System Tray Menu (Open island / Settings... / Quit Tuck)
             let open_island_item =
@@ -144,10 +199,22 @@ pub fn run() {
             extensions::start(handle.clone());
             usage::start(handle.clone());
             media::start(handle.clone());
+            lyrics::start(&handle);
+            telemetry::start(handle.clone());
+            desktop_signals::start(handle.clone());
+            visualizer::start(handle.clone());
             system::start(handle, hit_state_setup);
 
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            if matches!(event, tauri::RunEvent::Exit) {
+                app.state::<Arc<dictation::DictationService>>().shutdown();
+                clipboard_history::stop(
+                    &app.state::<Arc<clipboard_history::ClipboardHistoryService>>(),
+                );
+            }
+        });
 }

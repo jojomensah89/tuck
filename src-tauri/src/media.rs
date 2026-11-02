@@ -94,6 +94,20 @@ use windows::Media::Control::{
 use windows::Storage::Streams::DataReader;
 #[cfg(windows)]
 use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_MULTITHREADED};
+#[cfg(windows)]
+static SESSION_CATALOG: Mutex<Vec<(String, GlobalSystemMediaTransportControlsSession)>> =
+    Mutex::new(Vec::new());
+#[cfg(windows)]
+fn same_session(
+    left: &GlobalSystemMediaTransportControlsSession,
+    right: &GlobalSystemMediaTransportControlsSession,
+) -> bool {
+    use windows::core::{IUnknown, Interface};
+    match (left.cast::<IUnknown>(), right.cast::<IUnknown>()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    }
+}
 
 #[cfg(windows)]
 fn current_session() -> Option<GlobalSystemMediaTransportControlsSession> {
@@ -104,24 +118,21 @@ fn current_session() -> Option<GlobalSystemMediaTransportControlsSession> {
 
     let selected = SELECTED_SESSION_ID.lock().ok()?.clone();
     if let Some(target_id) = selected {
-        if !target_id.trim().is_empty() {
-            if let Ok(sessions) = mgr.GetSessions() {
-                if let Ok(count) = sessions.Size() {
-                    for i in 0..count {
-                        if let Ok(s) = sessions.GetAt(i) {
-                            let aumid = s
-                                .SourceAppUserModelId()
-                                .map(|id| id.to_string())
-                                .unwrap_or_default();
-                            let formatted_id = format!("{aumid}:{i}");
-                            if aumid == target_id || formatted_id == target_id {
-                                return Some(s);
-                            }
-                        }
-                    }
+        let pinned = SESSION_CATALOG
+            .lock()
+            .ok()?
+            .iter()
+            .find(|(id, _)| *id == target_id)
+            .map(|(_, session)| session.clone())?;
+        let sessions = mgr.GetSessions().ok()?;
+        for index in 0..sessions.Size().ok()? {
+            if let Ok(current) = sessions.GetAt(index) {
+                if same_session(&current, &pinned) {
+                    return Some(current);
                 }
             }
         }
+        return None;
     }
 
     mgr.GetCurrentSession().ok()
@@ -273,13 +284,23 @@ pub async fn media_sessions() -> Result<Vec<MediaSessionInfo>, String> {
             let selected = SELECTED_SESSION_ID.lock().ok().and_then(|g| g.clone());
 
             let mut list = Vec::new();
+            let old_catalog = SESSION_CATALOG
+                .lock()
+                .map_err(|_| "Media session catalog unavailable")?
+                .clone();
+            let mut new_catalog = Vec::new();
             for i in 0..count {
                 if let Ok(s) = sessions.GetAt(i) {
                     let source_app_id = s
                         .SourceAppUserModelId()
                         .map(|id| id.to_string())
                         .unwrap_or_default();
-                    let session_id = format!("{source_app_id}:{i}");
+                    let session_id = old_catalog
+                        .iter()
+                        .find(|(_, previous)| same_session(previous, &s))
+                        .map(|(id, _)| id.clone())
+                        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+                    new_catalog.push((session_id.clone(), s.clone()));
 
                     let props = s
                         .TryGetMediaPropertiesAsync()
@@ -307,7 +328,7 @@ pub async fn media_sessions() -> Result<Vec<MediaSessionInfo>, String> {
 
                     let is_selected = selected
                         .as_deref()
-                        .map(|sel| sel == session_id || sel == source_app_id)
+                        .map(|sel| sel == session_id)
                         .unwrap_or(false);
 
                     list.push(MediaSessionInfo {
@@ -317,6 +338,19 @@ pub async fn media_sessions() -> Result<Vec<MediaSessionInfo>, String> {
                         artist,
                         playing,
                         is_selected,
+                    });
+                }
+            }
+            *SESSION_CATALOG
+                .lock()
+                .map_err(|_| "Media session catalog unavailable")? = new_catalog;
+            if let Some(id) = selected {
+                if !list.iter().any(|session| session.id == id) {
+                    list.push(MediaSessionInfo {
+                        id,
+                        source_app_id: "Selected player unavailable".into(),
+                        is_selected: true,
+                        ..Default::default()
                     });
                 }
             }
@@ -335,10 +369,11 @@ pub async fn media_sessions() -> Result<Vec<MediaSessionInfo>, String> {
 /// Restricted to main and settings windows.
 #[tauri::command]
 pub fn media_select_session(
-    window: Option<tauri::Window>,
+    window: tauri::Window,
     session_id: Option<String>,
 ) -> Result<(), String> {
-    if let Some(ref w) = window {
+    {
+        let w = &window;
         let label = w.label();
         if label != "main" && label != "settings" {
             return Err(
@@ -347,6 +382,24 @@ pub fn media_select_session(
         }
     }
 
+    #[cfg(windows)]
+    if let Some(id) = session_id.as_ref().filter(|id| !id.trim().is_empty()) {
+        if !SESSION_CATALOG
+            .lock()
+            .map_err(|_| "Media catalog unavailable")?
+            .iter()
+            .any(|(known, _)| known == id)
+        {
+            return Err("This media session is no longer available".into());
+        }
+    }
+    select_session_id(session_id)
+}
+
+fn select_session_id(session_id: Option<String>) -> Result<(), String> {
+    if session_id.as_ref().is_some_and(|id| id.len() > 1024) {
+        return Err("Media session ID is too long".into());
+    }
     let mut selected = SELECTED_SESSION_ID
         .lock()
         .map_err(|_| "Failed to acquire lock for selected session".to_string())?;
@@ -441,7 +494,23 @@ async fn control(action: u8, ms: i64) -> Result<(), String> {
             let _apartment = Apartment::enter()?;
             let session = current_session().ok_or("No active media session")?;
             let result = match action {
-                0 => session.TryTogglePlayPauseAsync().and_then(|op| op.get()),
+                0 => {
+                    let info = session
+                        .GetPlaybackInfo()
+                        .map_err(|_| "Playback state unavailable")?;
+                    let controls = info
+                        .Controls()
+                        .map_err(|_| "Playback controls unavailable")?;
+                    if controls.IsPlayPauseToggleEnabled().unwrap_or(false) {
+                        session.TryTogglePlayPauseAsync().and_then(|op| op.get())
+                    } else if info.PlaybackStatus().ok()
+                        == Some(GlobalSystemMediaTransportControlsSessionPlaybackStatus::Playing)
+                    {
+                        session.TryPauseAsync().and_then(|op| op.get())
+                    } else {
+                        session.TryPlayAsync().and_then(|op| op.get())
+                    }
+                }
                 1 => session.TrySkipNextAsync().and_then(|op| op.get()),
                 2 => session.TrySkipPreviousAsync().and_then(|op| op.get()),
                 _ => {
@@ -560,16 +629,33 @@ mod tests {
 
     #[test]
     fn test_media_session_selection() {
-        assert!(media_select_session(None, Some("Spotify.exe:1".into())).is_ok());
+        assert!(select_session_id(Some("Spotify.exe:1".into())).is_ok());
         {
             let sel = SELECTED_SESSION_ID.lock().unwrap();
             assert_eq!(sel.as_deref(), Some("Spotify.exe:1"));
         }
 
-        assert!(media_select_session(None, None).is_ok());
+        assert!(select_session_id(None).is_ok());
         {
             let sel = SELECTED_SESSION_ID.lock().unwrap();
             assert_eq!(*sel, None);
+        }
+    }
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "Read-only live Windows media diagnostic; no transport commands"]
+    fn live_windows_media() {
+        let _apartment = Apartment::enter().expect("COM apartment");
+        if let Some(session) = current_session() {
+            let mut attempts = 0;
+            let (state, _, artwork) =
+                poll_session(&session, "", &None, &mut attempts).expect("Media properties");
+            println!(
+                "LIVE_MEDIA {}",
+                serde_json::json!({"active":state.active,"title":state.title,"artist":state.artist,"source":state.source_app_id,"playing":state.playing,"positionMs":state.position_ms,"durationMs":state.duration_ms,"hasArtwork":artwork.is_some(),"canPlayPause":state.can_play_pause,"canSeek":state.can_seek})
+            );
+        } else {
+            println!("LIVE_MEDIA no active Windows session");
         }
     }
 }

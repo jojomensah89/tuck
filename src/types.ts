@@ -10,6 +10,10 @@ export interface MediaState {
   positionMs: number;
   durationMs: number;
   artwork?: string | null;
+  canPlayPause?: boolean;
+  canSkipNext?: boolean;
+  canSkipPrev?: boolean;
+  canSeek?: boolean;
 }
 
 export interface PowerState {

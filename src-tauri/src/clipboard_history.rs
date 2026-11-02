@@ -60,6 +60,7 @@ pub struct ClipboardHistoryService {
     inner: Mutex<StateInner>,
     stop: Arc<AtomicBool>,
     last_sequence: AtomicU32,
+    operation: Mutex<()>,
 }
 
 impl Default for ClipboardHistoryService {
@@ -79,6 +80,7 @@ impl ClipboardHistoryService {
             }),
             stop: Arc::new(AtomicBool::new(false)),
             last_sequence: AtomicU32::new(0),
+            operation: Mutex::new(()),
         }
     }
 
@@ -112,53 +114,81 @@ impl ClipboardHistoryService {
     }
 
     fn set_enabled(&self, enabled: bool) -> Result<(), String> {
+        let _operation = self
+            .operation
+            .lock()
+            .map_err(|_| "Clipboard settings unavailable")?;
         let app = self.app()?;
         if enabled {
             self.last_sequence
                 .store(current_clipboard_sequence(), Ordering::Release);
         }
         let persist = {
-            let mut state = self
+            let state = self
                 .inner
                 .lock()
                 .map_err(|_| "Clipboard history service unavailable")?;
-            state.enabled = enabled;
             state.persist_on_exit
         };
         self.save_settings(&app, enabled, persist)?;
+        self.inner
+            .lock()
+            .map_err(|_| "Clipboard settings unavailable")?
+            .enabled = enabled;
         self.emit_changed();
         Ok(())
     }
 
     fn set_persistence(&self, persist: bool) -> Result<(), String> {
+        let _operation = self
+            .operation
+            .lock()
+            .map_err(|_| "Clipboard settings unavailable")?;
         let app = self.app()?;
         let (enabled, items) = {
-            let mut state = self
+            let state = self
                 .inner
                 .lock()
                 .map_err(|_| "Clipboard history service unavailable")?;
-            state.persist_on_exit = persist;
             (
                 state.enabled,
                 state.items.iter().cloned().collect::<Vec<_>>(),
             )
         };
-        self.save_settings(&app, enabled, persist)?;
         if persist {
             self.save_items(&app, &items)?;
         } else {
-            self.remove_items_file(&app);
+            self.remove_items_file(&app)?;
         }
+        if let Err(error) = self.save_settings(&app, enabled, persist) {
+            let was_persisted = self
+                .inner
+                .lock()
+                .map_err(|_| "Clipboard settings unavailable")?
+                .persist_on_exit;
+            if persist && !was_persisted {
+                self.remove_items_file(&app)?;
+            }
+            return Err(error);
+        }
+        self.inner
+            .lock()
+            .map_err(|_| "Clipboard settings unavailable")?
+            .persist_on_exit = persist;
         self.emit_changed();
         Ok(())
     }
 
     fn push_text(&self, text: String) -> Result<(), String> {
+        let _operation = self
+            .operation
+            .lock()
+            .map_err(|_| "Clipboard history unavailable")?;
         if text.is_empty() || text.len() > MAX_ITEM_BYTES || text.trim().is_empty() {
             return Ok(());
         }
         let app = self.app()?;
-        let mut state = self
+        let state = self
             .inner
             .lock()
             .map_err(|_| "Clipboard history service unavailable")?;
@@ -168,7 +198,8 @@ impl ClipboardHistoryService {
         if state.items.front().is_some_and(|item| item.text == text) {
             return Ok(());
         }
-        state.items.push_front(ClipboardHistoryItem {
+        let mut next = state.items.clone();
+        next.push_front(ClipboardHistoryItem {
             id: Uuid::new_v4().to_string(),
             text,
             created_at_ms: SystemTime::now()
@@ -177,66 +208,91 @@ impl ClipboardHistoryService {
                 .as_millis() as u64,
             pinned: false,
         });
-        evict_unpinned(&mut state.items);
+        evict_unpinned(&mut next);
         let snapshot = ClipboardHistorySnapshot {
             enabled: state.enabled,
             persist_on_exit: state.persist_on_exit,
-            items: state.items.iter().cloned().collect(),
+            items: next.iter().cloned().collect(),
         };
         drop(state);
         if snapshot.persist_on_exit {
             self.save_items(&app, &snapshot.items)?;
         }
+        self.inner
+            .lock()
+            .map_err(|_| "Clipboard history unavailable")?
+            .items = next;
         self.emit_changed();
         Ok(())
     }
 
     fn delete(&self, id: &str) -> Result<(), String> {
+        let _operation = self
+            .operation
+            .lock()
+            .map_err(|_| "Clipboard history unavailable")?;
         let app = self.app()?;
         let items = {
-            let mut state = self
+            let state = self
                 .inner
                 .lock()
                 .map_err(|_| "Clipboard history service unavailable")?;
-            let before = state.items.len();
-            state.items.retain(|item| item.id != id);
-            if before == state.items.len() {
+            let mut next = state.items.clone();
+            let before = next.len();
+            next.retain(|item| item.id != id);
+            if before == next.len() {
                 return Err("Clipboard history item was not found".into());
             }
-            state.items.iter().cloned().collect::<Vec<_>>()
+            next.iter().cloned().collect::<Vec<_>>()
         };
         self.persist_current(&app, &items)?;
+        self.inner
+            .lock()
+            .map_err(|_| "Clipboard history unavailable")?
+            .items = items.into_iter().collect();
         self.emit_changed();
         Ok(())
     }
 
     fn pin(&self, id: &str, pinned: bool) -> Result<(), String> {
+        let _operation = self
+            .operation
+            .lock()
+            .map_err(|_| "Clipboard history unavailable")?;
         let app = self.app()?;
         let items = {
-            let mut state = self
+            let state = self
                 .inner
                 .lock()
                 .map_err(|_| "Clipboard history service unavailable")?;
-            let item = state
-                .items
+            let mut next = state.items.clone();
+            let item = next
                 .iter_mut()
                 .find(|item| item.id == id)
                 .ok_or("Clipboard history item was not found")?;
             item.pinned = pinned;
-            evict_unpinned(&mut state.items);
-            state.items.iter().cloned().collect::<Vec<_>>()
+            evict_unpinned(&mut next);
+            next.iter().cloned().collect::<Vec<_>>()
         };
         self.persist_current(&app, &items)?;
+        self.inner
+            .lock()
+            .map_err(|_| "Clipboard history unavailable")?
+            .items = items.into_iter().collect();
         self.emit_changed();
         Ok(())
     }
 
     fn clear(&self) -> Result<(), String> {
+        let _operation = self
+            .operation
+            .lock()
+            .map_err(|_| "Clipboard history unavailable")?;
         let app = self.app()?;
+        self.remove_items_file(&app)?;
         if let Ok(mut state) = self.inner.lock() {
             state.items.clear();
         }
-        self.remove_items_file(&app);
         self.emit_changed();
         Ok(())
     }
@@ -289,9 +345,12 @@ impl ClipboardHistoryService {
         atomic_json(&dir.join("items.json"), &stored)
     }
 
-    fn remove_items_file(&self, app: &AppHandle) {
-        if let Ok(dir) = self.directory(app) {
-            let _ = std::fs::remove_file(dir.join("items.json"));
+    fn remove_items_file(&self, app: &AppHandle) -> Result<(), String> {
+        let dir = self.directory(app)?;
+        match std::fs::remove_file(dir.join("items.json")) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(_) => Err("Could not remove saved clipboard history".into()),
         }
     }
 }
@@ -416,18 +475,17 @@ fn valid_items(items: &[ClipboardHistoryItem]) -> bool {
 
 #[cfg(windows)]
 fn read_clipboard_text() -> Result<Option<(u32, String)>, String> {
-    use windows::core::w;
     use windows::Win32::{
-        Foundation::HANDLE,
+        Foundation::HGLOBAL,
         System::{
             DataExchange::{
                 CloseClipboard, EnumClipboardFormats, GetClipboardData, GetClipboardOwner,
                 GetClipboardSequenceNumber, OpenClipboard, RegisterClipboardFormatW,
             },
-            Memory::{GlobalLock, GlobalSize, GlobalUnlock, HGLOBAL},
+            Memory::{GlobalLock, GlobalSize, GlobalUnlock},
+            Threading::GetCurrentProcessId,
         },
-        Threading::GetCurrentProcessId,
-        UI::{Ole::CF_UNICODETEXT, WindowsAndMessaging::GetWindowThreadProcessId},
+        UI::WindowsAndMessaging::GetWindowThreadProcessId,
     };
     unsafe {
         let before = GetClipboardSequenceNumber();
@@ -435,7 +493,7 @@ fn read_clipboard_text() -> Result<Option<(u32, String)>, String> {
             return Ok(None);
         }
         let result = (|| {
-            let owner = GetClipboardOwner();
+            let owner = GetClipboardOwner().unwrap_or_default();
             if !owner.0.is_null() {
                 let mut owner_pid = 0;
                 let _ = GetWindowThreadProcessId(owner, Some(&mut owner_pid));
@@ -450,12 +508,12 @@ fn read_clipboard_text() -> Result<Option<(u32, String)>, String> {
             {
                 return Ok(None);
             }
-            let handle = match GetClipboardData(CF_UNICODETEXT.0 as u32) {
+            let handle = match GetClipboardData(13) {
                 Ok(handle) => HGLOBAL(handle.0),
                 Err(_) => return Ok(None),
             };
             let bytes = GlobalSize(handle);
-            if bytes < 2 || bytes > MAX_ITEM_BYTES + 2 || bytes % 2 != 0 {
+            if !(2..=MAX_ITEM_BYTES + 2).contains(&bytes) || !bytes.is_multiple_of(2) {
                 return Ok(None);
             }
             let pointer = GlobalLock(handle) as *const u16;
@@ -479,7 +537,7 @@ fn read_clipboard_text() -> Result<Option<(u32, String)>, String> {
         if close.is_err() {
             return Err("Could not close the Windows clipboard after reading it".into());
         }
-        result
+        return result;
     }
 
     unsafe fn has_private_marker(name: &str) -> Result<bool, String> {
@@ -531,6 +589,67 @@ fn read_clipboard_text() -> Result<Option<(u32, String)>, String> {
             }
         }
         Ok(false)
+    }
+}
+
+#[tauri::command]
+pub fn clipboard_copy(
+    window: tauri::Window,
+    service: State<'_, Arc<ClipboardHistoryService>>,
+    id: String,
+) -> Result<(), String> {
+    if !matches!(window.label(), "main" | "settings") {
+        return Err("Access denied".into());
+    }
+    let text = service
+        .inner
+        .lock()
+        .map_err(|_| "Clipboard history unavailable")?
+        .items
+        .iter()
+        .find(|item| item.id == id)
+        .map(|item| item.text.clone())
+        .ok_or("Clipboard item not found")?;
+    #[cfg(windows)]
+    unsafe {
+        use windows::Win32::{
+            Foundation::{GlobalFree, HANDLE},
+            System::{
+                DataExchange::{CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData},
+                Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE},
+            },
+        };
+        let units: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
+        let memory = GlobalAlloc(GMEM_MOVEABLE, units.len() * 2)
+            .map_err(|_| "Clipboard allocation failed")?;
+        let ptr = GlobalLock(memory) as *mut u16;
+        if ptr.is_null() {
+            let _ = GlobalFree(memory);
+            return Err("Clipboard allocation failed".into());
+        }
+        std::ptr::copy_nonoverlapping(units.as_ptr(), ptr, units.len());
+        let _ = GlobalUnlock(memory);
+        let owner = window.hwnd().map_err(|_| "Clipboard window unavailable")?;
+        if OpenClipboard(windows::Win32::Foundation::HWND(owner.0 as _)).is_err() {
+            let _ = GlobalFree(memory);
+            return Err("Clipboard is busy".into());
+        }
+        let result =
+            EmptyClipboard().and_then(|_| SetClipboardData(13, HANDLE(memory.0)).map(|_| ()));
+        let _ = CloseClipboard();
+        if result.is_err() {
+            let _ = GlobalFree(memory);
+            return Err("Could not copy clipboard item".into());
+        }
+        service
+            .last_sequence
+            .store(current_clipboard_sequence(), Ordering::Release);
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = text;
+        Err("Windows clipboard required".into())
     }
 }
 

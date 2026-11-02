@@ -5,10 +5,12 @@ export function newRequestId(): string {
 export interface LivePreferences {
   hoverExpand: boolean; openDelayMs: number; closeDelayMs: number; pinned: boolean;
   compactContent: 'lyrics' | 'title'; lyricsOpen: boolean; openWidth: number;
+  desktopPeeks: boolean;
 }
 export const DEFAULT_LIVE_PREFERENCES: LivePreferences = {
   hoverExpand: true, openDelayMs: 180, closeDelayMs: 900, pinned: false,
   compactContent: 'lyrics', lyricsOpen: true, openWidth: 500,
+  desktopPeeks: true,
 };
 export function normalizePreferences(input: unknown): LivePreferences {
   const p = input && typeof input === 'object' ? input as Partial<LivePreferences> : {};
@@ -18,6 +20,7 @@ export function normalizePreferences(input: unknown): LivePreferences {
     hoverExpand: typeof p.hoverExpand === 'boolean' ? p.hoverExpand : true,
     pinned: p.pinned === true, lyricsOpen: p.lyricsOpen !== false,
     compactContent: p.compactContent === 'title' ? 'title' : 'lyrics',
+    desktopPeeks: p.desktopPeeks !== false,
     openDelayMs: bounded(p.openDelayMs, 180, 0, 2000),
     closeDelayMs: bounded(p.closeDelayMs, 900, 100, 10000),
     openWidth: bounded(p.openWidth, 500, 440, 500),

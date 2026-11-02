@@ -10,8 +10,8 @@
   --warn: #ff453a;
   --accent: #ffffff;
   --tint: transparent;
-  --spring: cubic-bezier(0.32, 1.28, 0.4, 1);
-  --out: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --spring: cubic-bezier(0.22, 1, 0.36, 1);
+  --out: cubic-bezier(0.22, 1, 0.36, 1);
   --ear: 14px;
   font-family: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
 }
@@ -114,9 +114,9 @@ svg.ico.nav-ico {
 .island[data-state="peek"] {
   --r: 19px;
   transition:
-    width 0.56s var(--spring),
-    height 0.56s var(--spring),
-    border-radius 0.56s var(--spring),
+    width 0.38s var(--out),
+    height 0.38s var(--out),
+    border-radius 0.38s var(--out),
     opacity 0.2s,
     transform 0.3s var(--out);
 }
@@ -128,9 +128,9 @@ svg.ico.nav-ico {
     radial-gradient(90% 120% at 0% 100%, var(--tint), transparent 70%),
     var(--surface);
   transition:
-    width 0.56s var(--spring),
-    height 0.56s var(--spring),
-    border-radius 0.56s var(--spring),
+    width 0.38s var(--out),
+    height 0.38s var(--out),
+    border-radius 0.38s var(--out),
     opacity 0.2s,
     transform 0.3s var(--out);
 }
@@ -288,7 +288,7 @@ body.fullscreen-hidden .island {
 
 @keyframes act-pulse {
   0%, 100% { opacity: 1; transform: scale(1); }
-  50% { opacity: 0.7; transform: scale(0.92); }
+  50% { opacity: 0.7; transform: scale(0.98); }
 }
 
 .act-compact-time {
@@ -342,7 +342,7 @@ body.fullscreen-hidden .island {
 }
 
 .nav:active {
-  transform: translateY(-50%) scale(0.92);
+  transform: translateY(-50%) scale(0.98);
 }
 
 .dots {
@@ -557,7 +557,7 @@ body.fullscreen-hidden .island {
 }
 
 .ctl button:active {
-  transform: scale(0.9);
+  transform: scale(0.98);
 }
 
 .ctl button.big {

@@ -134,6 +134,28 @@ try {
   await native.locator('.lyric-line').last().click();
   assert.equal(await native.evaluate(()=>window.__calls.some(call=>call.command==='media_seek'&&call.args.ms===5000)),true);
   await native.screenshot({path:path.join(root,'artifacts','island-phase-two-media.png')});
+  for (const width of [440, 500]) {
+    await native.evaluate(width => {
+      const key = 'tuck.live.v2';
+      localStorage.setItem(key, JSON.stringify({...JSON.parse(localStorage.getItem(key) || '{}'), openWidth: width}));
+      window.dispatchEvent(new StorageEvent('storage', {key}));
+    }, width);
+    const geometry = await native.evaluate(() => {
+      const rect = selector => document.querySelector(selector).getBoundingClientRect();
+      const toolbar = rect('.media-tools'), details = rect('.page.media .now');
+      const title = rect('#title'), lyrics = rect('.lyrics-pane');
+      const select = rect('.player-select'), toggle = rect('.media-tools button');
+      const controls = rect('.page.media .ctl'), page = rect('.page.media');
+      return {width: rect('#isl').width, toolbarClear: toolbar.bottom <= details.top,
+        titleClear: title.right + 12 <= lyrics.left, selectorClear: select.right + 8 <= toggle.left,
+        controlsFit: controls.bottom <= page.bottom + 1,
+        selectorSize: parseFloat(getComputedStyle(document.querySelector('.player-select')).fontSize)};
+    });
+    assert.equal(geometry.width, width);
+    assert.equal(geometry.toolbarClear && geometry.titleClear && geometry.selectorClear && geometry.controlsFit, true, `Media regions must fit at ${width}px`);
+    assert.ok(geometry.selectorSize >= 12);
+    await native.screenshot({path:path.join(root,'artifacts',`island-unslop-${width}.png`)});
+  }
   await native.evaluate(()=>{
     const oldId=window.__calls.findLast(call=>call.command==='lyrics_get').args.requestId;
     const track={active:true,artist:'Fixture',playing:false,positionMs:3000,durationMs:120000};

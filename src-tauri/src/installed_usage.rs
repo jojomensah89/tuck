@@ -7,12 +7,13 @@ use std::{
     path::PathBuf,
     process::{Child, ChildStdin, Command, Stdio},
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc, Mutex, OnceLock,
     },
     time::{Duration, Instant},
 };
 use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
+static EPOCH: AtomicU64 = AtomicU64::new(0);
 static ENABLED: AtomicBool = AtomicBool::new(false);
 static REFRESH: AtomicBool = AtomicBool::new(true);
 static METERS: Mutex<Vec<Meter>> = Mutex::new(Vec::new());
@@ -45,10 +46,12 @@ pub fn set_installed_usage_enabled(window: WebviewWindow, enabled: bool) -> Resu
         },
     )
     .map_err(|_| "Could not save usage settings")?;
-    ENABLED.store(enabled, Ordering::Relaxed);
+    let mut cache = METERS.lock().unwrap_or_else(|p| p.into_inner());
+    EPOCH.fetch_add(1, Ordering::SeqCst);
+    ENABLED.store(enabled, Ordering::SeqCst);
     REFRESH.store(true, Ordering::Relaxed);
     if !enabled {
-        METERS.lock().unwrap_or_else(|p| p.into_inner()).clear();
+        cache.clear();
     }
     Ok(())
 }
@@ -409,6 +412,7 @@ pub fn start(app: AppHandle) {
                 && (REFRESH.swap(false, Ordering::Relaxed)
                     || last.elapsed() >= Duration::from_secs(300))
             {
+                let epoch = EPOCH.load(Ordering::SeqCst);
                 let mut meters = Vec::new();
                 for name in ["claude", "codex"] {
                     match probe(name) {
@@ -416,8 +420,16 @@ pub fn start(app: AppHandle) {
                         Err(error) => meters.push(unavailable(name, &error)),
                     }
                 }
-                if ENABLED.load(Ordering::Relaxed) {
-                    *METERS.lock().unwrap_or_else(|p| p.into_inner()) = meters;
+                let committed = {
+                    let mut cache = METERS.lock().unwrap_or_else(|p| p.into_inner());
+                    if ENABLED.load(Ordering::SeqCst) && epoch == EPOCH.load(Ordering::SeqCst) {
+                        *cache = meters;
+                        true
+                    } else {
+                        false
+                    }
+                };
+                if committed {
                     let _ = app.emit("usage", crate::usage::current_snapshot());
                 }
                 last = Instant::now();

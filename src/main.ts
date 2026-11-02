@@ -96,11 +96,17 @@ let state: IslandState = 'idle';
 let pageIndex = 0;
 let closeTimer = 0;
 let wheelLock = 0;
+let hoverInside=false;
+let nativeDragActive=false;
+let keyboardMode=false;
+let announcement:{text:string;until:number}|null=null;
+const externalActivities=new Map<string,{title:string;text:string;priority:number}>();
 
 const pages = Array.from(document.querySelectorAll<HTMLElement>('.page'));
 
 function setState(next: IslandState): void {
   if (state === 'open' && next !== 'open' && isTauri()) runAction(invokeCommand('deactivate_island'), 'Restore desktop interaction');
+  if(next!=='open')keyboardMode=false;
   state = next;
   const [w, h] = SIZES[next];
   isl.style.setProperty('--w', `${w}px`);
@@ -126,7 +132,9 @@ function setState(next: IslandState): void {
 }
 
 function onHover(inside: boolean): void {
+  hoverInside=inside;
   window.clearTimeout(closeTimer);
+  if(nativeDragActive || (!inside&&keyboardMode&&state==='open'))return;
   if (inside) {
     if (state === 'idle') setState('peek');
   } else {
@@ -413,8 +421,15 @@ function renderCompact(): void {
   const cc = $('cc');
   const cr = $('cr');
 
+  if(announcement&&announcement.until>Date.now()&&state==='peek') {
+    cl.innerHTML=SVG_ICONS.note;cc.textContent=announcement.text;cr.textContent='';return;
+  }
+  const external=[...externalActivities.values()].sort((a,b)=>b.priority-a.priority)[0];
   const actCompact = activitiesManager.getCompactView();
 
+  if(external&&external.priority>(actCompact?.priority??0)) {
+    cl.innerHTML=SVG_ICONS.timer;cc.textContent=state==='peek'?external.title:'';cr.textContent=external.text;return;
+  }
   // Priority stack: Active timer/stopwatch/pomodoro overrides media playback
   if (actCompact && (!mediaState.active || actCompact.priority > 50)) {
     cl.innerHTML = actCompact.leftHtml;
@@ -582,14 +597,7 @@ function renderActivitiesPage(top: Activity | null): void {
 let rawMeters: Meter[] = [];
 let prevPcts: Record<string, number> = {};
 
-function announceReset(meter: Meter): void {
-  $('statusMessage').textContent = `${meter.label} reset`;
-  if (state === 'open') return;
-  setState('peek');
-  $('cc').textContent = `${meter.label} reset`;
-  window.clearTimeout(closeTimer);
-  closeTimer = window.setTimeout(() => setState('idle'), 3500);
-}
+function announceReset(meter: Meter): void { showAnnouncement(`${meter.label} reset`); }
 
 function renderUsage(): void {
   const list = $('uList');
@@ -718,9 +726,35 @@ function setupQuickActions(): void {
   };
 }
 
+function showAnnouncement(text:string):void {
+  $('statusMessage').textContent=text;
+  if(state==='open')return;
+  announcement={text:text.slice(0,180),until:Date.now()+3500};
+  window.clearTimeout(closeTimer);setState('peek');
+  closeTimer=window.setTimeout(()=>{announcement=null;setState(hoverInside?'peek':'idle');},3500);
+}
+window.addEventListener('tuck-activity',event=>{
+  const detail=(event as CustomEvent).detail;
+  if(!detail||typeof detail.id!=='string'||typeof detail.title!=='string'||typeof detail.text!=='string'||!Number.isFinite(detail.priority))return;
+  if(detail.active)externalActivities.set(detail.id,{title:detail.title.slice(0,80),text:detail.text.slice(0,80),priority:Math.max(0,Math.min(100,detail.priority))});else externalActivities.delete(detail.id);
+  renderCompact();
+});
+window.addEventListener('tuck-preview',event=>{
+  const detail=(event as CustomEvent).detail;
+  if(detail&&typeof detail.title==='string'&&typeof detail.text==='string')showAnnouncement(`${detail.title}: ${detail.text}`);
+});
+function holdDrag(active:boolean):void {
+  nativeDragActive=active;window.clearTimeout(closeTimer);
+  if(active){setState('open');const index=pages.findIndex(page=>page.dataset.page==='extensions');if(index>=0)showPage(index);}
+  else onHover(hoverInside);
+}
+window.addEventListener('tuck-drop-active',event=>holdDrag((event as CustomEvent).detail===true));
+window.addEventListener('tuck-drag-active',event=>holdDrag((event as CustomEvent).detail===true));
+window.addEventListener('blur',()=>{keyboardMode=false;if(!nativeDragActive)onHover(hoverInside);});
+
 /* ================= Subscriptions & Native Events ================= */
 
-void listenToEvent<null>('open-island', () => { setState('open'); isl.focus(); });
+void listenToEvent<null>('open-island', () => { keyboardMode=true;window.clearTimeout(closeTimer);setState('open');isl.focus(); });
 void listenToEvent<boolean>('hover', (inside) => onHover(inside));
 void listenToEvent<boolean>('fullscreen', (hidden) => {
   document.body.classList.toggle('fullscreen-hidden', hidden);

@@ -1,3 +1,4 @@
+import {mountExtensions} from './extensions.js';
 import {
   isTauri,
   listenToEvent,
@@ -102,6 +103,7 @@ let keyboardMode=false;
 let announcement:{text:string;until:number}|null=null;
 const externalActivities=new Map<string,{title:string;text:string;priority:number}>();
 
+mountExtensions();
 const pages = Array.from(document.querySelectorAll<HTMLElement>('.page'));
 
 function setState(next: IslandState): void {

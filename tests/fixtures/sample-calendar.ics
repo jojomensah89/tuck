@@ -1,0 +1,46 @@
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Tuck//EN
+CALSCALE:GREGORIAN
+METHOD:PUBLISH
+BEGIN:VEVENT
+UID:evt-sprint-review-20261102-01
+SUMMARY:Engineering Sprint Review & Demo
+DESCRIPTION:Bi-weekly team sprint review and demo showcase.\nJoin Microsoft Teams: https://teams.microsoft.com/l/meetup-join/19%3ameeting_NzY1OGJiMmEt?context=%7b%22Tid%22%3a%2272f988bf%22%7d
+LOCATION:Microsoft Teams (Online)
+DTSTART:20261102T103000Z
+DTEND:20261102T113000Z
+URL:https://teams.microsoft.com/l/meetup-join/19%3ameeting_NzY1OGJiMmEt
+STATUS:CONFIRMED
+END:VEVENT
+BEGIN:VEVENT
+UID:evt-1on1-lead-20261102-02
+SUMMARY:Design Sync with Product Lead
+DESCRIPTION:Reviewing Tuck Dynamic Island compact layout and live download widgets.\nZoom Meeting Link: https://zoom.us/j/9876543210?pwd=samplepassword
+LOCATION:Zoom Conference Room
+DTSTART:20261102T140000Z
+DTEND:20261102T143000Z
+URL:https://zoom.us/j/9876543210
+STATUS:CONFIRMED
+END:VEVENT
+BEGIN:VEVENT
+UID:evt-client-presentation-20261102-03
+SUMMARY:Architecture Handoff Meeting
+DESCRIPTION:Join Google Meet: https://meet.google.com/abc-defg-hij
+LOCATION:Google Meet
+DTSTART:20261102T160000Z
+DTEND:20261102T170000Z
+URL:https://meet.google.com/abc-defg-hij
+STATUS:CONFIRMED
+END:VEVENT
+BEGIN:VEVENT
+UID:evt-malicious-attempt-20261102-04
+SUMMARY:Security Test Event With Dangerous Scheme
+DESCRIPTION:This event contains a malicious link: javascript:evil() and file:///C:/Windows/System32/cmd.exe
+LOCATION:Conference Room B
+DTSTART:20261102T180000Z
+DTEND:20261102T183000Z
+URL:javascript:alert(document.cookie)
+STATUS:CONFIRMED
+END:VEVENT
+END:VCALENDAR

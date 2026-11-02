@@ -1,4 +1,5 @@
 pub mod installed_usage;
+pub mod extensions;
 pub mod media;
 pub mod system;
 pub mod usage;
@@ -28,6 +29,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             Some(vec![]),
@@ -38,6 +40,18 @@ pub fn run() {
             installed_usage::installed_usage_enabled,
             installed_usage::set_installed_usage_enabled,
             installed_usage::refresh_installed_usage,
+            extensions::extension_snapshot,
+            extensions::extension_settings,
+            extensions::call_set_active,
+            extensions::calendar_import,
+            extensions::calendar_join,
+            extensions::shelf_add,
+            extensions::shelf_pick,
+            extensions::shelf_remove,
+            extensions::shelf_reveal,
+            extensions::shelf_drag,
+            extensions::radio_set,
+            extensions::notification_access,
             usage::usage_now,
             usage::set_secret,
             system::quick_action,
@@ -127,6 +141,7 @@ pub fn run() {
 
             // Start background native pollers
             installed_usage::start(handle.clone());
+            extensions::start(handle.clone());
             usage::start(handle.clone());
             media::start(handle.clone());
             system::start(handle, hit_state_setup);

@@ -69,9 +69,9 @@ export function extractAccentColor(
       // Calculate relative luminance:
       const L = 0.2126 * r + 0.7152 * g + 0.0722 * b;
 
-      // Lift dark colors so they stand out crisply on OLED pure black
-      if (L < 130) {
-        const t = (130 - L) / (255 - L);
+      // A muted artwork wash, not the pale grey produced by lifting every cover to 130.
+      if (L < 65) {
+        const t = (65 - L) / (255 - L);
         r += (255 - r) * t;
         g += (255 - g) * t;
         b += (255 - b) * t;

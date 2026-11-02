@@ -24,7 +24,7 @@ try {
   assert.equal(await page.locator('#isl').getAttribute('data-state'),'open');
   assert.equal(await page.locator('.full').getAttribute('aria-hidden'),'false');
   const box = await page.locator('#isl').boundingBox();
-  assert.equal(Math.round(box.width),440); assert.equal(Math.round(box.height),180);
+  assert.equal(Math.round(box.width),500); assert.equal(Math.round(box.height),210);
   await page.locator('#track').focus();
   await page.keyboard.press('ArrowRight');
   assert.equal(await page.locator('.page.on').getAttribute('data-page'),'media');
@@ -95,7 +95,8 @@ try {
   assert.equal(await native.locator('.ext-note').textContent(),'Manual call timer. This does not place calls or control your microphone.');
   await native.keyboard.press('Escape');
   await native.evaluate(()=>window.__emitNative('hover',true));
-  assert.equal(await native.locator('#cc').textContent(),'Manual call timer');
+  await native.waitForTimeout(250);
+  assert.equal(await native.locator('#isl').getAttribute('data-state'),'open','Hover expands after the configured delay');
   assert.equal(await native.evaluate(()=>window.__calls.some(call=>call.command==='deactivate_island')),true);
   await native.evaluate(()=>window.__emitNative('open-island',null));
   await native.getByRole('button',{name:'Files',exact:true}).click();
@@ -116,6 +117,37 @@ try {
   assert.equal(await native.locator('#isl').getAttribute('data-state'),'peek');
   assert.match(await native.locator('#cc').textContent(),/Fixture notification/);
   await native.screenshot({path:path.join(root,'artifacts','island-v1.png')});
+  // Phase-two presentation uses synthetic bridge fixtures, never a live-player claim.
+  await native.evaluate(()=>window.__emitNative('open-island',null));
+  await native.getByRole('button',{name:'Go to media page',exact:true}).click();
+  await native.evaluate(()=>{
+    const canvas=document.createElement('canvas');canvas.width=32;canvas.height=32;
+    const ctx=canvas.getContext('2d');ctx.fillStyle='#91203a';ctx.fillRect(0,0,32,32);
+    window.__emitNative('media',{active:true,trackId:'fixture-track',title:'Artwork color fixture',artist:'Synthetic test data',playing:false,positionMs:3000,durationMs:120000,artwork:canvas.toDataURL()});
+  });
+  await native.waitForTimeout(100);
+  await native.evaluate(()=>window.__emitNative('lyrics',{trackId:'fixture-track',status:'synced',syncedLyrics:'[00:01]Previous fixture line\n[00:03]Current fixture line\n[00:05]Next fixture line'}));
+  assert.equal(await native.locator('.lyric-line.current').textContent(),'Current fixture line');
+  assert.match(await native.locator('#isl').getAttribute('style'),/--art-wash: rgba/);
+  await native.locator('.lyric-line').last().click();
+  assert.equal(await native.evaluate(()=>window.__calls.some(call=>call.command==='media_seek'&&call.args.ms===5000)),true);
+  await native.screenshot({path:path.join(root,'artifacts','island-phase-two-media.png')});
+  await native.getByRole('button',{name:'Go to stats page',exact:true}).click();
+  await native.evaluate(()=>window.__emitNative('telemetry',{sampledAt:Date.now(),cpuPct:43,ramUsedBytes:8589934592,ramTotalBytes:17179869184,gpus:[{id:'gpu0',name:'Fixture GPU',usedPct:null}]}));
+  assert.match(await native.locator('.page.stats').textContent(),/43%/);
+  assert.match(await native.locator('.page.stats').textContent(),/8.0 GB \/ 16.0 GB/);
+  assert.match(await native.locator('.page.stats').textContent(),/Fixture GPUUnavailable/);
+  await native.evaluate(()=>window.__emitNative('media',{active:true,trackId:'other',title:'Other fixture',artist:'Test',playing:true,positionMs:0,durationMs:10000}));
+  assert.equal(await native.locator('.page.on').getAttribute('data-page'),'stats','Track changes must not steal a selected tool');
+  await native.getByRole('button',{name:'Go to dictation page',exact:true}).click();
+  await native.evaluate(()=>window.__emitNative('dictation',{status:'review',transcript:'<b>Text, not markup</b>',modelReady:true}));
+  assert.equal(await native.locator('.transcript').textContent(),'<b>Text, not markup</b>');
+  assert.equal(await native.locator('.transcript b').count(),0);
+  await native.getByRole('button',{name:'Go to clipboard page',exact:true}).click();
+  await native.evaluate(()=>window.__emitNative('clipboard-history',{enabled:true,items:[{id:'clip',text:'<img src=x>clipboard fixture',pinned:false,createdAt:Date.now()}]}));
+  assert.equal(await native.locator('.clipboard-text img').count(),0);
+  await native.locator('.clipboard-text').click();
+  assert.equal(await native.evaluate(()=>window.__calls.some(call=>call.command==='clipboard_copy'&&call.args.id==='clip')),true);
   assert.deepEqual(nativeErrors,[]);
   console.log('UI smoke passed: geometry, accessibility, keyboard seeking, timers, persistence errors, native-bridge call priority, shelf, focused radio updates, drag hold and previews.');
 } finally { await browser.close(); }

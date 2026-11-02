@@ -36,6 +36,8 @@ pub fn run() {
             system::quick_action,
             system::open_settings_cmd,
             system::open_island_cmd,
+            system::deactivate_island,
+            system::fullscreen_now,
             system::get_autostart,
             system::set_autostart,
             media::media_now,

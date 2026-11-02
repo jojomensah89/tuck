@@ -62,10 +62,10 @@ interface PowerState {
 | `open_island_cmd` | None | `Result<(), String>` | Temporarily removes `WS_EX_NOACTIVATE`, focuses window, and emits `open-island`. |
 | `get_autostart` | None | `Result<bool, String>` | Queries Windows registry via `tauri-plugin-autostart` to check if launch at login is enabled. |
 | `set_autostart` | `enable: bool` | `Result<(), String>` | Enables or disables launch at startup in Windows registry. |
-| `media_toggle` | None | `()` | Toggles play/pause on current SMTC session. |
-| `media_next` | None | `()` | Skips to next track on SMTC session. |
-| `media_prev` | None | `()` | Skips to previous track or seeks to beginning. |
-| `media_seek` | `ms: i64` | `()` | Seeks playback to given millisecond position. |
+| `media_toggle` | None | `Result<(), String>` | Toggles play/pause on current SMTC session. |
+| `media_next` | None | `Result<(), String>` | Skips to next track on SMTC session. |
+| `media_prev` | None | `Result<(), String>` | Skips to previous track or seeks to beginning. |
+| `media_seek` | `ms: i64` | `Result<(), String>` | Seeks playback to given millisecond position. |
 
 ---
 
@@ -86,7 +86,7 @@ interface PowerState {
 
 ## 4. Manual Verification & Smoke Test Checklist
 
-### Automated Checks (Verified in CI / Local Toolchain)
+### Automated checks verified locally (CI tracked separately)
 - [x] `cargo check --manifest-path src-tauri/Cargo.toml` compiles cleanly with 0 errors.
 - [x] `cargo test --manifest-path src-tauri/Cargo.toml` executes and passes all 10 unit tests with 0 failures and 0 warnings.
 - [x] `cargo fmt --manifest-path src-tauri/Cargo.toml -- --check` validates Rust code formatting.
@@ -100,3 +100,9 @@ interface PowerState {
 - [ ] Tray interaction: Right-clicking tray icon displays "Open island", "Settings...", and "Quit Tuck".
 - [ ] Keyboard entry route: Selecting "Open island" focuses island, handles Arrow/Enter keys, and re-locks focus on blur.
 - [ ] Autostart toggle: Toggling autostart in Settings updates `HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run`.
+
+## Sol low review follow-up
+
+The independent GPT 5.6 Sol low review identified two native blockers. The cursor poller now reconciles click-through every tick, including after tray activation when no hover transition happens. The frontend invokes `deactivate_island` whenever it leaves the open state, restoring WS_EX_NOACTIVATE and click-through. `fullscreen_now` exposes the cached state after frontend listener registration so startup events cannot be lost. Native `media_now` similarly supplies a cached initial media snapshot; artwork is retried up to ten polls and only retransmitted on change. Media controls return errors and seek relative to the timeline start.
+
+These changes require the coordinator integration PR frontend hooks. Desktop-without-battery rendering and persisted-settings failure feedback are corrected in that PR as well. Native real-desktop validation remains distinct from parser/geometry tests.

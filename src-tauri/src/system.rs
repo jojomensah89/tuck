@@ -1,5 +1,6 @@
 use serde::Serialize;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+static FULLSCREEN: AtomicBool = AtomicBool::new(false);
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 
@@ -360,6 +361,26 @@ pub(crate) async fn open_island_cmd(app: AppHandle) -> Result<(), String> {
     }
 }
 
+/// Cached fullscreen state for listeners that subscribe after native startup.
+#[tauri::command]
+pub(crate) fn fullscreen_now() -> bool {
+    FULLSCREEN.load(Ordering::Relaxed)
+}
+
+/// Collapsing the island must undo the tray keyboard activation path.
+#[tauri::command]
+pub(crate) fn deactivate_island(app: AppHandle) -> Result<(), String> {
+    let win = app
+        .get_webview_window("main")
+        .ok_or("Main window unavailable")?;
+    #[cfg(windows)]
+    if let Ok(hwnd) = win.hwnd() {
+        set_island_focusable(HWND(hwnd.0 as _), false);
+    }
+    win.set_ignore_cursor_events(true)
+        .map_err(|_| "Could not restore click-through".to_string())
+}
+
 /// Starts the 40ms cursor hit-testing and fullscreen detection poller, as well as the 2s power and monitor poller.
 pub fn start(app: AppHandle, hit_state: Arc<HitState>) {
     let app_cursor = app.clone();
@@ -398,6 +419,7 @@ pub fn start(app: AppHandle, hit_state: Arc<HitState>) {
             #[cfg(not(windows))]
             let is_fs = false;
 
+            FULLSCREEN.store(is_fs, Ordering::Relaxed);
             if is_fs != was_fullscreen {
                 was_fullscreen = is_fs;
                 let _ = app_cursor.emit("fullscreen", is_fs);
@@ -424,10 +446,10 @@ pub fn start(app: AppHandle, hit_state: Arc<HitState>) {
                 }
             }
 
+            // Reconcile even without an enter/leave transition: tray activation changes this externally.
+            let _ = win.set_ignore_cursor_events(!is_hovered);
             if is_hovered != was_hovered {
                 was_hovered = is_hovered;
-                // Pass-through cursor clicks when outside or fullscreen
-                let _ = win.set_ignore_cursor_events(!is_hovered);
                 let _ = app_cursor.emit("hover", is_hovered);
             }
         }

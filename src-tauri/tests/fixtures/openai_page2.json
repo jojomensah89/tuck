@@ -1,0 +1,23 @@
+{
+  "object": "list",
+  "data": [
+    {
+      "object": "bucket",
+      "start_time": 1762041600,
+      "end_time": 1762128000,
+      "results": [
+        {
+          "object": "organization.costs.result",
+          "amount": {
+            "value": 4.75,
+            "currency": "usd"
+          },
+          "line_item": "gpt-4o-mini",
+          "project_id": "proj_123"
+        }
+      ]
+    }
+  ],
+  "has_more": false,
+  "next_page": null
+}

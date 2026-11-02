@@ -1,6 +1,7 @@
 pub mod extensions;
 pub mod media;
 pub mod system;
+pub mod usage;
 
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -47,6 +48,8 @@ pub fn run() {
             extensions::shelf_drag,
             extensions::radio_set,
             extensions::notification_access,
+            usage::usage_now,
+            usage::set_secret,
             system::quick_action,
             system::open_settings_cmd,
             system::open_island_cmd,
@@ -134,6 +137,7 @@ pub fn run() {
 
             // Start background native pollers
             extensions::start(handle.clone());
+            usage::start(handle.clone());
             media::start(handle.clone());
             system::start(handle, hit_state_setup);
 

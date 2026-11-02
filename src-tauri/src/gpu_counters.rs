@@ -47,12 +47,7 @@ impl GpuCounters {
         let memory = self.values(self.memory);
         for gpu in gpus {
             gpu.usage_percent = aggregate_engine_usage(&gpu.adapter_id, &engines);
-            gpu.memory_used_bytes = memory
-                .iter()
-                .find(|(name, value)| {
-                    name.contains(&gpu.adapter_id) && value.is_finite() && *value >= 0.0
-                })
-                .map(|(_, value)| *value as u64);
+            gpu.memory_used_bytes = adapter_memory_usage(&gpu.adapter_id, &memory);
         }
     }
     fn values(&self, counter: isize) -> Vec<(String, f64)> {
@@ -108,6 +103,35 @@ impl GpuCounters {
         }
     }
 }
+
+fn adapter_memory_usage(adapter: &str, samples: &[(String, f64)]) -> Option<u64> {
+    // GPU Adapter Memory contains adapter totals, unlike GPU Process Memory.
+    // Sum distinct physical nodes for a linked adapter, never process/shared mappings.
+    let prefix = format!("{adapter}_phys_");
+    let mut nodes = HashMap::new();
+    for (name, value) in samples {
+        let Some(node) = name.strip_prefix(&prefix) else {
+            continue;
+        };
+        if node.is_empty()
+            || !node.bytes().all(|byte| byte.is_ascii_digit())
+            || !value.is_finite()
+            || *value < 0.0
+        {
+            continue;
+        }
+        nodes.entry(node).or_insert(*value as u64);
+    }
+    if nodes.is_empty() {
+        None
+    } else {
+        Some(
+            nodes
+                .values()
+                .fold(0u64, |total, value| total.saturating_add(*value)),
+        )
+    }
+}
 impl Drop for GpuCounters {
     fn drop(&mut self) {
         unsafe {
@@ -141,6 +165,19 @@ fn aggregate_engine_usage(adapter: &str, samples: &[(String, f64)]) -> Option<f3
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn memory_uses_unique_adapter_nodes_and_excludes_process_instances() {
+        let samples = vec![
+            ("luid_a_phys_0".into(), 100.0),
+            ("luid_a_phys_1".into(), 50.0),
+            ("luid_a_phys_0".into(), 100.0),
+            ("pid_1_luid_a_phys_0".into(), 80.0),
+            ("pid_2_luid_a_phys_0".into(), 80.0),
+            ("luid_b_phys_0".into(), 900.0),
+        ];
+        assert_eq!(adapter_memory_usage("luid_a", &samples), Some(150));
+        assert_eq!(adapter_memory_usage("missing", &samples), None);
+    }
     #[test]
     fn aggregates_processes_per_engine_then_chooses_busiest() {
         let values = vec![

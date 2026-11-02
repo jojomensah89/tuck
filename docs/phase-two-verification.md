@@ -35,3 +35,15 @@ UI Automation cannot guarantee support for every custom editor, protected/elevat
 In PowerShell: `.\scripts\prepare-native.ps1` (first use add `-InstallBuildTools`), then `cargo test --manifest-path src-tauri/Cargo.toml`, `cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings`, and `cargo fmt --manifest-path src-tauri/Cargo.toml -- --check`. Read-only hardware/media diagnostics: `cargo test --manifest-path src-tauri/Cargo.toml --lib live_windows -- --ignored --nocapture`.
 
 Review fixes are not certified by an earlier head's green checks. Keep main unchanged until the final head is reviewed and verified.
+
+## Final review corrections
+
+At the final regression checkpoint, 75 native tests pass (58 library, 7 phase-two integration, 10 Windows integration), with 3 explicit live diagnostics ignored. Formatting, Clippy with warnings denied, frontend build, all 29 Bun tests and UI smoke pass.
+
+Confirmed review findings are corrected: model removal checks active startup and download lifecycle under the runtime lock; the UI disables unavailable removal. Partial SendInput acceptance or focus loss after an accepted prefix prevents whole-transcript retry, exposes a manual reconciliation message and disables Insert. Review buffers are taken and zeroized on completion/discard. Late partial transcript events cannot restore a completed recording activity. A stop received during model loading prevents microphone startup.
+
+The reported Windows rename defect was not reproduced: Rust explicitly documents replacement of an existing destination, and Windows regression tests save false, true and false to the same file successfully. Keep replacement atomic rather than removing the destination first. Source: https://doc.rust-lang.org/std/fs/fn.rename.html . Clipboard settings failure tests also verify both preference flags remain unchanged on replacement failure.
+
+The live GPU Adapter Memory counter contains adapter-level `luid_..._phys_0` instances, rather than process-scoped instances. The aggregation now sums distinct physical nodes of the requested adapter while excluding process-counter names and duplicate nodes; a fixture covers multiple nodes and processes. Process shared-memory totals must not be substituted for adapter totals. Source: https://devblogs.microsoft.com/directx/gpus-in-the-task-manager/ .
+
+These corrections require a fresh exact-head independent review and CI before merge. The live verification gates above remain open and are not implied by fixture tests.

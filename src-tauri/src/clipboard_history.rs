@@ -796,15 +796,17 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("tuck-clipboard-{}", Uuid::new_v4()));
         std::fs::create_dir(&dir).unwrap();
         let path = dir.join("settings.json");
-        atomic_json(
-            &path,
-            &PersistedSettings {
-                schema_version: 1,
-                enabled: false,
-                persist_on_exit: false,
-            },
-        )
-        .unwrap();
+        for enabled in [false, true, false] {
+            atomic_json(
+                &path,
+                &PersistedSettings {
+                    schema_version: 1,
+                    enabled,
+                    persist_on_exit: enabled,
+                },
+            )
+            .unwrap();
+        }
         let mut locked = std::fs::OpenOptions::new()
             .read(true)
             .share_mode(0)

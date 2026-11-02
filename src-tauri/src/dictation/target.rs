@@ -2,6 +2,40 @@
 //! Clipboard is never touched: text is sent with Unicode keyboard input, so
 //! concurrent clipboard changes are preserved without a restore race.
 
+#[derive(Debug)]
+pub(super) struct InsertionFailure {
+    pub message: String,
+    pub may_have_inserted: bool,
+}
+impl From<String> for InsertionFailure {
+    fn from(message: String) -> Self {
+        Self {
+            message,
+            may_have_inserted: false,
+        }
+    }
+}
+
+pub(super) fn send_batches(
+    units: &[u16],
+    mut verify: impl FnMut() -> Result<(), String>,
+    mut send: impl FnMut(&[u16]) -> usize,
+) -> Result<(), InsertionFailure> {
+    let mut accepted = false;
+    for chunk in units.chunks(256) {
+        verify().map_err(|message| InsertionFailure {
+            message: if accepted { format!("{message} Some text may already be inserted. Reconcile the target manually; automatic retry is disabled.") } else { message },
+            may_have_inserted: accepted,
+        })?;
+        let inserted = send(chunk);
+        if inserted != chunk.len() * 2 {
+            return Err(InsertionFailure { message: if accepted || inserted > 0 { "Windows accepted only part of the insertion. Check the target text manually; automatic retry is disabled." } else { "Windows did not accept the insertion. Check the input target and permissions." }.into(), may_have_inserted: accepted || inserted > 0 });
+        }
+        accepted = true;
+    }
+    Ok(())
+}
+
 #[derive(Clone, Debug)]
 pub(super) struct ForegroundTarget {
     #[cfg(windows)]
@@ -203,7 +237,10 @@ pub(super) fn is_editable_target(_: &ForegroundTarget) -> Result<(), String> {
 }
 
 #[cfg(windows)]
-pub(super) fn insert_unicode(target: &ForegroundTarget, text: &str) -> Result<(), String> {
+pub(super) fn insert_unicode(
+    target: &ForegroundTarget,
+    text: &str,
+) -> Result<(), InsertionFailure> {
     use windows::Win32::UI::Input::KeyboardAndMouse::{
         GetAsyncKeyState, VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT,
     };
@@ -213,7 +250,7 @@ pub(super) fn insert_unicode(target: &ForegroundTarget, text: &str) -> Result<()
         .any(|key| unsafe { GetAsyncKeyState(key.0 as i32) } < 0)
     {
         if std::time::Instant::now() > deadline {
-            return Err("Release shortcut keys before inserting.".into());
+            return Err(String::from("Release shortcut keys before inserting.").into());
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
@@ -221,21 +258,20 @@ pub(super) fn insert_unicode(target: &ForegroundTarget, text: &str) -> Result<()
     is_editable_target(target)?;
     let units: Vec<u16> = text.encode_utf16().collect();
     if units.len() > 32 * 1024 {
-        return Err("Transcript is too long to insert safely".into());
+        return Err(String::from("Transcript is too long to insert safely").into());
     }
-    for chunk in units.chunks(256) {
-        verify_foreground_target(target)?;
-        let mut inputs = Vec::with_capacity(chunk.len() * 2);
-        for unit in chunk {
-            inputs.push(key_input(*unit, Default::default()));
-            inputs.push(key_input(*unit, KEYEVENTF_KEYUP));
-        }
-        let inserted = unsafe { SendInput(&inputs, std::mem::size_of::<INPUT>() as i32) };
-        if inserted != inputs.len() as u32 {
-            return Err("Windows accepted only part of the text insertion. Check the target app's integrity level and input support.".into());
-        }
-    }
-    Ok(())
+    send_batches(
+        &units,
+        || verify_foreground_target(target).and_then(|_| is_editable_target(target)),
+        |chunk| {
+            let mut inputs = Vec::with_capacity(chunk.len() * 2);
+            for unit in chunk {
+                inputs.push(key_input(*unit, Default::default()));
+                inputs.push(key_input(*unit, KEYEVENTF_KEYUP));
+            }
+            unsafe { SendInput(&inputs, std::mem::size_of::<INPUT>() as i32) as usize }
+        },
+    )
 }
 
 #[cfg(windows)]
@@ -258,6 +294,33 @@ fn key_input(
 }
 
 #[cfg(not(windows))]
-pub(super) fn insert_unicode(_: &ForegroundTarget, _: &str) -> Result<(), String> {
-    Err("Automatic text insertion is supported only on Windows.".into())
+pub(super) fn insert_unicode(_: &ForegroundTarget, _: &str) -> Result<(), InsertionFailure> {
+    Err(String::from("Automatic text insertion is supported only on Windows.").into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn partial_batch_or_later_focus_failure_disables_whole_text_retry() {
+        let partial = send_batches(&[65, 66], || Ok(()), |_| 1).unwrap_err();
+        assert!(partial.may_have_inserted);
+        let blocked = send_batches(&[65], || Ok(()), |_| 0).unwrap_err();
+        assert!(!blocked.may_have_inserted);
+        let mut checks = 0;
+        let after_prefix = send_batches(
+            &vec![65; 300],
+            || {
+                checks += 1;
+                if checks == 1 {
+                    Ok(())
+                } else {
+                    Err("Focus changed".into())
+                }
+            },
+            |chunk| chunk.len() * 2,
+        )
+        .unwrap_err();
+        assert!(after_prefix.may_have_inserted);
+    }
 }

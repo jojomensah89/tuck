@@ -45,6 +45,7 @@ export interface TelemetrySnapshot {
 export interface DictationSnapshot {
   status: 'disabled' | 'idle' | 'recording' | 'transcribing' | 'review' | 'error';
   transcript: string; error?: string | null; modelReady?: boolean;
+  canInsert?: boolean;
 }
 export interface ClipboardItem { id: string; text: string; pinned: boolean; createdAt: number }
 export interface ClipboardSnapshot { enabled: boolean; items: ClipboardItem[] }

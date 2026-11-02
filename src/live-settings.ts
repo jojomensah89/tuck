@@ -28,7 +28,7 @@ export function mountLiveSettings(): void {
     <label><input id="dictationReview" type="checkbox" disabled> Review before inserting</label>
     <label><input id="dictationPreview" type="checkbox" disabled> Show partial transcript while recording</label>
     <button id="saveDictation" disabled>Save dictation settings</button>
-    <button id="downloadModel" disabled>Download offline model</button><button id="cancelModelDownload">Cancel download</button><button id="removeModel">Remove model</button><p id="dictationSetupStatus" role="status">Reading native model status…</p>
+    <button id="downloadModel" disabled>Download offline model</button><button id="cancelModelDownload">Cancel download</button><button id="removeModel" disabled>Remove model</button><p id="dictationSetupStatus" role="status">Reading native model status…</p>
   </div>
   <h2>Clipboard history</h2><div class="card">
     <label><input id="clipboardEnabled" type="checkbox" disabled> Keep clipboard history</label>
@@ -75,6 +75,7 @@ export function mountLiveSettings(): void {
     input('dictationShortcut').value = data.toggleShortcut || 'Ctrl+Shift+Space'; input('dictationHoldShortcut').value = data.holdToTalkShortcut || 'Ctrl+Alt+Space'; input('dictationReview').checked = data.reviewBeforeInsert; input('dictationPreview').checked = data.partialPreview;
     dictationControls.forEach(id => (section.querySelector(`#${id}`) as HTMLInputElement).disabled = false);
     status('dictationSetupStatus', data.modelReady ? 'Offline model ready.' : 'Download a model before recording. Audio stays on this computer.');
+    control('removeModel').disabled = !data.modelReady;
   }).catch(() => status('dictationSetupStatus', 'Dictation service unavailable in this build.'));
   control('saveDictation').onclick = async () => {
     control('saveDictation').disabled = true;
@@ -96,6 +97,7 @@ export function mountLiveSettings(): void {
   }
   void listenToEvent<{status: string; modelInstalled: boolean; modelDownloadedBytes: number; message?: string}>('dictation_state', data => {
     control('downloadModel').disabled = data.status === 'downloadingModel' || data.modelInstalled;
+    control('removeModel').disabled = !data.modelInstalled || ['downloadingModel', 'starting', 'recording', 'transcribing', 'cancelling', 'inserting'].includes(data.status);
     status('dictationSetupStatus', data.message || (data.status === 'downloadingModel' ? `Downloading model · ${(data.modelDownloadedBytes / 1048576).toFixed(1)} MB` : data.modelInstalled ? 'Offline model ready.' : 'Download a model before recording.'));
   });
   void nativeService<{ enabled: boolean; persist: boolean }>('clipboard_settings').then(data => {

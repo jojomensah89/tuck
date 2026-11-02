@@ -157,6 +157,8 @@ try {
   await native.evaluate(()=>window.__emitNative('dictation_state',{status:'review',transcript:'<b>Text, not markup</b>',modelReady:true}));
   assert.equal(await native.locator('.transcript').textContent(),'<b>Text, not markup</b>');
   assert.equal(await native.locator('.transcript b').count(),0);
+  await native.evaluate(()=>window.__emitNative('dictation_state',{status:'review',transcript:'Partial insertion fixture',modelReady:true,canInsert:false,message:'Automatic retry disabled; check the target manually.'}));
+  assert.equal(await native.getByRole('button',{name:'Insert',exact:true}).isDisabled(),true,'Partial insertions never offer a whole-transcript retry');
   await native.getByRole('button',{name:'Go to clipboard page',exact:true}).click();
   await native.evaluate(()=>window.__emitNative('clipboard_history_changed',{enabled:true,items:[{id:'clip',text:'<img src=x>clipboard fixture',pinned:false,createdAt:Date.now()}]}));
   assert.equal(await native.locator('.clipboard-text img').count(),0);

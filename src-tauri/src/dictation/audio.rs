@@ -38,6 +38,9 @@ fn record_and_transcribe_inner(
     if cancel.load(Ordering::Acquire) {
         return Err("Dictation cancelled".into());
     }
+    if stop.load(Ordering::Acquire) {
+        return Ok(String::new());
+    }
 
     let (audio_tx, audio_rx) = bounded::<Vec<f32>>(256);
     let (error_tx, error_rx) = bounded::<String>(1);

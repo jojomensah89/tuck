@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutEvent, ShortcutState};
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 const EVENT_STATE: &str = "dictation_state";
 const EVENT_PARTIAL: &str = "dictation_partial";
@@ -52,6 +52,7 @@ pub struct DictationSnapshot {
     pub transcript: Option<String>,
     pub message: Option<String>,
     pub settings: DictationSettings,
+    pub can_insert: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -143,6 +144,9 @@ impl DictationService {
                 .unwrap_or_else(|| "error".into()),
             model_installed: path.as_deref().is_some_and(Path::is_file),
             model_downloaded_bytes: runtime.as_ref().map_or(0, |r| r.downloaded_bytes),
+            can_insert: runtime
+                .as_ref()
+                .is_some_and(|r| r.status == "review" && r.review_target.is_some()),
             transcript: runtime.and_then(|r| r.transcript.clone()),
             message: self.runtime.lock().ok().and_then(|r| r.message.clone()),
             settings,
@@ -192,10 +196,12 @@ impl DictationService {
                 .runtime
                 .lock()
                 .map_err(|_| "Dictation service unavailable")?;
-            if runtime.active.is_some() || runtime.downloading {
+            if runtime.active.is_some() || runtime.downloading || runtime.status == "inserting" {
                 return Err("Dictation is already recording, transcribing, or downloading".into());
             }
-            runtime.transcript = None;
+            if let Some(mut text) = runtime.transcript.take() {
+                text.zeroize();
+            }
             runtime.review_target = None;
             runtime.message = None;
         }
@@ -208,8 +214,11 @@ impl DictationService {
                 .runtime
                 .lock()
                 .map_err(|_| "Dictation service unavailable")?;
-            if runtime.active.is_some() || runtime.downloading {
+            if runtime.active.is_some() || runtime.downloading || runtime.status == "inserting" {
                 return Err("Dictation is already active".into());
+            }
+            if !model_path.is_file() {
+                return Err("The offline model was removed before recording started".into());
             }
             runtime.active = Some(ActiveSession {
                 stop: stop.clone(),
@@ -270,12 +279,16 @@ impl DictationService {
                 target::is_editable_target(original_target.as_ref().expect("checked above"))
             });
         let mut inserted = false;
+        let mut partial_insertion = false;
         let mut reason = safety.err();
         if !settings.review_before_insert && reason.is_none() {
             if let Some(target) = original_target.as_ref() {
                 match target::insert_unicode(target, &text) {
                     Ok(()) => inserted = true,
-                    Err(error) => reason = Some(error),
+                    Err(error) => {
+                        partial_insertion = error.may_have_inserted;
+                        reason = Some(error.message);
+                    }
                 }
             }
         }
@@ -286,7 +299,11 @@ impl DictationService {
             runtime.message = reason.clone();
             // Keep text only during review. Immediate successful insertion drops it.
             runtime.transcript = review.then(|| text.clone());
-            runtime.review_target = if review { original_target } else { None };
+            runtime.review_target = if review && !partial_insertion {
+                original_target
+            } else {
+                None
+            };
         }
         self.emit_state();
         if let Ok(app) = self.app() {
@@ -319,7 +336,9 @@ impl DictationService {
     fn clear_active(&self) {
         if let Ok(mut runtime) = self.runtime.lock() {
             runtime.active = None;
-            runtime.transcript = None;
+            if let Some(mut text) = runtime.transcript.take() {
+                text.zeroize();
+            }
         }
     }
 
@@ -364,30 +383,47 @@ impl DictationService {
 
     fn finish_review(self: &Arc<Self>) -> Result<(), String> {
         let (text, original_target) = {
-            let runtime = self
+            let mut runtime = self
                 .runtime
                 .lock()
                 .map_err(|_| "Dictation service unavailable")?;
+            if runtime.status != "review" {
+                return Err("There is no transcript awaiting review".into());
+            }
+            let target = runtime.review_target.clone().ok_or("Automatic insertion is unavailable. Reconcile any existing text manually before copying the transcript.")?;
             let text = runtime
                 .transcript
-                .clone()
+                .take()
                 .ok_or("There is no transcript awaiting review")?;
-            let target = runtime.review_target.clone();
-            (text, target)
+            runtime.status = "inserting".into();
+            (Zeroizing::new(text), target)
         };
-        let target = original_target
-            .ok_or("The original input target is unavailable; this text was not inserted")?;
-        target::verify_foreground_target(&target)?;
-        target::is_editable_target(&target)?;
-        target::insert_unicode(&target, &text)?;
-        if let Ok(mut runtime) = self.runtime.lock() {
-            runtime.transcript = None;
-            runtime.review_target = None;
-            runtime.message = None;
-            runtime.status = "idle".into();
-        }
         self.emit_state();
-        Ok(())
+        let result = target::insert_unicode(&original_target, &text);
+        let mut runtime = self
+            .runtime
+            .lock()
+            .map_err(|_| "Dictation service unavailable")?;
+        let result = match result {
+            Ok(()) => {
+                runtime.review_target = None;
+                runtime.message = None;
+                runtime.status = "idle".into();
+                Ok(())
+            }
+            Err(error) => {
+                runtime.transcript = Some(text.to_string());
+                runtime.status = "review".into();
+                if error.may_have_inserted {
+                    runtime.review_target = None;
+                }
+                runtime.message = Some(error.message.clone());
+                Err(error.message)
+            }
+        };
+        drop(runtime);
+        self.emit_state();
+        result
     }
 
     fn discard_review(&self) -> Result<(), String> {
@@ -398,7 +434,9 @@ impl DictationService {
         if runtime.status != "review" {
             return Err("There is no transcript awaiting review".into());
         }
-        runtime.transcript = None;
+        if let Some(mut text) = runtime.transcript.take() {
+            text.zeroize();
+        }
         runtime.review_target = None;
         runtime.message = None;
         runtime.status = "idle".into();
@@ -459,14 +497,25 @@ impl DictationService {
     }
 
     fn remove_model(&self) -> Result<(), String> {
-        if self.model_busy.load(Ordering::Acquire) {
+        let mut runtime = self
+            .runtime
+            .lock()
+            .map_err(|_| "Dictation service unavailable")?;
+        if runtime.active.is_some()
+            || runtime.downloading
+            || runtime.status == "inserting"
+            || self.model_busy.load(Ordering::Acquire)
+        {
             return Err("The model is in use; stop dictation before removing it".into());
         }
         let path = self.model_path()?;
         if path.exists() {
             std::fs::remove_file(path).map_err(|e| format!("Could not remove the model: {e}"))?;
         }
-        self.set_status("modelMissing", None);
+        runtime.status = "modelMissing".into();
+        runtime.message = None;
+        drop(runtime);
+        self.emit_state();
         Ok(())
     }
 
@@ -725,6 +774,21 @@ mod tests {
         assert!(validate_settings(&settings).is_err());
         settings.hold_to_talk_shortcut = "X".repeat(65);
         assert!(validate_settings(&settings).is_err());
+    }
+    #[test]
+    fn model_removal_is_rejected_during_startup_and_download() {
+        let service = DictationService::new();
+        service.runtime.lock().unwrap().downloading = true;
+        assert!(service.remove_model().unwrap_err().contains("in use"));
+        let mut runtime = service.runtime.lock().unwrap();
+        runtime.downloading = false;
+        runtime.active = Some(ActiveSession {
+            stop: Arc::new(AtomicBool::new(false)),
+            cancel: Arc::new(AtomicBool::new(false)),
+            mode: RecordingMode::Toggle,
+        });
+        drop(runtime);
+        assert!(service.remove_model().unwrap_err().contains("in use"));
     }
 
     #[test]

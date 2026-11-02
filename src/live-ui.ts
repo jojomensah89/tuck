@@ -162,15 +162,17 @@ export function mountLivePages(onLayout: () => void): {
   const transcript = node('div', 'transcript', 'Your transcript appears here.'); transcript.setAttribute('role', 'status');
   const speechActions = node('div', 'live-actions');
   const record = button('Record', () => { void act(nativeAction('dictation_toggle'), speechStatus); });
+  let dictationPhase = 'disabled';
   const stop = button('Finish', () => { void act(nativeAction('dictation_stop'), speechStatus); });
   const cancel = button('Cancel', () => { void act(nativeAction('dictation_cancel'), speechStatus); });
   const insert = button('Insert', () => { void act(nativeAction('dictation_insert'), speechStatus); }); insert.disabled = true;
   speechActions.append(record, stop, cancel, insert); speech.append(speechTitle, speechStatus, transcript, speechActions);
   function dictation(data: DictationSnapshot): void {
     if (!data || typeof data.status !== 'string') return;
+    dictationPhase = data.status;
     speechStatus.textContent = data.error || `Offline · ${data.status}`;
     transcript.textContent = data.transcript?.slice(0, 32000) || (data.status === 'recording' ? 'Listening…' : 'Your transcript appears here.');
-    insert.disabled = data.status !== 'review'; stop.disabled = data.status !== 'recording';
+    insert.disabled = data.status !== 'review' || data.canInsert === false; stop.disabled = data.status !== 'recording';
     record.disabled = !['idle', 'recording', 'review', 'error'].includes(data.status) || data.modelReady === false;
     record.textContent = data.status === 'recording' ? 'Finish recording' : 'Record';
     document.getElementById('isl')!.dataset.dictation = data.status;
@@ -233,7 +235,7 @@ export function mountLivePages(onLayout: () => void): {
     ['lyrics', applyLyrics], ['telemetry', (data: unknown) => telemetry(normalizeTelemetry(data))], ['dictation_state', (data: unknown) => dictation(normalizeDictation(data))], ['clipboard_history_changed', (data: unknown) => renderClipboard(normalizeClipboard(data))], ['visualizer', (data: {bins?: number[]; bands?: number[]; isSilent?: boolean}) => audio({ bands: data.bins || data.bands || [], active: !data.isSilent })],
   ] as const) void listenToEvent(event, handler as (data: unknown) => void).then(unlisten => unlisteners.push(unlisten));
   void listenToEvent<{ text: string }>('dictation_partial', data => {
-    if (typeof data?.text !== 'string') return;
+    if (dictationPhase !== 'recording' || typeof data?.text !== 'string') return;
     transcript.textContent = data.text.slice(0, 32000);
     window.dispatchEvent(new CustomEvent('tuck-activity', { detail: { id: 'dictation', active: true, title: 'Dictation', text: data.text.slice(-65), priority: 99 } }));
   }).then(unlisten => unlisteners.push(unlisten));

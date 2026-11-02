@@ -41,3 +41,24 @@ pub fn write(
         .map_err(|_| "Could not save service preference")?;
     Ok(_write)
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn windows_rename_replaces_an_existing_preference_file() {
+        let dir = std::env::temp_dir().join(format!("tuck-pref-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&dir).unwrap();
+        let path = dir.join("preference.json");
+        let temporary = dir.join("preference.tmp");
+        for enabled in [false, true, false] {
+            let bytes = serde_json::to_vec(&super::Preference { enabled }).unwrap();
+            std::fs::write(&temporary, bytes).unwrap();
+            std::fs::rename(&temporary, &path).unwrap();
+            let saved: super::Preference =
+                serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            assert_eq!(saved.enabled, enabled);
+        }
+        std::fs::remove_file(path).unwrap();
+        std::fs::remove_dir(dir).unwrap();
+    }
+}

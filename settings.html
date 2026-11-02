@@ -1,0 +1,320 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Tuck Settings</title>
+    <style>
+      :root {
+        --bg: #141416;
+        --card: #1c1c1f;
+        --line: #2c2c30;
+        --ink: #f2f2f4;
+        --ink-2: #a1a1a6;
+        --ink-3: #a1a1a6;
+        --accent: #0063d1;
+        --ok: #30d158;
+        --warn: #ff453a;
+        color-scheme: dark;
+        font-family: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        padding: 24px;
+        background: var(--bg);
+        color: var(--ink);
+        font-size: 14px;
+        line-height: 1.5;
+        -webkit-font-smoothing: antialiased;
+      }
+
+      header {
+        margin-bottom: 24px;
+      }
+
+      h1 {
+        font-size: 22px;
+        font-weight: 600;
+        margin: 0 0 4px;
+      }
+
+      h2 {
+        font-size: 14px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        color: var(--ink-2);
+        margin: 28px 0 10px;
+      }
+
+      p {
+        color: var(--ink-2);
+        margin: 0 0 12px;
+        font-size: 13px;
+      }
+
+      .card {
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 16px;
+        margin-bottom: 14px;
+      }
+
+      label {
+        display: block;
+        margin: 10px 0 4px;
+        font-weight: 600;
+        font-size: 13px;
+      }
+
+      input[type="text"],
+      input[type="password"],
+      input[type="number"] {
+        width: 100%;
+        padding: 10px 12px;
+        border-radius: 8px;
+        border: 1px solid var(--line);
+        background: #111113;
+        color: var(--ink);
+        font: inherit;
+        outline: none;
+        transition: border-color 0.15s, box-shadow 0.15s;
+      }
+
+      input:focus {
+        border-color: var(--accent);
+        box-shadow: 0 0 0 2px rgba(10, 132, 255, 0.3);
+      }
+
+      .row {
+        display: flex;
+        gap: 12px;
+      }
+
+      .row > * {
+        flex: 1;
+      }
+
+      button {
+        font: inherit;
+        padding: 9px 16px;
+        border-radius: 8px;
+        border: 1px solid var(--line);
+        background: #242428;
+        color: var(--ink);
+        cursor: pointer;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        transition: background 0.15s, border-color 0.15s;
+        min-height: 38px;
+      }
+
+      button:hover {
+        background: #2e2e34;
+        border-color: #3e3e46;
+      }
+
+      button:active {
+        transform: scale(0.98);
+      }
+
+      button:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 2px;
+      }
+
+      button.primary {
+        background: var(--accent);
+        border-color: var(--accent);
+        color: #ffffff;
+        font-weight: 600;
+      }
+
+      button.primary:hover {
+        background: #0057b8;
+      }
+
+      .picks {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 12px;
+      }
+
+      .pick {
+        padding: 16px 12px;
+        text-align: center;
+        background: var(--card);
+        border: 2px solid var(--line);
+        border-radius: 12px;
+        cursor: pointer;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        transition: border-color 0.2s, box-shadow 0.2s;
+      }
+
+      .pick[aria-pressed="true"] {
+        border-color: var(--accent);
+        box-shadow: 0 0 0 2px rgba(10, 132, 255, 0.35);
+      }
+
+      .pv {
+        height: 44px;
+        width: 104px;
+        background: #000000;
+        margin-bottom: 12px;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+      }
+
+      .pv.notch {
+        border-radius: 0 0 16px 16px;
+      }
+
+      .pv.float {
+        border-radius: 20px;
+        margin-top: 6px;
+        height: 32px;
+      }
+
+      .saved-toast {
+        color: var(--ok);
+        font-size: 12px;
+        margin-left: 10px;
+        opacity: 0;
+        transition: opacity 0.2s;
+      }
+
+      .saved-toast.show {
+        opacity: 1;
+      }
+
+      .badge {
+        display: inline-block;
+        padding: 2px 6px;
+        border-radius: 4px;
+        font-size: 11px;
+        font-weight: 600;
+        background: #2a2a30;
+        color: var(--ink-2);
+        margin-left: 6px;
+      }
+
+      .sec-note {
+        font-size: 12px;
+        color: var(--ink-3);
+        margin-top: 8px;
+        line-height: 1.4;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Tuck Settings</h1>
+      <p>Configure appearance, AI usage monitors, and secure administrative keys.</p>
+    </header>
+
+    <label><input id="autostart" type="checkbox" /> Launch Tuck when I sign in</label>
+    <p id="autostartStatus" role="status"></p>
+    <h2>Style &amp; Geometry</h2>
+    <div class="picks">
+      <button class="pick" id="pickNotch" aria-pressed="true" type="button">
+        <div class="pv notch"></div>
+        <strong>Hanging Notch</strong>
+        <p style="margin: 4px 0 0; font-size: 12px;">Flush with top screen edge with concave ears</p>
+      </button>
+      <button class="pick" id="pickFloat" aria-pressed="false" type="button">
+        <div class="pv float"></div>
+        <strong>Floating Pill</strong>
+        <p style="margin: 4px 0 0; font-size: 12px;">Floats 10px below the edge as an island</p>
+      </button>
+    </div>
+
+    <h2>Claude Subscription (Pro / Max)</h2>
+    <div class="card">
+      <p>
+        Monitors 5-hour session and weekly rate limits via Claude Code status line
+        <code>%APPDATA%\Tuck\claude-status.json</code>.
+      </p>
+      <p class="sec-note">Refreshes automatically while Claude Code is running; marked stale after 10 minutes of inactivity.</p>
+    </div>
+
+    <h2>Monthly API Budgets (USD)</h2>
+    <div class="card">
+      <p>Budgets calculate month-to-date token spend percentages. Both reset automatically on the 1st of each month (UTC).</p>
+      <div class="row">
+        <div>
+          <label for="bAnthropic">Claude API Budget ($)</label>
+          <input id="bAnthropic" type="number" min="0" step="1" placeholder="e.g. 50" />
+        </div>
+        <div>
+          <label for="bOpenai">OpenAI API Budget ($)</label>
+          <input id="bOpenai" type="number" min="0" step="1" placeholder="e.g. 50" />
+        </div>
+      </div>
+      <div style="margin-top: 14px; display: flex; align-items: center;">
+        <button id="saveBudgets" class="primary" type="button">Save Budgets</button>
+        <span class="saved-toast" id="s1">Saved</span>
+      </div>
+    </div>
+
+    <h2>Admin API Keys <span class="badge">Credential Manager</span></h2>
+    <div class="card">
+      <p>
+        Admin keys fetch exact organization token spend. Stored securely in
+        <strong>Windows Credential Manager</strong> via native IPC.
+        <strong>Never written to localStorage or config files.</strong>
+      </p>
+
+      <label for="kAnthropic">Anthropic Admin Key (sk-ant-admin...)</label>
+      <input id="kAnthropic" type="password" autocomplete="off" placeholder="Paste to set or replace" />
+      <button id="removeAnthropic" type="button">Remove Anthropic key</button>
+
+      <label for="kOpenai">OpenAI Admin Key (sk-admin...)</label>
+      <input id="kOpenai" type="password" autocomplete="off" placeholder="Paste to set or replace" />
+      <button id="removeOpenai" type="button">Remove OpenAI key</button>
+
+      <p class="sec-note">Blank fields keep existing keys. Use a Remove button to delete a saved key.</p>
+
+      <div style="margin-top: 14px; display: flex; align-items: center;">
+        <button id="saveKeys" class="primary" type="button">Update Keys</button>
+        <span class="saved-toast" id="s2">Credentials updated</span>
+      </div>
+    </div>
+
+    <p id="settingsStatus" role="status" aria-live="polite"></p>
+    <h2>ChatGPT App Message Estimate <span class="badge">Manual Rolling Window</span></h2>
+    <div class="card">
+      <p>
+        OpenAI does not provide an official usage API for ChatGPT Plus/Pro consumer apps.
+        Notch maintains a local rolling message counter with countdown to earliest expiry.
+      </p>
+      <div class="row">
+        <div>
+          <label for="cCap">Message Cap</label>
+          <input id="cCap" type="number" min="1" placeholder="e.g. 80" />
+        </div>
+        <div>
+          <label for="cHours">Window (Hours)</label>
+          <input id="cHours" type="number" min="1" placeholder="e.g. 3" />
+        </div>
+      </div>
+      <label for="cLabel">Label</label>
+      <input id="cLabel" type="text" placeholder="ChatGPT Plus (estimate)" />
+
+      <div style="margin-top: 14px; display: flex; align-items: center; gap: 8px;">
+        <button id="saveChat" class="primary" type="button">Save Estimate Settings</button>
+        <button id="clearChatLog" type="button">Clear Message Log</button>
+        <span class="saved-toast" id="s3">Saved</span>
+      </div>
+    </div>
+
+    <script type="module" src="/src/settings.ts"></script>
+  </body>
+</html>

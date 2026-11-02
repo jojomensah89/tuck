@@ -38,6 +38,7 @@ pub fn run() {
             system::open_island_cmd,
             system::get_autostart,
             system::set_autostart,
+            media::media_now,
             media::media_toggle,
             media::media_next,
             media::media_prev,

@@ -1,5 +1,16 @@
 use serde::Serialize;
+use std::sync::Mutex;
 use tauri::{AppHandle, Emitter};
+static SNAPSHOT: Mutex<Option<MediaState>> = Mutex::new(None);
+
+#[tauri::command]
+pub fn media_now() -> MediaState {
+    SNAPSHOT
+        .lock()
+        .ok()
+        .and_then(|state| state.clone())
+        .unwrap_or_default()
+}
 
 #[cfg(windows)]
 use base64::Engine;
@@ -12,7 +23,7 @@ use windows::Media::Control::{
 #[cfg(windows)]
 use windows::Storage::Streams::DataReader;
 #[cfg(windows)]
-use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
+use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_MULTITHREADED};
 
 /// Media state contract matching frontend and guide.
 #[derive(Serialize, Clone, Default, Debug, PartialEq)]
@@ -91,6 +102,7 @@ fn poll_session(
     session: &GlobalSystemMediaTransportControlsSession,
     last_track_id: &str,
     last_artwork: &Option<String>,
+    art_attempts: &mut u8,
 ) -> Option<(MediaState, String, Option<String>)> {
     let props = session.TryGetMediaPropertiesAsync().ok()?.get().ok()?;
     let title = props.Title().ok()?.to_string();
@@ -112,13 +124,23 @@ fn poll_session(
         })
         .unwrap_or((0, 0));
 
-    let track_id = format!("{}:{}:{}", artist, title, duration_ms);
+    let source = session
+        .SourceAppUserModelId()
+        .map(|id| id.to_string())
+        .unwrap_or_default();
+    let track_id = format!("{source}:{artist}:{title}:{duration_ms}");
+    if track_id != last_track_id {
+        *art_attempts = 0;
+    }
 
     // Reuse cached artwork if track identity hasn't changed to avoid reading stream on every poll
-    let artwork = if track_id == last_track_id {
+    let artwork = if track_id == last_track_id && last_artwork.is_some() {
         last_artwork.clone()
-    } else {
+    } else if *art_attempts < 10 {
+        *art_attempts += 1;
         read_artwork(&props)
+    } else {
+        None
     };
 
     let state = MediaState {
@@ -146,6 +168,7 @@ pub fn start(app: AppHandle) {
         let mut last_track_id = String::new();
         let mut last_artwork: Option<String> = None;
         let mut last_state = MediaState::default();
+        let mut art_attempts = 0;
 
         loop {
             std::thread::sleep(std::time::Duration::from_millis(500));
@@ -154,14 +177,20 @@ pub fn start(app: AppHandle) {
             {
                 if let Some(session) = current_session() {
                     if let Some((state, track_id, artwork)) =
-                        poll_session(&session, &last_track_id, &last_artwork)
+                        poll_session(&session, &last_track_id, &last_artwork, &mut art_attempts)
                     {
+                        let art_changed = track_id != last_track_id || artwork != last_artwork;
                         last_track_id = track_id;
                         last_artwork = artwork;
-                        if state != last_state {
-                            last_state = state.clone();
-                            let _ = app.emit("media", state);
+                        last_state = state.clone();
+                        if let Ok(mut cached) = SNAPSHOT.lock() {
+                            *cached = Some(state.clone());
                         }
+                        let mut event = state;
+                        if !art_changed {
+                            event.artwork = None;
+                        }
+                        let _ = app.emit("media", event);
                         continue;
                     }
                 }
@@ -172,97 +201,96 @@ pub fn start(app: AppHandle) {
                 last_state = MediaState::default();
                 last_track_id.clear();
                 last_artwork = None;
+                if let Ok(mut cached) = SNAPSHOT.lock() {
+                    *cached = Some(last_state.clone());
+                }
                 let _ = app.emit("media", last_state.clone());
             }
         }
     });
 }
 
-#[tauri::command]
-pub(crate) async fn media_toggle() {
-    tauri::async_runtime::spawn_blocking(|| {
-        #[cfg(windows)]
-        {
-            unsafe {
-                let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
-            }
-            if let Some(session) = current_session() {
-                let _ = session
-                    .TryTogglePlayPauseAsync()
-                    .ok()
-                    .and_then(|o| o.get().ok());
-            }
+#[cfg(windows)]
+struct Apartment;
+#[cfg(windows)]
+impl Apartment {
+    fn enter() -> Result<Self, String> {
+        unsafe { CoInitializeEx(None, COINIT_MULTITHREADED).ok() }
+            .map_err(|_| "Media service unavailable".to_string())?;
+        Ok(Self)
+    }
+}
+#[cfg(windows)]
+impl Drop for Apartment {
+    fn drop(&mut self) {
+        unsafe {
+            CoUninitialize();
         }
-    })
-    .await
-    .ok();
+    }
 }
 
-#[tauri::command]
-pub(crate) async fn media_next() {
-    tauri::async_runtime::spawn_blocking(|| {
-        #[cfg(windows)]
-        {
-            unsafe {
-                let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
-            }
-            if let Some(session) = current_session() {
-                let _ = session.TrySkipNextAsync().ok().and_then(|o| o.get().ok());
-            }
-        }
-    })
-    .await
-    .ok();
-}
-
-#[tauri::command]
-pub(crate) async fn media_prev() {
-    tauri::async_runtime::spawn_blocking(|| {
-        #[cfg(windows)]
-        {
-            unsafe {
-                let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
-            }
-            if let Some(session) = current_session() {
-                let _ = session
-                    .TrySkipPreviousAsync()
-                    .ok()
-                    .and_then(|o| o.get().ok());
-            }
-        }
-    })
-    .await
-    .ok();
-}
-
-#[tauri::command]
-pub(crate) async fn media_seek(ms: i64) {
+async fn control(action: u8, ms: i64) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
         #[cfg(windows)]
         {
-            unsafe {
-                let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
-            }
-            if let Some(session) = current_session() {
-                let duration_ms = session.GetTimelineProperties().ok().and_then(|tl| {
-                    let start = tl.StartTime().map(|d| d.Duration).unwrap_or(0);
-                    let end = tl.EndTime().map(|d| d.Duration).unwrap_or(0);
-                    let dur = ticks_to_ms(end - start);
-                    if dur > 0 {
-                        Some(dur)
-                    } else {
-                        None
+            let _apartment = Apartment::enter()?;
+            let session = current_session().ok_or("No active media session")?;
+            let result = match action {
+                0 => session.TryTogglePlayPauseAsync().and_then(|op| op.get()),
+                1 => session.TrySkipNextAsync().and_then(|op| op.get()),
+                2 => session.TrySkipPreviousAsync().and_then(|op| op.get()),
+                _ => {
+                    let timeline = session
+                        .GetTimelineProperties()
+                        .map_err(|_| "Timeline unavailable")?;
+                    let start = timeline
+                        .StartTime()
+                        .map_err(|_| "Timeline unavailable")?
+                        .Duration;
+                    let end = timeline
+                        .EndTime()
+                        .map_err(|_| "Timeline unavailable")?
+                        .Duration;
+                    let duration_ms = ticks_to_ms(end.saturating_sub(start));
+                    if duration_ms <= 0 {
+                        return Err("This stream does not support seeking".into());
                     }
-                });
-                let clamped_ms = clamp_seek_ms(ms, duration_ms);
-                let ticks = ms_to_ticks(clamped_ms);
-                let _ = session
-                    .TryChangePlaybackPositionAsync(ticks)
-                    .ok()
-                    .and_then(|o| o.get().ok());
+                    let ticks =
+                        start.saturating_add(ms_to_ticks(clamp_seek_ms(ms, Some(duration_ms))));
+                    session
+                        .TryChangePlaybackPositionAsync(ticks)
+                        .and_then(|op| op.get())
+                }
             }
+            .map_err(|_| "Media action failed")?;
+            if result {
+                Ok(())
+            } else {
+                Err("The player did not accept this action".into())
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = (action, ms);
+            Err("Windows media controls unavailable".into())
         }
     })
     .await
-    .ok();
+    .map_err(|_| "Media worker failed".to_string())?
+}
+#[tauri::command]
+pub(crate) async fn media_toggle() -> Result<(), String> {
+    control(0, 0).await
+}
+#[tauri::command]
+pub(crate) async fn media_next() -> Result<(), String> {
+    control(1, 0).await
+}
+#[tauri::command]
+pub(crate) async fn media_prev() -> Result<(), String> {
+    control(2, 0).await
+}
+#[tauri::command]
+pub(crate) async fn media_seek(ms: i64) -> Result<(), String> {
+    control(3, ms).await
 }

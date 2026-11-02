@@ -21,11 +21,19 @@ Source: supplied notch-island-build-guide.md. User confirmed on 2026-11-02: spec
 | Write-only Credential Manager keys, explicit removal, redacted errors | Usage + UI / PRs 1 and 2 | Allowlist/redaction tests and settings failure smoke |
 | ChatGPT manual rolling message estimate, configured cap/window, expiry, clear log | UI / PR 1 | Real module tests including corrupt storage and seven-day window |
 | Priority activity registry, timer, stopwatch and Pomodoro | UI / PR 1 | Timer tests and rendered layout/control smoke |
-| Downloads and manual call live activities; priority compact override | V1 integrations | Opt-in, unknown totals honest, start/stop tests |
-| Notification previews, permission request and unsupported access state | V1 integrations | WinRT compile; permission/native smoke with app identity constraints recorded |
-| Local ICS calendar, upcoming events, five-minute reminder and join action | V1 integrations | ICS parser, timestamp and safe URL tests |
-| Real Wi-Fi/Bluetooth radio state/control where Windows grants permission; Focus settings; screen capture | V1 integrations | WinRT compile, denied/unavailable states, allowlisted actions |
-| File shelf, native drops, remove/clear and drag out | V1 integrations | Native drag/drop smoke; never removes original files |
+| Downloads and manual call live activities; priority compact override | PR 5, integration PR 4 | Opt-in, unknown totals honest, start/stop tests |
+| Notification previews, permission request and unsupported access state | PR 5, integration PR 4 | WinRT compile; permission/native smoke with app identity constraints recorded |
+| Local ICS calendar, upcoming events, five-minute reminder and join action | PR 5, integration PR 4 | ICS parser, timestamp and safe URL tests |
+| Real Wi-Fi/Bluetooth radio state/control where Windows grants permission; Focus settings; screen capture | PR 5, integration PR 4 | WinRT compile, denied/unavailable states, allowlisted actions |
+| File shelf, native drops, remove/clear and drag out | PR 5, integration PR 4 | Native drag/drop smoke; never removes original files |
+
+## Completed integration and observed checks
+
+PRs 1, 2, 3 and 5 contain the reviewed feature implementations. PR 4 supplies the final shared controller wiring, installed-client usage sources, CI, documentation and Sol review fixes. Optional sources default off. The installed-account source follows the inspected T3/installed Claude control protocol and Codex account service; it does not read credential files. Local Codex returned two windows, while Claude answered the control request but had no signed-in token source/quota for this connection.
+
+Coordinator combined validation: 22 frontend tests; 37 Rust tests; formatting and Clippy; browser demo plus mocked-native-transport rendered interactions for geometry, keyboard, timers, file shelf, focused updates, compact priority, drag hold and previews. The live installed-client smoke is separate and ignored by CI. Windows native executable builds successfully.
+
+The full real-desktop visual/click-through smoke was blocked by an existing nusa.exe Notch overlay at the same screen position. Tuck's test process was closed; the existing application was left running. Radio hardware changes, Windows notification permission/package capability, cross-application drag completion and real provider billing remain manual unknowns, not passed tests.
 
 ## Deferred ideas from the guide
 

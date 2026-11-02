@@ -1,3 +1,4 @@
+import {mountExtensions} from './extensions.js';
 import {
   isTauri,
   listenToEvent,
@@ -96,6 +97,7 @@ let pageIndex = 0;
 let closeTimer = 0;
 let wheelLock = 0;
 
+mountExtensions();
 const pages = Array.from(document.querySelectorAll<HTMLElement>('.page'));
 
 function setState(next: IslandState): void {

@@ -1,3 +1,4 @@
+import {mountExtensionSettings} from './extensions.js';
 import { isTauri, setSecret, invokeCommand } from './ipc.js';
 import { STORAGE_KEYS, getJson, saveJson } from './usage.js';
 import type { ShapeStyle, ChatGPTConfig } from './types.js';
@@ -143,6 +144,7 @@ document.addEventListener('DOMContentLoaded', () => {
       finally { startup.disabled = false; }
     });
   } else { startup.disabled = true; }
+  mountExtensionSettings();
   initBudgets();
   initAdminKeys();
   initChatGPT();

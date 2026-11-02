@@ -184,10 +184,8 @@ mod native_windows {
         GetPrivateData: usize,
         GetParent: usize,
         EnumOutputs: usize,
-        GetDesc: unsafe extern "system" fn(
-            this: *mut c_void,
-            pDesc: *mut DXGI_ADAPTER_DESC,
-        ) -> HRESULT,
+        GetDesc:
+            unsafe extern "system" fn(this: *mut c_void, pDesc: *mut DXGI_ADAPTER_DESC) -> HRESULT,
     }
 
     extern "system" {
@@ -288,9 +286,12 @@ mod native_windows {
         let proc_name = b"CreateDXGIFactory\0";
         let create_factory_ptr = unsafe { GetProcAddress(h_module, proc_name.as_ptr()) };
         if !create_factory_ptr.is_null() {
-            type CreateDXGIFactoryFn =
-                unsafe extern "system" fn(riid: *const GUID, ppFactory: *mut *mut c_void) -> HRESULT;
-            let create_factory: CreateDXGIFactoryFn = unsafe { std::mem::transmute(create_factory_ptr) };
+            type CreateDXGIFactoryFn = unsafe extern "system" fn(
+                riid: *const GUID,
+                ppFactory: *mut *mut c_void,
+            ) -> HRESULT;
+            let create_factory: CreateDXGIFactoryFn =
+                unsafe { std::mem::transmute(create_factory_ptr) };
 
             let mut p_factory: *mut c_void = std::ptr::null_mut();
             let hr = unsafe { create_factory(&IID_IDXGI_FACTORY, &mut p_factory) };
@@ -318,7 +319,9 @@ mod native_windows {
                             .iter()
                             .position(|&c| c == 0)
                             .unwrap_or(desc.Description.len());
-                        let name = String::from_utf16_lossy(&desc.Description[..len]).trim().to_string();
+                        let name = String::from_utf16_lossy(&desc.Description[..len])
+                            .trim()
+                            .to_string();
 
                         // Filter out Microsoft Basic Render Driver software fallback if physical GPUs exist
                         let vendor = match desc.VendorId {
@@ -399,7 +402,10 @@ pub fn start(app: AppHandle) {
                 timestamp_ms: timestamp,
                 cpu_percent: cpu.as_ref().map(|c| c.usage_percent),
                 ram_percent: ram.as_ref().map(|r| r.usage_percent),
-                gpu_percent: gpus.iter().filter_map(|g| g.usage_percent).max_by(|a, b| a.total_cmp(b)),
+                gpu_percent: gpus
+                    .iter()
+                    .filter_map(|g| g.usage_percent)
+                    .max_by(|a, b| a.total_cmp(b)),
             };
 
             // Update bounded circular history buffer

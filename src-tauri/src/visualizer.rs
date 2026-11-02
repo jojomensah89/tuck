@@ -41,7 +41,9 @@ fn check_authorized_window(window: Option<&tauri::Window>) -> Result<(), String>
     if let Some(w) = window {
         let label = w.label();
         if label != "main" && label != "settings" {
-            return Err("Access denied: only main and settings windows may perform this action".into());
+            return Err(
+                "Access denied: only main and settings windows may perform this action".into(),
+            );
         }
     }
     Ok(())
@@ -58,10 +60,7 @@ pub fn visualizer_status() -> VisualizerStatus {
 }
 
 #[tauri::command]
-pub fn visualizer_set_enabled(
-    window: Option<tauri::Window>,
-    enabled: bool,
-) -> Result<(), String> {
+pub fn visualizer_set_enabled(window: Option<tauri::Window>, enabled: bool) -> Result<(), String> {
     check_authorized_window(window.as_ref())?;
     ENABLED.store(enabled, Ordering::SeqCst);
     if !enabled {
@@ -223,7 +222,9 @@ pub fn analyze_samples(
         let end_frac = ((b + 1) as f32 / NUM_BINS as f32).powf(2.0);
 
         let start_idx = (start_frac * (half_n as f32)).floor() as usize;
-        let end_idx = ((end_frac * (half_n as f32)).ceil() as usize).max(start_idx + 1).min(half_n);
+        let end_idx = ((end_frac * (half_n as f32)).ceil() as usize)
+            .max(start_idx + 1)
+            .min(half_n);
 
         let slice = &magnitudes[start_idx..end_idx];
         let max_val = slice.iter().copied().fold(0.0f32, f32::max);
@@ -358,11 +359,15 @@ mod native_wasapi {
             pFormat: *const WAVEFORMATEX,
             AudioSessionGuid: *const GUID,
         ) -> HRESULT,
-        GetBufferSize: unsafe extern "system" fn(this: *mut c_void, pNumBufferFrames: *mut u32) -> HRESULT,
+        GetBufferSize:
+            unsafe extern "system" fn(this: *mut c_void, pNumBufferFrames: *mut u32) -> HRESULT,
         GetStreamLatency: usize,
         GetCurrentPadding: usize,
         IsFormatSupported: usize,
-        GetMixFormat: unsafe extern "system" fn(this: *mut c_void, ppDeviceFormat: *mut *mut WAVEFORMATEX) -> HRESULT,
+        GetMixFormat: unsafe extern "system" fn(
+            this: *mut c_void,
+            ppDeviceFormat: *mut *mut WAVEFORMATEX,
+        ) -> HRESULT,
         GetDevicePeriod: usize,
         Start: unsafe extern "system" fn(this: *mut c_void) -> HRESULT,
         Stop: unsafe extern "system" fn(this: *mut c_void) -> HRESULT,
@@ -389,7 +394,10 @@ mod native_wasapi {
             pu64QPCPosition: *mut u64,
         ) -> HRESULT,
         ReleaseBuffer: unsafe extern "system" fn(this: *mut c_void, NumFramesRead: u32) -> HRESULT,
-        GetNextPacketSize: unsafe extern "system" fn(this: *mut c_void, pNumFramesInNextPacket: *mut u32) -> HRESULT,
+        GetNextPacketSize: unsafe extern "system" fn(
+            this: *mut c_void,
+            pNumFramesInNextPacket: *mut u32,
+        ) -> HRESULT,
     }
 
     extern "system" {
@@ -565,7 +573,10 @@ mod native_wasapi {
                     let is_silent_flag = (flags & 0x2) != 0;
                     if !is_silent_flag && is_float {
                         let float_slice = unsafe {
-                            std::slice::from_raw_parts(p_data as *const f32, (num_frames as usize) * channels)
+                            std::slice::from_raw_parts(
+                                p_data as *const f32,
+                                (num_frames as usize) * channels,
+                            )
                         };
                         for frame in float_slice.chunks(channels) {
                             let mono = if channels > 1 {
@@ -613,23 +624,21 @@ mod native_wasapi {
 
 /// Starts the visualizer monitor loop.
 pub fn start(app: AppHandle) {
-    std::thread::spawn(move || {
-        loop {
-            std::thread::sleep(std::time::Duration::from_millis(200));
-            if ENABLED.load(Ordering::Relaxed) {
-                #[cfg(windows)]
-                native_wasapi::run_loopback_capture(app.clone());
+    std::thread::spawn(move || loop {
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        if ENABLED.load(Ordering::Relaxed) {
+            #[cfg(windows)]
+            native_wasapi::run_loopback_capture(app.clone());
 
-                #[cfg(not(windows))]
-                {
-                    ACTIVE.store(true, Ordering::SeqCst);
-                    while ENABLED.load(Ordering::Relaxed) {
-                        std::thread::sleep(std::time::Duration::from_millis(50));
-                        let snap = VisualizerSnapshot::default();
-                        let _ = app.emit("visualizer", snap);
-                    }
-                    ACTIVE.store(false, Ordering::SeqCst);
+            #[cfg(not(windows))]
+            {
+                ACTIVE.store(true, Ordering::SeqCst);
+                while ENABLED.load(Ordering::Relaxed) {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                    let snap = VisualizerSnapshot::default();
+                    let _ = app.emit("visualizer", snap);
                 }
+                ACTIVE.store(false, Ordering::SeqCst);
             }
         }
     });

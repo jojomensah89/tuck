@@ -142,15 +142,26 @@ pub fn parse_lrc(lrc_content: &str) -> Vec<LyricLine> {
 }
 
 fn cache_key(artist: &str, title: &str, duration_ms: i64) -> String {
-    let dur_sec = if duration_ms > 0 { duration_ms / 1000 } else { 0 };
-    format!("{}:{}:{}", artist.trim().to_lowercase(), title.trim().to_lowercase(), dur_sec)
+    let dur_sec = if duration_ms > 0 {
+        duration_ms / 1000
+    } else {
+        0
+    };
+    format!(
+        "{}:{}:{}",
+        artist.trim().to_lowercase(),
+        title.trim().to_lowercase(),
+        dur_sec
+    )
 }
 
 fn check_authorized_window(window: Option<&tauri::Window>) -> Result<(), String> {
     if let Some(w) = window {
         let label = w.label();
         if label != "main" && label != "settings" {
-            return Err("Access denied: only main and settings windows may perform this action".into());
+            return Err(
+                "Access denied: only main and settings windows may perform this action".into(),
+            );
         }
     }
     Ok(())
@@ -164,10 +175,7 @@ pub fn lyrics_status() -> LyricsConfig {
 
 /// Enables or disables lyrics lookup. Restricted to main/settings window.
 #[tauri::command]
-pub fn lyrics_set_enabled(
-    window: Option<tauri::Window>,
-    enabled: bool,
-) -> Result<(), String> {
+pub fn lyrics_set_enabled(window: Option<tauri::Window>, enabled: bool) -> Result<(), String> {
     check_authorized_window(window.as_ref())?;
     let mut config = CONFIG.lock().map_err(|_| "Failed to lock lyrics config")?;
     config.enabled = enabled;
@@ -409,7 +417,11 @@ pub async fn lyrics_get(
     .map_err(|e| format!("Lyrics worker thread error: {e}"))??;
 
     // 5. Store successful response in bounded cache
-    if result.status == "synced" || result.status == "plain" || result.status == "instrumental" || result.status == "not_found" {
+    if result.status == "synced"
+        || result.status == "plain"
+        || result.status == "instrumental"
+        || result.status == "not_found"
+    {
         if let Ok(mut cache_guard) = CACHE.lock() {
             let deque = cache_guard.get_or_insert_with(VecDeque::new);
             if deque.len() >= MAX_CACHE_ENTRIES {

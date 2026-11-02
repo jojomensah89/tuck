@@ -38,7 +38,8 @@ fn test_media_state_phase_two_fields() {
     assert!(serialized.contains("\"canSeek\":true"));
     assert!(serialized.contains("\"generation\":5"));
 
-    let deserialized: MediaState = serde_json::from_str(&serialized).expect("Deserialization failed");
+    let deserialized: MediaState =
+        serde_json::from_str(&serialized).expect("Deserialization failed");
     assert_eq!(deserialized, state);
 }
 

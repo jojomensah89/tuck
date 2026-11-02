@@ -1,3 +1,4 @@
+import { newRequestId } from './live-state.js';
 export interface Todo { id: string; text: string; done: boolean; dueAt: number | null; reminded: boolean }
 const KEY = 'tuck.todos.v1';
 export function normalizeTodos(input: unknown): Todo[] {
@@ -45,7 +46,7 @@ export function mountTodos(): void {
     if (todos.length >= 100) { status.textContent = 'Remove a task before adding more (100 maximum).'; return; }
     const dueAt = date.value ? new Date(date.value).getTime() : null;
     if (dueAt !== null && (!Number.isFinite(dueAt) || dueAt <= Date.now())) { status.textContent = 'Choose a reminder time in the future.'; return; }
-    if (save([...todos, { id: crypto.randomUUID(), text: text.value.trim(), done: false, dueAt, reminded: false }])) { text.value = ''; date.value = ''; render(); }
+    if (save([...todos, { id: newRequestId(), text: text.value.trim(), done: false, dueAt, reminded: false }])) { text.value = ''; date.value = ''; render(); }
   };
   function checkDue(): void {
     const due = dueTodos(todos, Date.now()); if (!due.length) return;

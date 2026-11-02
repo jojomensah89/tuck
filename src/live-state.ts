@@ -1,4 +1,7 @@
 export const LIVE_SETTINGS_KEY = 'tuck.live.v2';
+export function newRequestId(): string {
+  return Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join('');
+}
 export interface LivePreferences {
   hoverExpand: boolean; openDelayMs: number; closeDelayMs: number; pinned: boolean;
   compactContent: 'lyrics' | 'title'; lyricsOpen: boolean; openWidth: number;
@@ -57,4 +60,21 @@ export function historyPath(values: (number | null)[]): string {
     const segment = `${active ? 'L' : 'M'}${(i / Math.max(1, values.length - 1) * 180).toFixed(1)},${(36 - value * .34).toFixed(1)}`;
     active = true; return segment;
   }).join(' ');
+}
+
+export function matchesLyricRequest(current: { trackId: string; requestId: string }, candidate: { trackId: string; requestId?: string }): boolean {
+  return current.requestId !== '' && candidate.trackId === current.trackId && candidate.requestId === current.requestId;
+}
+
+/** One native snapshot call at a time, and no time reversal from events or responses. */
+export class TelemetryGate {
+  private pending = false;
+  private latest = 0;
+  get sampledAt(): number { return this.latest; }
+  begin(): boolean { if (this.pending) return false; this.pending = true; return true; }
+  finish(): void { this.pending = false; }
+  accept(sampledAt: number): boolean {
+    if (!Number.isFinite(sampledAt) || sampledAt <= this.latest) return false;
+    this.latest = sampledAt; return true;
+  }
 }

@@ -13,7 +13,7 @@ export async function nativeAction(command: string, args?: Record<string, unknow
 }
 export interface MediaSession { id: string; name: string; selected: boolean }
 export interface LyricsSnapshot {
-  trackId: string; status: 'disabled' | 'loading' | 'synced' | 'plain' | 'instrumental' | 'unavailable' | 'error';
+  trackId: string; requestId: string; status: 'disabled' | 'loading' | 'synced' | 'plain' | 'instrumental' | 'unavailable' | 'error';
   syncedLyrics?: string | null; plainLyrics?: string | null; error?: string | null;
 }
 export interface TelemetrySnapshot {

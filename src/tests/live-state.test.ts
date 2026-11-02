@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { historyPath, lyricIndex, measuredPercent, normalizePreferences, parseLrc } from '../live-state';
+import { historyPath, lyricIndex, matchesLyricRequest, measuredPercent, normalizePreferences, parseLrc, TelemetryGate } from '../live-state';
 import { dueTodos, normalizeTodos } from '../todos';
 
 describe('live island state', () => {
@@ -24,5 +24,19 @@ describe('live island state', () => {
     const todos = normalizeTodos([null, { id: 'a', text: '<not markup>', dueAt: 10 }, { id: 'b', text: 'Done', done: true, dueAt: 10 }, { id: 'c', text: 'Seen', reminded: true, dueAt: 10 }]);
     expect(dueTodos(todos, 20).map(todo => todo.id)).toEqual(['a']);
     expect(normalizeTodos({ id: 'corrupt' })).toEqual([]);
+  });
+  test('lyrics reject old A events after A to B to A and uncorrelated events', () => {
+    const current = { trackId: 'A', requestId: 'second-A' };
+    expect(matchesLyricRequest(current, { trackId: 'A', requestId: 'first-A' })).toBe(false);
+    expect(matchesLyricRequest(current, { trackId: 'A' })).toBe(false);
+    expect(matchesLyricRequest(current, { trackId: 'B', requestId: 'second-A' })).toBe(false);
+    expect(matchesLyricRequest(current, { trackId: 'A', requestId: 'second-A' })).toBe(true);
+  });
+  test('telemetry gates concurrent polls and rejects older or duplicate snapshots', () => {
+    const gate = new TelemetryGate();
+    expect(gate.begin()).toBe(true); expect(gate.begin()).toBe(false);
+    expect(gate.accept(200)).toBe(true); expect(gate.accept(100)).toBe(false);
+    expect(gate.accept(200)).toBe(false); expect(gate.accept(NaN)).toBe(false);
+    gate.finish(); expect(gate.begin()).toBe(true); expect(gate.sampledAt).toBe(200);
   });
 });

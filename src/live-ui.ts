@@ -1,6 +1,6 @@
 import { listenToEvent, mediaSeek, isTauri } from './ipc.js';
 import { nativeAction, nativeService, type ClipboardSnapshot, type DictationSnapshot, type LyricsSnapshot, type MediaSession, type TelemetrySnapshot } from './live-services.js';
-import { historyPath, lyricIndex, measuredPercent, parseLrc, readPreferences, type LyricLine } from './live-state.js';
+import { historyPath, lyricIndex, matchesLyricRequest, measuredPercent, newRequestId, parseLrc, readPreferences, TelemetryGate, type LyricLine } from './live-state.js';
 import type { MediaState } from './types.js';
 
 const node = <K extends keyof HTMLElementTagNameMap>(tag: K, className = '', text = '') => {
@@ -38,6 +38,7 @@ export function mountLivePages(onLayout: () => void): {
   lyricToggle.setAttribute('aria-pressed', String(readPreferences().lyricsOpen));
   select.onchange = () => { void act(nativeAction('media_select_session', { id: select.value }), message); };
   let currentTrack = '', generation = 0, lines: LyricLine[] = [], activeLine = -2;
+  let currentRequestId = '';
   let currentLyric = '', lastPosition = 0, manualScrollUntil = 0;
   lyricList.addEventListener('wheel', e => { e.stopPropagation(); manualScrollUntil = Date.now() + 4000; }, { passive: true });
   async function sessions(): Promise<void> {
@@ -70,7 +71,7 @@ export function mountLivePages(onLayout: () => void): {
     }
   };
   function applyLyrics(snapshot: LyricsSnapshot): void {
-    if (snapshot.trackId !== currentTrack) return;
+    if (!snapshot || !matchesLyricRequest({ trackId: currentTrack, requestId: currentRequestId }, snapshot)) return;
     lines = parseLrc(snapshot.syncedLyrics || ''); activeLine = -2; currentLyric = ''; lyricList.replaceChildren();
     const statuses: Record<LyricsSnapshot['status'], string> = {
       disabled: 'Enable online lyrics in Settings.', loading: 'Finding lyrics…', synced: '', plain: 'Lyrics · not synchronized',
@@ -89,12 +90,13 @@ export function mountLivePages(onLayout: () => void): {
   }
   async function requestLyrics(state: MediaState): Promise<void> {
     const request = ++generation;
+    const requestId = newRequestId(); currentRequestId = state.active ? requestId : '';
     lines = []; currentLyric = ''; activeLine = -2; lyricList.replaceChildren();
     lyricsStatus.textContent = state.active ? 'Finding lyrics…' : 'Play music to see lyrics.';
     if (!state.active) return;
     try {
       const data = await nativeService<LyricsSnapshot>('lyrics_lookup', {
-        trackId: state.trackId, title: state.title, artist: state.artist, durationMs: state.durationMs,
+        trackId: state.trackId, requestId, title: state.title, artist: state.artist, durationMs: state.durationMs,
       });
       if (request === generation) applyLyrics(data);
     } catch { if (request === generation) lyricsStatus.textContent = isTauri() ? 'Lyrics unavailable. Enable lyrics in Settings.' : 'Online lyrics require the Windows app.'; }
@@ -105,6 +107,7 @@ export function mountLivePages(onLayout: () => void): {
   const statsStatus = node('span', 'live-note', 'Waiting for native samples'); statHead.append(statsStatus); stats.append(statHead);
   const statRows = node('div', 'stat-rows'); stats.append(statRows);
   const histories = new Map<string, (number | null)[]>();
+  const telemetryGate = new TelemetryGate();
   const rowNodes = new Map<string, { row: HTMLElement; value: HTMLElement; path: SVGPathElement }>();
   function metric(id: string, label: string, pct: number | null, detail = ''): void {
     let view = rowNodes.get(id);
@@ -122,7 +125,9 @@ export function mountLivePages(onLayout: () => void): {
   function telemetry(data: TelemetrySnapshot): void {
     if (!data || !Array.isArray(data.gpus)) return;
     const sampled = Number.isFinite(data.sampledAt) ? data.sampledAt : 0;
+    if (!telemetryGate.accept(sampled)) return;
     const stale = data.stale || !sampled || Date.now() - sampled > 10000;
+    if (stale) { invalidateTelemetry('Stale / warming up'); return; }
     statsStatus.textContent = stale ? 'Stale / warming up' : `Live · ${new Date(sampled).toLocaleTimeString()}`;
     metric('cpu', 'CPU', measuredPercent(data.cpuPct));
     const validRam = typeof data.ramUsedBytes === 'number' && typeof data.ramTotalBytes === 'number' && data.ramTotalBytes > 0 && data.ramUsedBytes >= 0;
@@ -133,6 +138,23 @@ export function mountLivePages(onLayout: () => void): {
     for (const [id, view] of rowNodes) if (!ids.has(id)) { view.row.remove(); rowNodes.delete(id); histories.delete(id); }
   }
   metric('cpu', 'CPU', null); metric('ram', 'Memory', null); metric('gpu-unknown', 'GPU', null);
+  function invalidateTelemetry(label: string): void {
+    statsStatus.textContent = label;
+    for (const [id, view] of rowNodes) {
+      view.value.textContent = 'Unavailable';
+      const history = histories.get(id) || []; history.push(null); if (history.length > 45) history.shift();
+      histories.set(id, history); view.path.setAttribute('d', historyPath(history));
+    }
+  }
+  async function refreshTelemetry(): Promise<void> {
+    if (!telemetryGate.begin()) return;
+    const startedAtSample = telemetryGate.sampledAt;
+    try { telemetry(await nativeService<TelemetrySnapshot>('telemetry_snapshot')); }
+    catch {
+      // An older failed request must not invalidate a newer event received in flight.
+      if (telemetryGate.sampledAt === startedAtSample) invalidateTelemetry('Native telemetry unavailable');
+    } finally { telemetryGate.finish(); }
+  }
 
   const speech = makePage('dictation', 'Dictation');
   const speechTitle = node('h2', '', 'Dictation'); const speechStatus = node('p', 'live-note', 'Offline · set up a model in Settings');
@@ -201,12 +223,13 @@ export function mountLivePages(onLayout: () => void): {
     ['lyrics', applyLyrics], ['telemetry', telemetry], ['dictation', dictation], ['clipboard-history', renderClipboard], ['visualizer', audio],
   ] as const) void listenToEvent(event, handler as (data: unknown) => void).then(unlisten => unlisteners.push(unlisten));
   void sessions();
-  void nativeService<TelemetrySnapshot>('telemetry_snapshot').then(telemetry).catch(() => { statsStatus.textContent = 'Native telemetry unavailable'; });
+  void refreshTelemetry();
   void nativeService<DictationSnapshot>('dictation_snapshot').then(dictation).catch(() => { speechStatus.textContent = 'Dictation service unavailable. See Settings.'; });
   void refreshClipboard().catch(() => { clipboardStatus.textContent = 'Clipboard service unavailable. See Settings.'; });
   const interval = window.setInterval(() => {
     if (Date.now() - lastAudio > 1000) bars.forEach(bar => bar.style.setProperty('--level', '0'));
-    if (document.querySelector('.page.on') === stats) void nativeService<TelemetrySnapshot>('telemetry_snapshot').then(telemetry).catch(() => { statsStatus.textContent = 'Native telemetry unavailable'; });
+    if (telemetryGate.sampledAt && Date.now() - telemetryGate.sampledAt > 10000) invalidateTelemetry('Stale / warming up');
+    if (document.querySelector('.page.on') === stats) void refreshTelemetry();
   }, 1000);
   const sessionInterval = window.setInterval(() => { void sessions(); }, 5000);
   window.addEventListener('pagehide', () => { clearInterval(interval); clearInterval(sessionInterval); unlisteners.forEach(unlisten => unlisten()); }, { once: true });

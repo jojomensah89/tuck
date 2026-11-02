@@ -1,0 +1,31 @@
+{
+  "model": {
+    "id": "claude-3-7-sonnet-20250219",
+    "display_name": "Claude 3.7 Sonnet"
+  },
+  "context_window": {
+    "used_tokens": 42000,
+    "total_tokens": 200000,
+    "used_percentage": 21.0
+  },
+  "cost": {
+    "total_cost_usd": 0.1425
+  },
+  "rate_limits": {
+    "five_hour": {
+      "used_percentage": 35.0,
+      "resets_at": "2026-11-02T14:30:00Z"
+    },
+    "seven_day": {
+      "used_percentage": 12.5,
+      "resets_at": 1793620800
+    }
+  },
+  "workspace": {
+    "path": "C:\\projects\\tuck",
+    "git": {
+      "branch": "main",
+      "is_dirty": false
+    }
+  }
+}

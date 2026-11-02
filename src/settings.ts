@@ -22,7 +22,8 @@ function markShape(): void {
 }
 
 function setShape(style: ShapeStyle): void {
-  localStorage.setItem(STORAGE_KEYS.SHAPE, style);
+  try { localStorage.setItem(STORAGE_KEYS.SHAPE, style); }
+  catch { $('settingsStatus')!.textContent = 'Could not save style. Check available storage and try again.'; return; }
   markShape();
   // Dispatch custom storage event for in-window testing
   window.dispatchEvent(
@@ -54,11 +55,12 @@ function initBudgets(): void {
     if (!Number.isFinite(anthropicVal) || !Number.isFinite(openaiVal) || anthropicVal < 0 || openaiVal < 0) {
       $('settingsStatus')!.textContent = 'Budgets must be zero or a positive amount.'; return;
     }
-    saveJson(STORAGE_KEYS.BUDGETS, {
+    const saved = saveJson(STORAGE_KEYS.BUDGETS, {
       'anthropic-api': anthropicVal,
       'openai-api': openaiVal,
     });
-    flash('s1');
+    if (saved) flash('s1');
+    else $('settingsStatus')!.textContent = 'Could not save budgets. Check available storage and try again.';
   });
 }
 
@@ -114,13 +116,13 @@ function initChatGPT(): void {
     if (!Number.isInteger(cap) || cap <= 0 || !Number.isFinite(hours) || hours <= 0) {
       $('settingsStatus')!.textContent = 'Set a positive whole message cap and a positive window in hours.'; return;
     }
-    saveJson<ChatGPTConfig>(STORAGE_KEYS.CHATGPT, { cap, hours, label });
-    flash('s3');
+    if (saveJson<ChatGPTConfig>(STORAGE_KEYS.CHATGPT, { cap, hours, label })) flash('s3');
+    else $('settingsStatus')!.textContent = 'Could not save estimate settings. Check available storage and try again.';
   });
 
   $('clearChatLog')?.addEventListener('click', () => {
-    saveJson(STORAGE_KEYS.CHATGPT_LOG, []);
-    flash('s3');
+    if (saveJson(STORAGE_KEYS.CHATGPT_LOG, [])) flash('s3');
+    else $('settingsStatus')!.textContent = 'Could not clear the message log. Check available storage and try again.';
   });
 }
 

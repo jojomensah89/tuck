@@ -10,6 +10,7 @@ import {
   openSettingsCmd,
   triggerQuickAction,
   dispatchMockEvent,
+  invokeCommand,
 } from './ipc.js';
 import { currentPositionMs, retainedArtwork, hitGeometry } from './runtime.js';
 import { extractAccentColor } from './accent.js';
@@ -99,6 +100,7 @@ let wheelLock = 0;
 const pages = Array.from(document.querySelectorAll<HTMLElement>('.page'));
 
 function setState(next: IslandState): void {
+  if (state === 'open' && next !== 'open' && isTauri()) runAction(invokeCommand('deactivate_island'), 'Restore desktop interaction');
   state = next;
   const [w, h] = SIZES[next];
   isl.style.setProperty('--w', `${w}px`);
@@ -474,7 +476,12 @@ function renderPower(): void {
       : '';
 
   const sub = $('battSub');
-  if (powerState.statusKnown === false || powerState.percentKnown === false) {
+  if (!powerState.hasBattery && powerState.statusKnown !== false) {
+    $('pct').textContent = 'AC power';
+    fill.style.width = '100%';
+    fill.className = '';
+    sub.textContent = 'No system battery';
+  } else if (powerState.statusKnown === false || powerState.percentKnown === false) {
     $('pct').textContent = 'Battery unavailable';
     fill.style.width = '0%';
     fill.className = '';
@@ -794,6 +801,11 @@ if (!isTauri()) {
       },
     ]);
   }, 100);
+}
+
+if (isTauri()) {
+  runAction(invokeCommand<MediaState>('media_now').then(onMediaUpdate), 'Read media session');
+  runAction(invokeCommand<boolean>('fullscreen_now').then(hidden => document.body.classList.toggle('fullscreen-hidden', hidden)), 'Read fullscreen state');
 }
 
 // Fetch initial usage if running in native app

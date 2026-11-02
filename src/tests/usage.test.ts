@@ -185,3 +185,11 @@ describe('Storage recovery and long rolling windows', () => {
     expect(getChatGPTMeter(1000000)?.count).toBe(2);
   });
 });
+
+
+it('reports persistence failure instead of claiming a successful save', () => {
+  const original = localStorage.setItem;
+  localStorage.setItem = () => { throw new Error('Storage quota'); };
+  try { expect(saveJson('test', {})).toBe(false); }
+  finally { localStorage.setItem = original; }
+});

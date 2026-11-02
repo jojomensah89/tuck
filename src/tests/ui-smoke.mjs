@@ -57,6 +57,10 @@ try {
   assert.match(await page.locator('#settingsStatus').textContent(),/positive/);
   await page.locator('#pickFloat').click();
   assert.equal(await page.evaluate(() => localStorage.getItem('notch.shape')),'float');
+  await page.evaluate(() => { Storage.prototype.setItem = () => { throw new Error('Storage disabled'); }; });
+  await page.locator('#saveBudgets').click();
+  assert.match(await page.locator('#settingsStatus').textContent(),/Could not save budgets/);
+  assert.equal(await page.locator('#s1').evaluate(el => el.classList.contains('show')),false);
   assert.deepEqual(errors,[]);
   console.log('UI smoke passed: geometry, inert/ARIA, keyboard seeking, timer controls, credential failures, settings validation, persistence.');
 } finally { await browser.close(); }

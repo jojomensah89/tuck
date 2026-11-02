@@ -5,6 +5,7 @@
 
 export const SVG_ICONS = {
   bolt: `<svg class="ico bolt" viewBox="0 0 24 24" aria-hidden="true"><path d="M13 2 4 14h6l-1 8 9-12h-6z"/></svg>`,
+  lyrics: `<svg class="ico lyrics-ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 2H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h4v3.5l4-3.5h8c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-11 9H7V7h2v4zm6 0h-2V7h2v4z"/></svg>`,
   note: `<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 3v11.3A3.5 3.5 0 1 0 11 17.5V8h6V3z"/></svg>`,
   play: `<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>`,
   pause: `<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5h4v14H6zm8 0h4v14h-4z"/></svg>`,
@@ -20,7 +21,7 @@ export const SVG_ICONS = {
   focus: `<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a9 9 0 1 0 9 9c0-.46-.04-.92-.1-1.36a5.389 5.389 0 0 1-4.4 2.26 5.403 5.403 0 0 1-5.4-5.4c0-1.81.89-3.42 2.26-4.4-.44-.06-.9-.1-1.36-.1z"/></svg>`,
   capture: `<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h3V2H4c-1.1 0-2 .9-2 2v3h2V4zm16-2h-3v2h3v3h2V4c0-1.1-.9-2-2-2zm0 18h-3v2h3c1.1 0 2-.9 2-2v-3h-2v3zM4 17H2v3c0 1.1.9 2 2 2h3v-2H4v-3zm8-9a4 4 0 1 0 0 8 4 4 0 0 0 0-8zm0 6a2 2 0 1 1 0-4 2 2 0 0 1 0 4z"/></svg>`,
   timer: `<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M15 1H9v2h6V1zm-4 13h2V8h-2v6zm8.03-6.61 1.42-1.42c-.43-.51-.9-.99-1.41-1.41l-1.42 1.42A8.962 8.962 0 0 0 12 4c-4.97 0-9 4.03-9 9s4.02 9 9 9a8.994 8.994 0 0 0 7.03-14.61zM12 20c-3.87 0-7-3.13-7-7s3.13-7 7-7 7 3.13 7 7-3.13 7-7 7z"/></svg>`,
-  stopwatch: `<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M19.03 7.39l1.42-1.42c-.45-.51-.9-.97-1.41-1.41L17.62 6c-1.55-1.26-3.5-2-5.62-2-4.97 0-9 4.03-9 9 0 4.97 4.02 9 9 9 4.97 0 9-4.03 9-9 0-2.12-.74-4.07-1.97-5.61zM12 20c-3.87 0-7-3.13-7-7s3.13-7 7-7 7 3.13 7 7-3.13 7-7 7zm1-13h-2v7l5 3 1-1.6-4-2.4V7z"/></svg>`,
+  stopwatch: `<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M19.03 7.39l1.42-1.42c-.45-.51-.9-.97-1.41-1.41L17.62 6c-1.55-1.26-3.5-2-5.62-2-4.97 0-9 4.03-9 9s4.02 9 9 9a8.994 8.994 0 0 0 7.03-14.61zM12 20c-3.87 0-7-3.13-7-7s3.13-7 7-7 7 3.13 7 7-3.13 7-7 7zm1-13h-2v7l5 3 1-1.6-4-2.4V7z"/></svg>`,
   pomodoro: `<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2c-.6 0-1 .4-1 1v1.1c-4.4.5-8 4.2-8 8.9 0 5 4 9 9 9s9-4 9-9c0-4.7-3.6-8.4-8-8.9V3c0-.6-.4-1-1-1zm0 4.1c3.9 0 7 3.1 7 7s-3.1 7-7 7-7-3.1-7-7 3.1-7 7-7zm-1 3v4.2l3.4 2 1-1.7-2.4-1.4V9.1h-2z"/></svg>`,
   check: `<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 16.17 4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>`,
   refresh: `<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M17.65 6.35A7.958 7.958 0 0 0 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0 1 12 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>`,

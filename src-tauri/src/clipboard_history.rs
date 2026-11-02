@@ -139,6 +139,50 @@ impl ClipboardHistoryService {
         Ok(())
     }
 
+    fn configure(&self, enabled: bool, persist: bool) -> Result<(), String> {
+        let _operation = self
+            .operation
+            .lock()
+            .map_err(|_| "Clipboard settings unavailable")?;
+        let app = self.app()?;
+        let previous = self.snapshot();
+        if persist != previous.persist_on_exit {
+            if persist {
+                self.save_items(&app, &previous.items)?;
+            } else {
+                self.remove_items_file(&app)?;
+            }
+        }
+        // Both preference flags commit in one atomic settings-file replacement.
+        if let Err(error) = self.save_settings(&app, enabled, persist) {
+            if persist != previous.persist_on_exit {
+                let restored = if previous.persist_on_exit {
+                    self.save_items(&app, &previous.items)
+                } else {
+                    self.remove_items_file(&app)
+                };
+                if restored.is_err() {
+                    return Err("Settings were not saved and the history file could not be restored. Current preferences are unchanged.".into());
+                }
+            }
+            return Err(error);
+        }
+        {
+            let mut state = self
+                .inner
+                .lock()
+                .map_err(|_| "Clipboard settings unavailable")?;
+            state.enabled = enabled;
+            state.persist_on_exit = persist;
+        }
+        if enabled {
+            self.last_sequence
+                .store(current_clipboard_sequence(), Ordering::Release);
+        }
+        self.emit_changed();
+        Ok(())
+    }
+
     fn set_persistence(&self, persist: bool) -> Result<(), String> {
         let _operation = self
             .operation
@@ -677,6 +721,20 @@ pub fn clipboard_get_state(
 }
 
 #[tauri::command]
+pub fn clipboard_configure(
+    window: tauri::Window,
+    service: State<'_, Arc<ClipboardHistoryService>>,
+    enabled: bool,
+    persist_on_exit: bool,
+) -> Result<ClipboardHistorySnapshot, String> {
+    if !matches!(window.label(), "main" | "settings") {
+        return Err("Access denied".into());
+    }
+    service.configure(enabled, persist_on_exit)?;
+    Ok(service.snapshot())
+}
+
+#[tauri::command]
 pub fn clipboard_set_enabled(
     service: State<'_, Arc<ClipboardHistoryService>>,
     enabled: bool,
@@ -730,6 +788,46 @@ pub fn clipboard_pin(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(windows)]
+    #[test]
+    fn failed_atomic_settings_replace_preserves_both_preferences() {
+        use std::io::Read;
+        use std::os::windows::fs::OpenOptionsExt;
+        let dir = std::env::temp_dir().join(format!("tuck-clipboard-{}", Uuid::new_v4()));
+        std::fs::create_dir(&dir).unwrap();
+        let path = dir.join("settings.json");
+        atomic_json(
+            &path,
+            &PersistedSettings {
+                schema_version: 1,
+                enabled: false,
+                persist_on_exit: false,
+            },
+        )
+        .unwrap();
+        let mut locked = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&path)
+            .unwrap();
+        assert!(atomic_json(
+            &path,
+            &PersistedSettings {
+                schema_version: 1,
+                enabled: true,
+                persist_on_exit: true
+            }
+        )
+        .is_err());
+        let mut bytes = Vec::new();
+        locked.read_to_end(&mut bytes).unwrap();
+        let saved: PersistedSettings = serde_json::from_slice(&bytes).unwrap();
+        assert!(!saved.enabled && !saved.persist_on_exit);
+        drop(locked);
+        std::fs::remove_file(&path).unwrap();
+        let _ = std::fs::remove_file(path.with_extension("json.tmp"));
+        std::fs::remove_dir(dir).unwrap();
+    }
 
     fn item(pinned: bool, text: &str) -> ClipboardHistoryItem {
         ClipboardHistoryItem {

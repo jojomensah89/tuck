@@ -26,8 +26,7 @@ export async function nativeAction(command: string, args?: Record<string, unknow
   if (command === 'media_select_session') args = { sessionId: args?.id || null };
   if (command === 'clipboard_set_settings') {
     const settings = args?.settings as { enabled: boolean; persist: boolean };
-    await invokeCommand('clipboard_set_persistence', { persistOnExit: settings.persist });
-    await invokeCommand('clipboard_set_enabled', { enabled: settings.enabled }); return;
+    await invokeCommand('clipboard_configure', { enabled: settings.enabled, persistOnExit: settings.persist }); return;
   }
   const names: Record<string, string> = { dictation_stop: 'dictation_hold_stop', dictation_insert: 'dictation_review_insert', dictation_download_model: 'dictation_model_download', clipboard_remove: 'clipboard_delete' };
   await invokeCommand(names[command] || command, args);

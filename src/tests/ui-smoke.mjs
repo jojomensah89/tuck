@@ -80,6 +80,8 @@ try {
       if(command==='extension_settings')throw 'Activity settings could not be saved';
       if(command==='media_now')return {active:false,trackId:'',title:'',artist:'',playing:false,positionMs:0,durationMs:0,artwork:null};
       if(command==='usage_now')return [];
+      if(command==='clipboard_get_state')return {enabled:false,persistOnExit:false,items:[]};
+      if(command==='clipboard_configure')throw 'Fixture atomic save failure';
       if(command==='get_autostart'||command==='installed_usage_enabled'||command==='fullscreen_now')return false;
       return null;
     }};
@@ -160,6 +162,20 @@ try {
   assert.equal(await native.locator('.clipboard-text img').count(),0);
   await native.locator('.clipboard-text').click();
   assert.equal(await native.evaluate(()=>window.__calls.some(call=>call.command==='clipboard_copy'&&call.args.id==='clip')),true);
+  await native.locator('.clipboard-text').focus();
+  await native.keyboard.press('ArrowRight');
+  assert.equal(await native.locator('.page.on').getAttribute('data-page'),'visualizer');
+  assert.equal(await native.evaluate(()=>document.activeElement.closest('.page')===document.querySelector('.page.on')),true,'Keyboard navigation relocates focus into the visible page');
+  await native.getByRole('button',{name:'Go to stats page',exact:true}).click();
+  assert.equal(await native.evaluate(()=>document.activeElement===document.querySelector('.page.on')),true,'A page without controls receives focus after a navigation dot is replaced');
+  await native.goto('http://tuck.test/settings.html');
+  await native.locator('#clipboardEnabled').check();
+  await native.locator('#clipboardPersist').check();
+  await native.locator('#saveClipboard').click();
+  await native.getByText('Could not save clipboard settings. Current preferences restored below.',{exact:true}).waitFor();
+  assert.equal(await native.locator('#clipboardEnabled').isChecked(),false);
+  assert.equal(await native.locator('#clipboardPersist').isChecked(),false);
+  assert.deepEqual(await native.evaluate(()=>window.__calls.filter(call=>['clipboard_configure','clipboard_set_persistence','clipboard_set_enabled'].includes(call.command)).map(call=>call.command)),['clipboard_configure'],'Both clipboard flags use a single native mutation');
   assert.deepEqual(nativeErrors,[]);
   console.log('UI smoke passed: geometry, accessibility, keyboard seeking, timers, persistence errors, native-bridge call priority, shelf, focused radio updates, drag hold and previews.');
 } finally { await browser.close(); }

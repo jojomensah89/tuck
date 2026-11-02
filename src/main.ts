@@ -217,6 +217,9 @@ isl.addEventListener(
 /* ================= Pages Navigation ================= */
 
 function showPage(n: number, dir = 1): void {
+  const focused = document.activeElement;
+  const relocateFocus = state === 'open' && focused instanceof HTMLElement &&
+    (pages[pageIndex]?.contains(focused) || $('dots').contains(focused));
   pageIndex = (n + pages.length) % pages.length;
 
   pages.forEach((p, i) => {
@@ -246,6 +249,12 @@ function showPage(n: number, dir = 1): void {
 
   if (pageIndex === 0) {
     fitTitle();
+  }
+  if (relocateFocus) {
+    const page = pages[pageIndex];
+    const control = page.querySelector<HTMLElement>('button:not(:disabled), input:not(:disabled), select:not(:disabled), [tabindex="0"]');
+    if (control) control.focus({ preventScroll: true });
+    else { page.tabIndex = -1; page.focus({ preventScroll: true }); }
   }
 }
 

@@ -24,6 +24,8 @@ Whisper model metadata was checked directly against Hugging Face: ggml-tiny.bin 
 
 ## Open verification gates
 
+The integrated frontend review identified keyboard focus remaining in an inert outgoing page and a two-command clipboard settings partial commit. Both are fixed: navigation relocates focus, clipboard_configure writes both preference flags together, failed writes refresh displayed native state, UI smoke asserts the behavior, and a real Windows file-lock regression test confirms failed atomic replacement preserves both flags. The original 70-test suite plus this new focused native test pass; Clippy and updated UI smoke also pass.
+
 Independent Sol low review of the integrated head and fresh Windows CI must finish before merge. Live pause/next/seek/player switching, authenticated real-track lyric matching, system-audio capture, actual microphone transcription and insertion into representative Windows/browser inputs, clipboard marker/persistence behavior, WMI brightness/radio permissions, device peeks, DPI and click-through remain to verify. An existing Nusa overlay previously blocked full same-position Tuck desktop smoke; it has not been stopped by this work.
 
 UI Automation cannot guarantee support for every custom editor, protected/elevated window or password implementation. Generic audio-output changes do not claim universal headphone battery telemetry. Brightness requires a monitor exposing WmiMonitorBrightness; external-monitor DDC control and Bluetooth peripheral battery are deferred. To-do reminders do not run when Tuck is closed. No public release, signing or updater publication is included.

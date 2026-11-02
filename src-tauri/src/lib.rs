@@ -67,6 +67,7 @@ pub fn run() {
             dictation::dictation_review_insert,
             dictation::dictation_review_discard,
             clipboard_history::clipboard_get_state,
+            clipboard_history::clipboard_configure,
             clipboard_history::clipboard_set_enabled,
             clipboard_history::clipboard_set_persistence,
             clipboard_history::clipboard_delete,

@@ -105,7 +105,13 @@ export function mountLiveSettings(): void {
   control('saveClipboard').onclick = async () => {
     control('saveClipboard').disabled = true;
     try { await nativeAction('clipboard_set_settings', { settings: { enabled: input('clipboardEnabled').checked, persist: input('clipboardPersist').checked } }); status('clipboardSetupStatus', 'Clipboard settings saved.'); }
-    catch { status('clipboardSetupStatus', 'Could not save clipboard settings.'); }
+    catch {
+      try {
+        const current = await nativeService<{enabled: boolean; persist: boolean}>('clipboard_settings');
+        input('clipboardEnabled').checked = current.enabled; input('clipboardPersist').checked = current.persist;
+        status('clipboardSetupStatus', 'Could not save clipboard settings. Current preferences restored below.');
+      } catch { status('clipboardSetupStatus', 'Could not save or read clipboard settings. Reopen Settings before trying again.'); }
+    }
     finally { control('saveClipboard').disabled = false; }
   };
 }

@@ -13,6 +13,9 @@ export interface MediaState {
 }
 
 export interface PowerState {
+  percentKnown?: boolean;
+  statusKnown?: boolean;
+  acConnected?: boolean | null;
   percent: number;
   charging: boolean;
   hasBattery: boolean;
@@ -28,6 +31,8 @@ export interface Meter {
   resetsAt: number | null; // unix seconds
   source: string; // 'official' | 'api' | 'manual'
   stale: boolean;
+  status?: string;
+  error?: string;
   count?: number; // message count for manual chatgpt
   cap?: number; // message cap for manual chatgpt
 }

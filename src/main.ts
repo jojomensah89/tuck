@@ -11,6 +11,7 @@ import {
   triggerQuickAction,
   dispatchMockEvent,
 } from './ipc.js';
+import { currentPositionMs, retainedArtwork, hitGeometry } from './runtime.js';
 import { extractAccentColor } from './accent.js';
 import { SVG_ICONS } from './icons.js';
 import { activitiesManager } from './activities.js';
@@ -38,7 +39,7 @@ const SIZES: Record<IslandState, [number, number]> = {
   open: [440, 180],
 };
 
-const OPEN_HOLD_MS = 800;
+const OPEN_HOLD_MS = 1600;
 
 function $(id: string): HTMLElement {
   const el = document.getElementById(id);
@@ -47,6 +48,15 @@ function $(id: string): HTMLElement {
 }
 
 const isl = $('isl');
+
+function runAction(action: Promise<unknown>, label: string): void {
+  void action.catch(() => {
+    const message = `${label} failed. Please try again.`;
+    $('statusMessage').textContent = message;
+    $('cc').textContent = message;
+    if (state === 'open') $('artist').textContent = message;
+  });
+}
 
 /* ================= Shape Setup ================= */
 
@@ -94,9 +104,17 @@ function setState(next: IslandState): void {
   isl.style.setProperty('--w', `${w}px`);
   isl.style.setProperty('--h', `${h}px`);
   isl.dataset.state = next;
+  const full = document.querySelector<HTMLElement>('.full')!;
+  const compact = document.querySelector<HTMLElement>('.compact')!;
+  if (next !== 'open' && full.contains(document.activeElement)) isl.focus();
+  full.inert = next !== 'open';
+  full.setAttribute('aria-hidden', String(next !== 'open'));
+  compact.setAttribute('aria-hidden', String(next === 'open'));
+  isl.setAttribute('aria-expanded', String(next === 'open'));
 
   // Inform Rust backend of current hit area (with top offset included per guide)
-  void setHit(w, h + topOffset);
+  const hit = hitGeometry(w, h, topOffset);
+  runAction(setHit(hit.w, hit.h), 'Update island bounds');
 
   renderCompact();
   if (next === 'open') {
@@ -134,7 +152,7 @@ isl.addEventListener('click', (e) => {
 isl.addEventListener('keydown', (e) => {
   // Never intercept keys when user is typing inside an input element
   const target = e.target as HTMLElement | null;
-  if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA')) {
+  if (target && target.closest('input, textarea, select, [contenteditable=true], [role=slider]')) {
     return;
   }
 
@@ -158,7 +176,7 @@ isl.addEventListener('keydown', (e) => {
 isl.addEventListener(
   'wheel',
   (e) => {
-    if (state !== 'open' || Date.now() < wheelLock) return;
+    if ((e.target as HTMLElement).closest('.usage') || state !== 'open' || Date.now() < wheelLock) return;
     wheelLock = Date.now() + 350;
     const delta = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
     if (delta !== 0) {
@@ -175,6 +193,8 @@ function showPage(n: number, dir = 1): void {
 
   pages.forEach((p, i) => {
     p.classList.remove('on', 'fwd', 'back');
+    p.inert = i !== pageIndex;
+    p.setAttribute('aria-hidden', String(i !== pageIndex));
     if (i === pageIndex) {
       p.classList.add('on', dir > 0 ? 'fwd' : 'back');
     }
@@ -186,7 +206,8 @@ function showPage(n: number, dir = 1): void {
   pages.forEach((_, i) => {
     const btn = document.createElement('button');
     btn.className = i === pageIndex ? 'on' : '';
-    btn.setAttribute('aria-label', `Go to page ${i + 1}`);
+    btn.setAttribute('aria-label', `Go to ${pages[i].dataset.page} page`);
+    btn.setAttribute('aria-current', String(i === pageIndex));
     btn.onclick = (e) => {
       e.stopPropagation();
       showPage(i, i > pageIndex ? 1 : -1);
@@ -244,7 +265,10 @@ function applyArtwork(): void {
   if (currentArtwork) {
     artEl.replaceChildren();
     artEl.style.backgroundImage = `url("${currentArtwork}")`;
-    extractAccentColor(currentArtwork, setAccentColor);
+    const sampledArtwork = currentArtwork;
+    extractAccentColor(currentArtwork, (color) => {
+      if (currentArtwork === sampledArtwork) setAccentColor(color);
+    });
   } else {
     artEl.style.backgroundImage = '';
     artEl.innerHTML = SVG_ICONS.note;
@@ -287,26 +311,20 @@ function onMediaUpdate(payload: MediaState): void {
   mediaReceivedAt = performance.now();
 
   // "null artwork means unchanged unless trackId changed"
-  if (trackChanged) {
-    currentArtwork = null;
-  }
-  if (artwork) {
-    currentArtwork = artwork;
-  }
+  currentArtwork = retainedArtwork(currentArtwork, trackChanged, artwork);
 
   if (trackChanged || artwork) {
     renderMedia();
   }
 
   syncTransportButtons();
+  for (const id of ['play', 'prev', 'next']) ($(id) as HTMLButtonElement).disabled = !mediaState.active;
   renderCompact();
 }
 
 function currentPosition(): number {
   if (!mediaState.active) return 0;
-  const elapsed = mediaState.playing ? performance.now() - mediaReceivedAt : 0;
-  const p = mediaState.positionMs + elapsed;
-  return mediaState.durationMs > 0 ? Math.min(mediaState.durationMs, p) : p;
+  return currentPositionMs(mediaState, mediaReceivedAt, performance.now());
 }
 
 function tick(): void {
@@ -320,6 +338,8 @@ function tick(): void {
 
   const trackSlider = $('track');
   trackSlider.setAttribute('aria-valuenow', String(Math.round(pct)));
+  trackSlider.setAttribute('aria-valuetext', `${formatMs(pos)} of ${formatMs(mediaState.durationMs)}`);
+  trackSlider.setAttribute('aria-disabled', String(!mediaState.active || mediaState.durationMs <= 0));
 }
 
 setInterval(tick, 200);
@@ -331,35 +351,58 @@ $('play').onclick = (e) => {
   mediaState.playing = !mediaState.playing;
   syncTransportButtons();
   renderCompact();
-  void mediaToggle();
+  runAction(mediaToggle(), 'Change playback');
 };
 
 $('next').onclick = (e) => {
   e.stopPropagation();
-  void mediaNext();
+  runAction(mediaNext(), 'Next track');
 };
 
 $('prev').onclick = (e) => {
   e.stopPropagation();
   if (currentPosition() > 3000) {
-    void mediaSeek(0);
+    seekTo(0);
   } else {
-    void mediaPrev();
+    runAction(mediaPrev(), 'Previous track');
   }
 };
 
-$('track').addEventListener('pointerdown', (e) => {
-  e.stopPropagation();
-  if (mediaState.durationMs <= 0) return;
-  const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-  const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-  const ms = Math.round(ratio * mediaState.durationMs);
-
-  mediaState.positionMs = ms;
+function seekTo(ms: number): void {
+  if (!mediaState.active || mediaState.durationMs <= 0) return;
+  mediaState.positionMs = Math.max(0, Math.min(mediaState.durationMs, ms));
   mediaReceivedAt = performance.now();
   tick();
-  void mediaSeek(ms);
+  runAction(mediaSeek(mediaState.positionMs), 'Seek track');
+}
+const slider = $('track');
+let scrubbing = false;
+function seekFromPointer(e: PointerEvent): void {
+  const rect = slider.getBoundingClientRect();
+  if (rect.width > 0) seekTo((e.clientX - rect.left) / rect.width * mediaState.durationMs);
+}
+slider.addEventListener('pointerdown', (e) => {
+  e.stopPropagation();
+  if (!mediaState.active || mediaState.durationMs <= 0) return;
+  scrubbing = true;
+  slider.setPointerCapture(e.pointerId);
+  seekFromPointer(e);
 });
+slider.addEventListener('pointermove', (e) => { if (scrubbing) seekFromPointer(e); });
+slider.addEventListener('pointerup', (e) => {
+  if (!scrubbing) return;
+  seekFromPointer(e);
+  scrubbing = false;
+  if (slider.hasPointerCapture(e.pointerId)) slider.releasePointerCapture(e.pointerId);
+});
+slider.addEventListener('pointercancel', () => { scrubbing = false; });
+slider.addEventListener('keydown', (e) => {
+  if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) return;
+  e.preventDefault();
+  e.stopPropagation();
+  seekTo(e.key === 'Home' ? 0 : e.key === 'End' ? mediaState.durationMs : currentPosition() + (e.key === 'ArrowRight' ? 5000 : -5000));
+});
+new ResizeObserver(fitTitle).observe($('title'));
 
 /* ================= Compact View Arbitration ================= */
 
@@ -377,7 +420,10 @@ function renderCompact(): void {
     cr.innerHTML = actCompact.rightHtml;
   } else if (mediaState.active) {
     if (currentArtwork) {
-      cl.innerHTML = `<span class="mini-art" style="background-image: url('${currentArtwork}')"></span>`;
+      const miniArt = document.createElement('span');
+      miniArt.className = 'mini-art';
+      miniArt.style.backgroundImage = `url("${currentArtwork}")`;
+      cl.replaceChildren(miniArt);
     } else {
       cl.innerHTML = SVG_ICONS.note;
     }
@@ -390,7 +436,7 @@ function renderCompact(): void {
       day: 'numeric',
       month: 'short',
     });
-    cr.textContent = powerState.hasBattery ? `${powerState.percent}%` : '';
+    cr.textContent = powerState.hasBattery && powerState.percentKnown !== false ? `${powerState.percent}%` : '';
   }
 }
 
@@ -428,14 +474,19 @@ function renderPower(): void {
       : '';
 
   const sub = $('battSub');
-  if (powerState.charging) {
+  if (powerState.statusKnown === false || powerState.percentKnown === false) {
+    $('pct').textContent = 'Battery unavailable';
+    fill.style.width = '0%';
+    fill.className = '';
+    sub.textContent = 'Windows has not reported battery status';
+  } else if (powerState.charging) {
     sub.textContent = 'Charging';
   } else if (powerState.minutesLeft != null) {
     const h = Math.floor(powerState.minutesLeft / 60);
     const m = powerState.minutesLeft % 60;
     sub.textContent = `${h}h ${m}m left`;
   } else {
-    sub.textContent = powerState.hasBattery ? 'On Battery' : 'AC power';
+    sub.textContent = powerState.acConnected === true ? 'Plugged in' : powerState.hasBattery ? 'On battery' : 'AC power';
   }
 
   renderCompact();
@@ -525,6 +576,8 @@ let rawMeters: Meter[] = [];
 let prevPcts: Record<string, number> = {};
 
 function announceReset(meter: Meter): void {
+  $('statusMessage').textContent = `${meter.label} reset`;
+  if (state === 'open') return;
   setState('peek');
   $('cc').textContent = `${meter.label} reset`;
   window.clearTimeout(closeTimer);
@@ -581,6 +634,9 @@ function renderUsage(): void {
     sub.className = 'u-sub';
 
     const parts: string[] = [];
+    if (m.spentUsd != null && m.usedPct != null) parts.push(`$${m.spentUsd.toFixed(2)} spent`);
+    if (m.error) parts.push(m.error);
+    if (m.status && m.status !== 'ok') parts.push(m.status);
     if (m.id === 'chatgpt' && m.count != null && m.cap != null) {
       parts.push(`${m.count}/${m.cap} messages`);
     }
@@ -592,7 +648,7 @@ function renderUsage(): void {
 
     parts.push(m.source === 'manual' ? 'estimate' : m.source === 'api' ? 'API' : 'official');
     if (m.stale) {
-      parts.push('stale: open Claude Code to refresh');
+      parts.push(m.provider === 'claude' ? 'stale: open Claude Code to refresh' : 'stale: waiting for provider refresh');
     }
 
     const partsSpan = document.createElement('span');
@@ -622,9 +678,10 @@ function onUsageUpdate(meters: Meter[]): void {
   renderUsage();
 }
 
-window.addEventListener('storage', () => {
-  renderUsage();
-});
+window.addEventListener('storage', () => { renderUsage(); });
+setInterval(() => {
+  if (!document.querySelector('#uList button:focus')) renderUsage();
+}, 30000);
 
 /* ================= Quick Actions ================= */
 
@@ -643,19 +700,20 @@ function setupQuickActions(): void {
       e.stopPropagation();
       const action = chip.dataset.action;
       if (action) {
-        void triggerQuickAction(action);
+        runAction(triggerQuickAction(action), 'Open Windows action');
       }
     };
   });
 
   $('openSettingsBtn').onclick = (e) => {
     e.stopPropagation();
-    void openSettingsCmd();
+    runAction(openSettingsCmd(), 'Open settings');
   };
 }
 
 /* ================= Subscriptions & Native Events ================= */
 
+void listenToEvent<null>('open-island', () => { setState('open'); isl.focus(); });
 void listenToEvent<boolean>('hover', (inside) => onHover(inside));
 void listenToEvent<boolean>('fullscreen', (hidden) => {
   document.body.classList.toggle('fullscreen-hidden', hidden);
@@ -670,7 +728,7 @@ void listenToEvent<Meter[]>('usage', (payload) => onUsageUpdate(payload));
 /* ================= First Run & Browser Preview ================= */
 
 if (!storedShape && isTauri()) {
-  void openSettingsCmd();
+  runAction(openSettingsCmd(), 'Open settings');
 }
 
 if (!isTauri()) {
@@ -680,7 +738,7 @@ if (!isTauri()) {
   const demoBadge = document.createElement('div');
   demoBadge.className = 'demo-banner';
   demoBadge.textContent = 'Browser Demo · Open Settings';
-  demoBadge.onclick = () => void openSettingsCmd();
+  demoBadge.onclick = () => runAction(openSettingsCmd(), 'Open settings');
   document.body.appendChild(demoBadge);
 
   // Dispatch initial realistic mock data for preview/development

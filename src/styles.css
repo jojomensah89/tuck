@@ -917,3 +917,15 @@ body.fullscreen-hidden .island {
     height: 8px;
   }
 }
+
+/* Keep controls inside the 136px page viewport without shrinking hit targets. */
+.act-controls { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; }
+.act-btn { padding: 4px 6px; min-height: 36px; }
+.page.activities { gap: 4px; }
+.act-display { margin: 0; }
+.act-digits { font-size: 28px; line-height: 30px; }
+.nav { width: 36px; height: 36px; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+button:disabled { opacity: .45; cursor: default; }
+
+.act-btn.warn { color: #ff766e; }

@@ -34,7 +34,7 @@ export function getNextMonthStartUtc(): number {
  */
 export function getChatGPTMeter(nowSeconds = Date.now() / 1000): Meter | null {
   const cfg = getJson<ChatGPTConfig | null>(STORAGE_KEYS.CHATGPT, null);
-  if (!cfg || !cfg.cap || cfg.cap <= 0 || !cfg.hours || cfg.hours <= 0) {
+  if (!cfg || !Number.isFinite(cfg.cap) || cfg.cap <= 0 || !Number.isFinite(cfg.hours) || cfg.hours <= 0) {
     return null;
   }
 
@@ -42,8 +42,9 @@ export function getChatGPTMeter(nowSeconds = Date.now() / 1000): Meter | null {
   const since = nowSeconds - windowSeconds;
 
   // Filter timestamps within active rolling window
-  const allLogs = getJson<number[]>(STORAGE_KEYS.CHATGPT_LOG, []);
-  const liveLogs = allLogs.filter((t) => typeof t === 'number' && t > since).sort((a, b) => a - b);
+  const storedLogs = getJson<unknown>(STORAGE_KEYS.CHATGPT_LOG, []);
+  const allLogs: unknown[] = Array.isArray(storedLogs) ? storedLogs : [];
+  const liveLogs = allLogs.filter((t): t is number => typeof t === 'number' && Number.isFinite(t) && t > since && t <= nowSeconds).sort((a, b) => a - b);
 
   const count = liveLogs.length;
   const usedPct = (count / cfg.cap) * 100;
@@ -53,7 +54,7 @@ export function getChatGPTMeter(nowSeconds = Date.now() / 1000): Meter | null {
   return {
     id: 'chatgpt',
     provider: 'chatgpt',
-    label: cfg.label || 'ChatGPT (estimate)',
+    label: typeof cfg.label === 'string' && cfg.label ? cfg.label : 'ChatGPT (estimate)',
     usedPct,
     spentUsd: null,
     resetsAt,
@@ -68,9 +69,11 @@ export function getChatGPTMeter(nowSeconds = Date.now() / 1000): Meter | null {
  * Logs a new ChatGPT message timestamp into the rolling window log.
  */
 export function logChatGPTMessage(timestampSeconds = Math.round(Date.now() / 1000)): void {
-  const allLogs = getJson<number[]>(STORAGE_KEYS.CHATGPT_LOG, []);
-  // Retain recent entries up to 48 hours to avoid indefinite growth
-  const pruned = allLogs.filter((t) => typeof t === 'number' && t > timestampSeconds - 48 * 3600);
+  const storedLogs = getJson<unknown>(STORAGE_KEYS.CHATGPT_LOG, []);
+  const allLogs: unknown[] = Array.isArray(storedLogs) ? storedLogs : [];
+  const cfg = getJson<ChatGPTConfig | null>(STORAGE_KEYS.CHATGPT, null);
+  const hours = cfg && Number.isFinite(cfg.hours) && cfg.hours > 0 ? cfg.hours : 48;
+  const pruned = allLogs.filter((t): t is number => typeof t === 'number' && Number.isFinite(t) && t > timestampSeconds - hours * 3600 && t <= timestampSeconds);
   pruned.push(timestampSeconds);
   saveJson(STORAGE_KEYS.CHATGPT_LOG, pruned);
 }
@@ -101,7 +104,7 @@ export function mergeMeters(nativeMeters: Meter[]): Meter[] {
 
   const merged: Meter[] = nativeMeters.map((m) => {
     if (m.spentUsd != null) {
-      const budgetCap = Number(budgets[m.provider]) || 0;
+      const budgetCap = Number(budgets?.[m.provider]) || 0;
       const usedPct = budgetCap > 0 ? (m.spentUsd / budgetCap) * 100 : null;
       return {
         ...m,
@@ -134,7 +137,7 @@ export function checkResets(
   const updatedPcts: Record<string, number> = { ...previousPcts };
 
   for (const meter of newList) {
-    if (meter.usedPct == null) continue;
+    if (meter.usedPct == null || meter.stale || !Number.isFinite(meter.usedPct) || meter.source !== 'official') continue;
     const prev = previousPcts[meter.id];
     if (prev != null && prev - meter.usedPct > 30) {
       onReset(meter);

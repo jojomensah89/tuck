@@ -1,4 +1,4 @@
-import { setSecret } from './ipc.js';
+import { isTauri, setSecret, invokeCommand } from './ipc.js';
 import { STORAGE_KEYS, getJson, saveJson } from './usage.js';
 import type { ShapeStyle, ChatGPTConfig } from './types.js';
 
@@ -51,6 +51,9 @@ function initBudgets(): void {
     const anthropicVal = Number(bAnthropic?.value) || 0;
     const openaiVal = Number(bOpenai?.value) || 0;
 
+    if (!Number.isFinite(anthropicVal) || !Number.isFinite(openaiVal) || anthropicVal < 0 || openaiVal < 0) {
+      $('settingsStatus')!.textContent = 'Budgets must be zero or a positive amount.'; return;
+    }
     saveJson(STORAGE_KEYS.BUDGETS, {
       'anthropic-api': anthropicVal,
       'openai-api': openaiVal,
@@ -62,22 +65,33 @@ function initBudgets(): void {
 /* ================= 3. Admin Keys (Windows Credential Manager) ================= */
 
 function initAdminKeys(): void {
-  $('saveKeys')?.addEventListener('click', async () => {
-    const kAnthropic = $('kAnthropic') as HTMLInputElement | null;
-    const kOpenai = $('kOpenai') as HTMLInputElement | null;
-
-    if (kAnthropic && kAnthropic.value.trim() !== '') {
-      await setSecret('anthropic-admin', kAnthropic.value.trim());
-      kAnthropic.value = '';
+  const status = $('settingsStatus')!;
+  const fields = ['kAnthropic', 'kOpenai'].map(id => $(id) as HTMLInputElement);
+  const controls = ['saveKeys', 'removeAnthropic', 'removeOpenai'].map(id => $(id) as HTMLButtonElement);
+  async function update(changes: [string, string][]): Promise<void> {
+    fields.forEach(field => { field.value = ''; });
+    controls.forEach(button => { button.disabled = true; });
+    status.textContent = '';
+    try {
+      if (!isTauri()) throw new Error('Desktop app required');
+      for (const [name, value] of changes) await setSecret(name, value);
+      status.textContent = changes.length ? 'Credentials updated.' : 'Enter a key to update, or choose Remove.';
+    } catch {
+      status.textContent = 'Credential update failed. Open the desktop app and try again. Some earlier updates may have succeeded.';
+    } finally {
+      controls.forEach(button => { button.disabled = false; });
     }
-
-    if (kOpenai && kOpenai.value.trim() !== '') {
-      await setSecret('openai-admin', kOpenai.value.trim());
-      kOpenai.value = '';
+  }
+  $('saveKeys')?.addEventListener('click', () => {
+    const changes: [string, string][] = [];
+    for (let i = 0; i < fields.length; i++) {
+      const value = fields[i].value.trim();
+      if (value) changes.push([i === 0 ? 'anthropic-admin' : 'openai-admin', value]);
     }
-
-    flash('s2');
+    void update(changes);
   });
+  $('removeAnthropic')?.addEventListener('click', () => { void update([['anthropic-admin', '']]); });
+  $('removeOpenai')?.addEventListener('click', () => { void update([['openai-admin', '']]); });
 }
 
 /* ================= 4. ChatGPT Estimate ================= */
@@ -97,6 +111,9 @@ function initChatGPT(): void {
     const hours = Number(cHours?.value) || 0;
     const label = cLabel?.value.trim() || 'ChatGPT (estimate)';
 
+    if (!Number.isInteger(cap) || cap <= 0 || !Number.isFinite(hours) || hours <= 0) {
+      $('settingsStatus')!.textContent = 'Set a positive whole message cap and a positive window in hours.'; return;
+    }
     saveJson<ChatGPTConfig>(STORAGE_KEYS.CHATGPT, { cap, hours, label });
     flash('s3');
   });
@@ -114,6 +131,18 @@ document.addEventListener('DOMContentLoaded', () => {
   $('pickFloat')?.addEventListener('click', () => setShape('float'));
   markShape();
 
+  const startup = $('autostart') as HTMLInputElement;
+  if (isTauri()) {
+    void invokeCommand<boolean>('get_autostart').then(enabled => { startup.checked = enabled; }).catch(() => {
+      $('autostartStatus')!.textContent = 'Could not read startup preference.';
+    });
+    startup.addEventListener('change', async () => {
+      startup.disabled = true;
+      try { await invokeCommand('set_autostart', { enable: startup.checked }); }
+      catch { startup.checked = !startup.checked; $('autostartStatus')!.textContent = 'Could not update startup preference.'; }
+      finally { startup.disabled = false; }
+    });
+  } else { startup.disabled = true; }
   initBudgets();
   initAdminKeys();
   initChatGPT();

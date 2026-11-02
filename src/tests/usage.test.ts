@@ -166,3 +166,22 @@ describe('Usage Tracker & ChatGPT Rolling Window', () => {
     expect(formatUntil(now + 90000, now)).toBe('resets in 1d 1h');
   });
 });
+
+
+describe('Storage recovery and long rolling windows', () => {
+  beforeEach(() => localStorage.clear());
+  it('ignores corrupt log shapes and future timestamps', () => {
+    saveJson(STORAGE_KEYS.CHATGPT, {cap:80,hours:3,label:'Test'});
+    saveJson(STORAGE_KEYS.CHATGPT_LOG, {});
+    expect(getChatGPTMeter(1000000)?.count).toBe(0);
+    logChatGPTMessage(1000000);
+    saveJson(STORAGE_KEYS.CHATGPT_LOG, [1000001, null, 'bad', 999999]);
+    expect(getChatGPTMeter(1000000)?.count).toBe(1);
+  });
+  it('keeps valid logs in a seven day configured window', () => {
+    saveJson(STORAGE_KEYS.CHATGPT, {cap:80,hours:168,label:'Test'});
+    saveJson(STORAGE_KEYS.CHATGPT_LOG, [1000000 - 3 * 86400]);
+    logChatGPTMessage(1000000);
+    expect(getChatGPTMeter(1000000)?.count).toBe(2);
+  });
+});

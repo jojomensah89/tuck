@@ -54,11 +54,11 @@ class ActivitiesRegistry {
     };
   }
 
-  private notify(): void {
+  private notify(persist = true): void {
     const all = this.getAll();
     const top = this.getTopActivity();
     this.listeners.forEach((fn) => fn(all, top));
-    this.saveState();
+    if (persist) this.saveState();
   }
 
   public getAll(): Activity[] {
@@ -119,7 +119,7 @@ class ActivitiesRegistry {
       }
 
       if (changed || this.hasRunningActivities()) {
-        this.notify();
+        this.notify(changed);
       }
     }, 250);
   }

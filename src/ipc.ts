@@ -136,30 +136,7 @@ export async function openSettingsCmd(): Promise<void> {
  * Native quick action to open corresponding Windows settings page or tool.
  */
 export async function triggerQuickAction(actionName: string): Promise<void> {
-  if (isTauri()) {
-    try {
-      await invokeCommand('quick_action', { name: actionName });
-      return;
-    } catch {
-      // Backend might not have quick_action handler yet, fallback to URI
-    }
-  }
-
-  // Known Windows Settings URIs:
-  const uris: Record<string, string> = {
-    wifi: 'ms-settings:network-wifi',
-    bluetooth: 'ms-settings:bluetooth',
-    focus: 'ms-settings:quiethours',
-    capture: 'ms-screenclip:',
-    settings: 'ms-settings:',
-  };
-
-  const uri = uris[actionName];
-  if (uri && typeof window !== 'undefined') {
-    try {
-      window.location.href = uri;
-    } catch {
-      console.warn(`[IPC] Could not open URI ${uri}`);
-    }
-  }
+  if (!['wifi', 'bluetooth', 'focus', 'capture'].includes(actionName)) throw new Error('Unknown action');
+  if (!isTauri()) throw new Error('Windows actions are available in the desktop app');
+  await invokeCommand('quick_action', { name: actionName });
 }

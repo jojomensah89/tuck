@@ -26,7 +26,7 @@
         </div>
 
         <!-- Full layer (Open) -->
-        <div class="full" aria-hidden="true">
+        <div class="full" aria-hidden="true" inert>
           <button class="nav l" id="prevPage" aria-label="Previous Page"></button>
           <button class="nav r" id="nextPage" aria-label="Next Page"></button>
 
@@ -118,9 +118,9 @@
                 </button>
               </div>
               <div class="quick-footnote">
-                <span>Opens Windows Settings (ms-settings)</span>
+                <span>Windows settings and screen snip</span>
                 &middot;
-                <button id="openSettingsBtn" style="text-decoration: underline; color: var(--ink-2);">Notch Settings</button>
+                <button id="openSettingsBtn" style="text-decoration: underline; color: var(--ink-2);">Tuck settings</button>
               </div>
             </section>
           </div>
@@ -129,5 +129,6 @@
         </div>
       </div>
     </div>
+    <div id="statusMessage" class="sr-only" role="status" aria-live="polite"></div>
   </body>
 </html>

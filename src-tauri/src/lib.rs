@@ -1,3 +1,4 @@
+pub mod installed_usage;
 pub mod media;
 pub mod system;
 pub mod usage;
@@ -34,6 +35,9 @@ pub fn run() {
         .manage(hit_state)
         .invoke_handler(tauri::generate_handler![
             set_hit,
+            installed_usage::installed_usage_enabled,
+            installed_usage::set_installed_usage_enabled,
+            installed_usage::refresh_installed_usage,
             usage::usage_now,
             usage::set_secret,
             system::quick_action,
@@ -122,6 +126,7 @@ pub fn run() {
             }
 
             // Start background native pollers
+            installed_usage::start(handle.clone());
             usage::start(handle.clone());
             media::start(handle.clone());
             system::start(handle, hit_state_setup);

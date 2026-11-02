@@ -145,6 +145,12 @@ document.addEventListener('DOMContentLoaded', () => {
       finally { startup.disabled = false; }
     });
   } else { startup.disabled = true; }
+  const installed=$('installedUsage') as HTMLInputElement;
+  if(isTauri()) {
+    void invokeCommand<boolean>('installed_usage_enabled').then(value=>{installed.checked=value;}).catch(()=>{$('installedUsageStatus')!.textContent='Could not read usage preference.';});
+    installed.addEventListener('change',async()=>{installed.disabled=true;try{await invokeCommand('set_installed_usage_enabled',{enabled:installed.checked});$('installedUsageStatus')!.textContent=installed.checked?'Reading installed accounts. Limits refresh every five minutes.':'Installed account monitoring disabled.';}catch{installed.checked=!installed.checked;$('installedUsageStatus')!.textContent='Could not save usage preference.';}finally{installed.disabled=false;}});
+    $('refreshInstalledUsage')!.addEventListener('click',()=>{void invokeCommand('refresh_installed_usage').then(()=>{$('installedUsageStatus')!.textContent='Refresh requested.';}).catch(()=>{$('installedUsageStatus')!.textContent='Refresh request failed.';});});
+  }else{installed.disabled=true;($('refreshInstalledUsage') as HTMLButtonElement).disabled=true;}
   initBudgets();
   initAdminKeys();
   initChatGPT();

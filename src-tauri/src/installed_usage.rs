@@ -1,0 +1,480 @@
+//! Read-only quota probes through installed client control protocols.
+//! No prompts, turns, login requests, credential reads or tool approvals.
+use crate::usage::Meter;
+use serde_json::{json, Value};
+use std::{
+    io::{BufRead, BufReader, Read, Write},
+    path::PathBuf,
+    process::{Child, ChildStdin, Command, Stdio},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc, Mutex, OnceLock,
+    },
+    time::{Duration, Instant},
+};
+use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
+static ENABLED: AtomicBool = AtomicBool::new(false);
+static REFRESH: AtomicBool = AtomicBool::new(true);
+static METERS: Mutex<Vec<Meter>> = Mutex::new(Vec::new());
+static SETTINGS_PATH: OnceLock<PathBuf> = OnceLock::new();
+pub fn snapshot() -> Vec<Meter> {
+    if !ENABLED.load(Ordering::Relaxed) {
+        return Vec::new();
+    }
+    METERS.lock().unwrap_or_else(|p| p.into_inner()).clone()
+}
+#[tauri::command]
+pub fn installed_usage_enabled() -> bool {
+    ENABLED.load(Ordering::Relaxed)
+}
+#[tauri::command]
+pub fn set_installed_usage_enabled(window: WebviewWindow, enabled: bool) -> Result<(), String> {
+    if window.label() != "settings" {
+        return Err("Change usage sources in settings".into());
+    }
+    let path = SETTINGS_PATH.get().ok_or("Usage settings unavailable")?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|_| "Could not save usage settings")?;
+    }
+    std::fs::write(
+        path,
+        if enabled {
+            b"true".as_slice()
+        } else {
+            b"false".as_slice()
+        },
+    )
+    .map_err(|_| "Could not save usage settings")?;
+    ENABLED.store(enabled, Ordering::Relaxed);
+    REFRESH.store(true, Ordering::Relaxed);
+    if !enabled {
+        METERS.lock().unwrap_or_else(|p| p.into_inner()).clear();
+    }
+    Ok(())
+}
+#[tauri::command]
+pub fn refresh_installed_usage() {
+    REFRESH.store(true, Ordering::Relaxed);
+}
+fn unavailable(provider: &str, message: &str) -> Meter {
+    Meter {
+        id: format!("{provider}-installed"),
+        provider: provider.into(),
+        label: if provider == "codex" {
+            "ChatGPT / Codex"
+        } else {
+            "Claude Code"
+        }
+        .into(),
+        used_pct: None,
+        spent_usd: None,
+        resets_at: None,
+        source: "official".into(),
+        stale: true,
+        status: Some("unavailable".into()),
+        error: Some(message.into()),
+    }
+}
+fn quota(
+    id: String,
+    provider: &str,
+    label: String,
+    percent: &Value,
+    reset: &Value,
+) -> Option<Meter> {
+    let used = percent
+        .as_f64()
+        .filter(|p| p.is_finite() && (0.0..=100.0).contains(p))?;
+    let reset = crate::usage::parse_unix_timestamp(reset).filter(|n| *n > 0)?;
+    Some(Meter {
+        id,
+        provider: provider.into(),
+        label,
+        used_pct: Some(used),
+        spent_usd: None,
+        resets_at: Some(reset),
+        source: "official".into(),
+        stale: false,
+        status: Some("ok".into()),
+        error: None,
+    })
+}
+pub fn parse_codex(account: &Value, limits: &Value) -> Result<Vec<Meter>, String> {
+    if account["account"]["type"] != "chatgpt" {
+        return Err("Sign in to the installed Codex client with ChatGPT. API-key accounts do not expose subscription limits.".into());
+    }
+    let buckets: Vec<(String, &Value)> = if let Some(map) = limits["rateLimitsByLimitId"]
+        .as_object()
+        .filter(|m| !m.is_empty())
+    {
+        map.iter()
+            .take(16)
+            .map(|(id, value)| (id.clone(), value))
+            .collect()
+    } else {
+        vec![("codex".into(), &limits["rateLimits"])]
+    };
+    let mut meters = Vec::new();
+    for (id, bucket) in buckets {
+        let name = bucket["limitName"].as_str().unwrap_or("Codex");
+        for key in ["primary", "secondary"] {
+            let window = &bucket[key];
+            let duration = match window["windowDurationMins"].as_u64() {
+                Some(10080) => "weekly".into(),
+                Some(n) if n % 60 == 0 => format!("{} h", n / 60),
+                Some(n) => format!("{n} min"),
+                None => key.into(),
+            };
+            if let Some(meter) = quota(
+                format!("codex-installed-{id}-{key}"),
+                "codex",
+                format!("{name} {duration}"),
+                &window["usedPercent"],
+                &window["resetsAt"],
+            ) {
+                meters.push(meter);
+            }
+        }
+    }
+    if meters.is_empty() {
+        Err("Installed Codex did not report quota windows".into())
+    } else {
+        Ok(meters)
+    }
+}
+pub fn parse_claude(value: &Value) -> Result<Vec<Meter>, String> {
+    if value["rate_limits_available"] == false {
+        return Err("This Claude Code connection does not expose subscription usage".into());
+    }
+    let limits = value.get("rate_limits").unwrap_or(value);
+    let mut meters = Vec::new();
+    for (key, label) in [
+        ("five_hour", "Claude 5 h"),
+        ("seven_day", "Claude weekly"),
+        ("seven_day_opus", "Claude weekly Opus"),
+        ("seven_day_sonnet", "Claude weekly Sonnet"),
+    ] {
+        let window = &limits[key];
+        let percent = window
+            .get("utilization")
+            .or_else(|| window.get("used_percentage"))
+            .unwrap_or(&Value::Null);
+        if let Some(meter) = quota(
+            format!("claude-installed-{key}"),
+            "claude",
+            label.into(),
+            percent,
+            &window["resets_at"],
+        ) {
+            meters.push(meter);
+        }
+    }
+    if let Some(scoped) = limits["model_scoped"].as_array() {
+        for (index, window) in scoped.iter().take(16).enumerate() {
+            let name = window["display_name"].as_str().unwrap_or("model");
+            if let Some(meter) = quota(
+                format!("claude-installed-scoped-{index}"),
+                "claude",
+                format!("Claude weekly {name}"),
+                &window["utilization"],
+                &window["resets_at"],
+            ) {
+                meters.push(meter);
+            }
+        }
+    }
+    if meters.is_empty() {
+        Err("Installed Claude Code did not report quota windows".into())
+    } else {
+        Ok(meters)
+    }
+}
+struct Client {
+    child: Child,
+    stdin: ChildStdin,
+    messages: mpsc::Receiver<Result<Value, String>>,
+    reader: Option<std::thread::JoinHandle<()>>,
+    deadline: Instant,
+}
+impl Drop for Client {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        if let Some(reader) = self.reader.take() {
+            let _ = reader.join();
+        }
+    }
+}
+fn executable(name: &str) -> Result<PathBuf, String> {
+    let mut paths = Vec::new();
+    if name == "codex" {
+        if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+            paths.push(PathBuf::from(local).join("Programs/OpenAI/Codex/bin/codex.exe"));
+        }
+    }
+    if let Some(home) = std::env::var_os("USERPROFILE") {
+        paths.push(PathBuf::from(home).join(format!(".local/bin/{name}.exe")));
+    }
+    if let Some(path) = std::env::var_os("PATH") {
+        paths.extend(
+            std::env::split_paths(&path)
+                .filter(|dir| dir.is_absolute())
+                .map(|dir| dir.join(format!("{name}.exe"))),
+        );
+    }
+    paths
+        .into_iter()
+        .find(|path| path.is_file())
+        .ok_or_else(|| format!("Install {name} CLI and sign in before enabling its usage meter"))
+}
+impl Client {
+    fn start(name: &str) -> Result<Self, String> {
+        let path = executable(name)?;
+        let mut command = Command::new(path);
+        if name == "codex" {
+            command.arg("app-server");
+        } else {
+            command
+                .args([
+                    "--output-format",
+                    "stream-json",
+                    "--verbose",
+                    "--input-format",
+                    "stream-json",
+                    "--no-session-persistence",
+                    "--tools",
+                    "",
+                    "--mcp-config",
+                    "{\"mcpServers\":{}}",
+                    "--strict-mcp-config",
+                    "--setting-sources",
+                    "user",
+                    "--settings",
+                    "{\"disableAllHooks\":true,\"disableClaudeAiConnectors\":true}",
+                ])
+                .env("CLAUDE_CODE_ENTRYPOINT", "sdk-ts")
+                .env("ENABLE_CLAUDEAI_MCP_SERVERS", "false")
+                .env("CLAUDE_CODE_AUTO_CONNECT_IDE", "0")
+                .env("CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL", "1");
+        }
+        if let Some(home) = std::env::var_os("USERPROFILE") {
+            command.current_dir(home);
+        }
+        command
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(0x08000000);
+        }
+        let mut child = command
+            .spawn()
+            .map_err(|_| format!("Could not start installed {name} CLI"))?;
+        let stdin = child.stdin.take().ok_or("Client input unavailable")?;
+        let stdout = child.stdout.take().ok_or("Client output unavailable")?;
+        let (tx, messages) = mpsc::sync_channel(32);
+        let reader = std::thread::spawn(move || {
+            let mut reader = BufReader::new(stdout);
+            let mut total = 0usize;
+            for _ in 0..256 {
+                let mut bytes = Vec::new();
+                let result = Read::take(&mut reader, 1_048_577).read_until(b'\n', &mut bytes);
+                total += bytes.len();
+                if result.is_err()
+                    || bytes.is_empty()
+                    || bytes.len() > 1_048_576
+                    || total > 8 * 1024 * 1024
+                {
+                    let _ = tx.try_send(Err("Client output closed or exceeded limits".into()));
+                    return;
+                }
+                if bytes.iter().all(u8::is_ascii_whitespace) {
+                    continue;
+                }
+                let value = serde_json::from_slice::<Value>(&bytes)
+                    .map_err(|_| "Client returned an invalid protocol frame".into());
+                if tx.try_send(value).is_err() {
+                    return;
+                }
+            }
+        });
+        Ok(Self {
+            child,
+            stdin,
+            messages,
+            reader: Some(reader),
+            deadline: Instant::now() + Duration::from_secs(25),
+        })
+    }
+    fn send(&mut self, value: &Value) -> Result<(), String> {
+        let mut bytes = serde_json::to_vec(value).map_err(|_| "Invalid control request")?;
+        bytes.push(b'\n');
+        self.stdin
+            .write_all(&bytes)
+            .map_err(|_| "Client closed its control input".into())
+    }
+    fn request(
+        &mut self,
+        id: u32,
+        method: &str,
+        params: Value,
+        claude: bool,
+    ) -> Result<Value, String> {
+        let request_id = format!("tuck-{id}");
+        if claude {
+            self.send(&json!({"type":"control_request","request_id":request_id,"request":params}))?;
+        } else {
+            self.send(&json!({"id":id,"method":method,"params":params}))?;
+        }
+        let request_deadline = (Instant::now() + Duration::from_secs(12)).min(self.deadline);
+        loop {
+            let remaining = request_deadline
+                .checked_duration_since(Instant::now())
+                .ok_or("Installed client usage request timed out")?;
+            let value = self
+                .messages
+                .recv_timeout(remaining)
+                .map_err(|_| "Installed client usage request timed out")??;
+            if claude {
+                if value["type"] == "control_response"
+                    && value["response"]["request_id"] == request_id
+                {
+                    if value["response"]["subtype"] != "success" {
+                        return Err("Claude Code rejected the read-only usage request. Update/sign in to the CLI.".into());
+                    }
+                    return Ok(value["response"]["response"].clone());
+                }
+                if value["type"] == "control_request" {
+                    let response = json!({"type":"control_response","response":{"subtype":"error","request_id":value["request_id"],"error":"Read-only usage client does not execute tools or approve requests"}});
+                    self.send(&response)?;
+                }
+            } else {
+                if value["id"].as_u64() == Some(id as u64) && value.get("method").is_none() {
+                    if value.get("error").is_some() {
+                        return Err("Codex rejected the read-only account usage request".into());
+                    }
+                    return value
+                        .get("result")
+                        .cloned()
+                        .ok_or("Codex response missing result".into());
+                }
+                if value.get("method").is_some() && value.get("id").is_some() {
+                    self.send(&json!({"id":value["id"],"error":{"code":-32601,"message":"Read-only usage client does not handle server requests"}}))?;
+                }
+            }
+        }
+    }
+}
+fn probe(name: &str) -> Result<Vec<Meter>, String> {
+    let mut client = Client::start(name)?;
+    if name == "codex" {
+        client.request(1,"initialize",json!({"clientInfo":{"name":"tuck","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":true,"requestAttestation":false}}),false)?;
+        client.send(&json!({"method":"initialized","params":{}}))?;
+        let account = client.request(2, "account/read", json!({"refreshToken":false}), false)?;
+        if account["account"]["type"] != "chatgpt" {
+            return parse_codex(&account, &Value::Null);
+        }
+        let limits = client.request(
+            3,
+            "account/rateLimits/read",
+            json!({"excludeResetCreditDetails":true}),
+            false,
+        )?;
+        parse_codex(&account, &limits)
+    } else {
+        client.request(1, "", json!({"subtype":"initialize"}), true)?;
+        let value = client.request(
+            2,
+            "",
+            json!({"subtype":"get_usage","skip_behaviors":true}),
+            true,
+        )?;
+        parse_claude(&value)
+    }
+}
+pub fn start(app: AppHandle) {
+    if let Ok(dir) = app.path().app_data_dir() {
+        let path = dir.join("installed-usage-enabled.json");
+        if let Ok(bytes) = std::fs::read(&path) {
+            ENABLED.store(bytes == b"true", Ordering::Relaxed);
+        }
+        let _ = SETTINGS_PATH.set(path);
+    }
+    std::thread::spawn(move || {
+        let mut last = Instant::now() - Duration::from_secs(300);
+        loop {
+            if ENABLED.load(Ordering::Relaxed)
+                && (REFRESH.swap(false, Ordering::Relaxed)
+                    || last.elapsed() >= Duration::from_secs(300))
+            {
+                let mut meters = Vec::new();
+                for name in ["claude", "codex"] {
+                    match probe(name) {
+                        Ok(values) => meters.extend(values),
+                        Err(error) => meters.push(unavailable(name, &error)),
+                    }
+                }
+                if ENABLED.load(Ordering::Relaxed) {
+                    *METERS.lock().unwrap_or_else(|p| p.into_inner()) = meters;
+                    let _ = app.emit("usage", crate::usage::current_snapshot());
+                }
+                last = Instant::now();
+            }
+            std::thread::sleep(Duration::from_secs(1));
+        }
+    });
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn codex_only_subscription_and_valid_quota_fields() {
+        let account = json!({"account":{"type":"chatgpt","email":"PRIVATE"}});
+        let limits = json!({"rateLimits":{"primary":{"usedPercent":22,"windowDurationMins":300,"resetsAt":1900000000}}});
+        let meters = parse_codex(&account, &limits).unwrap();
+        assert_eq!(meters[0].used_pct, Some(22.0));
+        assert!(!serde_json::to_string(&meters).unwrap().contains("PRIVATE"));
+        assert!(parse_codex(&json!({"account":{"type":"apiKey"}}), &limits).is_err());
+    }
+    #[test]
+    fn claude_control_quota_requires_actual_usage_and_reset() {
+        let values=parse_claude(&json!({"rate_limits_available":true,"rate_limits":{"five_hour":{"utilization":35,"resets_at":"2030-01-01T00:00:00Z"}}})).unwrap();
+        assert_eq!(values[0].used_pct, Some(35.0));
+        assert!(parse_claude(&json!({"rate_limits":{"five_hour":{"utilization":35}}})).is_err());
+    }
+    #[test]
+    #[ignore = "Explicit local installed-client read-only smoke"]
+    fn installed_clients_live() {
+        let meters = probe("codex").expect("Installed Codex quota probe");
+        assert!(!meters.is_empty());
+        println!("codex: {} quota windows", meters.len());
+        let mut client = Client::start("claude").expect("Installed Claude control client");
+        let init = client
+            .request(1, "", json!({"subtype":"initialize"}), true)
+            .expect("Claude initialize");
+        // Whitelist only non-identifying connection metadata. Never print the full response.
+        println!(
+            "claude connection: subscription={}, tokenSource={}, apiProvider={}",
+            init["account"]["subscriptionType"]
+                .as_str()
+                .unwrap_or("unreported"),
+            init["account"]["tokenSource"]
+                .as_str()
+                .unwrap_or("unreported"),
+            init["account"]["apiProvider"]
+                .as_str()
+                .unwrap_or("unreported")
+        );
+        let usage = client
+            .request(
+                2,
+                "",
+                json!({"subtype":"get_usage","skip_behaviors":true}),
+                true,
+            )
+            .expect("Claude usage control request");
+        match parse_claude(&usage){Ok(meters)=>println!("claude: {} quota windows",meters.len()),Err(_)=>println!("claude: control request succeeded; subscription quota unavailable for this connection")}
+    }
+}

@@ -110,22 +110,21 @@ pub fn sanitize_error(input: &str) -> String {
 
 /// Reads a write-only secret from Windows Credential Manager.
 /// Secrets are never logged, serialized to disk, or returned to the client.
-pub fn get_secret(name: &str) -> Option<String> {
-    let trimmed = name.trim();
-    if !is_allowed_secret_name(trimmed) {
-        return None;
+pub fn get_secret(name: &str) -> Result<Option<String>, String> {
+    let name = name.trim();
+    if !is_allowed_secret_name(name) {
+        return Err("Credential name not allowed".into());
     }
-    let entry = keyring::Entry::new(KEYRING_SERVICE, trimmed).ok()?;
+    let entry =
+        keyring::Entry::new(KEYRING_SERVICE, name).map_err(|_| "Credential Manager unavailable")?;
     match entry.get_password() {
-        Ok(pw) => {
-            let secret = pw.trim().to_string();
-            if secret.is_empty() {
-                None
-            } else {
-                Some(secret)
-            }
-        }
-        Err(_) => None,
+        Ok(value) => Ok(if value.trim().is_empty() {
+            None
+        } else {
+            Some(value.trim().to_owned())
+        }),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(_) => Err("Credential Manager read failed".into()),
     }
 }
 
@@ -262,7 +261,7 @@ pub fn parse_claude_status_content(
                     let used_pct = extract_percentage(target.get("used_percentage"));
                     let resets_at = target.get("resets_at").and_then(parse_unix_timestamp);
 
-                    let status = if used_pct.is_none() {
+                    let status = if used_pct.is_none() || resets_at.is_none() {
                         Some("unavailable".to_string())
                     } else if is_stale {
                         Some("stale".to_string())
@@ -672,10 +671,10 @@ fn build_api_meter(id: &str, label: &str, slot: &ApiSlot, month: i64, reset: i64
         source: "api".into(),
         stale: !current || slot.stale,
         status: Some(
-            if !slot.configured {
-                "unconfigured"
-            } else if slot.last_error.is_some() {
+            if slot.last_error.is_some() {
                 "error"
+            } else if !slot.configured {
+                "unconfigured"
             } else if !current || slot.stale || slot.last_success_usd.is_none() {
                 "stale"
             } else {
@@ -773,8 +772,9 @@ pub fn start<R: Runtime>(app: AppHandle<R>) {
                     };
                     let key = get_secret(name); // OS I/O and HTTP intentionally outside cache lock.
                     let result = match (&client, &key) {
-                        (Ok(client), Some(key)) => fetch_spend(client, key, anthropic),
-                        (Err(_), Some(_)) => Err("HTTP initialization failed".into()),
+                        (Ok(client), Ok(Some(key))) => fetch_spend(client, key, anthropic),
+                        (Err(_), Ok(Some(_))) => Err("HTTP initialization failed".into()),
+                        (_, Err(error)) => Err(error.clone()),
                         _ => Err("Not configured".into()),
                     };
                     let mut state = get_cache().lock().unwrap_or_else(|p| p.into_inner());
@@ -783,7 +783,15 @@ pub fn start<R: Runtime>(app: AppHandle<R>) {
                     } else {
                         &mut state.openai
                     };
-                    commit_result(slot, generation, month, key.is_some(), result);
+                    match key {
+                        Ok(key) => commit_result(slot, generation, month, key.is_some(), result),
+                        Err(_) => {
+                            if slot.generation == generation {
+                                slot.last_error = Some("Credential Manager read failed".into());
+                                slot.stale = true;
+                            }
+                        }
+                    }
                 }
                 last_api = Instant::now();
                 last_month = month;
@@ -1044,5 +1052,27 @@ mod tests {
     fn rejects_unsupported_currency_and_out_of_range_percentage() {
         assert_eq!(extract_percentage(Some(&serde_json::json!(101))), None);
         assert!(parse_openai_costs_page(&serde_json::json!({"data":[{"results":[{"amount":{"value":12,"currency":"EUR"}}]}],"has_more":false})).is_err());
+    }
+    #[test]
+    fn missing_reset_is_not_a_healthy_limit() {
+        let meters = parse_claude_status_content(
+            br#"{"rate_limits":{"five_hour":{"used_percentage":42}}}"#,
+            Some(SystemTime::now()),
+        );
+        assert_eq!(meters[0].status.as_deref(), Some("unavailable"));
+    }
+    #[test]
+    fn credential_read_error_preserves_cached_total() {
+        let slot = ApiSlot {
+            configured: true,
+            month: 10,
+            last_success_usd: Some(12.0),
+            last_error: Some("Credential Manager read failed".into()),
+            stale: true,
+            ..Default::default()
+        };
+        let meter = build_api_meter("openai-api", "API", &slot, 10, 20);
+        assert_eq!(meter.spent_usd, Some(12.0));
+        assert_eq!(meter.status.as_deref(), Some("error"));
     }
 }

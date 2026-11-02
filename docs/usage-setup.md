@@ -59,7 +59,7 @@ Admin API keys are write-only secrets managed by the Windows Credential Manager:
   * Setting an empty string or whitespace deletes the stored credential from the Windows Credential Manager.
   * Any secret name outside the allowlist is rejected with a generic validation error without echoing the input.
 * **Error Sanitization**:
-  * All error strings returned by API requests or keyring operations are scrubbed through `sanitize_error` to strip `sk-ant-admin*`, `sk-admin-*`, generic `sk-*`, `Bearer *`, and `x-api-key:*` authorization tokens without panicking on multi-byte UTF-8 or localized text.
+  * External keyring and request errors use fixed generic messages. Raw external details are withheld to avoid exposing credentials or personal data, including localized errors.
 
 ---
 

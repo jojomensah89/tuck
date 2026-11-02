@@ -16,11 +16,12 @@ export function getJson<T>(key: string, defaultValue: T): T {
   }
 }
 
-export function saveJson<T>(key: string, value: T): void {
+export function saveJson<T>(key: string, value: T): boolean {
   try {
     localStorage.setItem(key, JSON.stringify(value));
+    return true;
   } catch {
-    // Ignore storage quota errors
+    return false;
   }
 }
 

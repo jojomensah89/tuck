@@ -36,13 +36,13 @@ export function mountExtensions():void {
    body.append(button(current.call?'End timer':'Start call timer',()=>invoke('call_set_active',{active:!current.call}),'manual-call'));
   }else if(selected==='Files'){
    body.append(el('p','Drop files onto the island to stage them. Originals stay in place.','ext-note'),button('Add files',()=>invoke('shelf_pick')),button('Clear shelf',()=>invoke('shelf_remove',{id:null})));
-   for(const item of current.shelf){const row=el('div','','ext-row');row.append(el('span',`${item.name} ? ${formatBytes(item.bytes)}`),button('Reveal',()=>invoke('shelf_reveal',{id:item.id}),`reveal-${item.id}`),button('Remove',()=>invoke('shelf_remove',{id:item.id}),`remove-${item.id}`));
+   for(const item of current.shelf){const row=el('div','','ext-row');row.append(el('span',`${item.name} | ${formatBytes(item.bytes)}`),button('Reveal',()=>invoke('shelf_reveal',{id:item.id}),`reveal-${item.id}`),button('Remove',()=>invoke('shelf_remove',{id:item.id}),`remove-${item.id}`));
     const drag=el('button','Drag out','ext-button');drag.type='button';drag.dataset.actionKey=`drag-${item.id}`;drag.setAttribute('aria-label',`Drag ${item.name} to another app`);drag.addEventListener('pointerdown',event=>{if(event.button!==0)return;event.preventDefault();nativeDragging=true;window.dispatchEvent(new CustomEvent('tuck-drag-active',{detail:true}));void run(()=>invoke('shelf_drag',{id:item.id})).finally(()=>{nativeDragging=false;window.dispatchEvent(new CustomEvent('tuck-drag-active',{detail:false}));render(true);});});row.append(drag);body.append(row);}
    if(!current.shelf.length)body.append(el('p','Shelf is empty.','ext-note'));
   }else if(selected==='Calendar'){
    if(!current.settings.calendar)body.append(el('p','Enable calendar in Tuck settings and import an ICS file.','ext-note'));
    const upcoming=current.calendar.filter(event=>event.endsAt>=Date.now()).slice(0,20);
-   for(const event of upcoming){const row=el('div','','ext-row');row.append(el('span',`${event.title} ? ${new Date(event.startsAt).toLocaleString()}`));if(event.joinUrl)row.append(button('Join',()=>invoke('calendar_join',{id:event.id}),`join-${event.id}`));body.append(row);}
+   for(const event of upcoming){const row=el('div','','ext-row');row.append(el('span',`${event.title} | ${new Date(event.startsAt).toLocaleString()}`));if(event.joinUrl)row.append(button('Join',()=>invoke('calendar_join',{id:event.id}),`join-${event.id}`));body.append(row);}
    if(current.settings.calendar&&!upcoming.length)body.append(el('p','No upcoming imported events.','ext-note'));
   }else if(selected==='Radios'){
    body.append(el('p','Radio controls require opt-in and Windows permission. Focus opens Windows Settings.','ext-note'));
@@ -51,10 +51,10 @@ export function mountExtensions():void {
    body.append(button('Focus settings',()=>invoke('quick_action',{name:'focus'})));
   }else{
    if(!current.settings.downloads)body.append(el('p','Enable download monitoring in Tuck settings.','ext-note'));
-   for(const item of current.downloads){const row=el('div','','ext-row');row.append(el('span',`${item.name} ? ${formatBytes(item.bytes)} ? ${formatBytes(item.bytesPerSecond)}/s ? total unknown`));const progress=el('progress');progress.setAttribute('aria-label',`${item.name}: total size unknown`);row.append(progress);body.append(row);}
+   for(const item of current.downloads){const row=el('div','','ext-row');row.append(el('span',`${item.name} | ${formatBytes(item.bytes)} | ${formatBytes(item.bytesPerSecond)}/s | total unknown`));const progress=el('progress');progress.setAttribute('aria-label',`${item.name}: total size unknown`);row.append(progress);body.append(row);}
    if(current.settings.downloads&&!current.downloads.length)body.append(el('p','No partial downloads in your Downloads folder.','ext-note'));
   }
-  if(status)status.textContent=[...current.errors,actionError].filter(Boolean).join(' ? ');
+  if(status)status.textContent=[...current.errors,actionError].filter(Boolean).join(' | ');
   if(focusKey)[...body.querySelectorAll('button')].find(node=>node.dataset.actionKey===focusKey)?.focus();
   activity({id:'native-call',type:'call',title:'Manual call timer',text:current.call?formatDuration(Date.now()-current.call.startedAt):'',priority:95,active:!!current.call});
   activity({id:'native-downloads',type:'download',title:'Downloads',text:`${current.downloads.length} active`,priority:70,active:current.settings.downloads&&current.downloads.length>0});

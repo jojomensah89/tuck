@@ -19,6 +19,9 @@
         font-family: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
       }
 
+      @media (prefers-color-scheme: light) {
+        :root { --bg:#f4f3ef;--card:#ffffff;--line:#d8d6d0;--ink:#1c1c1e;--ink-2:#5c5c61;--ink-3:#5c5c61;--ok:#19783a;color-scheme:light; }
+      }
       * {
         box-sizing: border-box;
       }
@@ -236,6 +239,11 @@
       </button>
     </div>
 
+    <h2>Installed account usage</h2>
+    <label><input type="checkbox" id="installedUsage" /> Read limits from installed Claude Code and Codex</label>
+    <p>Uses the signed-in clients through read-only control requests. No prompts, turns, token copying, or login changes. Codex limits describe Codex usage on your ChatGPT plan.</p>
+    <button id="refreshInstalledUsage" type="button">Refresh installed account limits</button>
+    <p id="installedUsageStatus" role="status"></p>
     <h2>Claude Subscription (Pro / Max)</h2>
     <div class="card">
       <p>

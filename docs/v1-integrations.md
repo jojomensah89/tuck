@@ -19,6 +19,10 @@ Implemented using real Windows calls and a local activity store. Optional monito
 
 ## Validation
 
-Native module compile and Clippy passed on Windows. Six production-module tests cover opt-in defaults, calendar parsing/errors, safe URLs, real temporary partial downloads, and shelf non-deletion. Frontend build and unit tests pass. Final combined application interaction and CI checks are tracked in the integration PR.
+Native module compile and Clippy passed on Windows. Seven production-module tests cover opt-in defaults, calendar parsing/errors and concurrent import serialization, safe URLs, real temporary partial downloads, and shelf non-deletion. Frontend build and unit tests pass. Final combined application interaction and CI checks are tracked in the integration PR.
 
 Real hardware radio changes, notification permission, drag/drop into another desktop application and calendar reminder delivery remain separate manual checks; fixture tests do not establish those behaviors.
+
+## Sol low review fixes
+
+Radio mutations capture an opt-in epoch and recheck it immediately before each Windows SetStateAsync request. Calendar imports and calendar-setting reloads share a dedicated operation lock so disk and memory commits stay ordered. The UI rebuilds live state and restores focused controls by stable action/item identity instead of freezing updates. These fixes passed combined tests and Clippy.

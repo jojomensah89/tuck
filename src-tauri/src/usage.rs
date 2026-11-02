@@ -708,6 +708,14 @@ pub fn current_snapshot() -> Vec<Meter> {
         month,
         reset,
     ));
+    let installed = crate::installed_usage::snapshot();
+    if installed
+        .iter()
+        .any(|meter| meter.id.starts_with("claude-installed-") && meter.used_pct.is_some())
+    {
+        meters.retain(|meter| meter.provider != "claude");
+    }
+    meters.extend(installed);
     meters
 }
 #[tauri::command]

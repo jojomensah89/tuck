@@ -57,6 +57,65 @@ try {
   assert.match(await page.locator('#settingsStatus').textContent(),/positive/);
   await page.locator('#pickFloat').click();
   assert.equal(await page.evaluate(() => localStorage.getItem('notch.shape')),'float');
+  await page.evaluate(() => { Storage.prototype.setItem = () => { throw new Error('Storage disabled'); }; });
+  await page.locator('#saveBudgets').click();
+  assert.match(await page.locator('#settingsStatus').textContent(),/Could not save budgets/);
+  assert.equal(await page.locator('#s1').evaluate(el => el.classList.contains('show')),false);
   assert.deepEqual(errors,[]);
-  console.log('UI smoke passed: geometry, inert/ARIA, keyboard seeking, timer controls, credential failures, settings validation, persistence.');
+
+  // A mocked native bridge exercises the actual controllers; this is not a hardware smoke.
+  await context.addInitScript(() => {
+    window.isTauri=true;
+    let serial=0;const callbacks=new Map();const listeners=new Map();
+    const state={settings:{downloads:false,calendar:false,notifications:false,radios:true},downloads:[],call:null,calendar:[],shelf:[],radios:[{kind:'wifi',name:'Test Wi-Fi',state:'On'}],notificationStatus:'Disabled',errors:[]};
+    window.__nativeState=state;window.__calls=[];
+    window.__emitNative=(event,payload)=>{for(const id of listeners.get(event)||[])callbacks.get(id)?.({event,id,payload});};
+    window.__TAURI_INTERNALS__={metadata:{currentWindow:{label:'main'},currentWebview:{label:'main'}},transformCallback(callback){const id=++serial;callbacks.set(id,callback);return id;},async invoke(command,args={}){
+      window.__calls.push({command,args});
+      if(command==='plugin:event|listen'){const ids=listeners.get(args.event)||[];ids.push(args.handler);listeners.set(args.event,ids);return ++serial;}
+      if(command==='extension_snapshot')return structuredClone(state);
+      if(command==='call_set_active'){state.call=args.active?{title:'Manual call timer',startedAt:Date.now()}:null;return;}
+      if(command==='shelf_pick'){state.shelf=[{id:'fixture-file',name:'sample.txt',path:'C:\\Fixture\\sample.txt',bytes:20}];return;}
+      if(command==='radio_set'){state.radios[0].state=args.enabled?'On':'Off';return;}
+      if(command==='extension_settings')throw 'Activity settings could not be saved';
+      if(command==='media_now')return {active:false,trackId:'',title:'',artist:'',playing:false,positionMs:0,durationMs:0,artwork:null};
+      if(command==='usage_now')return [];
+      if(command==='get_autostart'||command==='installed_usage_enabled'||command==='fullscreen_now')return false;
+      return null;
+    }};
+  });
+  const native=await context.newPage();const nativeErrors=[];native.on('pageerror',error=>nativeErrors.push(error.message));
+  await native.goto('http://tuck.test/');await native.waitForTimeout(100);
+  await native.evaluate(()=>window.__emitNative('open-island',null));
+  for(let index=0;index<5;index++)await native.locator('#nextPage').click();
+  assert.equal(await native.locator('.page.on').getAttribute('data-page'),'extensions');
+  await native.getByRole('button',{name:'Start call timer',exact:true}).click();
+  await native.getByRole('button',{name:'End timer',exact:true}).waitFor({timeout:3000});
+  assert.equal(await native.getByRole('button',{name:'End timer',exact:true}).count(),1);
+  assert.equal(await native.locator('.ext-note').textContent(),'Manual call timer. This does not place calls or control your microphone.');
+  await native.keyboard.press('Escape');
+  await native.evaluate(()=>window.__emitNative('hover',true));
+  assert.equal(await native.locator('#cc').textContent(),'Manual call timer');
+  assert.equal(await native.evaluate(()=>window.__calls.some(call=>call.command==='deactivate_island')),true);
+  await native.evaluate(()=>window.__emitNative('open-island',null));
+  await native.getByRole('button',{name:'Files',exact:true}).click();
+  await native.getByRole('button',{name:'Add files',exact:true}).click();
+  assert.match(await native.locator('.ext-body').textContent(),/sample.txt/);
+  await native.getByRole('button',{name:'Radios',exact:true}).click();
+  await native.getByRole('button',{name:'Turn off',exact:true}).focus();
+  await native.evaluate(()=>{window.__nativeState.radios[0].state='Off';window.__emitNative('extension-state',structuredClone(window.__nativeState));});
+  assert.equal(await native.getByRole('button',{name:'Turn on',exact:true}).count(),1);
+  assert.equal(await native.evaluate(()=>document.activeElement.dataset.actionKey),'radio-wifi-Test Wi-Fi');
+  await native.evaluate(()=>window.dispatchEvent(new CustomEvent('tuck-drop-active',{detail:true})));
+  assert.equal(await native.locator('#isl').getAttribute('data-state'),'open');
+  await native.evaluate(()=>window.__emitNative('hover',false));await native.waitForTimeout(1750);
+  assert.equal(await native.locator('#isl').getAttribute('data-state'),'open','Native drag must hold the island open');
+  await native.evaluate(()=>window.dispatchEvent(new CustomEvent('tuck-drop-active',{detail:false})));
+  await native.keyboard.press('Escape');
+  await native.evaluate(()=>window.__emitNative('notification-preview',{title:'Fixture notification',body:'Preview text'}));
+  assert.equal(await native.locator('#isl').getAttribute('data-state'),'peek');
+  assert.match(await native.locator('#cc').textContent(),/Fixture notification/);
+  await native.screenshot({path:path.join(root,'artifacts','island-v1.png')});
+  assert.deepEqual(nativeErrors,[]);
+  console.log('UI smoke passed: geometry, accessibility, keyboard seeking, timers, persistence errors, native-bridge call priority, shelf, focused radio updates, drag hold and previews.');
 } finally { await browser.close(); }

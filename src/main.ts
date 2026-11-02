@@ -1,4 +1,8 @@
 import {mountExtensions} from './extensions.js';
+import { mountLivePages } from './live-ui.js';
+import { LIVE_SETTINGS_KEY, readPreferences } from './live-state.js';
+import './live.css';
+import { mountTodos } from './todos.js';
 import {
   isTauri,
   listenToEvent,
@@ -41,7 +45,7 @@ const SIZES: Record<IslandState, [number, number]> = {
   open: [440, 180],
 };
 
-const OPEN_HOLD_MS = 1600;
+let livePreferences = readPreferences();
 
 function $(id: string): HTMLElement {
   const el = document.getElementById(id);
@@ -96,6 +100,7 @@ window.addEventListener('storage', (e) => {
 let state: IslandState = 'idle';
 let pageIndex = 0;
 let closeTimer = 0;
+let openTimer = 0;
 let wheelLock = 0;
 let hoverInside=false;
 let nativeDragActive=false;
@@ -104,13 +109,22 @@ let announcement:{text:string;until:number}|null=null;
 const externalActivities=new Map<string,{title:string;text:string;priority:number}>();
 
 mountExtensions();
+const live = mountLivePages(() => setState(state));
+mountTodos();
 const pages = Array.from(document.querySelectorAll<HTMLElement>('.page'));
+window.addEventListener('storage', event => {
+  if (event.key !== LIVE_SETTINGS_KEY) return;
+  livePreferences = readPreferences();
+  document.querySelector('.page.media')?.classList.toggle('with-lyrics', livePreferences.lyricsOpen);
+  document.querySelector('.media-tools button')?.setAttribute('aria-pressed', String(livePreferences.lyricsOpen));
+  setState(state);
+});
 
 function setState(next: IslandState): void {
   if (state === 'open' && next !== 'open' && isTauri()) runAction(invokeCommand('deactivate_island'), 'Restore desktop interaction');
   if(next!=='open')keyboardMode=false;
   state = next;
-  const [w, h] = SIZES[next];
+  const [w, h] = next === 'open' ? [livePreferences.openWidth, 210] : SIZES[next];
   isl.style.setProperty('--w', `${w}px`);
   isl.style.setProperty('--h', `${h}px`);
   isl.dataset.state = next;
@@ -136,13 +150,15 @@ function setState(next: IslandState): void {
 function onHover(inside: boolean): void {
   hoverInside=inside;
   window.clearTimeout(closeTimer);
-  if(nativeDragActive || (!inside&&keyboardMode&&state==='open'))return;
+  window.clearTimeout(openTimer);
+  if(nativeDragActive || (!inside&&(keyboardMode||livePreferences.pinned)&&state==='open'))return;
   if (inside) {
-    if (state === 'idle') setState('peek');
+    if (livePreferences.hoverExpand) openTimer = window.setTimeout(() => setState('open'), livePreferences.openDelayMs);
+    else if (state === 'idle') setState('peek');
   } else {
     closeTimer = window.setTimeout(
       () => setState('idle'),
-      state === 'open' ? OPEN_HOLD_MS : 120
+      state === 'open' ? livePreferences.closeDelayMs : 120
     );
   }
 }
@@ -188,7 +204,7 @@ isl.addEventListener('keydown', (e) => {
 isl.addEventListener(
   'wheel',
   (e) => {
-    if ((e.target as HTMLElement).closest('.usage') || state !== 'open' || Date.now() < wheelLock) return;
+    if ((e.target as HTMLElement).closest('.usage, .live-page, .lyrics-pane, input, select') || state !== 'open' || Date.now() < wheelLock) return;
     wheelLock = Date.now() + 350;
     const delta = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
     if (delta !== 0) {
@@ -201,6 +217,9 @@ isl.addEventListener(
 /* ================= Pages Navigation ================= */
 
 function showPage(n: number, dir = 1): void {
+  const focused = document.activeElement;
+  const relocateFocus = state === 'open' && focused instanceof HTMLElement &&
+    (pages[pageIndex]?.contains(focused) || $('dots').contains(focused));
   pageIndex = (n + pages.length) % pages.length;
 
   pages.forEach((p, i) => {
@@ -219,6 +238,7 @@ function showPage(n: number, dir = 1): void {
     const btn = document.createElement('button');
     btn.className = i === pageIndex ? 'on' : '';
     btn.setAttribute('aria-label', `Go to ${pages[i].dataset.page} page`);
+    btn.title = pages[i].getAttribute('aria-label') || pages[i].dataset.page || 'Page';
     btn.setAttribute('aria-current', String(i === pageIndex));
     btn.onclick = (e) => {
       e.stopPropagation();
@@ -229,6 +249,12 @@ function showPage(n: number, dir = 1): void {
 
   if (pageIndex === 0) {
     fitTitle();
+  }
+  if (relocateFocus) {
+    const page = pages[pageIndex];
+    const control = page.querySelector<HTMLElement>('button:not(:disabled), input:not(:disabled), select:not(:disabled), [tabindex="0"]');
+    if (control) control.focus({ preventScroll: true });
+    else { page.tabIndex = -1; page.focus({ preventScroll: true }); }
   }
 }
 
@@ -266,9 +292,11 @@ function setAccentColor(rgb: { r: number; g: number; b: number } | null): void {
   if (rgb) {
     isl.style.setProperty('--accent', `rgb(${rgb.r}, ${rgb.g}, ${rgb.b})`);
     isl.style.setProperty('--tint', `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, 0.24)`);
+    isl.style.setProperty('--art-wash', `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, 0.65)`);
   } else {
     isl.style.setProperty('--accent', '#ffffff');
     isl.style.setProperty('--tint', 'transparent');
+    isl.style.setProperty('--art-wash', 'transparent');
   }
 }
 
@@ -330,7 +358,10 @@ function onMediaUpdate(payload: MediaState): void {
   }
 
   syncTransportButtons();
-  for (const id of ['play', 'prev', 'next']) ($(id) as HTMLButtonElement).disabled = !mediaState.active;
+  ($('play') as HTMLButtonElement).disabled = !mediaState.active || mediaState.canPlayPause === false;
+  ($('prev') as HTMLButtonElement).disabled = !mediaState.active || mediaState.canSkipPrev === false;
+  ($('next') as HTMLButtonElement).disabled = !mediaState.active || mediaState.canSkipNext === false;
+  live.media(mediaState, currentPosition());
   renderCompact();
 }
 
@@ -340,6 +371,8 @@ function currentPosition(): number {
 }
 
 function tick(): void {
+  live.position(currentPosition());
+  if (state !== 'open') renderCompact();
   if (state !== 'open' || pageIndex !== 0) return;
   const pos = currentPosition();
   $('cur').textContent = formatMs(pos);
@@ -351,18 +384,13 @@ function tick(): void {
   const trackSlider = $('track');
   trackSlider.setAttribute('aria-valuenow', String(Math.round(pct)));
   trackSlider.setAttribute('aria-valuetext', `${formatMs(pos)} of ${formatMs(mediaState.durationMs)}`);
-  trackSlider.setAttribute('aria-disabled', String(!mediaState.active || mediaState.durationMs <= 0));
+  trackSlider.setAttribute('aria-disabled', String(!mediaState.active || mediaState.canSeek === false || mediaState.durationMs <= 0));
 }
 
 setInterval(tick, 200);
 
 $('play').onclick = (e) => {
   e.stopPropagation();
-  mediaState.positionMs = currentPosition();
-  mediaReceivedAt = performance.now();
-  mediaState.playing = !mediaState.playing;
-  syncTransportButtons();
-  renderCompact();
   runAction(mediaToggle(), 'Change playback');
 };
 
@@ -381,7 +409,7 @@ $('prev').onclick = (e) => {
 };
 
 function seekTo(ms: number): void {
-  if (!mediaState.active || mediaState.durationMs <= 0) return;
+  if (!mediaState.active || mediaState.canSeek === false || mediaState.durationMs <= 0) return;
   mediaState.positionMs = Math.max(0, Math.min(mediaState.durationMs, ms));
   mediaReceivedAt = performance.now();
   tick();
@@ -446,8 +474,8 @@ function renderCompact(): void {
     } else {
       cl.innerHTML = SVG_ICONS.note;
     }
-    cc.textContent = state === 'peek' ? mediaState.title : '';
-    cr.innerHTML = mediaState.playing ? SVG_ICONS.eq : SVG_ICONS.pause;
+    cc.textContent = livePreferences.compactContent === 'lyrics' ? live.compactLyric() || mediaState.title : mediaState.title;
+    cr.innerHTML = mediaState.playing ? '' : SVG_ICONS.pause;
   } else {
     cl.innerHTML = powerState.charging ? SVG_ICONS.bolt : '';
     cc.textContent = new Date().toLocaleDateString([], {
@@ -730,10 +758,11 @@ function setupQuickActions(): void {
 
 function showAnnouncement(text:string):void {
   $('statusMessage').textContent=text;
-  if(state==='open')return;
+  const returnOpen = state === 'open';
+  if(returnOpen && (pageIndex !== 0 || keyboardMode))return;
   announcement={text:text.slice(0,180),until:Date.now()+3500};
   window.clearTimeout(closeTimer);setState('peek');
-  closeTimer=window.setTimeout(()=>{announcement=null;setState(hoverInside?'peek':'idle');},3500);
+  closeTimer=window.setTimeout(()=>{announcement=null;setState(returnOpen && (hoverInside || livePreferences.pinned) ? 'open' : hoverInside?'peek':'idle');},3500);
 }
 window.addEventListener('tuck-activity',event=>{
   const detail=(event as CustomEvent).detail;
@@ -763,8 +792,13 @@ void listenToEvent<boolean>('fullscreen', (hidden) => {
 });
 void listenToEvent<MediaState>('media', (payload) => onMediaUpdate(payload));
 void listenToEvent<PowerState>('power', (payload) => {
+  const previous = powerState;
   powerState = payload;
   renderPower();
+  if (livePreferences.desktopPeeks && previous.statusKnown && payload.statusKnown && previous.acConnected !== payload.acConnected) showAnnouncement(payload.acConnected ? 'Charger connected' : 'Charger disconnected');
+});
+void listenToEvent<{title: string; text: string}>('desktop-peek', payload => {
+  if (livePreferences.desktopPeeks && typeof payload?.title === 'string' && typeof payload.text === 'string') showAnnouncement(`${payload.title}: ${payload.text}`);
 });
 void listenToEvent<Meter[]>('usage', (payload) => onUsageUpdate(payload));
 

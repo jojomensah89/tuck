@@ -1,4 +1,5 @@
 import {mountExtensionSettings} from './extensions.js';
+import { mountLiveSettings } from './live-settings.js';
 import { isTauri, setSecret, invokeCommand } from './ipc.js';
 import { STORAGE_KEYS, getJson, saveJson } from './usage.js';
 import type { ShapeStyle, ChatGPTConfig } from './types.js';
@@ -153,6 +154,7 @@ document.addEventListener('DOMContentLoaded', () => {
     $('refreshInstalledUsage')!.addEventListener('click',()=>{void invokeCommand('refresh_installed_usage').then(()=>{$('installedUsageStatus')!.textContent='Refresh requested.';}).catch(()=>{$('installedUsageStatus')!.textContent='Refresh request failed.';});});
   }else{installed.disabled=true;($('refreshInstalledUsage') as HTMLButtonElement).disabled=true;}
   mountExtensionSettings();
+  mountLiveSettings();
   initBudgets();
   initAdminKeys();
   initChatGPT();

@@ -8,6 +8,7 @@ Install Bun, stable Rust with the MSVC target, Microsoft C++ Build Tools and Web
 
 ```powershell
 bun install --frozen-lockfile
+.\scripts\prepare-native.ps1 -InstallBuildTools
 bun run tauri dev
 ```
 
@@ -25,6 +26,10 @@ cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
 ```
 
 The rendered UI smoke uses installed Microsoft Edge in headless mode and intercepts build assets locally; no preview server is required. Native desktop and permission smoke checks are documented separately.
+
+Offline speech adds CMake and libclang build prerequisites. `prepare-native.ps1` prepares them in the current PowerShell session; it downloads libclang only with `-InstallBuildTools`. It does not download a speech model or open a microphone. In a new shell, run the script again without that switch before Cargo. CI prepares its own pinned libclang dependency.
+
+Phase-two work is tracked in [the approved scope](docs/live-island-phase-two.md) and [integration verification](docs/phase-two-verification.md). Its PR remains a draft until independent review and checks finish.
 
 ## Scope and setup
 

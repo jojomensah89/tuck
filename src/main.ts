@@ -2,7 +2,6 @@ import {mountExtensions} from './extensions.js';
 import { mountLivePages } from './live-ui.js';
 import { LIVE_SETTINGS_KEY, readPreferences } from './live-state.js';
 import './live.css';
-import { mountTodos } from './todos.js';
 import {
   isTauri,
   listenToEvent,
@@ -42,7 +41,7 @@ import type {
 const SIZES: Record<IslandState, [number, number]> = {
   idle: [212, 32],
   peek: [300, 38],
-  open: [440, 180],
+  open: [440, 210],
 };
 
 let livePreferences = readPreferences();
@@ -102,32 +101,23 @@ let pageIndex = 0;
 let closeTimer = 0;
 let openTimer = 0;
 let wheelLock = 0;
-let hoverInside=false;
-let nativeDragActive=false;
-let keyboardMode=false;
-let announcement:{text:string;until:number}|null=null;
-const externalActivities=new Map<string,{title:string;text:string;priority:number}>();
-
-mountExtensions();
-const live = mountLivePages(() => setState(state));
-mountTodos();
-const pages = Array.from(document.querySelectorAll<HTMLElement>('.page'));
-window.addEventListener('storage', event => {
-  if (event.key !== LIVE_SETTINGS_KEY) return;
-  livePreferences = readPreferences();
-  document.querySelector('.page.media')?.classList.toggle('with-lyrics', livePreferences.lyricsOpen);
-  document.querySelector('.media-tools button')?.setAttribute('aria-pressed', String(livePreferences.lyricsOpen));
-  setState(state);
-});
+let hoverInside = false;
+let nativeDragActive = false;
+let keyboardMode = false;
+let announcement: { text: string; until: number } | null = null;
+const externalActivities = new Map<string, { title: string; text: string; priority: number }>();
 
 function setState(next: IslandState): void {
   if (state === 'open' && next !== 'open' && isTauri()) runAction(invokeCommand('deactivate_island'), 'Restore desktop interaction');
-  if(next!=='open')keyboardMode=false;
+  if (next !== 'open') keyboardMode = false;
   state = next;
   const [w, h] = next === 'open' ? [livePreferences.openWidth, 210] : SIZES[next];
   isl.style.setProperty('--w', `${w}px`);
   isl.style.setProperty('--h', `${h}px`);
+  isl.style.width = `${w}px`;
+  isl.style.height = `${h}px`;
   isl.dataset.state = next;
+
   const full = document.querySelector<HTMLElement>('.full')!;
   const compact = document.querySelector<HTMLElement>('.compact')!;
   if (next !== 'open' && full.contains(document.activeElement)) isl.focus();
@@ -136,22 +126,23 @@ function setState(next: IslandState): void {
   compact.setAttribute('aria-hidden', String(next === 'open'));
   isl.setAttribute('aria-expanded', String(next === 'open'));
 
-  // Inform Rust backend of current hit area (with top offset included per guide)
   const hit = hitGeometry(w, h, topOffset);
   runAction(setHit(hit.w, hit.h), 'Update island bounds');
 
   renderCompact();
   if (next === 'open') {
     fitTitle();
+    renderMediaHeader();
     tick();
   }
 }
 
 function onHover(inside: boolean): void {
-  hoverInside=inside;
+  hoverInside = inside;
   window.clearTimeout(closeTimer);
   window.clearTimeout(openTimer);
-  if(nativeDragActive || (!inside&&(keyboardMode||livePreferences.pinned)&&state==='open'))return;
+  if (nativeDragActive || (!inside && (keyboardMode || livePreferences.pinned) && state === 'open')) return;
+
   if (inside) {
     if (livePreferences.hoverExpand) openTimer = window.setTimeout(() => setState('open'), livePreferences.openDelayMs);
     else if (state === 'idle') setState('peek');
@@ -170,15 +161,25 @@ if (!isTauri()) {
 }
 
 isl.addEventListener('click', (e) => {
-  // If clicking on an action button, don't just trigger state
   if ((e.target as HTMLElement).closest('button, .track')) return;
   if (state !== 'open') {
     setState('open');
   }
 });
 
+mountExtensions();
+const live = mountLivePages(() => setState(state));
+const pages = Array.from(document.querySelectorAll<HTMLElement>('.page'));
+
+window.addEventListener('storage', event => {
+  if (event.key !== LIVE_SETTINGS_KEY) return;
+  livePreferences = readPreferences();
+  document.querySelector('.page.media')?.classList.toggle('with-lyrics', livePreferences.lyricsOpen);
+  document.querySelector<HTMLButtonElement>('button[aria-label="Toggle lyrics"], .media-tools button')?.setAttribute('aria-pressed', String(livePreferences.lyricsOpen));
+  setState(state);
+});
+
 isl.addEventListener('keydown', (e) => {
-  // Never intercept keys when user is typing inside an input element
   const target = e.target as HTMLElement | null;
   if (target && target.closest('input, textarea, select, [contenteditable=true], [role=slider]')) {
     return;
@@ -186,9 +187,11 @@ isl.addEventListener('keydown', (e) => {
 
   if (e.key === 'Enter' && state !== 'open') {
     e.preventDefault();
+    keyboardMode = true;
     setState('open');
   } else if (e.key === 'Escape') {
     e.preventDefault();
+    keyboardMode = false;
     setState('idle');
   } else if (state === 'open') {
     if (e.key === 'ArrowRight') {
@@ -217,6 +220,7 @@ isl.addEventListener(
 /* ================= Pages Navigation ================= */
 
 function showPage(n: number, dir = 1): void {
+  if (pages.length === 0) return;
   const focused = document.activeElement;
   const relocateFocus = state === 'open' && focused instanceof HTMLElement &&
     (pages[pageIndex]?.contains(focused) || $('dots').contains(focused));
@@ -249,6 +253,7 @@ function showPage(n: number, dir = 1): void {
 
   if (pageIndex === 0) {
     fitTitle();
+    renderMediaHeader();
   }
   if (relocateFocus) {
     const page = pages[pageIndex];
@@ -285,7 +290,35 @@ function formatMs(ms: number): string {
   const s = Math.max(0, Math.floor(ms / 1000));
   const m = Math.floor(s / 60);
   const sec = s % 60;
-  return `${m}:${String(sec).padStart(2, '0')}`;
+  return `${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
+}
+
+function formatMediaDate(d = new Date()): string {
+  const weekday = d.toLocaleDateString('en-GB', { weekday: 'short' });
+  const day = d.getDate();
+  const month = d.toLocaleDateString('en-GB', { month: 'short' });
+  const year = d.getFullYear();
+  return `${weekday} ${day} ${month} ${year}`;
+}
+
+function formatMediaTime(d = new Date()): string {
+  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+}
+
+function renderMediaHeader(): void {
+  const dateEl = document.getElementById('mediaDate');
+  const timeEl = document.getElementById('mediaTime');
+  const badgeEl = document.getElementById('mediaBattBadge');
+  const wavesEl = document.getElementById('mediaWaves');
+  const now = new Date();
+  if (dateEl) dateEl.textContent = formatMediaDate(now);
+  if (timeEl) timeEl.textContent = formatMediaTime(now);
+  if (badgeEl && !badgeEl.innerHTML) badgeEl.innerHTML = SVG_ICONS.bolt;
+  if (wavesEl && !wavesEl.innerHTML) wavesEl.innerHTML = SVG_ICONS.eq;
+}
+
+function formatIdleTime(now = new Date()): string {
+  return now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
 }
 
 function setAccentColor(rgb: { r: number; g: number; b: number } | null): void {
@@ -333,6 +366,7 @@ function renderMedia(): void {
     titleSpan.textContent = mediaState.active ? mediaState.title : 'Nothing playing';
   }
   $('artist').textContent = mediaState.active ? mediaState.artist : 'Play something in any app';
+  renderMediaHeader();
   applyArtwork();
   fitTitle();
 }
@@ -465,7 +499,19 @@ function renderCompact(): void {
     cl.innerHTML = actCompact.leftHtml;
     cc.textContent = state === 'peek' ? actCompact.centerText : '';
     cr.innerHTML = actCompact.rightHtml;
-  } else if (mediaState.active) {
+    return;
+  }
+
+  const showLyrics = livePreferences.compactContent === 'lyrics' && livePreferences.lyricsOpen && mediaState.active;
+
+  if (state === 'idle' && !showLyrics) {
+    cl.innerHTML = `<span class="battery-badge">${SVG_ICONS.bolt}</span>`;
+    cc.textContent = formatIdleTime();
+    cr.innerHTML = SVG_ICONS.eq;
+    return;
+  }
+
+  if (mediaState.active) {
     if (currentArtwork) {
       const miniArt = document.createElement('span');
       miniArt.className = 'mini-art';
@@ -475,9 +521,9 @@ function renderCompact(): void {
       cl.innerHTML = SVG_ICONS.note;
     }
     cc.textContent = livePreferences.compactContent === 'lyrics' ? live.compactLyric() || mediaState.title : mediaState.title;
-    cr.innerHTML = mediaState.playing ? '' : SVG_ICONS.pause;
+    cr.innerHTML = mediaState.playing ? SVG_ICONS.eq : SVG_ICONS.pause;
   } else {
-    cl.innerHTML = powerState.charging ? SVG_ICONS.bolt : '';
+    cl.innerHTML = `<span class="battery-badge">${SVG_ICONS.bolt}</span>`;
     cc.textContent = new Date().toLocaleDateString([], {
       weekday: 'short',
       day: 'numeric',
@@ -546,7 +592,8 @@ function renderPower(): void {
 
 setInterval(() => {
   renderToday();
-  if (!mediaState.active) renderCompact();
+  renderMediaHeader();
+  if (state !== 'open') renderCompact();
 }, 1000);
 
 /* ================= Live Activities ================= */
@@ -660,7 +707,7 @@ function renderUsage(): void {
     } else if (m.spentUsd != null) {
       val.textContent = `$${m.spentUsd.toFixed(2)}`;
     } else {
-      val.textContent = '—';
+      val.textContent = '\u2014';
     }
     row.appendChild(val);
 
@@ -697,7 +744,7 @@ function renderUsage(): void {
     }
 
     const partsSpan = document.createElement('span');
-    partsSpan.textContent = parts.join(' · ');
+    partsSpan.textContent = parts.join(' \u00b7 ');
     sub.appendChild(partsSpan);
 
     if (m.id === 'chatgpt') {
@@ -739,6 +786,8 @@ function setupQuickActions(): void {
   $('nextPage').innerHTML = SVG_ICONS.navRight;
   $('prev').innerHTML = SVG_ICONS.prev;
   $('next').innerHTML = SVG_ICONS.next;
+
+  renderMediaHeader();
 
   document.querySelectorAll<HTMLButtonElement>('.chip').forEach((chip) => {
     chip.onclick = (e) => {
@@ -814,7 +863,7 @@ if (!isTauri()) {
   // Add demo badge
   const demoBadge = document.createElement('div');
   demoBadge.className = 'demo-banner';
-  demoBadge.textContent = 'Browser Demo · Open Settings';
+  demoBadge.textContent = 'Browser Demo \u00b7 Open Settings';
   demoBadge.onclick = () => runAction(openSettingsCmd(), 'Open settings');
   document.body.appendChild(demoBadge);
 
@@ -850,23 +899,23 @@ if (!isTauri()) {
         stale: false,
       },
       {
-        id: 'claude-week',
+        id: 'claude-7d',
         provider: 'claude',
-        label: 'Claude weekly',
-        usedPct: 34,
+        label: 'Claude weekly (7 d)',
+        usedPct: 41,
         spentUsd: null,
-        resetsAt: Math.round(Date.now() / 1000 + 4 * 86400),
+        resetsAt: Math.round(Date.now() / 1000 + 86400 * 3),
         source: 'official',
         stale: false,
       },
       {
-        id: 'anthropic-api',
-        provider: 'anthropic-api',
-        label: 'Claude API',
-        usedPct: null,
-        spentUsd: 14.28,
-        resetsAt: null,
-        source: 'api',
+        id: 'codex-5h',
+        provider: 'openai',
+        label: 'Codex 5-hour window',
+        usedPct: 15,
+        spentUsd: null,
+        resetsAt: Math.round(Date.now() / 1000 + 3600 * 4),
+        source: 'official',
         stale: false,
       },
     ]);
@@ -887,11 +936,17 @@ void fetchUsageNow().then((initial) => {
 
 /* ================= Initialization ================= */
 
-setupQuickActions();
 setupActivitiesUI();
+setupQuickActions();
 showPage(0);
-renderMedia();
 renderToday();
 renderPower();
 renderUsage();
+renderMedia();
+renderCompact();
 setState('idle');
+
+// Refresh usage meters periodically
+setInterval(() => {
+  void fetchUsageNow();
+}, 60000);

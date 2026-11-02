@@ -1,6 +1,5 @@
 import { describe, expect, test } from 'bun:test';
 import { historyPath, lyricIndex, matchesLyricRequest, measuredPercent, normalizePreferences, parseLrc, TelemetryGate } from '../live-state';
-import { dueTodos, normalizeTodos } from '../todos';
 
 describe('live island state', () => {
   test('bounds saved geometry and delays while retaining explicit choices', () => {
@@ -19,11 +18,6 @@ describe('live island state', () => {
   test('unknown metrics stay unknown and histories have gaps', () => {
     expect(measuredPercent(null)).toBeNull(); expect(measuredPercent(NaN)).toBeNull(); expect(measuredPercent(140)).toBeNull();
     expect(measuredPercent(0)).toBe(0); expect(historyPath([30, null, 50])).toBe('M0.0,25.8  M180.0,19.0');
-  });
-  test('reminders ignore completed, already reminded and invalid persisted tasks', () => {
-    const todos = normalizeTodos([null, { id: 'a', text: '<not markup>', dueAt: 10 }, { id: 'b', text: 'Done', done: true, dueAt: 10 }, { id: 'c', text: 'Seen', reminded: true, dueAt: 10 }]);
-    expect(dueTodos(todos, 20).map(todo => todo.id)).toEqual(['a']);
-    expect(normalizeTodos({ id: 'corrupt' })).toEqual([]);
   });
   test('lyrics reject old A events after A to B to A and uncorrelated events', () => {
     const current = { trackId: 'A', requestId: 'second-A' };

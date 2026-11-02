@@ -75,7 +75,7 @@ try {
       if(command==='plugin:event|listen'){const ids=listeners.get(args.event)||[];ids.push(args.handler);listeners.set(args.event,ids);return ++serial;}
       if(command==='extension_snapshot')return structuredClone(state);
       if(command==='call_set_active'){state.call=args.active?{title:'Manual call timer',startedAt:Date.now()}:null;return;}
-      if(command==='shelf_pick'){state.shelf=[{id:'fixture-file',name:'sample.txt',path:'C:\\Fixture\\sample.txt',bytes:20}];return;}
+      if(command==='shelf_pick'){state.shelf=[{id:'fixture-file',name:'sample.txt',path:'C:\\\\Fixture\\\\sample.txt',bytes:20}];return;}
       if(command==='radio_set'){state.radios[0].state=args.enabled?'On':'Off';return;}
       if(command==='extension_settings')throw 'Activity settings could not be saved';
       if(command==='media_now')return {active:false,trackId:'',title:'',artist:'',playing:false,positionMs:0,durationMs:0,artwork:null};
@@ -88,6 +88,7 @@ try {
   });
   const native=await context.newPage();const nativeErrors=[];native.on('pageerror',error=>nativeErrors.push(error.message));
   await native.goto('http://tuck.test/');await native.waitForTimeout(100);
+  assert.equal(await native.locator('.page.todos').count(), 0, 'Todos feature must be completely removed');
   await native.evaluate(()=>window.__emitNative('open-island',null));
   for(let index=0;index<5;index++)await native.locator('#nextPage').click();
   assert.equal(await native.locator('.page.on').getAttribute('data-page'),'extensions');
@@ -142,18 +143,18 @@ try {
     }, width);
     const geometry = await native.evaluate(() => {
       const rect = selector => document.querySelector(selector).getBoundingClientRect();
-      const toolbar = rect('.media-tools'), details = rect('.page.media .now');
       const title = rect('#title'), lyrics = rect('.lyrics-pane');
-      const select = rect('.player-select'), toggle = rect('.media-tools button');
+      const toggle = rect('button[aria-label="Toggle lyrics"]');
       const controls = rect('.page.media .ctl'), page = rect('.page.media');
-      return {width: rect('#isl').width, toolbarClear: toolbar.bottom <= details.top,
-        titleClear: title.right + 12 <= lyrics.left, selectorClear: select.right + 8 <= toggle.left,
+      return {
+        width: rect('#isl').width,
+        titleClear: title.right + 12 <= lyrics.left,
+        togglePresent: toggle.width >= 12 && toggle.height >= 12,
         controlsFit: controls.bottom <= page.bottom + 1,
-        selectorSize: parseFloat(getComputedStyle(document.querySelector('.player-select')).fontSize)};
+      };
     });
     assert.equal(geometry.width, width);
-    assert.equal(geometry.toolbarClear && geometry.titleClear && geometry.selectorClear && geometry.controlsFit, true, `Media regions must fit at ${width}px`);
-    assert.ok(geometry.selectorSize >= 12);
+    assert.equal(geometry.titleClear && geometry.togglePresent && geometry.controlsFit, true, `Media regions must fit at ${width}px`);
     await native.screenshot({path:path.join(root,'artifacts',`island-unslop-${width}.png`)});
   }
   await native.evaluate(()=>{
@@ -205,3 +206,4 @@ try {
   assert.deepEqual(nativeErrors,[]);
   console.log('UI smoke passed: geometry, accessibility, keyboard seeking, timers, persistence errors, native-bridge call priority, shelf, focused radio updates, drag hold and previews.');
 } finally { await browser.close(); }
+

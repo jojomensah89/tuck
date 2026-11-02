@@ -1,4 +1,5 @@
 import { listenToEvent, mediaSeek, isTauri } from './ipc.js';
+import { SVG_ICONS } from './icons.js';
 import { nativeAction, nativeService, normalizeClipboard, normalizeDictation, normalizeTelemetry, type ClipboardSnapshot, type DictationSnapshot, type LyricsSnapshot, type MediaSession, type TelemetrySnapshot } from './live-services.js';
 import { historyPath, lyricIndex, matchesLyricRequest, measuredPercent, newRequestId, parseLrc, readPreferences, TelemetryGate, type LyricLine } from './live-state.js';
 import type { MediaState } from './types.js';
@@ -21,22 +22,29 @@ export function mountLivePages(onLayout: () => void): {
   compactLyric: () => string;
 } {
   const mediaPage = document.querySelector<HTMLElement>('.page.media')!;
+  const ctl = mediaPage.querySelector<HTMLElement>('.ctl')!;
   const toolbar = node('div', 'media-tools');
-  const select = node('select', 'player-select'); select.setAttribute('aria-label', 'Media player');
-  select.append(new Option('Auto player', ''));
   const message = node('p', 'live-note'); message.setAttribute('role', 'status');
   const lyricsPane = node('div', 'lyrics-pane'); lyricsPane.setAttribute('aria-label', 'Lyrics');
   const lyricList = node('div', 'lyric-lines');
   const lyricsStatus = node('p', 'lyrics-status', 'Enable online lyrics in Settings.');
-  const lyricToggle = button('Lyrics', () => {
-    mediaPage.classList.toggle('with-lyrics'); lyricToggle.setAttribute('aria-pressed', String(mediaPage.classList.contains('with-lyrics'))); onLayout();
-  });
+  const lyricToggle = node('button', 'lyrics-toggle-btn');
+  lyricToggle.type = 'button';
+  lyricToggle.setAttribute('aria-label', 'Toggle lyrics');
   lyricToggle.title = 'Show or hide lyrics';
-  toolbar.append(select, lyricToggle); mediaPage.append(toolbar, lyricsPane, message);
+  lyricToggle.innerHTML = SVG_ICONS.lyrics;
+  lyricToggle.onclick = e => {
+    e.stopPropagation();
+    mediaPage.classList.toggle('with-lyrics');
+    lyricToggle.setAttribute('aria-pressed', String(mediaPage.classList.contains('with-lyrics')));
+    onLayout();
+  };
+  toolbar.append(lyricToggle);
+  ctl.prepend(toolbar);
+  mediaPage.append(lyricsPane, message);
   lyricsPane.append(lyricsStatus, lyricList);
   mediaPage.classList.toggle('with-lyrics', readPreferences().lyricsOpen);
   lyricToggle.setAttribute('aria-pressed', String(readPreferences().lyricsOpen));
-  select.onchange = () => { select.title = select.selectedOptions[0]?.text || 'Auto player'; void act(nativeAction('media_select_session', { id: select.value }), message); };
   let currentTrack = '', generation = 0, lines: LyricLine[] = [], activeLine = -2;
   let currentRequestId = '';
   let latestMedia: MediaState | null = null;
@@ -44,18 +52,8 @@ export function mountLivePages(onLayout: () => void): {
   lyricList.addEventListener('wheel', e => { e.stopPropagation(); manualScrollUntil = Date.now() + 4000; }, { passive: true });
   async function sessions(): Promise<void> {
     try {
-      const list = await nativeService<MediaSession[]>('media_sessions');
-      if (!Array.isArray(list)) return;
-      const focused = document.activeElement === select;
-      if (focused) return;
-      select.replaceChildren(new Option('Auto player', ''));
-      select.disabled = false;
-      for (const session of list) {
-        if (typeof session.id !== 'string' || typeof session.name !== 'string') continue;
-        const option = new Option(session.name, session.id); option.selected = session.selected; select.append(option);
-      }
-      select.title = select.selectedOptions[0]?.text || 'Auto player';
-    } catch { select.disabled = true; select.title = 'Player selection is unavailable in this build'; }
+      await nativeService<MediaSession[]>('media_sessions');
+    } catch { /* native player sessions unavailable */ }
   }
   const updatePosition = (position: number) => {
     lastPosition = position;
@@ -76,13 +74,13 @@ export function mountLivePages(onLayout: () => void): {
     if (!snapshot || !matchesLyricRequest({ trackId: currentTrack, requestId: currentRequestId }, snapshot)) return;
     lines = snapshot.lines || parseLrc(snapshot.syncedLyrics || ''); activeLine = -2; currentLyric = ''; lyricList.replaceChildren();
     const statuses: Record<LyricsSnapshot['status'], string> = {
-      disabled: 'Enable online lyrics in Settings.', loading: 'Finding lyrics…', synced: '', plain: 'Lyrics · not synchronized',
+      disabled: 'Enable online lyrics in Settings.', loading: 'Finding lyrics\u2026', synced: '', plain: 'Lyrics \u00b7 not synchronized',
       instrumental: 'Instrumental', unavailable: 'No lyrics found for this track.', error: 'Lyrics unavailable. Check your connection and try another track.',
     };
     lyricsStatus.textContent = statuses[snapshot.status] ?? 'Lyrics unavailable.';
     if (lines.length) {
       for (const line of lines) {
-        const b = button(line.text || '♪', () => { void act(mediaSeek(line.atMs), message); });
+        const b = button(line.text || '\u266a', () => { void act(mediaSeek(line.atMs), message); });
         b.className = 'lyric-line'; b.title = 'Seek to this line'; lyricList.append(b);
       }
     } else if (snapshot.plainLyrics) {
@@ -94,7 +92,7 @@ export function mountLivePages(onLayout: () => void): {
     const request = ++generation;
     const requestId = newRequestId(); currentRequestId = state.active ? requestId : '';
     lines = []; currentLyric = ''; activeLine = -2; lyricList.replaceChildren();
-    lyricsStatus.textContent = state.active ? 'Finding lyrics…' : 'Play music to see lyrics.';
+    lyricsStatus.textContent = state.active ? 'Finding lyrics\u2026' : 'Play music to see lyrics.';
     if (!state.active) return;
     try {
       const data = await nativeService<LyricsSnapshot>('lyrics_lookup', {
@@ -120,7 +118,7 @@ export function mountLivePages(onLayout: () => void): {
       view = { row, value, path }; rowNodes.set(id, view);
     }
     const history = histories.get(id) || []; history.push(pct); if (history.length > 45) history.shift(); histories.set(id, history);
-    view.value.textContent = pct === null ? 'Unavailable' : `${Math.round(pct)}%${detail ? ` · ${detail}` : ''}`;
+    view.value.textContent = pct === null ? 'Unavailable' : `${Math.round(pct)}%${detail ? ` \u00b7 ${detail}` : ''}`;
     view.path.setAttribute('d', historyPath(history));
   }
   const bytes = (value: number) => `${(value / 1073741824).toFixed(1)} GB`;
@@ -130,7 +128,7 @@ export function mountLivePages(onLayout: () => void): {
     if (!telemetryGate.accept(sampled)) return;
     const stale = data.stale || !sampled || Date.now() - sampled > 10000;
     if (stale) { invalidateTelemetry('Stale / warming up'); return; }
-    statsStatus.textContent = stale ? 'Stale / warming up' : `Live · ${new Date(sampled).toLocaleTimeString()}`;
+    statsStatus.textContent = stale ? 'Stale / warming up' : `Live \u00b7 ${new Date(sampled).toLocaleTimeString()}`;
     metric('cpu', 'CPU', measuredPercent(data.cpuPct));
     const validRam = typeof data.ramUsedBytes === 'number' && typeof data.ramTotalBytes === 'number' && data.ramTotalBytes > 0 && data.ramUsedBytes >= 0;
     metric('ram', 'Memory', validRam ? measuredPercent(data.ramUsedBytes! / data.ramTotalBytes! * 100) : null, validRam ? `${bytes(data.ramUsedBytes!)} / ${bytes(data.ramTotalBytes!)}` : '');
@@ -159,7 +157,7 @@ export function mountLivePages(onLayout: () => void): {
   }
 
   const speech = makePage('dictation', 'Dictation');
-  const speechTitle = node('h2', '', 'Dictation'); const speechStatus = node('p', 'live-note', 'Offline · set up a model in Settings');
+  const speechTitle = node('h2', '', 'Dictation'); const speechStatus = node('p', 'live-note', 'Offline \u00b7 set up a model in Settings');
   const transcript = node('div', 'transcript', 'Your transcript appears here.'); transcript.setAttribute('role', 'status');
   const speechActions = node('div', 'live-actions');
   const record = button('Record', () => { void act(nativeAction('dictation_toggle'), speechStatus); });
@@ -171,8 +169,8 @@ export function mountLivePages(onLayout: () => void): {
   function dictation(data: DictationSnapshot): void {
     if (!data || typeof data.status !== 'string') return;
     dictationPhase = data.status;
-    speechStatus.textContent = data.error || `Offline · ${data.status}`;
-    transcript.textContent = data.transcript?.slice(0, 32000) || (data.status === 'recording' ? 'Listening…' : 'Your transcript appears here.');
+    speechStatus.textContent = data.error || `Offline \u00b7 ${data.status}`;
+    transcript.textContent = data.transcript?.slice(0, 32000) || (data.status === 'recording' ? 'Listening\u2026' : 'Your transcript appears here.');
     insert.disabled = data.status !== 'review' || data.canInsert === false; stop.disabled = data.status !== 'recording';
     record.disabled = !['idle', 'recording', 'review', 'error'].includes(data.status) || data.modelReady === false;
     record.textContent = data.status === 'recording' ? 'Finish recording' : 'Record';
@@ -189,7 +187,7 @@ export function mountLivePages(onLayout: () => void): {
   let clipboardSignature = '';
   function renderClipboard(data: ClipboardSnapshot): void {
     if (!data || !Array.isArray(data.items)) return;
-    clipboardStatus.textContent = data.enabled ? (data.items.length ? 'Select to copy · pins stay at the top' : 'Nothing copied yet.') : 'Enable clipboard history in Settings.';
+    clipboardStatus.textContent = data.enabled ? (data.items.length ? 'Select to copy \u00b7 pins stay at the top' : 'Nothing copied yet.') : 'Enable clipboard history in Settings.';
     const signature = JSON.stringify(data.items);
     if (signature === clipboardSignature) return; clipboardSignature = signature;
     const focus = (document.activeElement as HTMLElement)?.dataset.focus;
@@ -220,7 +218,7 @@ export function mountLivePages(onLayout: () => void): {
   function audio(data: { bands: number[]; active?: boolean }): void {
     if (!data || !Array.isArray(data.bands)) return;
     lastAudio = Date.now();
-    audioStatus.textContent = data.active === false ? 'Silence · no audio stored' : 'Live playback spectrum · no audio stored';
+    audioStatus.textContent = data.active === false ? 'Silence \u00b7 no audio stored' : 'Live playback spectrum \u00b7 no audio stored';
     for (const group of [bars, wideBars]) group.forEach((bar, i) => {
       const source = i * Math.max(0, data.bands.length - 1) / (group.length - 1);
       const low = data.bands[Math.floor(source)] || 0, high = data.bands[Math.ceil(source)] || 0;
@@ -261,4 +259,3 @@ export function mountLivePages(onLayout: () => void): {
     position: updatePosition, compactLyric: () => currentLyric,
   };
 }
-

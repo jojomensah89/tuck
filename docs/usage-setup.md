@@ -57,9 +57,9 @@ Admin API keys are write-only secrets managed by the Windows Credential Manager:
 * **Write-Only Security Policy**:
   * Secrets are never logged, serialized to files, or returned over Tauri IPC commands.
   * Setting an empty string or whitespace deletes the stored credential from the Windows Credential Manager.
-  * Any secret name outside the allowlist is rejected with a validation error.
+  * Any secret name outside the allowlist is rejected with a generic validation error without echoing the input.
 * **Error Sanitization**:
-  * All error strings returned by API requests or keyring operations are scrubbed through `sanitize_error` to strip `sk-ant-admin*`, `sk-admin-*`, generic `sk-*`, and `Bearer *` authorization tokens.
+  * All error strings returned by API requests or keyring operations are scrubbed through `sanitize_error` to strip `sk-ant-admin*`, `sk-admin-*`, generic `sk-*`, `Bearer *`, and `x-api-key:*` authorization tokens without panicking on multi-byte UTF-8 or localized text.
 
 ---
 
@@ -76,7 +76,7 @@ export interface Meter {
   spentUsd?: number;      // Month-to-date spending in USD for pay-per-token APIs
   resetsAt?: number;      // Unix timestamp (seconds)
   source: string;         // "official" | "api"
-  stale: boolean;         // true if >600s old or refresh failed
+  stale: bool;            // true if >600s old or refresh failed
   status?: string;        // "ok" | "stale" | "unavailable" | "error" | "unconfigured"
   error?: string;         // Redacted error message if applicable
 }
@@ -88,7 +88,7 @@ export interface Meter {
 
 ### Frontend Ownership
 * **Budgets**: User budget thresholds and alerts are managed entirely on the frontend.
-* **Subscriptions & Estimates**: Fixed monthly subscription costs (e.g. Claude Pro/Max $20/mo, ChatGPT Plus $20/mo) and manual ChatGPT estimates belong to the frontend layer.
+* **Subscriptions & Estimates**: Subscription costs are separate from API spending. ChatGPT counts are user-configured manual estimates.
 
 ---
 
@@ -98,17 +98,16 @@ Tuck ships a PowerShell statusline forwarder at `scripts/tuck-statusline.ps1`.
 
 ### Setup Steps:
 1. Ensure the target directory `%APPDATA%\Tuck` exists (the script creates it automatically if missing).
-2. Configure Claude Code to use the Tuck statusline script by updating `~/.claude/config.json`:
+2. Configure Claude Code to use the Tuck statusline script by updating `~/.claude/settings.json`:
    ```json
    {
-     "statusLine": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"C:\\path\\to\\tuck\\scripts\\tuck-statusline.ps1\""
+     "statusLine": {
+       "type": "command",
+       "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"C:\\path\\to\\tuck\\scripts\\tuck-statusline.ps1\""
+     }
    }
    ```
-   Alternatively, run:
-   ```powershell
-   claude config set statusLine 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\path\to\tuck\scripts\tuck-statusline.ps1"'
-   ```
-3. Whenever Claude Code runs a session, it pipes its JSON payload to the script, which saves it to `%APPDATA%\Tuck\claude-status.json` and outputs `Tuck`.
+3. Whenever Claude Code runs a session, it pipes its JSON payload to the script, which atomically saves it to `%APPDATA%\Tuck\claude-status.json` and outputs `Tuck`.
 4. Tuck also checks the legacy guide fallback path `%APPDATA%\Notch\claude-status.json` if the Tuck directory is not yet present.
 
 ---
@@ -146,3 +145,11 @@ reqwest = { version = "0.12", default-features = false, features = ["blocking", 
        Ok(())
    })
    ```
+
+## Review corrections and validation
+
+After independent review, the cache snapshot became memory-only. Keyring and HTTP calls execute outside its mutex; credential edits clear cached spending and increment a generation so in-flight old-key requests cannot overwrite the new state. UTC month changes hide old totals. Request query parameters are encoded, redirects disabled, each provider fetch limited to 30 seconds total, each response capped at 5 MB, and malformed/missing amounts, currencies or pagination fail explicitly. Valid empty results can report zero; malformed results cannot.
+
+Raw external error details are withheld rather than passed through a best-effort token sanitizer. The statusline forwarder uses an atomic unique temporary-file replacement and leaves the existing file intact on a failed replacement.
+
+Coordinator validation: 16 usage unit tests plus 10 native tests pass against the wired Windows application. Formatting and Clippy pass. No real provider credentials or organization billing responses were used for validation.

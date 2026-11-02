@@ -7,13 +7,18 @@
 //!
 //! Credentials are stored exclusively in the Windows Credential Manager under the `tuck` service.
 
-use chrono::{Datelike, SecondsFormat, Timelike, Utc};
+use chrono::{Datelike, SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
+    collections::HashSet,
+    io::Read,
     path::PathBuf,
-    sync::{Arc, Mutex, OnceLock},
-    time::{Duration, SystemTime},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex, OnceLock,
+    },
+    time::{Duration, Instant, SystemTime},
 };
 use tauri::{AppHandle, Emitter, Runtime};
 
@@ -90,86 +95,12 @@ pub fn is_allowed_secret_name(name: &str) -> bool {
 
 /// Sanitizes error messages to prevent accidental leakage of API keys or auth tokens.
 pub fn sanitize_error(input: &str) -> String {
-    let mut words: Vec<String> = Vec::new();
-
-    for line in input.lines() {
-        let mut line_out = String::new();
-        let bytes = line.as_bytes();
-        let mut i = 0;
-        while i < bytes.len() {
-            // Check for Bearer token
-            if line[i..].starts_with("Bearer ") {
-                line_out.push_str("Bearer [REDACTED]");
-                i += 7;
-                while i < bytes.len() && !bytes[i].is_ascii_whitespace() && bytes[i] != b'"' && bytes[i] != b'\'' {
-                    i += 1;
-                }
-                continue;
-            }
-
-            // Check for x-api-key header
-            let remaining = &line[i..];
-            if remaining.len() >= 10 && remaining[..10].eq_ignore_ascii_case("x-api-key:") {
-                line_out.push_str("x-api-key: [REDACTED]");
-                i += 10;
-                while i < bytes.len() && bytes[i].is_ascii_whitespace() {
-                    i += 1;
-                }
-                while i < bytes.len() && !bytes[i].is_ascii_whitespace() && bytes[i] != b'"' && bytes[i] != b'\'' && bytes[i] != b',' {
-                    i += 1;
-                }
-                continue;
-            }
-
-            // Check for sk-ant-admin
-            if remaining.starts_with("sk-ant-admin") {
-                line_out.push_str("sk-ant-admin[REDACTED]");
-                i += 12;
-                while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'-' || bytes[i] == b'_') {
-                    i += 1;
-                }
-                continue;
-            }
-
-            // Check for sk-admin-
-            if remaining.starts_with("sk-admin-") {
-                line_out.push_str("sk-admin-[REDACTED]");
-                i += 9;
-                while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'-' || bytes[i] == b'_') {
-                    i += 1;
-                }
-                continue;
-            }
-
-            // Check for generic sk-
-            if remaining.starts_with("sk-") {
-                let start = i;
-                let mut end = i + 3;
-                while end < bytes.len() && (bytes[end].is_ascii_alphanumeric() || bytes[end] == b'-' || bytes[end] == b'_') {
-                    end += 1;
-                }
-                if end - start >= 12 {
-                    line_out.push_str("sk-[REDACTED]");
-                    i = end;
-                    continue;
-                }
-            }
-
-            // Safe UTF-8 character consumption
-            if let Some(ch) = remaining.chars().next() {
-                line_out.push(ch);
-                i += ch.len_utf8();
-            } else {
-                break;
-            }
-        }
-        words.push(line_out);
-    }
-
+    // Raw OS/network/provider error strings can contain credentials or PII.
+    // Expose a fixed diagnostic instead of attempting lossy token matching.
     if input.is_empty() {
         String::new()
     } else {
-        words.join("\n")
+        "Provider operation failed; details withheld to protect credentials".into()
     }
 }
 
@@ -203,13 +134,10 @@ pub fn get_secret(name: &str) -> Option<String> {
 /// An empty or whitespace-only value explicitly deletes the stored credential.
 /// Frontend can pass empty string to delete or non-empty string to update.
 #[tauri::command]
-pub fn set_secret(name: String, value: String) -> Result<(), String> {
+fn set_secret_blocking(name: String, value: String) -> Result<(), String> {
     let name_trimmed = name.trim();
     if !is_allowed_secret_name(name_trimmed) {
-        return Err(format!(
-            "Secret '{}' is not permitted. Only 'anthropic-admin' and 'openai-admin' are allowed.",
-            name_trimmed
-        ));
+        return Err("Credential name is not allowed".into());
     }
 
     let entry = keyring::Entry::new(KEYRING_SERVICE, name_trimmed)
@@ -220,11 +148,11 @@ pub fn set_secret(name: String, value: String) -> Result<(), String> {
         // Explicit deletion
         match entry.delete_credential() {
             Ok(()) => {
-                invalidate_api_slot(name_trimmed);
+                invalidate_api_slot(name_trimmed, false);
                 Ok(())
             }
             Err(keyring::Error::NoEntry) => {
-                invalidate_api_slot(name_trimmed);
+                invalidate_api_slot(name_trimmed, false);
                 Ok(())
             }
             Err(e) => Err(format!(
@@ -236,9 +164,16 @@ pub fn set_secret(name: String, value: String) -> Result<(), String> {
         entry
             .set_password(val_trimmed)
             .map_err(|e| format!("Keyring save error: {}", sanitize_error(&e.to_string())))?;
-        invalidate_api_slot(name_trimmed);
+        invalidate_api_slot(name_trimmed, true);
         Ok(())
     }
+}
+
+#[tauri::command]
+pub async fn set_secret(name: String, value: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || set_secret_blocking(name, value))
+        .await
+        .map_err(|_| "Credential worker failed".to_string())?
 }
 
 // ============================================================================
@@ -275,7 +210,7 @@ pub fn parse_unix_timestamp(v: &Value) -> Option<i64> {
 pub fn extract_percentage(val: Option<&Value>) -> Option<f64> {
     let v = val?;
     let num = v.as_f64()?;
-    if num.is_finite() && !num.is_nan() {
+    if num.is_finite() && (0.0..=100.0).contains(&num) {
         Some(num)
     } else {
         None
@@ -365,7 +300,8 @@ pub fn parse_claude_status_content(
             out
         }
         Err(err) => {
-            let err_msg = format!("Malformed JSON in status file: {}", err);
+            let _ = err;
+            let err_msg = "Malformed JSON in status file".to_string();
             vec![
                 Meter {
                     id: "claude-5h".to_string(),
@@ -401,11 +337,15 @@ pub fn parse_claude_status_content(
 /// 2. Guide fallback: `%APPDATA%\Notch\claude-status.json`
 pub fn resolve_claude_status_path() -> (Option<PathBuf>, bool) {
     if let Some(appdata) = std::env::var_os("APPDATA") {
-        let tuck_path = PathBuf::from(&appdata).join("Tuck").join("claude-status.json");
+        let tuck_path = PathBuf::from(&appdata)
+            .join("Tuck")
+            .join("claude-status.json");
         if tuck_path.exists() {
             return (Some(tuck_path), true);
         }
-        let notch_path = PathBuf::from(&appdata).join("Notch").join("claude-status.json");
+        let notch_path = PathBuf::from(&appdata)
+            .join("Notch")
+            .join("claude-status.json");
         if notch_path.exists() {
             return (Some(notch_path), true);
         }
@@ -437,9 +377,16 @@ pub fn claude_meters() -> Vec<Meter> {
     }
 
     let modified = meta.modified().ok();
-    let bytes = match std::fs::read(&path) {
-        Ok(b) => b,
-        Err(e) => return unavailable_claude_meters(&format!("Unable to read status file: {}", e)),
+    let bytes = (|| -> std::io::Result<Vec<u8>> {
+        let mut bytes = Vec::new();
+        std::fs::File::open(&path)?
+            .take(MAX_STATUS_FILE_BYTES + 1)
+            .read_to_end(&mut bytes)?;
+        Ok(bytes)
+    })();
+    let bytes = match bytes {
+        Ok(bytes) if bytes.len() as u64 <= MAX_STATUS_FILE_BYTES => bytes,
+        _ => return unavailable_claude_meters("Status file unavailable or exceeds size limit"),
     };
 
     parse_claude_status_content(&bytes, modified)
@@ -484,102 +431,68 @@ fn unavailable_claude_meters(reason: &str) -> Vec<Meter> {
 /// as a decimal string (e.g. `"1250.50"`). This function parses and converts to USD (`cents / 100.0`).
 ///
 /// Returns `(page_usd, has_more, next_page_cursor)`.
-pub fn parse_anthropic_cost_page(json: &Value) -> Result<(f64, bool, Option<String>), String> {
-    let data = json
+pub fn parse_anthropic_cost_page(v: &Value) -> Result<(f64, bool, Option<String>), String> {
+    parse_cost_page(v, true)
+}
+pub fn parse_openai_costs_page(v: &Value) -> Result<(f64, bool, Option<String>), String> {
+    parse_cost_page(v, false)
+}
+fn parse_cost_page(v: &Value, anthropic: bool) -> Result<(f64, bool, Option<String>), String> {
+    let data = v
         .get("data")
         .and_then(Value::as_array)
-        .ok_or_else(|| "Missing or invalid 'data' array in Anthropic response".to_string())?;
-
-    let mut page_cents = 0.0;
+        .ok_or("Cost response missing data")?;
+    let more = v
+        .get("has_more")
+        .and_then(Value::as_bool)
+        .ok_or("Cost response missing pagination state")?;
+    let cursor = v
+        .get("next_page")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned);
+    if more && cursor.is_none() {
+        return Err("Cost response missing next cursor".into());
+    }
+    let mut total = 0.0;
     for bucket in data {
-        if let Some(results) = bucket.get("results").and_then(Value::as_array) {
-            for item in results {
-                let amount_cents = if let Some(s) = item.get("amount").and_then(Value::as_str) {
-                    s.parse::<f64>()
-                        .map_err(|e| format!("Invalid amount decimal: {}", e))?
-                } else if let Some(n) = item.get("amount").and_then(Value::as_f64) {
-                    n
-                } else {
-                    continue;
-                };
-
-                if !amount_cents.is_finite() || amount_cents.is_nan() {
-                    return Err("Non-finite amount encountered in Anthropic response".to_string());
-                }
-
-                page_cents += amount_cents;
+        let results = bucket
+            .get("results")
+            .and_then(Value::as_array)
+            .ok_or("Cost response missing results")?;
+        for item in results {
+            let amount = item.get("amount").ok_or("Cost item missing amount")?;
+            let currency = if anthropic {
+                item.get("currency")
+            } else {
+                amount.get("currency")
+            }
+            .and_then(Value::as_str)
+            .ok_or("Cost item missing currency")?;
+            if !currency.eq_ignore_ascii_case("usd") {
+                return Err("Unsupported billing currency".into());
+            }
+            let raw = if anthropic {
+                amount
+            } else {
+                amount.get("value").ok_or("Cost item missing value")?
+            };
+            let value = raw
+                .as_f64()
+                .or_else(|| raw.as_str().and_then(|s| s.parse::<f64>().ok()))
+                .ok_or("Invalid cost amount")?;
+            if !value.is_finite() {
+                return Err("Invalid cost amount".into());
+            }
+            // Negative credits are legitimate billing adjustments.
+            total += if anthropic { value / 100.0 } else { value };
+            if !total.is_finite() {
+                return Err("Cost total out of range".into());
             }
         }
     }
-
-    let has_more = json
-        .get("has_more")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-    let next_page = json
-        .get("next_page")
-        .and_then(Value::as_str)
-        .filter(|s| !s.trim().is_empty())
-        .map(|s| s.to_string());
-
-    let page_usd = page_cents / 100.0;
-    Ok((page_usd, has_more, next_page))
+    Ok((total, more, cursor))
 }
-
-/// Parses a single page from the OpenAI Organization Costs endpoint.
-///
-/// In OpenAI's official `organization/costs` API, `amount.value` is reported in **USD dollars**.
-///
-/// Returns `(page_usd, has_more, next_page_cursor)`.
-pub fn parse_openai_costs_page(json: &Value) -> Result<(f64, bool, Option<String>), String> {
-    let data = json
-        .get("data")
-        .and_then(Value::as_array)
-        .ok_or_else(|| "Missing or invalid 'data' array in OpenAI response".to_string())?;
-
-    let mut page_usd = 0.0;
-    for bucket in data {
-        if let Some(results) = bucket.get("results").and_then(Value::as_array) {
-            for item in results {
-                let amount_obj = item.get("amount");
-                let val = if let Some(n) =
-                    amount_obj.and_then(|a| a.get("value")).and_then(Value::as_f64)
-                {
-                    n
-                } else if let Some(s) =
-                    amount_obj.and_then(|a| a.get("value")).and_then(Value::as_str)
-                {
-                    s.parse::<f64>()
-                        .map_err(|e| format!("Invalid amount value string: {}", e))?
-                } else {
-                    continue;
-                };
-
-                if !val.is_finite() || val.is_nan() {
-                    return Err("Non-finite amount encountered in OpenAI response".to_string());
-                }
-
-                page_usd += val;
-            }
-        }
-    }
-
-    let has_more = json
-        .get("has_more")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-    let next_page = json
-        .get("next_page")
-        .and_then(Value::as_str)
-        .filter(|s| !s.trim().is_empty())
-        .map(|s| s.to_string());
-
-    Ok((page_usd, has_more, next_page))
-}
-
-// ============================================================================
-// UTC Month Calculations
-// ============================================================================
 
 /// Returns 00:00:00 UTC on the 1st of the current month.
 pub fn current_month_start_utc() -> chrono::DateTime<Utc> {
@@ -610,104 +523,101 @@ pub fn next_month_start_utc() -> chrono::DateTime<Utc> {
 // Network Fetchers
 // ============================================================================
 
-fn http_client() -> reqwest::blocking::Client {
+fn http_client() -> Result<reqwest::blocking::Client, String> {
     reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(HTTP_TIMEOUT_SECS))
+        .timeout(Duration::from_secs(15))
+        .redirect(reqwest::redirect::Policy::none())
         .build()
-        .unwrap_or_else(|_| reqwest::blocking::Client::new())
+        .map_err(|_| "HTTP initialization failed".into())
 }
-
-/// Fetches month-to-date spend from Anthropic Admin API with pagination.
-fn fetch_anthropic_spend(client: &reqwest::blocking::Client, key: &str) -> Result<f64, String> {
-    let starting_at = current_month_start_utc().to_rfc3339_opts(SecondsFormat::Secs, true);
-    let mut total_usd = 0.0;
-    let mut page_cursor: Option<String> = None;
-    let mut page_count = 0;
-
-    loop {
-        page_count += 1;
-        if page_count > MAX_PAGINATION_PAGES {
-            return Err("Pagination limit reached for Anthropic cost report".to_string());
-        }
-
-        let mut url = format!(
-            "https://api.anthropic.com/v1/organizations/cost_report?starting_at={}&bucket_width=1d&limit=31",
-            starting_at
-        );
-        if let Some(cursor) = &page_cursor {
-            url.push_str("&page=");
-            url.push_str(cursor);
-        }
-
-        let resp = client
-            .get(&url)
-            .header("x-api-key", key)
-            .header("anthropic-version", "2023-06-01")
-            .send()
-            .map_err(|e| sanitize_error(&e.to_string()))?;
-
-        if !resp.status().is_success() {
-            return Err(format!("Anthropic API returned status {}", resp.status()));
-        }
-
-        let val: Value = resp.json().map_err(|e| sanitize_error(&e.to_string()))?;
-        let (page_usd, has_more, next_cursor) = parse_anthropic_cost_page(&val)?;
-        total_usd += page_usd;
-
-        if has_more && next_cursor.is_some() {
-            page_cursor = next_cursor;
+fn fetch_spend(
+    client: &reqwest::blocking::Client,
+    key: &str,
+    anthropic: bool,
+) -> Result<f64, String> {
+    let month = current_month_start_utc();
+    let endpoint = if anthropic {
+        "https://api.anthropic.com/v1/organizations/cost_report"
+    } else {
+        "https://api.openai.com/v1/organization/costs"
+    };
+    let mut query = vec![
+        ("bucket_width", "1d".to_string()),
+        ("limit", "31".to_string()),
+    ];
+    query.push((
+        if anthropic {
+            "starting_at"
         } else {
-            break;
-        }
-    }
-
-    Ok(total_usd)
-}
-
-/// Fetches month-to-date spend from OpenAI Organization Costs API with pagination.
-fn fetch_openai_spend(client: &reqwest::blocking::Client, key: &str) -> Result<f64, String> {
-    let start_time = current_month_start_utc().timestamp();
-    let mut total_usd = 0.0;
-    let mut page_cursor: Option<String> = None;
-    let mut page_count = 0;
-
-    loop {
-        page_count += 1;
-        if page_count > MAX_PAGINATION_PAGES {
-            return Err("Pagination limit reached for OpenAI organization costs".to_string());
-        }
-
-        let mut url = format!(
-            "https://api.openai.com/v1/organization/costs?start_time={}&bucket_width=1d&limit=31",
-            start_time
-        );
-        if let Some(cursor) = &page_cursor {
-            url.push_str("&page=");
-            url.push_str(cursor);
-        }
-
-        let resp = client
-            .get(&url)
-            .bearer_auth(key)
-            .send()
-            .map_err(|e| sanitize_error(&e.to_string()))?;
-
-        if !resp.status().is_success() {
-            return Err(format!("OpenAI API returned status {}", resp.status()));
-        }
-
-        let val: Value = resp.json().map_err(|e| sanitize_error(&e.to_string()))?;
-        let (page_usd, has_more, next_cursor) = parse_openai_costs_page(&val)?;
-        total_usd += page_usd;
-
-        if has_more && next_cursor.is_some() {
-            page_cursor = next_cursor;
+            "start_time"
+        },
+        if anthropic {
+            month.to_rfc3339_opts(SecondsFormat::Secs, true)
         } else {
-            break;
+            month.timestamp().to_string()
+        },
+    ));
+    query.push((
+        if anthropic { "ending_at" } else { "end_time" },
+        if anthropic {
+            Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true)
+        } else {
+            Utc::now().timestamp().to_string()
+        },
+    ));
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut seen = HashSet::new();
+    let mut cursor = None;
+    let mut total = 0.0;
+    for _ in 0..MAX_PAGINATION_PAGES {
+        let remaining = deadline
+            .checked_duration_since(Instant::now())
+            .ok_or("Cost request timed out")?;
+        let mut request = client
+            .get(endpoint)
+            .query(&query)
+            .timeout(remaining.min(Duration::from_secs(15)));
+        if let Some(ref page) = cursor {
+            request = request.query(&[("page", page)]);
         }
+        request = if anthropic {
+            request
+                .header("x-api-key", key)
+                .header("anthropic-version", "2023-06-01")
+        } else {
+            request.bearer_auth(key)
+        };
+        let response = request.send().map_err(|_| "Provider request failed")?;
+        if !response.status().is_success() {
+            return Err(format!(
+                "Provider returned HTTP {}",
+                response.status().as_u16()
+            ));
+        }
+        let mut body = Vec::new();
+        response
+            .take(5 * 1024 * 1024 + 1)
+            .read_to_end(&mut body)
+            .map_err(|_| "Provider response read failed")?;
+        if body.len() > 5 * 1024 * 1024 {
+            return Err("Provider response too large".into());
+        }
+        let json: Value = serde_json::from_slice(&body).map_err(|_| "Invalid provider response")?;
+        let (amount, more, next) = parse_cost_page(&json, anthropic)?;
+        total += amount;
+        if !total.is_finite() {
+            return Err("Cost total out of range".into());
+        }
+        if !more {
+            return Ok(total);
+        }
+        let next = next.ok_or("Missing pagination cursor")?;
+        if !seen.insert(next.clone()) {
+            return Err("Repeated pagination cursor".into());
+        }
+        cursor = Some(next);
     }
-
-    Ok(total_usd)
+    Err("Cost pagination limit exceeded".into())
 }
 
 // ============================================================================
@@ -716,190 +626,170 @@ fn fetch_openai_spend(client: &reqwest::blocking::Client, key: &str) -> Result<f
 
 #[derive(Debug, Default, Clone)]
 struct ApiSlot {
+    configured: bool,
+    generation: u64,
+    month: i64,
     last_success_usd: Option<f64>,
     last_error: Option<String>,
     stale: bool,
 }
-
 #[derive(Debug, Default)]
 struct SharedState {
     claude: Vec<Meter>,
     anthropic: ApiSlot,
     openai: ApiSlot,
 }
-
 static CACHE: OnceLock<Arc<Mutex<SharedState>>> = OnceLock::new();
-
+static REFRESH: AtomicBool = AtomicBool::new(true);
 fn get_cache() -> &'static Arc<Mutex<SharedState>> {
     CACHE.get_or_init(|| Arc::new(Mutex::new(SharedState::default())))
 }
-
-fn invalidate_api_slot(name: &str) {
+fn invalidate_api_slot(name: &str, configured: bool) {
     if let Ok(mut state) = get_cache().lock() {
-        if name == "anthropic-admin" {
-            state.anthropic.last_error = None;
-            state.anthropic.stale = true;
-        } else if name == "openai-admin" {
-            state.openai.last_error = None;
-            state.openai.stale = true;
-        }
-    }
-}
-
-fn build_api_meter(
-    id: &str,
-    provider: &str,
-    label: &str,
-    secret_key_name: &str,
-    slot: &ApiSlot,
-    resets_at: i64,
-) -> Meter {
-    let has_key = get_secret(secret_key_name).is_some();
-    if !has_key {
-        return Meter {
-            id: id.to_string(),
-            provider: provider.to_string(),
-            label: label.to_string(),
-            used_pct: None,
-            spent_usd: None,
-            resets_at: Some(resets_at),
-            source: "api".to_string(),
+        let slot = if name == "anthropic-admin" {
+            &mut state.anthropic
+        } else {
+            &mut state.openai
+        };
+        *slot = ApiSlot {
+            configured,
+            generation: slot.generation.wrapping_add(1),
             stale: true,
-            status: Some("unconfigured".to_string()),
-            error: None,
+            ..Default::default()
         };
     }
-
-    let status = if slot.last_error.is_some() {
-        Some("error".to_string())
-    } else if slot.stale {
-        Some("stale".to_string())
-    } else {
-        Some("ok".to_string())
-    };
-
+    REFRESH.store(true, Ordering::Relaxed);
+}
+fn build_api_meter(id: &str, label: &str, slot: &ApiSlot, month: i64, reset: i64) -> Meter {
+    let current = slot.month == month;
     Meter {
-        id: id.to_string(),
-        provider: provider.to_string(),
-        label: label.to_string(),
+        id: id.into(),
+        provider: id.into(),
+        label: label.into(),
         used_pct: None,
-        spent_usd: slot.last_success_usd,
-        resets_at: Some(resets_at),
-        source: "api".to_string(),
-        stale: slot.stale,
-        status,
+        spent_usd: if current { slot.last_success_usd } else { None },
+        resets_at: Some(reset),
+        source: "api".into(),
+        stale: !current || slot.stale,
+        status: Some(
+            if !slot.configured {
+                "unconfigured"
+            } else if slot.last_error.is_some() {
+                "error"
+            } else if !current || slot.stale || slot.last_success_usd.is_none() {
+                "stale"
+            } else {
+                "ok"
+            }
+            .into(),
+        ),
         error: slot.last_error.clone(),
     }
 }
-
-/// Generates a non-blocking cached snapshot of all usage meters.
 pub fn current_snapshot() -> Vec<Meter> {
-    let reset_timestamp = next_month_start_utc().timestamp();
-    let state = get_cache().lock().unwrap();
-
+    let month = current_month_start_utc().timestamp();
+    let reset = next_month_start_utc().timestamp();
+    let state = get_cache().lock().unwrap_or_else(|p| p.into_inner());
     let mut meters = if state.claude.is_empty() {
-        claude_meters()
+        parse_claude_status_content(b"{}", None)
     } else {
         state.claude.clone()
     };
-
     meters.push(build_api_meter(
-        "anthropic-api",
         "anthropic-api",
         "Claude API",
-        "anthropic-admin",
         &state.anthropic,
-        reset_timestamp,
+        month,
+        reset,
     ));
-
     meters.push(build_api_meter(
         "openai-api",
-        "openai-api",
         "OpenAI API",
-        "openai-admin",
         &state.openai,
-        reset_timestamp,
+        month,
+        reset,
     ));
-
     meters
 }
-
-/// Public Tauri command returning a fast, non-blocking cached snapshot of AI meters.
 #[tauri::command]
-pub async fn usage_now() -> Vec<Meter> {
+pub fn usage_now() -> Vec<Meter> {
     current_snapshot()
 }
-
-/// Starts the background usage polling service.
-///
-/// Spawns a background thread that periodically refreshes:
-/// - Local Claude statusline file (every 60 seconds)
-/// - Configured remote APIs (every 10 minutes)
-///
-/// Emits `"usage"` events to Tauri listeners on every tick.
+fn commit_result(
+    slot: &mut ApiSlot,
+    generation: u64,
+    month: i64,
+    configured: bool,
+    result: Result<f64, String>,
+) {
+    if slot.generation != generation {
+        return;
+    }
+    if slot.month != month {
+        slot.last_success_usd = None;
+    }
+    slot.month = month;
+    slot.configured = configured;
+    slot.stale = true;
+    match result {
+        Ok(value) => {
+            slot.last_success_usd = Some(value);
+            slot.last_error = None;
+            slot.stale = false;
+        }
+        Err(error) => {
+            slot.last_error = if configured { Some(error) } else { None };
+            if !configured {
+                slot.last_success_usd = None;
+            }
+        }
+    }
+}
 pub fn start<R: Runtime>(app: AppHandle<R>) {
     std::thread::spawn(move || {
         let client = http_client();
-        let mut tick: u32 = 0;
-
+        let mut last_file = Instant::now() - Duration::from_secs(60);
+        let mut last_api = Instant::now() - Duration::from_secs(600);
+        let mut last_month = 0;
         loop {
-            let claude = claude_meters();
-            let check_apis = tick % 10 == 0;
-
-            {
-                let mut state = get_cache().lock().unwrap();
-                state.claude = claude;
-
-                if check_apis {
-                    // Anthropic
-                    if let Some(key) = get_secret("anthropic-admin") {
-                        match fetch_anthropic_spend(&client, &key) {
-                            Ok(usd) => {
-                                state.anthropic.last_success_usd = Some(usd);
-                                state.anthropic.last_error = None;
-                                state.anthropic.stale = false;
-                            }
-                            Err(e) => {
-                                state.anthropic.last_error = Some(e);
-                                state.anthropic.stale = true;
-                            }
-                        }
-                    } else {
-                        state.anthropic = ApiSlot {
-                            last_success_usd: None,
-                            last_error: None,
-                            stale: true,
-                        };
-                    }
-
-                    // OpenAI
-                    if let Some(key) = get_secret("openai-admin") {
-                        match fetch_openai_spend(&client, &key) {
-                            Ok(usd) => {
-                                state.openai.last_success_usd = Some(usd);
-                                state.openai.last_error = None;
-                                state.openai.stale = false;
-                            }
-                            Err(e) => {
-                                state.openai.last_error = Some(e);
-                                state.openai.stale = true;
-                            }
-                        }
-                    } else {
-                        state.openai = ApiSlot {
-                            last_success_usd: None,
-                            last_error: None,
-                            stale: true,
-                        };
-                    }
-                }
+            if last_file.elapsed() >= Duration::from_secs(60) {
+                let claude = claude_meters();
+                get_cache().lock().unwrap_or_else(|p| p.into_inner()).claude = claude;
+                last_file = Instant::now();
             }
-
-            let snapshot = current_snapshot();
-            let _ = app.emit("usage", snapshot);
-
-            tick = tick.wrapping_add(1);
-            std::thread::sleep(Duration::from_secs(60));
+            let month = current_month_start_utc().timestamp();
+            if REFRESH.swap(false, Ordering::Relaxed)
+                || last_api.elapsed() >= Duration::from_secs(600)
+                || month != last_month
+            {
+                for (name, anthropic) in [("anthropic-admin", true), ("openai-admin", false)] {
+                    let generation = {
+                        let state = get_cache().lock().unwrap_or_else(|p| p.into_inner());
+                        if anthropic {
+                            state.anthropic.generation
+                        } else {
+                            state.openai.generation
+                        }
+                    };
+                    let key = get_secret(name); // OS I/O and HTTP intentionally outside cache lock.
+                    let result = match (&client, &key) {
+                        (Ok(client), Some(key)) => fetch_spend(client, key, anthropic),
+                        (Err(_), Some(_)) => Err("HTTP initialization failed".into()),
+                        _ => Err("Not configured".into()),
+                    };
+                    let mut state = get_cache().lock().unwrap_or_else(|p| p.into_inner());
+                    let slot = if anthropic {
+                        &mut state.anthropic
+                    } else {
+                        &mut state.openai
+                    };
+                    commit_result(slot, generation, month, key.is_some(), result);
+                }
+                last_api = Instant::now();
+                last_month = month;
+            }
+            let _ = app.emit("usage", current_snapshot());
+            std::thread::sleep(Duration::from_secs(1));
         }
     });
 }
@@ -911,6 +801,7 @@ pub fn start<R: Runtime>(app: AppHandle<R>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Timelike;
     use std::time::Duration;
 
     #[test]
@@ -925,20 +816,16 @@ mod tests {
 
     #[test]
     fn test_error_sanitization() {
-        let raw = "Failed to connect with sk-ant-admin0192837465abc: timeout";
-        let sanitized = sanitize_error(raw);
-        assert!(!sanitized.contains("sk-ant-admin0192837465abc"));
-        assert!(sanitized.contains("sk-ant-admin[REDACTED]"));
-
-        let raw_openai = "Error with key sk-admin-0987654321xyz in request";
-        let sanitized_openai = sanitize_error(raw_openai);
-        assert!(!sanitized_openai.contains("sk-admin-0987654321xyz"));
-        assert!(sanitized_openai.contains("sk-admin-[REDACTED]"));
-
-        let raw_bearer = "Authorization: Bearer secret_token_value_12345";
-        let sanitized_bearer = sanitize_error(raw_bearer);
-        assert!(!sanitized_bearer.contains("secret_token_value_12345"));
-        assert!(sanitized_bearer.contains("Bearer [REDACTED]"));
+        for raw in [
+            "Localized ??? with sk-admin-secret",
+            "x-api-key: private",
+            "Bearer secret",
+            "??????",
+        ] {
+            let safe = sanitize_error(raw);
+            assert!(!safe.contains("secret"));
+            assert!(!safe.contains("private"));
+        }
     }
 
     #[test]
@@ -1117,5 +1004,45 @@ mod tests {
         assert!(json_str.contains("\"resetsAt\":1700000000"));
         assert!(!json_str.contains("used_pct"));
         assert!(!json_str.contains("resets_at"));
+    }
+    #[test]
+    fn malformed_costs_are_not_zero() {
+        for value in [
+            serde_json::json!({}),
+            serde_json::json!({"data":[{}],"has_more":false}),
+            serde_json::json!({"data":[{"results":[{"amount":null,"currency":"USD"}]}],"has_more":false}),
+            serde_json::json!({"data":[],"has_more":true}),
+        ] {
+            assert!(parse_anthropic_cost_page(&value).is_err());
+        }
+        assert_eq!(
+            parse_anthropic_cost_page(&serde_json::json!({"data":[],"has_more":false}))
+                .unwrap()
+                .0,
+            0.0
+        );
+    }
+    #[test]
+    fn stale_generation_and_month_cannot_publish_old_spend() {
+        let mut slot = ApiSlot {
+            generation: 2,
+            configured: true,
+            month: 10,
+            last_success_usd: Some(30.0),
+            ..Default::default()
+        };
+        commit_result(&mut slot, 1, 11, true, Ok(90.0));
+        assert_eq!(slot.last_success_usd, Some(30.0));
+        assert_eq!(
+            build_api_meter("openai-api", "API", &slot, 11, 20).spent_usd,
+            None
+        );
+        commit_result(&mut slot, 2, 11, true, Err("Offline".into()));
+        assert_eq!(slot.last_success_usd, None);
+    }
+    #[test]
+    fn rejects_unsupported_currency_and_out_of_range_percentage() {
+        assert_eq!(extract_percentage(Some(&serde_json::json!(101))), None);
+        assert!(parse_openai_costs_page(&serde_json::json!({"data":[{"results":[{"amount":{"value":12,"currency":"EUR"}}]}],"has_more":false})).is_err());
     }
 }

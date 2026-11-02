@@ -171,6 +171,8 @@ try {
   await native.getByRole('button',{name:'Go to stats page',exact:true}).click();
   assert.equal(await native.evaluate(()=>document.activeElement===document.querySelector('.page.on')),true,'A page without controls receives focus after a navigation dot is replaced');
   await native.goto('http://tuck.test/settings.html');
+  await native.evaluate(()=>window.__emitNative('dictation_state',{status:'review',modelInstalled:true,modelDownloadedBytes:0}));
+  assert.equal(await native.locator('#removeModel').isDisabled(),true,'Review must be discarded before model removal');
   await native.locator('#clipboardEnabled').check();
   await native.locator('#clipboardPersist').check();
   await native.locator('#saveClipboard').click();

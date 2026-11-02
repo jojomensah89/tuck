@@ -97,7 +97,7 @@ export function mountLiveSettings(): void {
   }
   void listenToEvent<{status: string; modelInstalled: boolean; modelDownloadedBytes: number; message?: string}>('dictation_state', data => {
     control('downloadModel').disabled = data.status === 'downloadingModel' || data.modelInstalled;
-    control('removeModel').disabled = !data.modelInstalled || ['downloadingModel', 'starting', 'recording', 'transcribing', 'cancelling', 'inserting'].includes(data.status);
+    control('removeModel').disabled = !data.modelInstalled || ['downloadingModel', 'starting', 'recording', 'transcribing', 'cancelling', 'inserting', 'review'].includes(data.status);
     status('dictationSetupStatus', data.message || (data.status === 'downloadingModel' ? `Downloading model · ${(data.modelDownloadedBytes / 1048576).toFixed(1)} MB` : data.modelInstalled ? 'Offline model ready.' : 'Download a model before recording.'));
   });
   void nativeService<{ enabled: boolean; persist: boolean }>('clipboard_settings').then(data => {

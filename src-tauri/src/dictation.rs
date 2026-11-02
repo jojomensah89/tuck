@@ -503,6 +503,7 @@ impl DictationService {
             .map_err(|_| "Dictation service unavailable")?;
         if runtime.active.is_some()
             || runtime.downloading
+            || runtime.status == "review"
             || runtime.status == "inserting"
             || self.model_busy.load(Ordering::Acquire)
         {
@@ -789,6 +790,26 @@ mod tests {
         });
         drop(runtime);
         assert!(service.remove_model().unwrap_err().contains("in use"));
+    }
+
+    #[test]
+    fn model_removal_preserves_review_until_explicit_discard() {
+        let service = DictationService::new();
+        {
+            let mut runtime = service.runtime.lock().unwrap();
+            runtime.status = "review".into();
+            runtime.transcript = Some("pending transcript".into());
+        }
+        assert!(service.remove_model().unwrap_err().contains("in use"));
+        {
+            let runtime = service.runtime.lock().unwrap();
+            assert_eq!(runtime.status, "review");
+            assert_eq!(runtime.transcript.as_deref(), Some("pending transcript"));
+        }
+        service.discard_review().unwrap();
+        let runtime = service.runtime.lock().unwrap();
+        assert!(runtime.transcript.is_none());
+        assert_eq!(runtime.status, "idle");
     }
 
     #[test]

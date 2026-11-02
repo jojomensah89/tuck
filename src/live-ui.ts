@@ -23,7 +23,7 @@ export function mountLivePages(onLayout: () => void): {
   const mediaPage = document.querySelector<HTMLElement>('.page.media')!;
   const toolbar = node('div', 'media-tools');
   const select = node('select', 'player-select'); select.setAttribute('aria-label', 'Media player');
-  select.append(new Option('Current Windows player', ''));
+  select.append(new Option('Auto player', ''));
   const message = node('p', 'live-note'); message.setAttribute('role', 'status');
   const lyricsPane = node('div', 'lyrics-pane'); lyricsPane.setAttribute('aria-label', 'Lyrics');
   const lyricList = node('div', 'lyric-lines');
@@ -36,7 +36,7 @@ export function mountLivePages(onLayout: () => void): {
   lyricsPane.append(lyricsStatus, lyricList);
   mediaPage.classList.toggle('with-lyrics', readPreferences().lyricsOpen);
   lyricToggle.setAttribute('aria-pressed', String(readPreferences().lyricsOpen));
-  select.onchange = () => { void act(nativeAction('media_select_session', { id: select.value }), message); };
+  select.onchange = () => { select.title = select.selectedOptions[0]?.text || 'Auto player'; void act(nativeAction('media_select_session', { id: select.value }), message); };
   let currentTrack = '', generation = 0, lines: LyricLine[] = [], activeLine = -2;
   let currentRequestId = '';
   let latestMedia: MediaState | null = null;
@@ -48,12 +48,13 @@ export function mountLivePages(onLayout: () => void): {
       if (!Array.isArray(list)) return;
       const focused = document.activeElement === select;
       if (focused) return;
-      select.replaceChildren(new Option('Automatic Windows player', ''));
+      select.replaceChildren(new Option('Auto player', ''));
       select.disabled = false;
       for (const session of list) {
         if (typeof session.id !== 'string' || typeof session.name !== 'string') continue;
         const option = new Option(session.name, session.id); option.selected = session.selected; select.append(option);
       }
+      select.title = select.selectedOptions[0]?.text || 'Auto player';
     } catch { select.disabled = true; select.title = 'Player selection is unavailable in this build'; }
   }
   const updatePosition = (position: number) => {

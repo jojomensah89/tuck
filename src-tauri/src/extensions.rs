@@ -79,6 +79,8 @@ pub struct Preview {
     pub title: String,
     pub body: String,
 }
+static CALENDAR_OPERATION: Mutex<()> = Mutex::new(());
+static SETTINGS_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static STATE: OnceLock<Mutex<Snapshot>> = OnceLock::new();
 static STORAGE: OnceLock<PathBuf> = OnceLock::new();
 fn state() -> &'static Mutex<Snapshot> {
@@ -278,6 +280,9 @@ pub async fn extension_settings(
 ) -> Result<Settings, String> {
     ensure(&window, true)?;
     tauri::async_runtime::spawn_blocking(move || {
+        let _operation = CALENDAR_OPERATION
+            .lock()
+            .map_err(|_| "Settings operation unavailable")?;
         write_local(
             "extensions.json",
             &serde_json::to_vec(&settings).map_err(|_| "Invalid settings")?,
@@ -294,6 +299,7 @@ pub async fn extension_settings(
         };
         let mut state = state().lock().unwrap_or_else(|p| p.into_inner());
         state.settings = settings.clone();
+        SETTINGS_EPOCH.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         state.calendar = calendar;
         if !settings.downloads {
             state.downloads.clear();
@@ -325,18 +331,22 @@ pub fn call_set_active(window: WebviewWindow, active: bool) -> Result<(), String
 #[tauri::command]
 pub async fn calendar_import(window: WebviewWindow, text: String) -> Result<usize, String> {
     ensure(&window, true)?;
-    tauri::async_runtime::spawn_blocking(move || {
-        let events = parse_ics(&text)?;
-        let count = events.len();
-        write_local("calendar.ics", text.as_bytes())?;
-        let mut state = state().lock().unwrap_or_else(|p| p.into_inner());
-        if state.settings.calendar {
-            state.calendar = events;
-        }
-        Ok(count)
-    })
-    .await
-    .map_err(|_| "Calendar worker failed".to_string())?
+    tauri::async_runtime::spawn_blocking(move || commit_calendar(&text))
+        .await
+        .map_err(|_| "Calendar worker failed".to_string())?
+}
+fn commit_calendar(text: &str) -> Result<usize, String> {
+    let _operation = CALENDAR_OPERATION
+        .lock()
+        .map_err(|_| "Calendar operation unavailable")?;
+    let events = parse_ics(text)?;
+    let count = events.len();
+    write_local("calendar.ics", text.as_bytes())?;
+    let mut state = state().lock().unwrap_or_else(|p| p.into_inner());
+    if state.settings.calendar {
+        state.calendar = events;
+    }
+    Ok(count)
 }
 #[tauri::command]
 pub fn calendar_join(window: WebviewWindow, id: String) -> Result<(), String> {
@@ -537,6 +547,7 @@ pub async fn radio_set(window: WebviewWindow, kind: String, enabled: bool) -> Re
     if !["wifi", "bluetooth"].contains(&kind.as_str()) {
         return Err("Unknown radio".into());
     }
+    let epoch = SETTINGS_EPOCH.load(std::sync::atomic::Ordering::SeqCst);
     #[cfg(windows)]
     {
         use windows::Devices::Radios::{Radio, RadioAccessStatus, RadioKind, RadioState};
@@ -567,6 +578,11 @@ pub async fn radio_set(window: WebviewWindow, kind: String, enabled: bool) -> Re
             let mut found = false;
             for radio in radios {
                 if radio.Kind().ok() == Some(target) {
+                    if !snapshot().settings.radios
+                        || SETTINGS_EPOCH.load(std::sync::atomic::Ordering::SeqCst) != epoch
+                    {
+                        return Err("Radio opt-in changed; action cancelled".into());
+                    }
                     found = true;
                     let result = radio
                         .SetStateAsync(if enabled {
@@ -925,5 +941,24 @@ mod tests {
         assert!(path.exists());
         assert!(shelf_path(&added[0].id).is_err());
         std::fs::remove_file(path).unwrap();
+    }
+    #[test]
+    fn concurrent_imports_keep_disk_and_memory_together() {
+        let dir = std::env::temp_dir().join(format!("tuck-calendar-test-{}", uuid::Uuid::new_v4()));
+        STORAGE
+            .set(dir.clone())
+            .expect("test-local calendar storage");
+        state().lock().unwrap().settings.calendar = true;
+        let workers=(0..2).map(|index|std::thread::spawn(move||{
+            commit_calendar(&format!("BEGIN:VCALENDAR\nBEGIN:VEVENT\nUID:event-{index}\nDTSTART:20300101T120000Z\nSUMMARY:Import {index}\nEND:VEVENT\nEND:VCALENDAR")).unwrap();
+        })).collect::<Vec<_>>();
+        for worker in workers {
+            worker.join().unwrap();
+        }
+        let persisted =
+            parse_ics(&std::fs::read_to_string(dir.join("calendar.ics")).unwrap()).unwrap();
+        assert_eq!(persisted[0].id, snapshot().calendar[0].id);
+        std::fs::remove_file(dir.join("calendar.ics")).unwrap();
+        std::fs::remove_dir(dir).unwrap();
     }
 }

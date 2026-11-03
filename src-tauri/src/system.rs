@@ -518,7 +518,7 @@ pub(crate) fn quick_action(name: String) -> Result<(), String> {
     }
 }
 
-/// Opens or focuses the reusable 460x700 settings.html window.
+/// Opens or focuses the reusable 760x600 settings.html window (sidebar layout; 640x440 minimum).
 pub fn open_settings(app: &AppHandle) -> Result<(), String> {
     if let Some(win) = app.get_webview_window("settings") {
         win.show().map_err(|e| e.to_string())?;
@@ -527,7 +527,8 @@ pub fn open_settings(app: &AppHandle) -> Result<(), String> {
     } else {
         WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("settings.html".into()))
             .title("Tuck Settings")
-            .inner_size(460.0, 700.0)
+            .inner_size(760.0, 600.0)
+            .min_inner_size(640.0, 440.0)
             .resizable(true)
             .focused(true)
             .build()

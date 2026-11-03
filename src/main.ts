@@ -26,6 +26,20 @@ import { activityProgress, batteryTone, createRing, formatSpan } from './rings.j
 import { selectCompactActivity, type CompactActivityCandidate } from './compact-slots.js';
 import { formatClockTime } from './time-format.js';
 import {
+  AnnouncementQueue,
+  HUD_ANNOUNCE_QUIET_MS,
+  HudModel,
+  hudLabel,
+  levelEventShowsHud,
+  levelInputApplies,
+  peekReturnTarget,
+  readHudPayload,
+  stepVolume,
+  volumeGlyph,
+  wheelVolumeDelta,
+  type HudReading,
+} from './hud.js';
+import {
   STORAGE_KEYS,
   mergeMeters,
   checkResets,
@@ -48,6 +62,9 @@ const SIZES: Record<IslandState, [number, number]> = {
   open: [440, 210],
 };
 
+/** The strip of the open island that keeps acting like the idle pill */
+const PILL_STRIP = { width: SIZES.idle[0], height: SIZES.idle[1] };
+
 let livePreferences = readPreferences();
 
 function $(id: string): HTMLElement {
@@ -57,6 +74,8 @@ function $(id: string): HTMLElement {
 }
 
 const isl = $('isl');
+isl.style.setProperty('--pill-w', `${PILL_STRIP.width}px`);
+isl.style.setProperty('--pill-h', `${PILL_STRIP.height}px`);
 // Set once the live pages mount; renderCompact can run before that during startup
 let compactLyric: () => string = () => '';
 // The compact title is measured mid-morph on state changes; refit once the shell settles
@@ -205,6 +224,21 @@ let hoverInside = false;
 let nativeDragActive = false;
 let keyboardMode = false;
 let announcement: { text: string; until: number } | null = null;
+const hud = new HudModel();
+/** Level feedback while the island is open; it has no shell to morph */
+const openLevel = new HudModel();
+const levelStrip = $('levelStrip');
+let openLevelTimer = 0;
+/** The Windows flyout is minimized right now, so the island is the only level feedback */
+let flyoutHidden = false;
+/** The last hand-back request sent to native */
+let flyoutPause = '';
+const pendingAnnouncements = new AnnouncementQueue();
+/** The current peek interrupted the open island, which comes back when the peek ends */
+let returnOpenAfterPeek = false;
+let lastChargerChange: number | null = null;
+let hudTimer = 0;
+let hudAnnounceTimer = 0;
 interface ExternalActivityState {
   title: string;
   text: string;
@@ -217,7 +251,11 @@ const externalActivities = new Map<string, ExternalActivityState>();
 function setState(next: IslandState): void {
   if (state === 'open' && next !== 'open' && isTauri()) runAction(invokeCommand('deactivate_island'), 'Restore desktop interaction');
   if (next !== 'open') keyboardMode = false;
+  if (next !== 'peek') returnOpenAfterPeek = false;
+  // The value still reaches the status region; only the painted strip goes
+  if (next !== 'open') delete levelStrip.dataset.on;
   state = next;
+  syncFlyoutPause();
   const [w, h] = next === 'open' ? [livePreferences.openWidth, 210] : SIZES[next];
   isl.style.setProperty('--w', `${w}px`);
   isl.style.setProperty('--h', `${h}px`);
@@ -225,6 +263,8 @@ function setState(next: IslandState): void {
   isl.style.width = `${w}px`;
   isl.style.height = `${h}px`;
   isl.dataset.state = next;
+  if (next === 'peek' && hud.visible(Date.now())) isl.dataset.hud = hud.reading!.kind;
+  else delete isl.dataset.hud;
 
   const full = document.querySelector<HTMLElement>('.full')!;
   const compact = document.querySelector<HTMLElement>('.compact')!;
@@ -245,10 +285,28 @@ function setState(next: IslandState): void {
   }
 }
 
+/**
+ * The Windows flyout comes back while the HUD switch is off (the island shows nothing)
+ * or the island is pinned open (it stays in use, and the in-strip level is easy to miss
+ * there, so both show). A peek over a pinned island is only a pause in being open, so
+ * it does not count as leaving.
+ */
+function syncFlyoutPause(): void {
+  if (!isTauri()) return;
+  const hudOff = !livePreferences.levelHud;
+  const pinnedOpen = livePreferences.pinned && (state === 'open' || returnOpenAfterPeek);
+  const key = `${hudOff}:${pinnedOpen}`;
+  if (key === flyoutPause) return;
+  flyoutPause = key;
+  void invokeCommand('set_flyout_island_pause', { hudOff, pinnedOpen }).catch(() => { flyoutPause = ''; });
+}
+
 function onHover(inside: boolean): void {
   hoverInside = inside;
   window.clearTimeout(closeTimer);
   window.clearTimeout(openTimer);
+  // The HUD owns the shell until it times out; hover is re-read when it leaves
+  if (state !== 'open' && hud.visible(Date.now())) return;
   if (nativeDragActive || (!inside && (keyboardMode || livePreferences.pinned) && state === 'open')) return;
 
   if (inside) {
@@ -582,6 +640,11 @@ function renderCompact(): void {
   const cc = $('cc');
   const cr = $('cr');
   const compact = document.querySelector<HTMLElement>('.compact')!;
+
+  if (state === 'peek' && hud.visible(Date.now())) {
+    renderHud(hud.reading!, compact);
+    return;
+  }
 
   if (announcement && announcement.until > Date.now() && state === 'peek') {
     setCompactSlot(cl, 'announcement:leading', 'note', () => compactMarkup(SVG_ICONS.note));
@@ -966,14 +1029,160 @@ function setupQuickActions(): void {
 
 }
 
-function showAnnouncement(text:string):void {
-  $('statusMessage').textContent=text;
-  const returnOpen = state === 'open';
-  if(returnOpen && (rail.active() !== 'media' || keyboardMode))return;
+/** A peek ended: next queued announcement first, then back to where the island belongs */
+function finishPeek(): void {
+  const next = pendingAnnouncements.next(Date.now());
+  if (next) { showAnnouncement(next, false); return; }
+  if (state === 'open') return;
+  setState(peekReturnTarget({ returnOpen: returnOpenAfterPeek, hover: hoverInside, pinned: livePreferences.pinned, dragging: nativeDragActive }));
+}
+
+function showAnnouncement(text:string, speak=true):void {
+  // Screen readers hear it right away, even when the text has to wait for the HUD
+  if(speak)$('statusMessage').textContent=text;
+  const wasOpen = state === 'open';
+  if(wasOpen && (rail.active() !== 'media' || keyboardMode))return;
+  if(wasOpen)returnOpenAfterPeek=true;
+  // The HUD owns the shell until it times out; the text follows it
+  if(hud.visible(Date.now())){pendingAnnouncements.add(text,Date.now());return;}
   announcement={text:text.slice(0,180),until:Date.now()+3500};
   window.clearTimeout(closeTimer);setState('peek');
-  closeTimer=window.setTimeout(()=>{announcement=null;setState(returnOpen && (hoverInside || livePreferences.pinned) ? 'open' : hoverInside?'peek':'idle');},3500);
+  closeTimer=window.setTimeout(()=>{announcement=null;finishPeek();},3500);
 }
+
+/* ================= Volume & Brightness HUD ================= */
+
+function buildHudBar(): HTMLElement {
+  const bar = document.createElement('span');
+  bar.className = 'hud-bar';
+  bar.setAttribute('aria-hidden', 'true');
+  const fill = document.createElement('span');
+  fill.className = 'hud-fill';
+  bar.append(fill);
+  return bar;
+}
+
+function hudGlyph(reading: HudReading): 'brightness' | ReturnType<typeof volumeGlyph> {
+  return reading.kind === 'brightness' ? 'brightness' : volumeGlyph(reading.level, reading.muted);
+}
+
+/** Glyph, level bar and tabular value; the bar is built once per kind so its fill eases between values */
+function renderHud(reading: HudReading, compact: HTMLElement): void {
+  const glyph = hudGlyph(reading);
+  setCompactSlot($('cl'), 'hud:leading', glyph, () => compactMarkup(SVG_ICONS[glyph], 'hud-glyph'));
+  setCompactSlot($('cc'), `hud:bar:${reading.kind}`, 'bar', buildHudBar);
+  const bar = $('cc').querySelector<HTMLElement>('.compact-slot.current .hud-bar');
+  if (bar) {
+    bar.classList.toggle('muted', reading.muted);
+    bar.style.setProperty('--level', String(reading.level / 100));
+  }
+  const value = `${reading.level}%`;
+  setCompactSlot($('cr'), 'hud:value', `${value}:${reading.muted}`, () =>
+    compactText(value, reading.muted ? 'compact-metric hud-value muted' : 'compact-metric hud-value'));
+  setLabel(compact, hudLabel(reading));
+}
+
+function settleHud(): void {
+  hud.dismiss();
+  // An island opened meanwhile owns the announcement timer for its in-strip level
+  if (state !== 'open') window.clearTimeout(hudAnnounceTimer);
+  finishPeek();
+}
+
+/** Screen readers hear the value once input pauses; a newer change replaces the wait */
+function announceWhenSettled(model: HudModel): void {
+  window.clearTimeout(hudAnnounceTimer);
+  hudAnnounceTimer = window.setTimeout(() => {
+    const text = model.dueAnnouncement(Date.now());
+    if (text) $('statusMessage').textContent = text;
+  }, HUD_ANNOUNCE_QUIET_MS + 20);
+}
+
+/** The open island keeps its size and content; the level paints over the strip for a moment */
+function showOpenLevel(reading: HudReading, now: number): void {
+  openLevel.show(reading, now);
+  announceWhenSettled(openLevel);
+  if (!levelStrip.firstChild) {
+    levelStrip.append(compactMarkup('', 'hud-glyph'), buildHudBar(), compactText('', 'compact-metric hud-value'));
+  }
+  const [glyph, bar, value] = levelStrip.children as HTMLCollectionOf<HTMLElement>;
+  setMarkup(glyph, SVG_ICONS[hudGlyph(reading)]);
+  bar.classList.toggle('muted', reading.muted);
+  bar.style.setProperty('--level', String(reading.level / 100));
+  value.textContent = `${reading.level}%`;
+  value.classList.toggle('muted', reading.muted);
+  levelStrip.dataset.on = reading.kind;
+  window.clearTimeout(openLevelTimer);
+  openLevelTimer = window.setTimeout(() => {
+    openLevel.dismiss();
+    delete levelStrip.dataset.on;
+  }, openLevel.remaining(now));
+}
+
+function showHud(reading: HudReading): void {
+  const now = Date.now();
+  if (state === 'open') {
+    showOpenLevel(reading, now);
+    return;
+  }
+  // An interrupted announcement gets its full time back once the HUD settles
+  if (announcement && announcement.until > now) pendingAnnouncements.addFirst(announcement.text, now);
+  announcement = null;
+  hud.show(reading, now);
+  window.clearTimeout(openTimer);
+  window.clearTimeout(closeTimer);
+  window.clearTimeout(hudTimer);
+  hudTimer = window.setTimeout(settleHud, hud.remaining(now));
+  announceWhenSettled(hud);
+  if (state !== 'peek') setState('peek');
+  else {
+    isl.dataset.hud = reading.kind;
+    renderCompact();
+  }
+}
+
+// Browser demo only: a local level so the HUD can be tried without the desktop app
+let demoVolume = { level: 50, muted: false };
+function applyVolume(command: 'volume_step' | 'volume_toggle_mute', args?: Record<string, unknown>): void {
+  if (!isTauri()) {
+    demoVolume = command === 'volume_step'
+      ? { level: stepVolume(demoVolume.level, Number(args?.delta) || 0), muted: Number(args?.delta) > 0 ? false : demoVolume.muted }
+      : { ...demoVolume, muted: !demoVolume.muted };
+    showHud({ kind: 'volume', ...demoVolume });
+    return;
+  }
+  void invokeCommand<unknown>(command, args).then(result => {
+    const reading = readHudPayload(result);
+    if (reading) showHud(reading);
+  }).catch(() => { /* no output device; the HUD simply does not appear */ });
+}
+
+function overLevelInput(event: MouseEvent): boolean {
+  return levelInputApplies(state, isl.getBoundingClientRect(), PILL_STRIP, event.clientX, event.clientY);
+}
+
+// The pill-sized strip always means volume, in every state. These listeners capture, so
+// whatever sits under the strip on the open island (a scroller, the rail's tab switching)
+// never sees the event. Only wheel and middle click are taken: left clicks go through.
+let wheelRest = 0;
+isl.addEventListener('wheel', event => {
+  if (!overLevelInput(event)) return;
+  event.preventDefault();
+  event.stopPropagation();
+  const result = wheelVolumeDelta(wheelRest, event);
+  wheelRest = result.rest;
+  if (result.delta !== 0) applyVolume('volume_step', { delta: result.delta });
+}, { passive: false, capture: true });
+
+// Middle click toggles mute over the strip; stopping the press stops the browser's autoscroll everywhere
+isl.addEventListener('mousedown', event => { if (event.button === 1) event.preventDefault(); }, { capture: true });
+isl.addEventListener('auxclick', event => {
+  if (event.button !== 1 || !overLevelInput(event)) return;
+  event.preventDefault();
+  event.stopPropagation();
+  applyVolume('volume_toggle_mute');
+}, { capture: true });
+
 window.addEventListener('tuck-activity',event=>{
   const detail=(event as CustomEvent).detail;
   if(!detail||typeof detail.id!=='string'||typeof detail.title!=='string'||typeof detail.text!=='string'||!Number.isFinite(detail.priority))return;
@@ -1011,11 +1220,22 @@ void listenToEvent<PowerState>('power', (payload) => {
   const previous = powerState;
   powerState = payload;
   renderPower();
+  if (previous.statusKnown && payload.statusKnown && previous.acConnected !== payload.acConnected) lastChargerChange = Date.now();
   if (livePreferences.desktopPeeks && previous.statusKnown && payload.statusKnown && previous.acConnected !== payload.acConnected) showAnnouncement(payload.acConnected ? 'Charger connected' : 'Charger disconnected');
 });
 void listenToEvent<{title: string; text: string}>('desktop-peek', payload => {
   if (livePreferences.desktopPeeks && typeof payload?.title === 'string' && typeof payload.text === 'string') showAnnouncement(`${payload.title}: ${payload.text}`);
 });
+void listenToEvent<unknown>('system-level', payload => {
+  const reading = readHudPayload(payload);
+  if (reading && levelEventShowsHud(reading, livePreferences.levelHud, Date.now(), lastChargerChange, flyoutHidden)) showHud(reading);
+});
+interface FlyoutStatus { state?: string; message?: string | null }
+function onFlyoutStatus(status: FlyoutStatus | null | undefined): void {
+  flyoutHidden = status?.state === 'hidden';
+  if (status?.state === 'unavailable' && typeof status.message === 'string') showAnnouncement(status.message);
+}
+void listenToEvent<FlyoutStatus>('system-flyout', onFlyoutStatus);
 void listenToEvent<Meter[]>('usage', (payload) => onUsageUpdate(payload));
 
 /* ================= First Run & Browser Preview ================= */
@@ -1093,6 +1313,8 @@ if (isTauri()) {
   runAction(invokeCommand('set_fullscreen_auto_hide', { enabled: livePreferences.fullscreenAutoHide }), 'Apply fullscreen preference');
   runAction(invokeCommand<MediaState>('media_now').then(onMediaUpdate), 'Read media session');
   runAction(invokeCommand<boolean>('fullscreen_now').then(hidden => document.body.classList.toggle('fullscreen-hidden', hidden)), 'Read fullscreen state');
+  // A failure before this listener existed is still pending natively
+  runAction(invokeCommand<FlyoutStatus>('get_hide_system_flyout').then(onFlyoutStatus), 'Read flyout state');
 }
 
 // Fetch initial usage if running in native app

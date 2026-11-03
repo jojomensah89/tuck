@@ -145,14 +145,29 @@
           <div class="group">
             <h2>Peeks</h2>
             <div class="panel">
-              <div class="set-row" id="row-desktopPeeks" data-keywords="volume brightness wifi bluetooth caps lock hud">
+              <div class="set-row" id="row-desktopPeeks" data-keywords="wifi bluetooth caps lock charger audio output keyboard language">
                 <div class="row-text">
                   <label class="row-title" for="desktopPeeks">System peeks</label>
-                  <p class="row-desc">Show volume, brightness, connection and key changes in the island.</p>
+                  <p class="row-desc">Show connection, charger and key changes in the island.</p>
                 </div>
                 <input id="desktopPeeks" class="switch" type="checkbox" role="switch" />
               </div>
+              <div class="set-row" id="row-levelHud" data-keywords="volume brightness hud level peek sound">
+                <div class="row-text">
+                  <label class="row-title" for="levelHud">Volume and brightness HUD</label>
+                  <p class="row-desc">Show level changes in the island. Brightness only shows right after input, and gradual automatic changes stay quiet. Scrolling over the top centre of the island always shows the volume.</p>
+                </div>
+                <input id="levelHud" class="switch" type="checkbox" role="switch" />
+              </div>
               <p class="group-status" id="interactionStatus" role="status"></p>
+              <div class="set-row" id="row-hideSystemFlyout" data-keywords="volume brightness flyout osd hud overlay windows popup hide">
+                <div class="row-text">
+                  <label class="row-title" for="hideSystemFlyout">Hide the Windows volume flyout</label>
+                  <p class="row-desc">The island shows volume and brightness instead. The Windows flyout comes back while the HUD above is off, the island is pinned open, or a fullscreen app hides the island. Uses an undocumented method and turns itself off if it stops working.</p>
+                </div>
+                <input id="hideSystemFlyout" class="switch" type="checkbox" role="switch" />
+              </div>
+              <p class="group-status" id="flyoutStatus" role="status"></p>
             </div>
           </div>
         </section>

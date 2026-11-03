@@ -591,7 +591,7 @@ Priority: **P1** = clear win, low risk. **P2** = worthwhile, needs a spike. **P3
 Things this research did not settle, each needing a check on a real machine:
 
 - Whether an unpackaged Tauri exe can use `UserNotificationListener`, and what a sparse MSIX package changes.
-- Which window hosts the Windows 11 volume flyout on the current build, and whether it can be hidden without side effects.
+- Which window hosts the Windows 11 volume flyout on the current build, and whether it can be hidden without side effects. Partly answered (2026-11-03, build 26300): two `XamlExplorerHostIslandWindow` hosts owned by `explorer.exe` have the `DesktopWindowXamlSource` child; the flyout is the small one at the bottom centre, the other covers the screen. The flyout host measures 169x61 at (875, 971) on a 1920x1080 screen and only exists after the first flyout of a session. Tuck (`osd_flyout.rs`) matches the class pair as HideVolumeOSD 1.4 does, then requires a shell-owned window with the flyout's shape (bottom half, horizontally centred, under a third of the screen), and only after a volume key press. A brightness change can re-minimize a host already identified but never introduces a new one, because brightness keys have no key code and look like the Quick Settings slider. Side effects on other builds are untested.
 - Whether the Bluetooth battery PnP property key I recalled is right, and which of the user's devices expose it.
 - How Tuck's current drag-drop event reports virtual files.
 - Whether Tuck's ICS parser expands recurring events.

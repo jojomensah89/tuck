@@ -1,7 +1,7 @@
 import './settings.css';
 import { mountExtensionSettings } from './extensions.js';
 import { mountLiveSettings } from './live-settings.js';
-import { isTauri, setSecret, invokeCommand } from './ipc.js';
+import { isTauri, setSecret, invokeCommand, listenToEvent } from './ipc.js';
 import { STORAGE_KEYS, getJson, saveJson } from './usage.js';
 import { describeResult, filterSettings, navTarget, type SearchEntry } from './settings-search.js';
 import { clearSaved, confirmThen, markSaved, onCommit, setStatus } from './settings-ui.js';
@@ -270,7 +270,37 @@ function initChatGPT(): void {
 
 /* ================= Native toggles: startup and installed usage ================= */
 
+interface FlyoutStatus { enabled: boolean; state: 'off' | 'hidden' | 'waiting' | 'unavailable'; message: string | null }
+
+/** Opt-in: hide the Windows volume/brightness flyout. Native state wins; it can turn itself off. */
+function initFlyoutToggle(): void {
+  const toggle = $<HTMLInputElement>('hideSystemFlyout')!;
+  if (!isTauri()) {
+    toggle.disabled = true;
+    setStatus('flyoutStatus', 'Available in the desktop app.');
+    return;
+  }
+  const apply = (status: FlyoutStatus | null) => {
+    if (!status) return;
+    toggle.checked = status.enabled;
+    setStatus('flyoutStatus', status.message ?? '', status.state === 'unavailable' ? 'error' : 'info');
+  };
+  void invokeCommand<FlyoutStatus>('get_hide_system_flyout').then(apply)
+    .catch(() => setStatus('flyoutStatus', 'Could not read the flyout setting.', 'error'));
+  void listenToEvent<FlyoutStatus>('system-flyout', apply);
+  toggle.addEventListener('change', async () => {
+    toggle.disabled = true;
+    try {
+      const status = await invokeCommand<FlyoutStatus>('set_hide_system_flyout', { enabled: toggle.checked });
+      apply(status);
+      if (status?.state !== 'unavailable') markSaved(toggle);
+    } catch { toggle.checked = !toggle.checked; setStatus('flyoutStatus', 'Could not update the flyout setting.', 'error'); }
+    finally { toggle.disabled = false; }
+  });
+}
+
 function initNativeToggles(): void {
+  initFlyoutToggle();
   const startup = $<HTMLInputElement>('autostart')!;
   const installed = $<HTMLInputElement>('installedUsage')!;
   const refresh = $<HTMLButtonElement>('refreshInstalledUsage')!;

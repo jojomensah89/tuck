@@ -123,4 +123,14 @@ for (const width of [500, 440]) {
   await p.waitForTimeout(500); await shotW('stats');
   await c.close();
 }
+// Volume and brightness HUD from mocked native level events (reduced motion freezes the bar fill)
+c = await ctx({hoverExpand:false}); await mockNative(c);
+p = await c.newPage(); await p.emulateMedia({reducedMotion:'reduce'});
+await p.goto('http://tuck.test/'); await p.waitForTimeout(200);
+await p.evaluate(()=>document.body.classList.add('dev-mode'));
+for (const [name, payload] of [['volume',{kind:'volume',level:62,muted:false}],['volume-low',{kind:'volume',level:18,muted:false}],['volume-muted',{kind:'volume',level:62,muted:true}],['brightness',{kind:'brightness',level:80,muted:false}]]) {
+  await p.evaluate(payload=>window.__emitNative('system-level',payload), payload); await p.waitForTimeout(450);
+  await p.screenshot({path:path.join(out,`${String(shot++).padStart(2,'0')}-hud-${name}.png`)});
+}
+await c.close();
 await browser.close();

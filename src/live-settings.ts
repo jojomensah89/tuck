@@ -14,6 +14,7 @@ export function mountLiveSettings(): void {
   input('hoverExpand').checked = prefs.hoverExpand; input('pinOpen').checked = prefs.pinned;
   input('fullscreenAutoHide').checked = prefs.fullscreenAutoHide;
   input('lyricsOpen').checked = prefs.lyricsOpen; input('desktopPeeks').checked = prefs.desktopPeeks;
+  input('levelHud').checked = prefs.levelHud;
   for (const radio of compact()) radio.checked = radio.value === prefs.compactContent;
   input('openDelay').value = String(prefs.openDelayMs); input('closeDelay').value = String(prefs.closeDelayMs); input('openWidth').value = String(prefs.openWidth);
 
@@ -38,7 +39,7 @@ export function mountLiveSettings(): void {
     }
     const next = normalizePreferences({ hoverExpand: input('hoverExpand').checked, pinned: input('pinOpen').checked,
       fullscreenAutoHide: input('fullscreenAutoHide').checked,
-      lyricsOpen: input('lyricsOpen').checked, desktopPeeks: input('desktopPeeks').checked,
+      lyricsOpen: input('lyricsOpen').checked, desktopPeeks: input('desktopPeeks').checked, levelHud: input('levelHud').checked,
       compactContent: compact().find(radio => radio.checked)?.value ?? 'lyrics',
       openDelayMs: Number(input('openDelay').value), closeDelayMs: Number(input('closeDelay').value), openWidth: Number(input('openWidth').value), lastTab: readPreferences().lastTab, prefsVersion: PREFS_VERSION });
     try {
@@ -54,7 +55,7 @@ export function mountLiveSettings(): void {
       setStatus(statusFor(changed.id), 'Could not save settings. Check available storage and try again.', 'error');
     }
   };
-  for (const id of ['hoverExpand', 'pinOpen', 'fullscreenAutoHide', 'lyricsOpen', 'desktopPeeks']) input(id).addEventListener('change', () => savePreferences(input(id)));
+  for (const id of ['hoverExpand', 'pinOpen', 'fullscreenAutoHide', 'lyricsOpen', 'desktopPeeks', 'levelHud']) input(id).addEventListener('change', () => savePreferences(input(id)));
   for (const radio of compact()) radio.addEventListener('change', () => savePreferences(radio));
   for (const id of numbers) onCommit(input(id), () => savePreferences(input(id)));
 

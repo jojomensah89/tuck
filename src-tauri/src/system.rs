@@ -506,6 +506,8 @@ pub(crate) fn refresh_window_state(app: &AppHandle) -> bool {
         reassert_topmost(&win);
     }
     if hidden != previous {
+        // Fullscreen apps keep the Windows volume flyout while the island is away.
+        crate::osd_flyout::set_fullscreen(hidden);
         let _ = app.emit("fullscreen", hidden);
     }
     hidden

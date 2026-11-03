@@ -1,6 +1,13 @@
 use serde::Serialize;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 static FULLSCREEN: AtomicBool = AtomicBool::new(false);
+static FULLSCREEN_AUTO_HIDE: AtomicBool = AtomicBool::new(true);
+static CURSOR_PAUSE_REASONS: AtomicU8 = AtomicU8::new(0);
+static CURSOR_GATE: std::sync::LazyLock<(std::sync::Mutex<()>, std::sync::Condvar)> =
+    std::sync::LazyLock::new(|| (std::sync::Mutex::new(()), std::sync::Condvar::new()));
+pub(crate) const CURSOR_PAUSE_FULLSCREEN: u8 = 1;
+pub(crate) const CURSOR_PAUSE_SESSION: u8 = 2;
+pub(crate) const CURSOR_PAUSE_SUSPEND: u8 = 4;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 
@@ -19,13 +26,14 @@ use windows::{
         },
         UI::{
             Shell::{
-                SHQueryUserNotificationState, ShellExecuteW, QUNS_BUSY,
+                SHQueryUserNotificationState, ShellExecuteW, QUNS_BUSY, QUNS_PRESENTATION_MODE,
                 QUNS_RUNNING_D3D_FULL_SCREEN,
             },
             WindowsAndMessaging::{
                 GetClassNameW, GetCursorPos, GetDesktopWindow, GetForegroundWindow, GetShellWindow,
                 GetWindowLongPtrW, GetWindowRect, IsIconic, IsWindowVisible, SetWindowLongPtrW,
-                GWL_EXSTYLE, SW_SHOWNORMAL, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+                SetWindowPos, GWL_EXSTYLE, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+                SW_SHOWNORMAL, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
             },
         },
     },
@@ -253,6 +261,45 @@ pub fn center_on_primary_monitor(win: &WebviewWindow) -> Result<(), Box<dyn std:
 }
 
 #[cfg(windows)]
+pub(crate) fn reassert_topmost(win: &WebviewWindow) {
+    if let Ok(raw) = win.hwnd() {
+        unsafe {
+            let _ = SetWindowPos(
+                HWND(raw.0 as _),
+                HWND_TOPMOST,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+            );
+        }
+    }
+}
+
+pub(crate) fn set_cursor_pause(reason: u8, paused: bool) {
+    if paused {
+        CURSOR_PAUSE_REASONS.fetch_or(reason, Ordering::SeqCst);
+    } else {
+        CURSOR_PAUSE_REASONS.fetch_and(!reason, Ordering::SeqCst);
+    }
+    CURSOR_GATE.1.notify_all();
+}
+
+fn wait_for_cursor_resume() {
+    let mut guard = CURSOR_GATE
+        .0
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    while CURSOR_PAUSE_REASONS.load(Ordering::SeqCst) != 0 {
+        guard = CURSOR_GATE
+            .1
+            .wait(guard)
+            .unwrap_or_else(|error| error.into_inner());
+    }
+}
+
+#[cfg(windows)]
 fn is_excluded_window_class(hwnd: HWND) -> bool {
     let mut buf = [0u16; 256];
     let len = unsafe { GetClassNameW(hwnd, &mut buf) };
@@ -268,7 +315,7 @@ fn is_excluded_window_class(hwnd: HWND) -> bool {
 }
 
 #[cfg(windows)]
-fn check_fullscreen(island_hwnd: HWND, settings_hwnd: Option<HWND>) -> bool {
+pub(crate) fn check_fullscreen(island_hwnd: HWND, settings_hwnd: Option<HWND>) -> bool {
     unsafe {
         let fg = GetForegroundWindow();
         if fg.0.is_null() || fg == island_hwnd {
@@ -300,7 +347,11 @@ fn check_fullscreen(island_hwnd: HWND, settings_hwnd: Option<HWND>) -> bool {
 
         // 1. Shell user notification state for apps on the same monitor
         let shell_fullscreen = SHQueryUserNotificationState()
-            .map(|state| state == QUNS_RUNNING_D3D_FULL_SCREEN || state == QUNS_BUSY)
+            .map(|state| {
+                state == QUNS_RUNNING_D3D_FULL_SCREEN
+                    || state == QUNS_BUSY
+                    || state == QUNS_PRESENTATION_MODE
+            })
             .unwrap_or(false);
         if shell_fullscreen {
             return true;
@@ -367,6 +418,50 @@ pub(crate) fn fullscreen_now() -> bool {
     FULLSCREEN.load(Ordering::Relaxed)
 }
 
+#[tauri::command]
+pub(crate) fn get_fullscreen_auto_hide() -> bool {
+    FULLSCREEN_AUTO_HIDE.load(Ordering::Relaxed)
+}
+
+#[tauri::command]
+pub(crate) fn set_fullscreen_auto_hide(app: AppHandle, enabled: bool) -> Result<(), String> {
+    FULLSCREEN_AUTO_HIDE.store(enabled, Ordering::Relaxed);
+    refresh_window_state(&app);
+    Ok(())
+}
+
+pub(crate) fn refresh_window_state(app: &AppHandle) {
+    let Some(win) = app.get_webview_window("main") else {
+        return;
+    };
+    #[cfg(windows)]
+    let detected = win
+        .hwnd()
+        .ok()
+        .map(|raw| {
+            let settings_hwnd = app
+                .get_webview_window("settings")
+                .and_then(|window| window.hwnd().ok())
+                .map(|handle| HWND(handle.0 as _));
+            check_fullscreen(HWND(raw.0 as _), settings_hwnd)
+        })
+        .unwrap_or(false);
+    #[cfg(not(windows))]
+    let detected = false;
+    let hidden = detected && FULLSCREEN_AUTO_HIDE.load(Ordering::Relaxed);
+    let previous = FULLSCREEN.swap(hidden, Ordering::Relaxed);
+    set_cursor_pause(CURSOR_PAUSE_FULLSCREEN, hidden);
+    if hidden {
+        let _ = win.set_ignore_cursor_events(true);
+    } else {
+        #[cfg(windows)]
+        reassert_topmost(&win);
+    }
+    if hidden != previous {
+        let _ = app.emit("fullscreen", hidden);
+    }
+}
+
 /// Collapsing the island must undo the tray keyboard activation path.
 #[tauri::command]
 pub(crate) fn deactivate_island(app: AppHandle) -> Result<(), String> {
@@ -381,7 +476,8 @@ pub(crate) fn deactivate_island(app: AppHandle) -> Result<(), String> {
         .map_err(|_| "Could not restore click-through".to_string())
 }
 
-/// Starts the 40ms cursor hit-testing and fullscreen detection poller, as well as the 2s power and monitor poller.
+/// Starts the 40ms cursor hit-testing loop. Native lifecycle, display, power and
+/// fullscreen events are handled by the message-only window in `lifecycle`.
 pub fn start(app: AppHandle, hit_state: Arc<HitState>) {
     let app_cursor = app.clone();
     let hit_cursor = hit_state.clone();
@@ -394,54 +490,30 @@ pub fn start(app: AppHandle, hit_state: Arc<HitState>) {
         }
 
         let mut was_hovered = false;
-        let mut was_fullscreen = false;
 
         loop {
+            wait_for_cursor_resume();
             std::thread::sleep(std::time::Duration::from_millis(40));
 
             let Some(win) = app_cursor.get_webview_window("main") else {
                 continue;
             };
 
-            #[cfg(windows)]
-            let island_hwnd = win.hwnd().map(|h| HWND(h.0 as _)).unwrap_or_default();
-            #[cfg(not(windows))]
-            let island_hwnd = ();
-
-            #[cfg(windows)]
-            let settings_hwnd = app_cursor
-                .get_webview_window("settings")
-                .and_then(|w| w.hwnd().ok())
-                .map(|h| HWND(h.0 as _));
-
-            #[cfg(windows)]
-            let is_fs = check_fullscreen(island_hwnd, settings_hwnd);
-            #[cfg(not(windows))]
-            let is_fs = false;
-
-            FULLSCREEN.store(is_fs, Ordering::Relaxed);
-            if is_fs != was_fullscreen {
-                was_fullscreen = is_fs;
-                let _ = app_cursor.emit("fullscreen", is_fs);
-            }
-
             // Hit test: physical cursor vs scaled CSS geometry
             let mut is_hovered = false;
-            if !is_fs {
-                #[cfg(windows)]
-                unsafe {
-                    let mut pt = POINT::default();
-                    if GetCursorPos(&mut pt).is_ok() {
-                        if let (Ok(pos), Ok(size), Ok(sf)) =
-                            (win.outer_position(), win.outer_size(), win.scale_factor())
-                        {
-                            let hit_w = hit_cursor.width.load(Ordering::Relaxed);
-                            let hit_h = hit_cursor.height.load(Ordering::Relaxed);
-                            let bounds = compute_hit_bounds(
-                                pos.x, pos.y, size.width, sf, hit_w, hit_h, 6.0, // 6px slop
-                            );
-                            is_hovered = is_point_inside(&bounds, pt.x as f64, pt.y as f64);
-                        }
+            #[cfg(windows)]
+            unsafe {
+                let mut pt = POINT::default();
+                if GetCursorPos(&mut pt).is_ok() {
+                    if let (Ok(pos), Ok(size), Ok(sf)) =
+                        (win.outer_position(), win.outer_size(), win.scale_factor())
+                    {
+                        let hit_w = hit_cursor.width.load(Ordering::Relaxed);
+                        let hit_h = hit_cursor.height.load(Ordering::Relaxed);
+                        let bounds = compute_hit_bounds(
+                            pos.x, pos.y, size.width, sf, hit_w, hit_h, 6.0, // 6px slop
+                        );
+                        is_hovered = is_point_inside(&bounds, pt.x as f64, pt.y as f64);
                     }
                 }
             }
@@ -455,20 +527,7 @@ pub fn start(app: AppHandle, hit_state: Arc<HitState>) {
         }
     });
 
-    // 2s Power and display layout poller (emits every poll so frontend never misses initial event)
-    let app_power = app.clone();
-    std::thread::spawn(move || {
-        loop {
-            if let Some(power) = read_power() {
-                let _ = app_power.emit("power", power);
-            }
-            // Periodic lightweight check for primary monitor resolution or placement changes
-            if let Some(win) = app_power.get_webview_window("main") {
-                let _ = center_on_primary_monitor(&win);
-            }
-            std::thread::sleep(std::time::Duration::from_millis(2000));
-        }
-    });
+    crate::lifecycle::start(app);
 }
 
 /// Allowed quick action names opening actual Windows system URI.

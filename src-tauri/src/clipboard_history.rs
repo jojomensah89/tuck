@@ -3,12 +3,14 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
+use std::io::Read;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager, State};
 use uuid::Uuid;
+use zeroize::{Zeroize, Zeroizing};
 
 const EVENT_CHANGED: &str = "clipboard_history_changed";
 const EVENT_ERROR: &str = "clipboard_history_error";
@@ -24,6 +26,13 @@ pub struct ClipboardHistoryItem {
     pub text: String,
     pub created_at_ms: u64,
     pub pinned: bool,
+}
+
+impl Drop for ClipboardHistoryItem {
+    fn drop(&mut self) {
+        self.id.zeroize();
+        self.text.zeroize();
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -52,6 +61,7 @@ struct PersistedItems {
 struct StateInner {
     enabled: bool,
     persist_on_exit: bool,
+    generation: u64,
     items: VecDeque<ClipboardHistoryItem>,
 }
 
@@ -76,6 +86,7 @@ impl ClipboardHistoryService {
             inner: Mutex::new(StateInner {
                 enabled: false,
                 persist_on_exit: false,
+                generation: 0,
                 items: VecDeque::new(),
             }),
             stop: Arc::new(AtomicBool::new(false)),
@@ -131,10 +142,13 @@ impl ClipboardHistoryService {
             state.persist_on_exit
         };
         self.save_settings(&app, enabled, persist)?;
-        self.inner
-            .lock()
-            .map_err(|_| "Clipboard settings unavailable")?
-            .enabled = enabled;
+        {
+            let mut state = self
+                .inner
+                .lock()
+                .map_err(|_| "Clipboard settings unavailable")?;
+            update_enabled(&mut state, enabled);
+        }
         self.emit_changed();
         Ok(())
     }
@@ -172,7 +186,7 @@ impl ClipboardHistoryService {
                 .inner
                 .lock()
                 .map_err(|_| "Clipboard settings unavailable")?;
-            state.enabled = enabled;
+            update_enabled(&mut state, enabled);
             state.persist_on_exit = persist;
         }
         if enabled {
@@ -223,12 +237,13 @@ impl ClipboardHistoryService {
         Ok(())
     }
 
-    fn push_text(&self, text: String) -> Result<(), String> {
+    fn push_text(&self, text: String, generation: u64) -> Result<(), String> {
         let _operation = self
             .operation
             .lock()
             .map_err(|_| "Clipboard history unavailable")?;
-        if text.is_empty() || text.len() > MAX_ITEM_BYTES || text.trim().is_empty() {
+        let mut text = Zeroizing::new(text);
+        if !accepts_clipboard_text(text.as_str()) {
             return Ok(());
         }
         let app = self.app()?;
@@ -236,16 +251,20 @@ impl ClipboardHistoryService {
             .inner
             .lock()
             .map_err(|_| "Clipboard history service unavailable")?;
-        if !state.enabled {
+        if !accept_clipboard_generation(state.enabled, state.generation, generation) {
             return Ok(());
         }
-        if state.items.front().is_some_and(|item| item.text == text) {
+        if state
+            .items
+            .front()
+            .is_some_and(|item| item.text.as_str() == text.as_str())
+        {
             return Ok(());
         }
         let mut next = state.items.clone();
         next.push_front(ClipboardHistoryItem {
             id: Uuid::new_v4().to_string(),
-            text,
+            text: std::mem::take(&mut *text),
             created_at_ms: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
@@ -390,24 +409,71 @@ impl ClipboardHistoryService {
     }
 
     fn remove_items_file(&self, app: &AppHandle) -> Result<(), String> {
-        let dir = self.directory(app)?;
-        match std::fs::remove_file(dir.join("items.json")) {
-            Ok(()) => Ok(()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(_) => Err("Could not remove saved clipboard history".into()),
-        }
+        let path = self.directory(app)?.join("items.json");
+        remove_file_if_exists(&path)
+            .map_err(|_| "Could not remove saved clipboard history".to_owned())
     }
 }
 
 fn atomic_json(path: &std::path::Path, value: &impl Serialize) -> Result<(), String> {
-    let bytes = serde_json::to_vec(value)
-        .map_err(|e| format!("Could not serialize clipboard history: {e}"))?;
+    let bytes = Zeroizing::new(
+        serde_json::to_vec(value)
+            .map_err(|e| format!("Could not serialize clipboard history: {e}"))?,
+    );
     if bytes.len() > MAX_STORE_BYTES {
         return Err("Clipboard history exceeds the local storage limit".into());
     }
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, bytes).map_err(|e| format!("Could not write clipboard history: {e}"))?;
-    std::fs::rename(tmp, path).map_err(|e| format!("Could not save clipboard history: {e}"))
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or("Invalid clipboard history file path")?;
+    let tmp = path.with_file_name(format!("{file_name}.{}.tmp", Uuid::new_v4()));
+    let _cleanup = TemporaryHistoryFile(tmp.clone());
+    std::fs::write(&tmp, bytes.as_slice())
+        .map_err(|e| format!("Could not write clipboard history: {e}"))?;
+    replace_file(&tmp, path).map_err(|e| format!("Could not save clipboard history: {e}"))
+}
+
+struct TemporaryHistoryFile(PathBuf);
+
+impl Drop for TemporaryHistoryFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+#[cfg(windows)]
+fn replace_file(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows::{
+        core::PCWSTR,
+        Win32::Storage::FileSystem::{
+            MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+        },
+    };
+    let from: Vec<u16> = from
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let to: Vec<u16> = to
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    unsafe {
+        MoveFileExW(
+            PCWSTR(from.as_ptr()),
+            PCWSTR(to.as_ptr()),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    }
+    .map_err(|error| std::io::Error::other(error.to_string()))
+}
+
+#[cfg(not(windows))]
+fn replace_file(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
+    std::fs::rename(from, to)
 }
 
 fn evict_unpinned(items: &mut VecDeque<ClipboardHistoryItem>) {
@@ -421,41 +487,131 @@ fn evict_unpinned(items: &mut VecDeque<ClipboardHistoryItem>) {
     }
 }
 
+fn should_skip_clipboard_item(
+    exclude_from_monitoring: bool,
+    history_disabled: bool,
+    password_marked: bool,
+    tuck_transient: bool,
+) -> bool {
+    exclude_from_monitoring || history_disabled || password_marked || tuck_transient
+}
+
+fn clipboard_sequence_unchanged(before: u32, after: u32) -> bool {
+    before == after
+}
+
+fn accept_clipboard_generation(enabled: bool, current: u64, captured: u64) -> bool {
+    enabled && current == captured
+}
+
+fn accepts_clipboard_text(text: &str) -> bool {
+    !text.is_empty() && text.len() <= MAX_ITEM_BYTES && !text.trim().is_empty()
+}
+
+fn update_enabled(state: &mut StateInner, enabled: bool) {
+    if state.enabled != enabled {
+        state.enabled = enabled;
+        state.generation = state.generation.wrapping_add(1);
+    }
+}
+
+fn valid_persisted_items(stored: &PersistedItems) -> bool {
+    stored.schema_version == 1 && valid_items(&stored.items)
+}
+
+fn read_bounded(path: &std::path::Path, max_bytes: usize) -> std::io::Result<Vec<u8>> {
+    let file = std::fs::File::open(path)?;
+    if file.metadata()?.len() > max_bytes as u64 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "file exceeds the configured size limit",
+        ));
+    }
+    let mut bytes = Vec::new();
+    file.take(max_bytes as u64 + 1).read_to_end(&mut bytes)?;
+    if bytes.len() > max_bytes {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "file grew beyond the configured size limit",
+        ));
+    }
+    Ok(bytes)
+}
+
+fn remove_file_if_exists(path: &std::path::Path) -> std::io::Result<()> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
 /// Initialize the polling worker; disabled by default, so it does not inspect
 /// the OS clipboard until the user enables history.
 pub fn start(app: AppHandle, service: &Arc<ClipboardHistoryService>) -> Result<(), String> {
-    if let Ok(mut slot) = service.app.write() {
-        *slot = Some(app.clone());
-    }
-    if let Ok(dir) = service.directory(&app) {
-        if let Ok(bytes) = std::fs::read(dir.join("settings.json")) {
-            if bytes.len() <= 4096 {
-                if let Ok(settings) = serde_json::from_slice::<PersistedSettings>(&bytes) {
-                    if settings.schema_version == 1 {
-                        if let Ok(mut state) = service.inner.lock() {
-                            state.enabled = settings.enabled;
-                            state.persist_on_exit = settings.persist_on_exit;
-                        }
-                        if settings.persist_on_exit {
-                            if let Ok(bytes) = std::fs::read(dir.join("items.json")) {
-                                if bytes.len() <= MAX_STORE_BYTES {
-                                    if let Ok(stored) =
-                                        serde_json::from_slice::<PersistedItems>(&bytes)
-                                    {
-                                        if stored.schema_version == 1 && valid_items(&stored.items)
-                                        {
-                                            if let Ok(mut state) = service.inner.lock() {
-                                                state.items = stored.items.into_iter().collect();
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
+    *service
+        .app
+        .write()
+        .map_err(|_| "Clipboard history service unavailable")? = Some(app.clone());
+    let dir = service.directory(&app)?;
+    let mut load_items = false;
+    match read_bounded(&dir.join("settings.json"), 4096) {
+        Ok(bytes) => {
+            if let Ok(settings) = serde_json::from_slice::<PersistedSettings>(&bytes) {
+                if settings.schema_version == 1 {
+                    let mut state = service
+                        .inner
+                        .lock()
+                        .map_err(|_| "Clipboard history service unavailable")?;
+                    state.enabled = settings.enabled;
+                    state.persist_on_exit = settings.persist_on_exit;
+                    load_items = settings.persist_on_exit;
                 }
             }
         }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {}
+        Err(error) => {
+            return Err(format!(
+                "Could not read clipboard-history settings: {error}"
+            ));
+        }
+    }
+    if load_items {
+        let items_path = dir.join("items.json");
+        match read_bounded(&items_path, MAX_STORE_BYTES) {
+            Ok(bytes) => {
+                let bytes = Zeroizing::new(bytes);
+                match serde_json::from_slice::<PersistedItems>(bytes.as_slice()) {
+                    Ok(stored) if valid_persisted_items(&stored) => {
+                        service
+                            .inner
+                            .lock()
+                            .map_err(|_| "Clipboard history service unavailable")?
+                            .items = stored.items.into_iter().collect();
+                    }
+                    _ => {
+                        remove_file_if_exists(&items_path).map_err(|error| {
+                            format!("Could not remove invalid clipboard history: {error}")
+                        })?;
+                    }
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
+                remove_file_if_exists(&items_path).map_err(|error| {
+                    format!("Could not remove oversized clipboard history: {error}")
+                })?;
+            }
+            Err(error) => {
+                return Err(format!(
+                    "Could not read persisted clipboard history: {error}"
+                ));
+            }
+        }
+    } else {
+        // A missing/invalid opt-in setting must not leave stale clipboard text on disk.
+        service.remove_items_file(&app)?;
     }
     let worker_service = service.clone();
     let stop = service.stop.clone();
@@ -466,19 +622,22 @@ pub fn start(app: AppHandle, service: &Arc<ClipboardHistoryService>) -> Result<(
         .name("tuck-clipboard-history".into())
         .spawn(move || {
             while !stop.load(Ordering::Acquire) {
-                let enabled = worker_service
+                let (enabled, generation) = worker_service
                     .inner
                     .lock()
-                    .map(|s| s.enabled)
-                    .unwrap_or(false);
+                    .map(|s| (s.enabled, s.generation))
+                    .unwrap_or((false, 0));
                 if enabled {
                     match read_clipboard_text() {
                         Ok(Some((sequence, text))) => {
+                            let mut text = Zeroizing::new(text);
                             let previous = worker_service
                                 .last_sequence
                                 .swap(sequence, Ordering::AcqRel);
                             if sequence != previous {
-                                if let Err(error) = worker_service.push_text(text) {
+                                if let Err(error) =
+                                    worker_service.push_text(std::mem::take(&mut *text), generation)
+                                {
                                     if let Ok(app) = worker_service.app() {
                                         let _ = app.emit(EVENT_ERROR, error);
                                     }
@@ -509,8 +668,9 @@ pub fn stop(service: &Arc<ClipboardHistoryService>) {
 fn valid_items(items: &[ClipboardHistoryItem]) -> bool {
     items.len() <= MAX_ITEMS
         && items.iter().all(|item| {
-            !item.id.is_empty()
+            Uuid::parse_str(&item.id).is_ok()
                 && item.id.len() <= 64
+                && accepts_clipboard_text(&item.text)
                 && item.text.len() <= MAX_ITEM_BYTES
                 && !item.text.contains('\0')
         })
@@ -527,6 +687,7 @@ fn read_clipboard_text() -> Result<Option<(u32, String)>, String> {
                 GetClipboardSequenceNumber, OpenClipboard, RegisterClipboardFormatW,
             },
             Memory::{GlobalLock, GlobalSize, GlobalUnlock},
+            Ole::CF_UNICODETEXT,
             Threading::GetCurrentProcessId,
         },
         UI::WindowsAndMessaging::GetWindowThreadProcessId,
@@ -536,23 +697,31 @@ fn read_clipboard_text() -> Result<Option<(u32, String)>, String> {
         if OpenClipboard(None).is_err() {
             return Ok(None);
         }
-        let result = (|| {
+        let mut result = (|| {
             let owner = GetClipboardOwner().unwrap_or_default();
             if !owner.0.is_null() {
                 let mut owner_pid = 0;
-                let _ = GetWindowThreadProcessId(owner, Some(&mut owner_pid));
+                if GetWindowThreadProcessId(owner, Some(&mut owner_pid)) == 0 {
+                    return Ok(None);
+                }
                 if owner_pid == GetCurrentProcessId() {
                     return Ok(None);
                 }
             }
-            if has_private_marker("ExcludeClipboardContentFromMonitorProcessing")?
-                || has_disabled_history_marker("CanIncludeInClipboardHistory")?
-                || has_private_marker("PasswordProtected")?
-                || has_private_marker("TuckDictationTransient")?
-            {
+            let exclude_from_monitoring =
+                has_private_marker("ExcludeClipboardContentFromMonitorProcessing")?;
+            let history_disabled = has_disabled_history_marker("CanIncludeInClipboardHistory")?;
+            let password_marked = has_private_marker("PasswordProtected")?;
+            let tuck_transient = has_private_marker("TuckDictationTransient")?;
+            if should_skip_clipboard_item(
+                exclude_from_monitoring,
+                history_disabled,
+                password_marked,
+                tuck_transient,
+            ) {
                 return Ok(None);
             }
-            let handle = match GetClipboardData(13) {
+            let handle = match GetClipboardData(CF_UNICODETEXT.0 as u32) {
                 Ok(handle) => HGLOBAL(handle.0),
                 Err(_) => return Ok(None),
             };
@@ -569,16 +738,20 @@ fn read_clipboard_text() -> Result<Option<(u32, String)>, String> {
                 .iter()
                 .position(|unit| *unit == 0)
                 .unwrap_or(units.len());
-            let text = String::from_utf16_lossy(&units[..length]);
+            let mut text = String::from_utf16_lossy(&units[..length]);
             let _ = GlobalUnlock(handle);
             let after = GetClipboardSequenceNumber();
-            if before != after {
+            if !clipboard_sequence_unchanged(before, after) {
+                text.zeroize();
                 return Ok(None);
             }
             Ok(Some((after, text)))
         })();
         let close = CloseClipboard();
         if close.is_err() {
+            if let Ok(Some((_, text))) = &mut result {
+                text.zeroize();
+            }
             return Err("Could not close the Windows clipboard after reading it".into());
         }
         return result;
@@ -645,15 +818,17 @@ pub fn clipboard_copy(
     if !matches!(window.label(), "main" | "settings") {
         return Err("Access denied".into());
     }
-    let text = service
-        .inner
-        .lock()
-        .map_err(|_| "Clipboard history unavailable")?
-        .items
-        .iter()
-        .find(|item| item.id == id)
-        .map(|item| item.text.clone())
-        .ok_or("Clipboard item not found")?;
+    let text = Zeroizing::new(
+        service
+            .inner
+            .lock()
+            .map_err(|_| "Clipboard history unavailable")?
+            .items
+            .iter()
+            .find(|item| item.id == id)
+            .map(|item| item.text.clone())
+            .ok_or("Clipboard item not found")?,
+    );
     #[cfg(windows)]
     unsafe {
         use windows::Win32::{
@@ -663,7 +838,11 @@ pub fn clipboard_copy(
                 Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE},
             },
         };
-        let units: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
+        let units = Zeroizing::new(
+            text.encode_utf16()
+                .chain(std::iter::once(0))
+                .collect::<Vec<_>>(),
+        );
         let memory = GlobalAlloc(GMEM_MOVEABLE, units.len() * 2)
             .map_err(|_| "Clipboard allocation failed")?;
         let ptr = GlobalLock(memory) as *mut u16;
@@ -870,5 +1049,80 @@ mod tests {
         assert!(!snapshot.enabled);
         assert!(!snapshot.persist_on_exit);
         assert!(snapshot.items.is_empty());
+    }
+
+    #[test]
+    fn privacy_markers_exclude_cooperating_sensitive_clipboards() {
+        assert!(!should_skip_clipboard_item(false, false, false, false));
+        assert!(should_skip_clipboard_item(true, false, false, false));
+        assert!(should_skip_clipboard_item(false, true, false, false));
+        assert!(should_skip_clipboard_item(false, false, true, false));
+        assert!(should_skip_clipboard_item(false, false, false, true));
+    }
+
+    #[test]
+    fn clipboard_change_during_native_read_discards_the_snapshot() {
+        assert!(clipboard_sequence_unchanged(12, 12));
+        assert!(!clipboard_sequence_unchanged(12, 13));
+    }
+
+    #[test]
+    fn stale_read_is_rejected_after_disable_and_reenable() {
+        let state = Arc::new(Mutex::new(StateInner {
+            enabled: true,
+            persist_on_exit: false,
+            generation: 0,
+            items: VecDeque::new(),
+        }));
+        let captured_generation = state.lock().unwrap().generation;
+        let rendezvous = Arc::new(std::sync::Barrier::new(2));
+        let worker_state = state.clone();
+        let worker_rendezvous = rendezvous.clone();
+        let worker = std::thread::spawn(move || {
+            worker_rendezvous.wait();
+            worker_rendezvous.wait();
+            let state = worker_state.lock().unwrap();
+            accept_clipboard_generation(state.enabled, state.generation, captured_generation)
+        });
+
+        rendezvous.wait();
+        {
+            let mut state = state.lock().unwrap();
+            update_enabled(&mut state, false);
+            update_enabled(&mut state, true);
+        }
+        rendezvous.wait();
+
+        assert!(!worker.join().unwrap());
+        let state = state.lock().unwrap();
+        assert!(state.items.is_empty());
+        assert_eq!(state.generation, 2);
+    }
+
+    #[test]
+    fn history_input_and_persisted_schema_are_bounded() {
+        assert!(!accepts_clipboard_text("  \n"));
+        assert!(!accepts_clipboard_text(&"x".repeat(MAX_ITEM_BYTES + 1)));
+        assert!(!valid_persisted_items(&PersistedItems {
+            schema_version: 2,
+            items: vec![],
+        }));
+        assert!(serde_json::from_str::<PersistedItems>(
+            r#"{"schemaVersion":1,"items":[],"futureField":true}"#
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn bounded_storage_read_rejects_oversized_files_before_parsing() {
+        let dir = std::env::temp_dir().join(format!("tuck-clipboard-bound-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("items.json");
+        std::fs::write(&path, b"x".repeat(17)).unwrap();
+        let error = read_bounded(&path, 16).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        std::fs::write(&path, b"small").unwrap();
+        assert_eq!(read_bounded(&path, 16).unwrap(), b"small");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

@@ -2,6 +2,8 @@
 //! Clipboard is never touched: text is sent with Unicode keyboard input, so
 //! concurrent clipboard changes are preserved without a restore race.
 
+use zeroize::{Zeroize, Zeroizing};
+
 #[derive(Debug)]
 pub(super) struct InsertionFailure {
     pub message: String,
@@ -256,7 +258,7 @@ pub(super) fn insert_unicode(
     }
     verify_foreground_target(target)?;
     is_editable_target(target)?;
-    let units: Vec<u16> = text.encode_utf16().collect();
+    let units = Zeroizing::new(text.encode_utf16().collect::<Vec<u16>>());
     if units.len() > 32 * 1024 {
         return Err(String::from("Transcript is too long to insert safely").into());
     }
@@ -269,7 +271,13 @@ pub(super) fn insert_unicode(
                 inputs.push(key_input(*unit, Default::default()));
                 inputs.push(key_input(*unit, KEYEVENTF_KEYUP));
             }
-            unsafe { SendInput(&inputs, std::mem::size_of::<INPUT>() as i32) as usize }
+            unsafe {
+                let inserted = SendInput(&inputs, std::mem::size_of::<INPUT>() as i32) as usize;
+                for input in &mut inputs {
+                    input.Anonymous.ki.wScan.zeroize();
+                }
+                inserted
+            }
         },
     )
 }

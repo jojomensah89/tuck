@@ -55,6 +55,14 @@ pub struct DictationSnapshot {
     pub can_insert: bool,
 }
 
+impl Drop for DictationSnapshot {
+    fn drop(&mut self) {
+        if let Some(transcript) = self.transcript.as_mut() {
+            transcript.zeroize();
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct DictationTranscriptEvent {
@@ -62,6 +70,12 @@ pub struct DictationTranscriptEvent {
     pub inserted: bool,
     pub requires_review: bool,
     pub reason: Option<String>,
+}
+
+impl Drop for DictationTranscriptEvent {
+    fn drop(&mut self) {
+        self.text.zeroize();
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -84,7 +98,16 @@ struct Runtime {
     active: Option<ActiveSession>,
     downloaded_bytes: u64,
     downloading: bool,
+    removing_model: bool,
     download_cancel: Option<Arc<AtomicBool>>,
+}
+
+impl Drop for Runtime {
+    fn drop(&mut self) {
+        if let Some(transcript) = self.transcript.as_mut() {
+            transcript.zeroize();
+        }
+    }
 }
 
 /// Shared by coordinator-registered Tauri commands and the shortcut callback.
@@ -116,6 +139,7 @@ impl DictationService {
                 active: None,
                 downloaded_bytes: 0,
                 downloading: false,
+                removing_model: false,
                 download_cancel: None,
             }),
             model_busy: AtomicBool::new(false),
@@ -135,29 +159,35 @@ impl DictationService {
 
     fn snapshot(&self) -> DictationSnapshot {
         let settings = self.settings.read().map(|s| s.clone()).unwrap_or_default();
-        let runtime = self.runtime.lock().ok();
+        let (status, model_downloaded_bytes, can_insert, transcript, message) = self
+            .runtime
+            .lock()
+            .map(|runtime| {
+                (
+                    runtime.status.clone(),
+                    runtime.downloaded_bytes,
+                    runtime.status == "review" && runtime.review_target.is_some(),
+                    runtime.transcript.clone(),
+                    runtime.message.clone(),
+                )
+            })
+            .unwrap_or_else(|_| ("error".into(), 0, false, None, None));
         let path = self.model_path().ok();
         DictationSnapshot {
-            status: runtime
-                .as_ref()
-                .map(|r| r.status.clone())
-                .unwrap_or_else(|| "error".into()),
+            status,
             model_installed: path.as_deref().is_some_and(Path::is_file),
-            model_downloaded_bytes: runtime.as_ref().map_or(0, |r| r.downloaded_bytes),
-            can_insert: runtime
-                .as_ref()
-                .is_some_and(|r| r.status == "review" && r.review_target.is_some()),
-            transcript: runtime.and_then(|r| r.transcript.clone()),
-            message: self.runtime.lock().ok().and_then(|r| r.message.clone()),
+            model_downloaded_bytes,
+            can_insert,
+            transcript,
+            message,
             settings,
         }
     }
 
     fn emit_state(&self) {
-        if let Ok(app) = self.app.read() {
-            if let Some(app) = app.as_ref() {
-                let _ = app.emit(EVENT_STATE, self.snapshot());
-            }
+        let app = self.app.read().ok().and_then(|slot| slot.clone());
+        if let Some(app) = app {
+            let _ = app.emit(EVENT_STATE, self.snapshot());
         }
     }
 
@@ -196,7 +226,11 @@ impl DictationService {
                 .runtime
                 .lock()
                 .map_err(|_| "Dictation service unavailable")?;
-            if runtime.active.is_some() || runtime.downloading || runtime.status == "inserting" {
+            if runtime.active.is_some()
+                || runtime.downloading
+                || runtime.removing_model
+                || runtime.status == "inserting"
+            {
                 return Err("Dictation is already recording, transcribing, or downloading".into());
             }
             if let Some(mut text) = runtime.transcript.take() {
@@ -214,11 +248,12 @@ impl DictationService {
                 .runtime
                 .lock()
                 .map_err(|_| "Dictation service unavailable")?;
-            if runtime.active.is_some() || runtime.downloading || runtime.status == "inserting" {
+            if runtime.active.is_some()
+                || runtime.downloading
+                || runtime.removing_model
+                || runtime.status == "inserting"
+            {
                 return Err("Dictation is already active".into());
-            }
-            if !model_path.is_file() {
-                return Err("The offline model was removed before recording started".into());
             }
             runtime.active = Some(ActiveSession {
                 stop: stop.clone(),
@@ -229,6 +264,16 @@ impl DictationService {
         }
         self.emit_state();
 
+        if let Err(error) = model::verify_installed(&model_path) {
+            self.clear_active();
+            self.set_status("error", Some(error.clone()));
+            return Err(error);
+        }
+        if stop.load(Ordering::Acquire) || cancel.load(Ordering::Acquire) {
+            self.finish_cancelled();
+            return Ok(());
+        }
+
         let service = self.clone();
         std::thread::Builder::new()
             .name("tuck-dictation".into())
@@ -236,17 +281,19 @@ impl DictationService {
                 let result =
                     audio::record_and_transcribe(&service, &app, &model_path, stop, cancel.clone());
                 if cancel.load(Ordering::Acquire) {
+                    if let Ok(mut text) = result {
+                        text.zeroize();
+                    }
                     service.finish_cancelled();
                     return;
                 }
                 match result {
                     Ok(mut text) => {
-                        let mut limit = text.len().min(MAX_TRANSCRIPT_BYTES);
-                        while !text.is_char_boundary(limit) {
-                            limit -= 1;
-                        }
-                        text.truncate(limit);
+                        truncate_utf8(&mut text, MAX_TRANSCRIPT_BYTES);
                         service.finish_transcript(text, original_target);
+                    }
+                    Err(error) if error == "Dictation stopped before microphone capture began" => {
+                        service.finish_cancelled();
                     }
                     Err(error) => service.finish_error(error),
                 }
@@ -258,14 +305,10 @@ impl DictationService {
         Ok(())
     }
 
-    fn finish_transcript(
-        &self,
-        mut text: String,
-        original_target: Option<target::ForegroundTarget>,
-    ) {
-        text = text.trim().to_owned();
+    fn finish_transcript(&self, text: String, original_target: Option<target::ForegroundTarget>) {
+        let source = Zeroizing::new(text);
+        let text = Zeroizing::new(source.trim().to_owned());
         if text.is_empty() {
-            text.zeroize();
             self.clear_active();
             self.set_status("idle", Some("No speech was recognized.".into()));
             return;
@@ -275,15 +318,16 @@ impl DictationService {
             .as_ref()
             .ok_or_else(|| "The original foreground window could not be captured.".to_owned())
             .and_then(target::verify_foreground_target)
-            .and_then(|_| {
-                target::is_editable_target(original_target.as_ref().expect("checked above"))
+            .and_then(|_| match original_target.as_ref() {
+                Some(target) => target::is_editable_target(target),
+                None => Err("The original foreground window could not be captured.".into()),
             });
         let mut inserted = false;
         let mut partial_insertion = false;
         let mut reason = safety.err();
         if !settings.review_before_insert && reason.is_none() {
             if let Some(target) = original_target.as_ref() {
-                match target::insert_unicode(target, &text) {
+                match target::insert_unicode(target, text.as_str()) {
                     Ok(()) => inserted = true,
                     Err(error) => {
                         partial_insertion = error.may_have_inserted;
@@ -298,7 +342,7 @@ impl DictationService {
             runtime.status = if review { "review" } else { "idle" }.into();
             runtime.message = reason.clone();
             // Keep text only during review. Immediate successful insertion drops it.
-            runtime.transcript = review.then(|| text.clone());
+            runtime.transcript = review.then(|| text.as_str().to_owned());
             runtime.review_target = if review && !partial_insertion {
                 original_target
             } else {
@@ -310,14 +354,13 @@ impl DictationService {
             let _ = app.emit(
                 EVENT_TRANSCRIPT,
                 DictationTranscriptEvent {
-                    text: text.clone(),
+                    text: text.as_str().to_owned(),
                     inserted,
                     requires_review: review,
                     reason,
                 },
             );
         }
-        text.zeroize();
     }
 
     fn finish_error(&self, error: String) {
@@ -453,7 +496,12 @@ impl DictationService {
                 .runtime
                 .lock()
                 .map_err(|_| "Dictation service unavailable")?;
-            if runtime.active.is_some() || runtime.downloading {
+            if runtime.active.is_some()
+                || runtime.downloading
+                || runtime.removing_model
+                || runtime.status == "review"
+                || runtime.status == "inserting"
+            {
                 return Err("Stop dictation before changing the model".into());
             }
             runtime.downloading = true;
@@ -467,57 +515,101 @@ impl DictationService {
         std::thread::Builder::new()
             .name("tuck-model-download".into())
             .spawn(move || {
-                let result = model::download(&app, &cancel, |received| {
-                    if let Ok(mut runtime) = service.runtime.lock() {
-                        runtime.downloaded_bytes = received;
-                    }
-                    service.emit_state();
-                });
+                let mut last_progress_event = std::time::Instant::now()
+                    .checked_sub(std::time::Duration::from_secs(1))
+                    .unwrap_or_else(std::time::Instant::now);
+                let result = match tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                {
+                    Ok(runtime) => runtime.block_on(model::download(&app, &cancel, |received| {
+                        if let Ok(mut runtime) = service.runtime.lock() {
+                            runtime.downloaded_bytes = received;
+                        }
+                        if last_progress_event.elapsed() >= std::time::Duration::from_millis(250) {
+                            last_progress_event = std::time::Instant::now();
+                            service.emit_state();
+                        }
+                    })),
+                    Err(error) => Err(format!("Could not start model download runtime: {error}")),
+                };
+                let cancelled = cancel.load(Ordering::Acquire);
+                let error = result.err().filter(|_| !cancelled);
                 if let Ok(mut runtime) = service.runtime.lock() {
                     runtime.downloading = false;
                     runtime.download_cancel = None;
-                    runtime.status = if result.is_ok() || cancel.load(Ordering::Acquire) {
-                        "idle"
-                    } else {
-                        "error"
-                    }
-                    .into();
-                    runtime.message = result.err();
+                    runtime.status = if error.is_none() { "idle" } else { "error" }.into();
+                    runtime.message = error.clone();
                 }
                 service.emit_state();
+                if let Some(error) = error {
+                    if let Ok(app) = service.app() {
+                        let _ = app.emit(EVENT_ERROR, error);
+                    }
+                }
             })
             .map_err(|e| {
                 if let Ok(mut runtime) = self.runtime.lock() {
                     runtime.downloading = false;
                     runtime.download_cancel = None;
+                    runtime.status = "error".into();
+                    runtime.message = Some(format!("Could not start model download: {e}"));
                 }
+                self.emit_state();
                 format!("Could not start model download: {e}")
             })?;
         Ok(())
     }
 
     fn remove_model(&self) -> Result<(), String> {
-        let mut runtime = self
-            .runtime
-            .lock()
-            .map_err(|_| "Dictation service unavailable")?;
-        if runtime.active.is_some()
-            || runtime.downloading
-            || runtime.status == "review"
-            || runtime.status == "inserting"
-            || self.model_busy.load(Ordering::Acquire)
         {
-            return Err("The model is in use; stop dictation before removing it".into());
+            let mut runtime = self
+                .runtime
+                .lock()
+                .map_err(|_| "Dictation service unavailable")?;
+            if runtime.active.is_some()
+                || runtime.downloading
+                || runtime.removing_model
+                || runtime.status == "review"
+                || runtime.status == "inserting"
+                || self.model_busy.load(Ordering::Acquire)
+            {
+                return Err("The model is in use; stop dictation before removing it".into());
+            }
+            runtime.removing_model = true;
+            runtime.status = "removingModel".into();
+            runtime.message = None;
         }
-        let path = self.model_path()?;
-        if path.exists() {
-            std::fs::remove_file(path).map_err(|e| format!("Could not remove the model: {e}"))?;
-        }
-        runtime.status = "modelMissing".into();
-        runtime.message = None;
-        drop(runtime);
         self.emit_state();
-        Ok(())
+        let path = match self.model_path() {
+            Ok(path) => path,
+            Err(error) => {
+                if let Ok(mut runtime) = self.runtime.lock() {
+                    runtime.removing_model = false;
+                    runtime.status = "error".into();
+                    runtime.message = Some(error.clone());
+                }
+                self.emit_state();
+                return Err(error);
+            }
+        };
+        let result = if path.exists() {
+            std::fs::remove_file(path).map_err(|e| format!("Could not remove the model: {e}"))
+        } else {
+            Ok(())
+        };
+        if let Ok(mut runtime) = self.runtime.lock() {
+            runtime.removing_model = false;
+            runtime.status = if result.is_ok() {
+                "modelMissing"
+            } else {
+                "error"
+            }
+            .into();
+            runtime.message = result.as_ref().err().cloned();
+        }
+        self.emit_state();
+        result
     }
 
     pub fn shutdown(&self) {
@@ -584,8 +676,8 @@ pub fn handle_shortcut(app: &AppHandle, shortcut: &Shortcut, event: ShortcutEven
     let toggle = Shortcut::try_from(settings.toggle_shortcut.as_str()).ok();
     let hold = Shortcut::try_from(settings.hold_to_talk_shortcut.as_str()).ok();
     if toggle.as_ref() == Some(shortcut) && event.state == ShortcutState::Pressed {
-        let status = service.snapshot().status;
-        if status == "recording" {
+        let status = service.snapshot().status.clone();
+        if status == "recording" || status == "starting" {
             let _ = service.stop();
         } else if status == "idle" || status == "review" || status == "error" {
             let _ = service.begin(RecordingMode::Toggle);
@@ -660,9 +752,67 @@ fn persist_settings(app: &AppHandle, settings: &DictationSettings) -> Result<(),
     if bytes.len() > 4096 {
         return Err("Dictation settings exceed the size limit".into());
     }
-    let tmp = path.with_extension("json.tmp");
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or("Invalid dictation settings file path")?;
+    let tmp = path.with_file_name(format!("{file_name}.{}.tmp", uuid::Uuid::new_v4()));
+    let _cleanup = TemporaryConfigFile(tmp.clone());
     std::fs::write(&tmp, bytes).map_err(|e| format!("Could not write settings: {e}"))?;
-    std::fs::rename(tmp, path).map_err(|e| format!("Could not commit settings: {e}"))
+    replace_file(&tmp, &path).map_err(|e| format!("Could not commit settings: {e}"))
+}
+
+struct TemporaryConfigFile(PathBuf);
+
+impl Drop for TemporaryConfigFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+#[cfg(windows)]
+fn replace_file(from: &Path, to: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows::{
+        core::PCWSTR,
+        Win32::Storage::FileSystem::{
+            MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+        },
+    };
+    let from: Vec<u16> = from
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let to: Vec<u16> = to
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    unsafe {
+        MoveFileExW(
+            PCWSTR(from.as_ptr()),
+            PCWSTR(to.as_ptr()),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    }
+    .map_err(|error| std::io::Error::other(error.to_string()))
+}
+
+#[cfg(not(windows))]
+fn replace_file(from: &Path, to: &Path) -> std::io::Result<()> {
+    std::fs::rename(from, to)
+}
+
+fn truncate_utf8(text: &mut String, max_bytes: usize) {
+    if text.len() <= max_bytes {
+        return;
+    }
+    let mut end = max_bytes;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text.truncate(end);
 }
 
 #[tauri::command]
@@ -712,7 +862,7 @@ pub fn dictation_model_remove(service: State<'_, Arc<DictationService>>) -> Resu
 
 #[tauri::command]
 pub fn dictation_toggle(service: State<'_, Arc<DictationService>>) -> Result<(), String> {
-    if service.snapshot().status == "recording" {
+    if matches!(service.snapshot().status.as_str(), "recording" | "starting") {
         service.stop()
     } else {
         service.begin(RecordingMode::Toggle)
@@ -783,6 +933,11 @@ mod tests {
         assert!(service.remove_model().unwrap_err().contains("in use"));
         let mut runtime = service.runtime.lock().unwrap();
         runtime.downloading = false;
+        runtime.removing_model = true;
+        drop(runtime);
+        assert!(service.remove_model().unwrap_err().contains("in use"));
+        let mut runtime = service.runtime.lock().unwrap();
+        runtime.removing_model = false;
         runtime.active = Some(ActiveSession {
             stop: Arc::new(AtomicBool::new(false)),
             cancel: Arc::new(AtomicBool::new(false)),
@@ -815,7 +970,35 @@ mod tests {
     #[test]
     fn transcript_byte_cap_does_not_create_an_unbounded_payload() {
         let mut text = "a".repeat(MAX_TRANSCRIPT_BYTES + 10);
-        text.truncate(MAX_TRANSCRIPT_BYTES);
+        truncate_utf8(&mut text, MAX_TRANSCRIPT_BYTES);
         assert_eq!(text.len(), MAX_TRANSCRIPT_BYTES);
+    }
+
+    #[test]
+    fn transcript_truncation_preserves_unicode_boundaries() {
+        let mut text = "😀".repeat(128);
+        truncate_utf8(&mut text, 127);
+        assert!(text.len() <= 127);
+        assert!(text.is_char_boundary(text.len()));
+    }
+
+    #[test]
+    fn settings_persistence_replaces_an_existing_file() {
+        let dir =
+            std::env::temp_dir().join(format!("tuck-dictation-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        let temporary = dir.join("settings.json.tmp");
+        std::fs::write(&path, b"old").unwrap();
+        std::fs::write(
+            &temporary,
+            serde_json::to_vec(&DictationSettings::default()).unwrap(),
+        )
+        .unwrap();
+        replace_file(&temporary, &path).unwrap();
+        let restored: DictationSettings =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(restored, DictationSettings::default());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

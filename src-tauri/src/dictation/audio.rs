@@ -2,16 +2,22 @@ use super::{DictationService, EVENT_PARTIAL};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{SampleFormat, Stream, StreamConfig};
 use crossbeam_channel::{bounded, Receiver, Sender};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
 use zeroize::{Zeroize, Zeroizing};
 
-const TARGET_RATE: u32 = 16_000;
 const MAX_SECONDS: usize = 120;
+const MAX_QUEUED_AUDIO_SECONDS: usize = 10;
+const MAX_CALLBACK_SECONDS: usize = 1;
+const AUDIO_QUEUE_BLOCKS: usize = 2048;
 const PREVIEW_INTERVAL: Duration = Duration::from_secs(3);
+
+#[path = "audio_math.rs"]
+mod audio_math;
+use audio_math::{release_audio_frames, resample_to_16k, try_reserve_audio_frames};
 
 pub(super) fn record_and_transcribe(
     service: &DictationService,
@@ -33,18 +39,25 @@ fn record_and_transcribe_inner(
     stop: Arc<AtomicBool>,
     cancel: Arc<AtomicBool>,
 ) -> Result<String, String> {
+    if cancel.load(Ordering::Acquire) {
+        return Err("Dictation cancelled".into());
+    }
+    if stop.load(Ordering::Acquire) {
+        return Err("Dictation stopped before microphone capture began".into());
+    }
     let context = WhisperContext::new_with_params(model_path, WhisperContextParameters::default())
         .map_err(|e| format!("Could not load the local dictation model: {e}"))?;
     if cancel.load(Ordering::Acquire) {
         return Err("Dictation cancelled".into());
     }
     if stop.load(Ordering::Acquire) {
-        return Ok(String::new());
+        return Err("Dictation stopped before microphone capture began".into());
     }
 
-    let (audio_tx, audio_rx) = bounded::<Vec<f32>>(256);
+    let queued_frames = Arc::new(AtomicUsize::new(0));
+    let (audio_tx, audio_rx) = bounded::<Vec<f32>>(AUDIO_QUEUE_BLOCKS);
     let (error_tx, error_rx) = bounded::<String>(1);
-    let (stream, sample_rate) = open_input_stream(audio_tx, error_tx)?;
+    let (stream, sample_rate) = open_input_stream(audio_tx, error_tx, queued_frames.clone())?;
     stream.play().map_err(|e| format!("Could not start microphone capture: {e}. Check Windows microphone privacy settings and the selected input device."))?;
     service.set_status("recording", None);
 
@@ -56,17 +69,19 @@ fn record_and_transcribe_inner(
     loop {
         if cancel.load(Ordering::Acquire) {
             drop(stream);
-            zeroize_pending_audio(&audio_rx);
+            zeroize_pending_audio(&audio_rx, &queued_frames);
             samples.zeroize();
             return Err("Dictation cancelled".into());
         }
         if let Ok(error) = error_rx.try_recv() {
             drop(stream);
-            zeroize_pending_audio(&audio_rx);
+            zeroize_pending_audio(&audio_rx, &queued_frames);
+            samples.zeroize();
             return Err(format!("Microphone capture interrupted: {error}"));
         }
         match audio_rx.recv_timeout(Duration::from_millis(100)) {
             Ok(mut block) => {
+                release_audio_frames(&queued_frames, block.len());
                 let remaining = cap.saturating_sub(samples.len());
                 if block.len() > remaining {
                     block.truncate(remaining);
@@ -79,7 +94,10 @@ fn record_and_transcribe_inner(
             }
             Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
             Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
-                return Err("Microphone capture ended unexpectedly".into())
+                drop(stream);
+                zeroize_pending_audio(&audio_rx, &queued_frames);
+                samples.zeroize();
+                return Err("Microphone capture ended unexpectedly".into());
             }
         }
         if preview && started.elapsed() >= next_preview && samples.len() >= sample_rate as usize * 2
@@ -87,8 +105,8 @@ fn record_and_transcribe_inner(
             let start = samples.len().saturating_sub(sample_rate as usize * 15);
             let preview_audio = Zeroizing::new(resample_to_16k(&samples[start..], sample_rate));
             if !cancel.load(Ordering::Acquire) {
-                if let Ok(text) = transcribe(&context, &preview_audio, cancel.clone()) {
-                    let text = text.trim();
+                if let Ok(mut partial_text) = transcribe(&context, &preview_audio, cancel.clone()) {
+                    let text = partial_text.trim();
                     if !text.is_empty() {
                         let _ = app.emit(
                             EVENT_PARTIAL,
@@ -97,6 +115,7 @@ fn record_and_transcribe_inner(
                             },
                         );
                     }
+                    partial_text.zeroize();
                 }
             }
             next_preview += PREVIEW_INTERVAL;
@@ -112,6 +131,7 @@ fn record_and_transcribe_inner(
     drop(stream);
     // Drain the bounded-by-session audio backlog after the callback has stopped.
     while let Ok(mut block) = audio_rx.try_recv() {
+        release_audio_frames(&queued_frames, block.len());
         let remaining = cap.saturating_sub(samples.len());
         if block.len() > remaining {
             block.truncate(remaining);
@@ -134,8 +154,9 @@ fn record_and_transcribe_inner(
     Ok(transcript)
 }
 
-fn zeroize_pending_audio(receiver: &Receiver<Vec<f32>>) {
+fn zeroize_pending_audio(receiver: &Receiver<Vec<f32>>, queued_frames: &AtomicUsize) {
     while let Ok(mut block) = receiver.try_recv() {
+        release_audio_frames(queued_frames, block.len());
         block.zeroize();
     }
 }
@@ -146,9 +167,16 @@ struct PartialTranscript {
     text: String,
 }
 
+impl Drop for PartialTranscript {
+    fn drop(&mut self) {
+        self.text.zeroize();
+    }
+}
+
 fn open_input_stream(
     audio_tx: Sender<Vec<f32>>,
     error_tx: Sender<String>,
+    queued_frames: Arc<AtomicUsize>,
 ) -> Result<(Stream, u32), String> {
     let host = cpal::default_host();
     let device = host.default_input_device().ok_or(
@@ -169,20 +197,42 @@ fn open_input_stream(
     }
     let stream_config: StreamConfig = config.clone().into();
     let format = config.sample_format();
+    let max_callback_frames = (sample_rate as usize).saturating_mul(MAX_CALLBACK_SECONDS);
+    let max_queued_frames = (sample_rate as usize).saturating_mul(MAX_QUEUED_AUDIO_SECONDS);
     let stream = match format {
-        SampleFormat::F32 => {
-            build_stream::<f32, _>(&device, &stream_config, channels, audio_tx, error_tx, |v| v)
-        }
-        SampleFormat::I16 => {
-            build_stream::<i16, _>(&device, &stream_config, channels, audio_tx, error_tx, |v| {
-                v as f32 / 32768.0
-            })
-        }
-        SampleFormat::U16 => {
-            build_stream::<u16, _>(&device, &stream_config, channels, audio_tx, error_tx, |v| {
-                (v as f32 - 32768.0) / 32768.0
-            })
-        }
+        SampleFormat::F32 => build_stream::<f32, _>(
+            &device,
+            &stream_config,
+            channels,
+            max_callback_frames,
+            max_queued_frames,
+            audio_tx,
+            error_tx,
+            queued_frames.clone(),
+            |v| v,
+        ),
+        SampleFormat::I16 => build_stream::<i16, _>(
+            &device,
+            &stream_config,
+            channels,
+            max_callback_frames,
+            max_queued_frames,
+            audio_tx,
+            error_tx,
+            queued_frames.clone(),
+            |v| v as f32 / 32768.0,
+        ),
+        SampleFormat::U16 => build_stream::<u16, _>(
+            &device,
+            &stream_config,
+            channels,
+            max_callback_frames,
+            max_queued_frames,
+            audio_tx,
+            error_tx,
+            queued_frames,
+            |v| (v as f32 - 32768.0) / 32768.0,
+        ),
         other => Err(format!(
             "The microphone uses unsupported sample format {other:?}"
         )),
@@ -194,8 +244,11 @@ fn build_stream<T, F>(
     device: &cpal::Device,
     config: &StreamConfig,
     channels: usize,
+    max_callback_frames: usize,
+    max_queued_frames: usize,
     tx: Sender<Vec<f32>>,
     error_tx: Sender<String>,
+    queued_frames: Arc<AtomicUsize>,
     convert: F,
 ) -> Result<Stream, String>
 where
@@ -203,52 +256,45 @@ where
     F: Fn(T) -> f32 + Send + 'static,
 {
     let callback_error = error_tx.clone();
+    let stream_error = error_tx;
     device.build_input_stream(
         config,
         move |input: &[T], _| {
+            let frame_count = input.len() / channels;
+            if frame_count > max_callback_frames {
+                let _ = callback_error.try_send(
+                    "Microphone callback exceeded its bounded audio block".into(),
+                );
+                return;
+            }
+            if frame_count == 0 {
+                return;
+            }
+            if !try_reserve_audio_frames(&queued_frames, frame_count, max_queued_frames) {
+                let _ = callback_error.try_send(
+                    "Microphone audio queue reached its 10 second memory limit; dictation stopped safely".into(),
+                );
+                return;
+            }
             let mut mono = Vec::with_capacity(input.len() / channels);
             for frame in input.chunks_exact(channels) {
                 let value = frame.iter().cloned().map(&convert).sum::<f32>() / channels as f32;
                 mono.push(value.clamp(-1.0, 1.0));
             }
             if let Err(error) = tx.try_send(mono) {
-                let mut dropped = error.into_inner(); dropped.zeroize();
-                let _ = error_tx.try_send("Microphone buffer overflow. Disable partial previews on slower hardware.".into());
+                let mut dropped = error.into_inner();
+                release_audio_frames(&queued_frames, dropped.len());
+                dropped.zeroize();
+                let _ = callback_error.try_send(
+                    "Microphone callback queue is full; dictation stopped safely".into(),
+                );
             }
         },
-        move |error| { let _ = callback_error.try_send(error.to_string()); },
+        move |error| {
+            let _ = stream_error.try_send(error.to_string());
+        },
         None,
     ).map_err(|e| format!("Could not open microphone: {e}. Check microphone permissions and close applications holding exclusive access."))
-}
-
-fn resample_to_16k(input: &[f32], source_rate: u32) -> Vec<f32> {
-    if input.is_empty() {
-        return Vec::new();
-    }
-    if source_rate == TARGET_RATE {
-        return input.to_vec();
-    }
-    let output_len = ((input.len() as u64 * TARGET_RATE as u64) / source_rate as u64) as usize;
-    let mut output = Vec::with_capacity(output_len);
-    for output_index in 0..output_len {
-        let start = output_index as f64 * source_rate as f64 / TARGET_RATE as f64;
-        let end = (output_index + 1) as f64 * source_rate as f64 / TARGET_RATE as f64;
-        let first = start.floor() as usize;
-        let last = (end.ceil() as usize).min(input.len());
-        let mut total = 0.0f32;
-        let mut weight = 0.0f64;
-        for (index, value) in input.iter().enumerate().take(last).skip(first) {
-            let overlap = (end.min(index as f64 + 1.0) - start.max(index as f64)).max(0.0);
-            total += value * overlap as f32;
-            weight += overlap;
-        }
-        output.push(if weight > 0.0 {
-            total / weight as f32
-        } else {
-            0.0
-        });
-    }
-    output
 }
 
 fn transcribe(
@@ -280,7 +326,7 @@ fn transcribe(
         return Err("Dictation cancelled".into());
     }
     let count = state.full_n_segments();
-    let mut output = String::new();
+    let mut output = Zeroizing::new(String::new());
     for index in 0..count {
         if cancel.load(Ordering::Acquire) {
             output.zeroize();
@@ -289,13 +335,14 @@ fn transcribe(
         let segment = state
             .get_segment(index)
             .ok_or("Could not read transcription segment")?;
-        output.push_str(
-            &segment
-                .to_str_lossy()
-                .map_err(|e| format!("Could not read transcription text: {e}"))?,
-        );
+        let mut segment = segment
+            .to_str_lossy()
+            .map_err(|e| format!("Could not read transcription text: {e}"))?
+            .into_owned();
+        output.push_str(&segment);
+        segment.zeroize();
     }
-    Ok(output)
+    Ok(output.as_str().to_owned())
 }
 
 #[cfg(test)]

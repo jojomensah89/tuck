@@ -1,0 +1,85 @@
+/*
+ * Tuck design tokens. Color lives with each surface (styles.css for the island,
+ * settings.html for settings); everything here is safe to load on either page.
+ */
+:root {
+  /* Spacing: 4px grid (2px only for nudges inside small controls) */
+  --s-half: 2px;
+  --s-1: 4px;
+  --s-2: 8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-5: 20px;
+  --s-6: 24px;
+  --s-8: 32px;
+  --s-12: 48px;
+
+  /* Radius */
+  --r-xs: 2px;
+  --r-sm: 4px;
+  --r-md: 8px;
+  --r-lg: 12px;
+  --r-xl: 16px;
+  --r-round: 50%;
+  --r-idle: 16px;
+  --r-peek: 20px;
+  --r-open: 32px;
+  --ear: 14px;
+
+  /* Type */
+  --font: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --t-2xs: 10px;
+  --t-xs: 11px;
+  --t-sm: 12px;
+  --t-md: 13px;
+  --t-base: 14px;
+  --t-lg: 20px;
+  --t-xl: 28px;
+  --t-2xl: 40px;
+  --w-regular: 400;
+  --w-medium: 500;
+  --w-strong: 600;
+
+  /* Icons */
+  --i-2xs: 10px;
+  --i-xs: 14px;
+  --i-sm: 16px;
+  --i-md: 20px;
+  --i-lg: 24px;
+
+  /* Sizes */
+  --hit: 36px;
+  --hit-sm: 32px;
+  --open-w: 500px;
+  --open-h: 210px;
+
+  /* Motion: durations */
+  --d-instant: 100ms;
+  --d-fast: 160ms;
+  --d-base: 280ms;
+  --d-close: 300ms;
+  --d-shell: 420ms;
+  --d-content-in: 90ms;  /* the shell is ~65% open on --spring at this point */
+
+  /* Motion: easings (damped springs sampled into linear()) */
+  /* Shell morph, zeta 0.68: ~5% overshoot, settles by the end */
+  --spring: linear(0, 0.084, 0.27, 0.481, 0.674, 0.827, 0.936, 1.004, 1.04, 1.053, 1.052, 1.044, 1.032, 1.021, 1.012, 1.005, 1.001, 0.998, 0.997, 0.997, 1);
+  /* Content entering, zeta 0.78: ~2% overshoot */
+  --spring-enter: linear(0, 0.095, 0.292, 0.502, 0.683, 0.819, 0.913, 0.97, 1.002, 1.016, 1.02, 1.018, 1.014, 1.01, 1.007, 1.004, 1);
+  /* Critically damped settle, no overshoot: closing, hovers, value changes */
+  --ease-out: linear(0, 0.1, 0.287, 0.473, 0.627, 0.743, 0.827, 0.886, 0.925, 0.952, 0.969, 0.98, 0.987, 0.992, 0.995, 0.997, 1);
+  /* Accelerating curve for content leaving */
+  --ease-exit: linear(0, 0.01, 0.044, 0.105, 0.2, 0.332, 0.506, 0.727, 1);
+  --press: 0.96;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --d-instant: 0ms;
+    --d-fast: 0ms;
+    --d-base: 0ms;
+    --d-close: 0ms;
+    --d-shell: 0ms;
+    --d-content-in: 0ms;
+  }
+}

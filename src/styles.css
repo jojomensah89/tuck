@@ -1,4 +1,11 @@
+/* ================= Tokens ================= */
+
+/* Spacing, radius, type, icon and motion tokens live in tokens.css (shared with settings) */
+@import "./tokens.css";
+
+/* Island colors */
 :root {
+  /* Color: one black/graphite ramp, white ink, accent from artwork */
   --surface: #000000;
   --raise: #1c1c1e;
   --raise-hover: #2c2c2e;
@@ -6,14 +13,18 @@
   --ink: #ffffff;
   --ink-2: #a1a1a6;
   --ink-3: #636366;
+  --ink-inverse-hover: #e5e5ea;
+  --line: rgba(255, 255, 255, 0.08);
+  --wash: rgba(255, 255, 255, 0.1);
+  --wash-strong: rgba(255, 255, 255, 0.18);
   --ok: #30d158;
+  --ok-wash: rgba(48, 209, 88, 0.2);
+  --caution: #ff9f0a;
   --warn: #ff453a;
+  --warn-ink: #ff766e;
   --accent: #ffffff;
-  --tint: transparent;
-  --spring: cubic-bezier(0.22, 1, 0.36, 1);
-  --out: cubic-bezier(0.22, 1, 0.36, 1);
-  --ear: 14px;
-  font-family: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
+
+  font-family: var(--font);
 }
 
 * {
@@ -49,28 +60,42 @@ button {
   justify-content: center;
 }
 
+button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
 button:focus-visible,
 input:focus-visible,
 div[tabindex="0"]:focus-visible {
-  outline: 2px solid #ffffff;
+  outline: 2px solid var(--ink);
   outline-offset: 2px;
 }
 
 svg.ico {
-  width: 22px;
-  height: 22px;
+  width: var(--i-md);
+  height: var(--i-md);
   fill: currentColor;
   flex-shrink: 0;
 }
 
 svg.ico.big {
-  width: 26px;
-  height: 26px;
+  width: var(--i-lg);
+  height: var(--i-lg);
 }
 
 svg.ico.nav-ico {
-  width: 14px;
-  height: 14px;
+  width: var(--i-xs);
+  height: var(--i-xs);
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 
 /* ================= Island Shell ================= */
@@ -85,6 +110,11 @@ svg.ico.nav-ico {
   pointer-events: none;
 }
 
+/*
+ * The shell is the only thing whose box changes size. Its two layers are
+ * isolated: .full is laid out once at the open size and clipped, so the
+ * morph never relayouts page content.
+ */
 .island {
   position: absolute;
   top: var(--top, 0px);
@@ -93,46 +123,48 @@ svg.ico.nav-ico {
   width: var(--w, 212px);
   height: var(--h, 32px);
   background: var(--surface);
-  border-radius: 0 0 var(--r, 16px) var(--r, 16px);
-  box-shadow: 0 14px 30px rgba(0, 0, 0, 0.45);
+  border-radius: 0 0 var(--r, var(--r-idle)) var(--r, var(--r-idle));
   cursor: pointer;
   outline: none;
   pointer-events: auto;
+  /* Closing: settle without overshoot, a little quicker than opening */
   transition:
-    width 0.34s var(--out),
-    height 0.34s var(--out),
-    border-radius 0.34s var(--out),
-    opacity 0.2s,
-    transform 0.3s var(--out);
-  will-change: width, height, border-radius;
+    width var(--d-close) var(--ease-out),
+    height var(--d-close) var(--ease-out),
+    border-radius var(--d-close) var(--ease-out),
+    opacity var(--d-fast) var(--ease-out),
+    transform var(--d-close) var(--ease-out);
 }
 
 .island[data-state="idle"] {
-  --r: 16px;
+  --r: var(--r-idle);
+}
+
+.island[data-state="peek"],
+.island[data-state="open"] {
+  transition:
+    width var(--d-shell) var(--spring),
+    height var(--d-shell) var(--spring),
+    border-radius var(--d-shell) var(--spring),
+    opacity var(--d-fast) var(--ease-out),
+    transform var(--d-close) var(--ease-out);
 }
 
 .island[data-state="peek"] {
-  --r: 19px;
-  transition:
-    width 0.38s var(--out),
-    height 0.38s var(--out),
-    border-radius 0.38s var(--out),
-    opacity 0.2s,
-    transform 0.3s var(--out);
+  --r: var(--r-peek);
 }
 
 .island[data-state="open"] {
-  --r: 34px;
+  --r: var(--r-open);
   cursor: default;
-  background:
-    radial-gradient(90% 120% at 0% 100%, var(--tint), transparent 70%),
-    var(--surface);
-  transition:
-    width 0.38s var(--out),
-    height 0.38s var(--out),
-    border-radius 0.38s var(--out),
-    opacity 0.2s,
-    transform 0.3s var(--out);
+}
+
+.island-clip {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  border-radius: inherit;
+  contain: layout paint;
 }
 
 /* Concave ears for hanging notch */
@@ -186,27 +218,42 @@ body.fullscreen-hidden .island {
 .compact {
   position: absolute;
   inset: 0;
-  padding: 0 14px;
+  padding: 0 var(--s-3);
   display: grid;
   grid-template-columns: 1fr auto 1fr;
   align-items: center;
-  gap: 8px;
-  font-size: 12px;
-  font-weight: 600;
-  transition: opacity 0.2s;
+  gap: var(--s-2);
+  font-size: var(--t-sm);
+  font-weight: var(--w-medium);
+  contain: layout paint;
+  /* Returning from open: wait for the full layer to leave */
+  transition:
+    opacity var(--d-fast) var(--d-instant) var(--ease-out),
+    transform var(--d-base) var(--d-instant) var(--spring-enter);
 }
 
 .island[data-state="open"] .compact {
   opacity: 0;
+  transform: scale(0.92);
   pointer-events: none;
-  transition: opacity 0.12s;
+  transition:
+    opacity var(--d-instant) var(--ease-exit),
+    transform var(--d-instant) var(--ease-exit);
+}
+
+.cl,
+.cr {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
 }
 
 .cl {
   justify-self: start;
-  display: flex;
-  align-items: center;
-  gap: 6px;
+}
+
+.cr {
+  justify-self: end;
 }
 
 .cc {
@@ -219,17 +266,10 @@ body.fullscreen-hidden .island {
   text-align: center;
 }
 
-.cr {
-  justify-self: end;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
 .mini-art {
-  width: 20px;
-  height: 20px;
-  border-radius: 6px;
+  width: var(--i-md);
+  height: var(--i-md);
+  border-radius: var(--r-sm);
   background-color: var(--raise);
   background-position: center;
   background-size: cover;
@@ -240,18 +280,21 @@ body.fullscreen-hidden .island {
   color: var(--ok);
 }
 
+/* Equalizer: transform-only so it never relayouts the row */
 .eq {
   display: flex;
-  gap: 2px;
+  gap: var(--s-half);
   align-items: flex-end;
-  height: 14px;
+  height: var(--i-xs);
 }
 
 .eq i {
   width: 3px;
-  height: 4px;
-  border-radius: 2px;
+  height: 100%;
+  border-radius: var(--r-xs);
   background: var(--accent);
+  transform: scaleY(0.3);
+  transform-origin: bottom;
   animation: eq-bounce 0.9s infinite ease-in-out;
 }
 
@@ -265,10 +308,10 @@ body.fullscreen-hidden .island {
 
 @keyframes eq-bounce {
   0%, 100% {
-    height: 4px;
+    transform: scaleY(0.3);
   }
   50% {
-    height: 14px;
+    transform: scaleY(1);
   }
 }
 
@@ -278,63 +321,81 @@ body.fullscreen-hidden .island {
 }
 
 .act-compact-icon svg {
-  width: 14px;
-  height: 14px;
-}
-
-.act-compact-icon.pulsing svg {
-  animation: act-pulse 2s infinite ease-in-out;
-}
-
-@keyframes act-pulse {
-  0%, 100% { opacity: 1; transform: scale(1); }
-  50% { opacity: 0.7; transform: scale(0.98); }
+  width: var(--i-xs);
+  height: var(--i-xs);
 }
 
 .act-compact-time {
   font-variant-numeric: tabular-nums;
-  font-size: 11px;
+  font-size: var(--t-xs);
 }
 
 /* ================= Full Layer (Open) ================= */
 
+/* Laid out at the final open size; the shell clips it while it grows */
 .full {
   position: absolute;
-  inset: 0;
+  top: 0;
+  left: 50%;
+  width: var(--open-w);
+  height: var(--open-h);
   opacity: 0;
-  filter: blur(8px);
+  transform: translateX(-50%) scale(0.96);
+  transform-origin: 50% 0;
   pointer-events: none;
-  transition: opacity 0.12s, filter 0.12s;
+  contain: strict;
+  transition:
+    opacity var(--d-instant) var(--ease-exit),
+    transform var(--d-instant) var(--ease-exit);
 }
 
 .island[data-state="open"] .full {
   opacity: 1;
-  filter: none;
+  transform: translateX(-50%) scale(1);
   pointer-events: auto;
   transition:
-    opacity 0.28s 0.14s,
-    filter 0.34s 0.14s;
+    opacity var(--d-fast) var(--d-content-in) var(--ease-out),
+    transform var(--d-base) var(--d-content-in) var(--spring-enter);
+}
+
+/* Chrome arrives a beat after the page content */
+.full > .nav,
+.full > .dots {
+  opacity: 0;
+  transition: opacity var(--d-instant) var(--ease-exit);
+}
+
+.island[data-state="open"] .full > .nav,
+.island[data-state="open"] .full > .dots {
+  opacity: 1;
+  transition: opacity var(--d-base) calc(var(--d-content-in) + 80ms) var(--ease-out);
+}
+
+.island[data-state="open"] .full > .nav {
+  transition:
+    opacity var(--d-base) calc(var(--d-content-in) + 80ms) var(--ease-out),
+    background var(--d-fast) var(--ease-out),
+    transform var(--d-instant) var(--ease-out);
 }
 
 .nav {
   position: absolute;
   top: 50%;
   transform: translateY(-50%);
-  width: 28px;
-  height: 28px;
-  border-radius: 50%;
+  width: var(--hit);
+  height: var(--hit);
+  border-radius: var(--r-round);
   background: var(--raise);
   cursor: pointer;
-  transition: background 0.15s, transform 0.1s;
   z-index: 10;
 }
 
 .nav.l {
-  left: 10px;
+  left: var(--s-2);
 }
 
 .nav.r {
-  right: 10px;
+  right: var(--s-2);
 }
 
 .nav:hover {
@@ -342,18 +403,18 @@ body.fullscreen-hidden .island {
 }
 
 .nav:active {
-  transform: translateY(-50%) scale(0.98);
+  transform: translateY(-50%) scale(var(--press));
 }
 
 .dots {
   position: absolute;
-  bottom: 8px;
+  bottom: var(--s-2);
   left: 0;
   right: 0;
   display: flex;
   justify-content: center;
   align-items: center;
-  gap: 6px;
+  gap: var(--s-2);
   z-index: 10;
 }
 
@@ -365,12 +426,12 @@ body.fullscreen-hidden .island {
   background: var(--ink-3);
   cursor: pointer;
   transition:
-    width 0.3s var(--out),
-    background 0.3s;
+    width var(--d-base) var(--spring-enter),
+    background var(--d-fast) var(--ease-out);
 }
 
 .dots button.on {
-  width: 18px;
+  width: 16px;
   background: var(--ink);
 }
 
@@ -384,7 +445,7 @@ body.fullscreen-hidden .island {
 
 .pages-container {
   position: absolute;
-  inset: 18px 46px 26px;
+  inset: var(--s-4) calc(var(--s-2) + var(--hit)) var(--s-6); /* page edge meets the nav buttons */
   overflow: hidden;
 }
 
@@ -396,38 +457,47 @@ body.fullscreen-hidden .island {
   height: 100%;
 }
 
-.page.on {
+.page.on,
+.page.leaving {
   display: flex;
 }
 
+/* Cross-fade: the outgoing page leaves in the opposite direction while the new one arrives */
+.page.leaving {
+  pointer-events: none;
+  animation: page-out-left var(--d-instant) var(--ease-exit) forwards;
+}
+
+.page.leaving.back {
+  animation-name: page-out-right;
+}
+
 .page.on.fwd {
-  animation: slide-in-right 0.32s var(--out);
+  animation: page-in-right var(--d-base) var(--spring-enter) both;
 }
 
 .page.on.back {
-  animation: slide-in-left 0.32s var(--out);
+  animation: page-in-left var(--d-base) var(--spring-enter) both;
 }
 
-@keyframes slide-in-right {
-  from {
-    opacity: 0;
-    transform: translateX(12px);
-  }
-  to {
-    opacity: 1;
-    transform: translateX(0);
-  }
+@keyframes page-in-right {
+  from { opacity: 0; transform: translateX(12px); }
+  to { opacity: 1; transform: none; }
 }
 
-@keyframes slide-in-left {
-  from {
-    opacity: 0;
-    transform: translateX(-12px);
-  }
-  to {
-    opacity: 1;
-    transform: translateX(0);
-  }
+@keyframes page-in-left {
+  from { opacity: 0; transform: translateX(-12px); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes page-out-left {
+  from { opacity: 1; transform: none; }
+  to { opacity: 0; transform: translateX(-8px); }
+}
+
+@keyframes page-out-right {
+  from { opacity: 1; transform: none; }
+  to { opacity: 0; transform: translateX(8px); }
 }
 
 /* ================= Media Page ================= */
@@ -435,19 +505,19 @@ body.fullscreen-hidden .island {
 .page.media {
   flex-direction: column;
   justify-content: space-between;
-  gap: 8px;
+  gap: var(--s-2);
 }
 
 .now {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: var(--s-3);
 }
 
 .art {
-  width: 56px;
-  height: 56px;
-  border-radius: 12px;
+  width: 52px;
+  height: 52px;
+  border-radius: var(--r-md);
   background-color: var(--raise);
   background-position: center;
   background-size: cover;
@@ -464,8 +534,10 @@ body.fullscreen-hidden .island {
 }
 
 .title {
-  font-size: 14px;
-  font-weight: 600;
+  font-size: var(--t-base);
+  font-weight: var(--w-strong);
+  line-height: 18px;
+  color: var(--ink);
   white-space: nowrap;
   overflow: hidden;
   position: relative;
@@ -489,85 +561,95 @@ body.fullscreen-hidden .island {
 }
 
 .artist {
-  font-size: 12px;
+  font-size: var(--t-sm);
+  font-weight: var(--w-medium);
+  line-height: 16px;
   color: var(--ink-2);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  margin-top: 2px;
 }
 
 .bar {
   display: flex;
   align-items: center;
-  gap: 10px;
-  font-size: 11px;
-  font-weight: 500;
+  gap: var(--s-2);
+  font-size: var(--t-xs);
+  font-weight: var(--w-medium);
   color: var(--ink-2);
   font-variant-numeric: tabular-nums;
 }
 
 .bar span {
-  min-width: 34px;
+  min-width: 36px;
 }
 
 .bar span:last-child {
   text-align: right;
 }
 
+/* Drawn 8px tall and scaled to 4px, so the hover grow is a transform */
 .track {
   flex: 1;
-  height: 4px;
-  border-radius: 4px;
-  background: rgba(255, 255, 255, 0.18);
+  height: 8px;
+  border-radius: var(--r-sm);
+  background: var(--wash-strong);
   overflow: hidden;
   cursor: pointer;
-  transition: height 0.15s;
   position: relative;
+  transform: scaleY(0.5);
+  transition: transform var(--d-fast) var(--ease-out);
 }
 
 .bar:hover .track {
-  height: 8px;
+  transform: none;
 }
 
 .fill {
+  width: 100%;
   height: 100%;
-  width: 0;
   background: var(--accent);
-  border-radius: 4px;
-  transition: width 0.2s linear;
+  border-radius: var(--r-sm);
+  transform: translateX(calc((var(--p, 0) - 1) * 100%));
+  transition: transform 0.2s linear; /* matches the 200ms position tick */
 }
 
 .ctl {
+  position: relative;
   display: flex;
   justify-content: center;
   align-items: center;
-  gap: 26px;
+  gap: var(--s-6);
+  min-height: var(--hit-sm);
 }
 
 .ctl button {
-  width: 36px;
-  height: 36px;
-  border-radius: 50%;
-  transition: background 0.15s, transform 0.12s;
+  width: var(--hit-sm);
+  height: var(--hit-sm);
+  border-radius: var(--r-md);
+  color: var(--ink);
+  opacity: 0.85;
+  transition:
+    opacity var(--d-fast) var(--ease-out),
+    transform var(--d-instant) var(--ease-out);
 }
 
 .ctl button:hover {
-  background: rgba(255, 255, 255, 0.1);
+  opacity: 1;
 }
 
 .ctl button:active {
-  transform: scale(0.98);
+  transform: scale(var(--press));
 }
 
-.ctl button.big {
-  width: 44px;
-  height: 44px;
-  background: var(--raise);
+.ctl button svg {
+  width: var(--i-md);
+  height: var(--i-md);
 }
 
-.ctl button.big:hover {
-  background: var(--raise-hover);
+.ctl button.big svg {
+  width: var(--i-lg);
+  height: var(--i-lg);
 }
 
 /* ================= Today Page ================= */
@@ -575,7 +657,7 @@ body.fullscreen-hidden .island {
 .page.today {
   justify-content: space-between;
   align-items: center;
-  gap: 20px;
+  gap: var(--s-5);
 }
 
 .clock-col {
@@ -583,17 +665,17 @@ body.fullscreen-hidden .island {
 }
 
 .clock {
-  font-size: 40px;
-  font-weight: 300;
-  letter-spacing: -1.5px;
+  font-size: var(--t-2xl);
+  font-weight: var(--w-regular);
+  letter-spacing: -1px;
   line-height: 1;
   font-variant-numeric: tabular-nums;
 }
 
 .date {
-  font-size: 12px;
+  font-size: var(--t-sm);
   color: var(--ink-2);
-  margin-top: 8px;
+  margin-top: var(--s-2);
 }
 
 .batt {
@@ -603,18 +685,18 @@ body.fullscreen-hidden .island {
 }
 
 .batt-top {
-  font-size: 20px;
-  font-weight: 600;
-  margin-bottom: 6px;
+  font-size: var(--t-lg);
+  font-weight: var(--w-medium);
+  margin-bottom: var(--s-2);
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--s-2);
 }
 
 .batt-bar {
   height: 8px;
-  border-radius: 4px;
-  background: rgba(255, 255, 255, 0.18);
+  border-radius: var(--r-sm);
+  background: var(--wash-strong);
   overflow: hidden;
 }
 
@@ -622,8 +704,10 @@ body.fullscreen-hidden .island {
   height: 100%;
   width: 100%;
   background: var(--ink);
-  border-radius: 4px;
-  transition: width 0.4s, background 0.3s;
+  border-radius: var(--r-sm);
+  transition:
+    width var(--d-shell) var(--ease-out),
+    background var(--d-base) var(--ease-out);
 }
 
 #battFill.charging {
@@ -635,9 +719,9 @@ body.fullscreen-hidden .island {
 }
 
 .batt-sub {
-  font-size: 11px;
+  font-size: var(--t-xs);
   color: var(--ink-2);
-  margin-top: 6px;
+  margin-top: var(--s-2);
 }
 
 /* ================= Live Activities Page ================= */
@@ -645,65 +729,66 @@ body.fullscreen-hidden .island {
 .page.activities {
   flex-direction: column;
   justify-content: space-between;
-  gap: 8px;
+  gap: var(--s-1);
 }
 
 .act-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  font-size: 12px;
+  font-size: var(--t-sm);
   color: var(--ink-2);
 }
 
 .act-title {
-  font-weight: 600;
+  font-weight: var(--w-medium);
   color: var(--ink);
 }
 
 .act-display {
   display: flex;
   align-items: baseline;
-  gap: 12px;
-  margin-top: 4px;
+  gap: var(--s-3);
 }
 
 .act-digits {
-  font-size: 32px;
-  font-weight: 300;
+  font-size: var(--t-xl);
+  font-weight: var(--w-regular);
   font-variant-numeric: tabular-nums;
-  letter-spacing: -1px;
-  line-height: 1;
+  letter-spacing: -0.5px;
+  line-height: 32px;
 }
 
 .act-status-pill {
-  font-size: 11px;
-  padding: 2px 8px;
-  border-radius: 10px;
+  font-size: var(--t-xs);
+  padding: var(--s-half) var(--s-2);
+  border-radius: var(--r-md);
   background: var(--raise);
   color: var(--ink-2);
 }
 
 .act-status-pill.active {
-  background: rgba(48, 209, 88, 0.2);
+  background: var(--ok-wash);
   color: var(--ok);
 }
 
+/* Three columns keep all six controls inside the page without shrinking hit targets */
 .act-controls {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--s-1);
 }
 
 .act-btn {
   background: var(--raise);
-  border-radius: 8px;
-  padding: 6px 12px;
-  font-size: 12px;
-  font-weight: 500;
-  min-height: 36px;
-  transition: background 0.15s, transform 0.1s;
+  border-radius: var(--r-md);
+  padding: var(--s-1) var(--s-2);
+  font-size: var(--t-sm);
+  font-weight: var(--w-medium);
+  min-height: var(--hit);
+  transition:
+    background var(--d-fast) var(--ease-out),
+    transform var(--d-instant) var(--ease-out);
 }
 
 .act-btn:hover {
@@ -711,21 +796,20 @@ body.fullscreen-hidden .island {
 }
 
 .act-btn:active {
-  transform: scale(0.96);
+  transform: scale(var(--press));
 }
 
 .act-btn.primary {
   background: var(--ink);
   color: var(--surface);
-  font-weight: 600;
 }
 
 .act-btn.primary:hover {
-  background: #e5e5ea;
+  background: var(--ink-inverse-hover);
 }
 
 .act-btn.warn {
-  color: var(--warn);
+  color: var(--warn-ink);
 }
 
 /* ================= Usage Page ================= */
@@ -734,7 +818,7 @@ body.fullscreen-hidden .island {
   flex-direction: column;
   overflow-y: auto;
   align-items: flex-start;
-  padding-right: 4px;
+  padding-right: var(--s-1);
 }
 
 .page.usage::-webkit-scrollbar {
@@ -743,25 +827,25 @@ body.fullscreen-hidden .island {
 
 .page.usage::-webkit-scrollbar-thumb {
   background: var(--raise-active);
-  border-radius: 2px;
+  border-radius: var(--r-xs);
 }
 
 .u-list {
   width: 100%;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: var(--s-3);
 }
 
 .u-row {
   display: grid;
   grid-template-columns: 1fr auto;
-  gap: 3px 8px;
-  font-size: 12px;
+  gap: var(--s-1) var(--s-2);
+  font-size: var(--t-sm);
 }
 
 .u-name {
-  font-weight: 600;
+  font-weight: var(--w-medium);
 }
 
 .u-val {
@@ -772,8 +856,8 @@ body.fullscreen-hidden .island {
 .u-bar {
   grid-column: 1 / -1;
   height: 4px;
-  border-radius: 2px;
-  background: rgba(255, 255, 255, 0.18);
+  border-radius: var(--r-xs);
+  background: var(--wash-strong);
   overflow: hidden;
 }
 
@@ -781,12 +865,12 @@ body.fullscreen-hidden .island {
   display: block;
   height: 100%;
   background: var(--ink);
-  border-radius: 2px;
-  transition: width 0.4s;
+  border-radius: var(--r-xs);
+  transition: width var(--d-shell) var(--ease-out);
 }
 
 .u-bar i.warn {
-  background: #ff9f0a;
+  background: var(--caution);
 }
 
 .u-bar i.hot {
@@ -795,21 +879,22 @@ body.fullscreen-hidden .island {
 
 .u-sub {
   grid-column: 1 / -1;
-  font-size: 11px;
+  font-size: var(--t-xs);
   color: var(--ink-2);
   display: flex;
-  gap: 8px;
+  gap: var(--s-2);
   align-items: center;
   flex-wrap: wrap;
 }
 
 .u-sub button {
   background: var(--raise);
-  border-radius: 10px;
-  padding: 3px 10px;
-  font-size: 11px;
+  border-radius: var(--r-md);
+  padding: var(--s-1) var(--s-2);
+  font-size: var(--t-xs);
   cursor: pointer;
   min-height: 24px;
+  transition: background var(--d-fast) var(--ease-out);
 }
 
 .u-sub button:hover {
@@ -818,9 +903,9 @@ body.fullscreen-hidden .island {
 
 .u-empty {
   color: var(--ink-2);
-  font-size: 12px;
+  font-size: var(--t-sm);
   text-align: center;
-  padding: 24px 0;
+  padding: var(--s-6) 0;
   width: 100%;
 }
 
@@ -829,28 +914,30 @@ body.fullscreen-hidden .island {
 .page.quick {
   flex-direction: column;
   justify-content: space-between;
-  gap: 8px;
+  gap: var(--s-2);
 }
 
 .quick-grid {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
-  gap: 8px;
+  gap: var(--s-2);
   width: 100%;
 }
 
 .chip {
   background: var(--raise);
-  border-radius: 14px;
+  border-radius: var(--r-lg);
   height: 56px;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 4px;
-  font-size: 11px;
-  font-weight: 500;
-  transition: background 0.15s, transform 0.1s;
+  gap: var(--s-1);
+  font-size: var(--t-xs);
+  font-weight: var(--w-medium);
+  transition:
+    background var(--d-fast) var(--ease-out),
+    transform var(--d-instant) var(--ease-out);
 }
 
 .chip:hover {
@@ -858,34 +945,34 @@ body.fullscreen-hidden .island {
 }
 
 .chip:active {
-  transform: scale(0.96);
+  transform: scale(var(--press));
 }
 
 .chip svg {
-  width: 18px;
-  height: 18px;
+  width: var(--i-md);
+  height: var(--i-md);
 }
 
 .quick-footnote {
-  font-size: 10px;
+  font-size: var(--t-2xs);
   color: var(--ink-3);
   text-align: center;
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
+  gap: var(--s-2);
 }
 
 /* ================= Browser Demo Header ================= */
 
 .demo-banner {
   position: absolute;
-  top: 4px;
-  right: 8px;
-  font-size: 10px;
-  padding: 2px 8px;
-  border-radius: 6px;
-  background: rgba(255, 255, 255, 0.1);
+  top: var(--s-1);
+  right: var(--s-2);
+  font-size: var(--t-2xs);
+  padding: var(--s-half) var(--s-2);
+  border-radius: var(--r-sm);
+  background: var(--wash);
   color: var(--ink-2);
   pointer-events: auto;
   cursor: pointer;
@@ -893,12 +980,13 @@ body.fullscreen-hidden .island {
 }
 
 .demo-banner:hover {
-  background: rgba(255, 255, 255, 0.2);
+  background: var(--wash-strong);
   color: var(--ink);
 }
 
 /* ================= Reduced Motion ================= */
 
+/* Nothing slides, scales or loops; state still changes, and live meters stay visible but still */
 @media (prefers-reduced-motion: reduce) {
   .island,
   .island * {
@@ -906,26 +994,26 @@ body.fullscreen-hidden .island {
     transition-delay: 0s !important;
   }
 
+  .island .compact {
+    transform: none !important;
+  }
+
+  .island .full {
+    transform: translateX(-50%) !important;
+  }
+
   .eq i,
   .title.scroll span,
-  .page.on,
-  .act-compact-icon.pulsing svg {
+  .page.on {
     animation: none !important;
   }
 
-  .eq i {
-    height: 8px;
+  .page.leaving {
+    display: none;
   }
+
+  /* Calm, uneven resting bars instead of a bouncing loop */
+  .eq i { transform: scaleY(0.5); }
+  .eq i:nth-child(2) { transform: scaleY(0.8); }
+  .eq i:nth-child(3) { transform: scaleY(0.4); }
 }
-
-/* Keep controls inside the 136px page viewport without shrinking hit targets. */
-.act-controls { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; }
-.act-btn { padding: 4px 6px; min-height: 36px; }
-.page.activities { gap: 4px; }
-.act-display { margin: 0; }
-.act-digits { font-size: 28px; line-height: 30px; }
-.nav { width: 36px; height: 36px; }
-.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
-button:disabled { opacity: .45; cursor: default; }
-
-.act-btn.warn { color: #ff766e; }

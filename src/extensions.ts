@@ -16,21 +16,29 @@ async function refresh():Promise<void>{if(isTauri()){current=await invoke<Extens
 let render: (force?:boolean)=>void=()=>{};
 export function mountExtensions():void {
  const container=document.querySelector('#isl .pages-container');if(!container||document.getElementById('extensionsPage'))return;
- const page=el('section','','page extensions');page.id='extensionsPage';page.dataset.page='extensions';page.setAttribute('aria-label','Windows activities');page.inert=true;page.setAttribute('aria-hidden','true');
+ // Files, calls, radios and downloads share one Tools section; calendar is its own Today section.
+ const page=el('section','','page extensions');page.id='extensionsPage';page.dataset.page='extensions';page.setAttribute('aria-label','Files and devices');
  const tabs=el('div','','ext-tabs');tabs.setAttribute('aria-label','Windows activity views');const body=el('div','','ext-body');status=el('p','','ext-status');status.setAttribute('role','status');
- let selected='Calls';const buttons:HTMLButtonElement[]=[];
+ const calendarPage=el('section','','page extensions calendar');calendarPage.id='calendarPage';calendarPage.dataset.page='calendar';calendarPage.setAttribute('aria-label','Calendar');
+ const calendarBody=el('div','','ext-body');calendarPage.append(el('h2','Calendar','ext-heading'),calendarBody);
+ let selected='Files';const buttons:HTMLButtonElement[]=[];
  const show=(name:string)=>{selected=name;for(const node of buttons)node.setAttribute('aria-pressed',String(node.textContent===name));render();};
- for(const name of ['Calls','Files','Calendar','Radios','Downloads']){const tab=el('button',name,'ext-button');tab.type='button';tab.addEventListener('click',event=>{event.stopPropagation();show(name);});buttons.push(tab);tabs.append(tab);}
- page.append(tabs,body,status);container.append(page);
+ for(const name of ['Files','Calls','Radios','Downloads']){const tab=el('button',name,'ext-button');tab.type='button';tab.addEventListener('click',event=>{event.stopPropagation();show(name);});buttons.push(tab);tabs.append(tab);}
+ page.append(tabs,body,status);container.append(page,calendarPage);
  const activity=(detail:TuckActivityEventDetail)=>window.dispatchEvent(new CustomEvent('tuck-activity',{detail}));
  render=(_force=false)=>{
   activity({id:'native-call',type:'call',title:'Manual call timer',text:current.call?formatDuration(Date.now()-current.call.startedAt):'',priority:95,active:!!current.call});
   activity({id:'native-downloads',type:'download',title:'Downloads',text:`${current.downloads.length} active`,priority:70,active:current.settings.downloads&&current.downloads.length>0});
   // User-triggered refresh updates controls and restores the corresponding focus target.
-  const focusKey=body.contains(document.activeElement)?(document.activeElement as HTMLElement).dataset.actionKey:undefined;
+  const focusOwner=[body,calendarBody].find(node=>node.contains(document.activeElement));
+  const focusKey=focusOwner?(document.activeElement as HTMLElement).dataset.actionKey:undefined;
   const elapsed=document.getElementById('extCallElapsed');if(elapsed&&current.call)elapsed.textContent=formatDuration(Date.now()-current.call.startedAt);
   if(nativeDragging)return;
-  body.replaceChildren();
+  body.replaceChildren();calendarBody.replaceChildren();
+  if(!current.settings.calendar)calendarBody.append(el('p','Enable calendar in Tuck settings and import an ICS file.','ext-note'));
+  const upcoming=current.calendar.filter(event=>event.endsAt>=Date.now()).slice(0,20);
+  for(const event of upcoming){const row=el('div','','ext-row');row.append(el('span',`${event.title} | ${new Date(event.startsAt).toLocaleString()}`));if(event.joinUrl)row.append(button('Join',()=>invoke('calendar_join',{id:event.id}),`join-${event.id}`));calendarBody.append(row);}
+  if(current.settings.calendar&&!upcoming.length)calendarBody.append(el('p','No upcoming imported events.','ext-note'));
   if(selected==='Calls'){
    body.append(el('p','Manual call timer. This does not place calls or control your microphone.','ext-note'));
    if(current.call){const elapsed=el('strong',formatDuration(Date.now()-current.call.startedAt),'ext-time');elapsed.id='extCallElapsed';body.append(elapsed);}
@@ -38,13 +46,8 @@ export function mountExtensions():void {
   }else if(selected==='Files'){
    body.append(el('p','Drop files onto the island to stage them. Originals stay in place.','ext-note'),button('Add files',()=>invoke('shelf_pick')),button('Clear shelf',()=>invoke('shelf_remove',{id:null})));
    for(const item of current.shelf){const row=el('div','','ext-row');row.append(el('span',`${item.name} | ${formatBytes(item.bytes)}`),button('Reveal',()=>invoke('shelf_reveal',{id:item.id}),`reveal-${item.id}`),button('Remove',()=>invoke('shelf_remove',{id:item.id}),`remove-${item.id}`));
-    const drag=el('button','Drag out','ext-button');drag.type='button';drag.dataset.actionKey=`drag-${item.id}`;drag.setAttribute('aria-label',`Drag ${item.name} to another app`);drag.addEventListener('pointerdown',event=>{if(event.button!==0)return;event.preventDefault();nativeDragging=true;window.dispatchEvent(new CustomEvent('tuck-drag-active',{detail:true}));void run(()=>invoke('shelf_drag',{id:item.id})).finally(()=>{nativeDragging=false;window.dispatchEvent(new CustomEvent('tuck-drag-active',{detail:false}));render(true);});});row.append(drag);body.append(row);}
+    const drag=el('button','Drag out','ext-button');drag.type='button';drag.dataset.noSwipe='';drag.dataset.actionKey=`drag-${item.id}`;drag.setAttribute('aria-label',`Drag ${item.name} to another app`);drag.addEventListener('pointerdown',event=>{if(event.button!==0)return;event.preventDefault();nativeDragging=true;window.dispatchEvent(new CustomEvent('tuck-drag-active',{detail:true}));void run(()=>invoke('shelf_drag',{id:item.id})).finally(()=>{nativeDragging=false;window.dispatchEvent(new CustomEvent('tuck-drag-active',{detail:false}));render(true);});});row.append(drag);body.append(row);}
    if(!current.shelf.length)body.append(el('p','Shelf is empty.','ext-note'));
-  }else if(selected==='Calendar'){
-   if(!current.settings.calendar)body.append(el('p','Enable calendar in Tuck settings and import an ICS file.','ext-note'));
-   const upcoming=current.calendar.filter(event=>event.endsAt>=Date.now()).slice(0,20);
-   for(const event of upcoming){const row=el('div','','ext-row');row.append(el('span',`${event.title} | ${new Date(event.startsAt).toLocaleString()}`));if(event.joinUrl)row.append(button('Join',()=>invoke('calendar_join',{id:event.id}),`join-${event.id}`));body.append(row);}
-   if(current.settings.calendar&&!upcoming.length)body.append(el('p','No upcoming imported events.','ext-note'));
   }else if(selected==='Radios'){
    body.append(el('p','Radio controls require opt-in and Windows permission. Focus opens Windows Settings.','ext-note'));
    for(const radio of current.radios){body.append(el('span',`${radio.name}: ${radio.state}`),button(radio.state==='On'?'Turn off':'Turn on',()=>invoke('radio_set',{kind:radio.kind,enabled:radio.state!=='On'}),`radio-${radio.kind}-${radio.name}`));}
@@ -56,11 +59,11 @@ export function mountExtensions():void {
    if(current.settings.downloads&&!current.downloads.length)body.append(el('p','No partial downloads in your Downloads folder.','ext-note'));
   }
   if(status)status.textContent=[...current.errors,actionError].filter(Boolean).join(' | ');
-  if(focusKey)[...body.querySelectorAll('button')].find(node=>node.dataset.actionKey===focusKey)?.focus();
+  if(focusKey&&focusOwner)[...focusOwner.querySelectorAll('button')].find(node=>node.dataset.actionKey===focusKey)?.focus();
   activity({id:'native-call',type:'call',title:'Manual call timer',text:current.call?formatDuration(Date.now()-current.call.startedAt):'',priority:95,active:!!current.call});
   activity({id:'native-downloads',type:'download',title:'Downloads',text:`${current.downloads.length} active`,priority:70,active:current.settings.downloads&&current.downloads.length>0});
  };
- show('Calls');
+ show('Files');
  if(isTauri()){
   void listen<ExtensionSnapshot>('extension-state',event=>{current=event.payload;render();}).catch(()=>{if(status)status.textContent='Could not subscribe to Windows state.';});
   void listen<CalendarEvent>('calendar-reminder',event=>{window.dispatchEvent(new CustomEvent('tuck-preview',{detail:{title:event.payload.title,text:'Meeting starts within 5 minutes',priority:90}}));}).catch(()=>{});

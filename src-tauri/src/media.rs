@@ -701,6 +701,11 @@ fn run_event_service(
                 manager_subscriptions = ManagerSubscriptions::new(value, &sender)
                     .map_err(|error| eprintln!("Media manager subscription: {error}"))
                     .ok();
+                // Without subscriptions new players are never seen; retry like a failed manager
+                if manager_subscriptions.is_none() {
+                    manager = None;
+                    manager_failures = manager_failures.saturating_add(1);
+                }
             } else {
                 manager_failures = manager_failures.saturating_add(1);
                 eprintln!("Media manager unavailable (attempt {manager_failures})");

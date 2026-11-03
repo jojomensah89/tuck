@@ -34,8 +34,8 @@ use windows::{
                 GetClassNameW, GetCursorPos, GetDesktopWindow, GetForegroundWindow, GetShellWindow,
                 GetWindowLongPtrW, GetWindowRect, IsIconic, IsWindowVisible, IsZoomed,
                 SetWindowLongPtrW, SetWindowPos, GWL_EXSTYLE, GWL_STYLE, HWND_TOPMOST,
-                SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_SHOWNORMAL, WS_CAPTION,
-                WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+                SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_SHOWNORMAL,
+                WS_CAPTION, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_THICKFRAME,
             },
         },
     },
@@ -275,7 +275,9 @@ pub(crate) fn reassert_topmost(win: &WebviewWindow) {
                 0,
                 0,
                 0,
-                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                // Async: the island belongs to the main thread, and waiting on it here
+                // would let lifecycle messages re-enter the hub's window procedure.
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS,
             );
         }
     }
@@ -408,8 +410,10 @@ pub(crate) fn check_fullscreen(island_hwnd: HWND, settings_hwnd: Option<HWND>) -
             return false;
         }
         // With an auto-hidden taskbar a maximized window covers the whole monitor too.
+        // Undecorated apps drop the caption but keep the resize frame, so check both.
         let style = GetWindowLongPtrW(fg, GWL_STYLE) as u32;
-        let maximized_with_caption = IsZoomed(fg).as_bool() && style & WS_CAPTION.0 == WS_CAPTION.0;
+        let maximized_with_caption =
+            IsZoomed(fg).as_bool() && style & (WS_CAPTION.0 | WS_THICKFRAME.0) != 0;
 
         let win_rect = Rect {
             left: fg_rect.left,
@@ -522,7 +526,7 @@ pub(crate) fn deactivate_island(app: AppHandle) -> Result<(), String> {
 }
 
 /// Starts the 40ms cursor hit-testing loop. Native lifecycle, display, power and
-/// fullscreen events are handled by the message-only window in `lifecycle`.
+/// fullscreen events are handled by the hidden window in `lifecycle`.
 pub fn start(app: AppHandle, hit_state: Arc<HitState>) {
     let app_cursor = app.clone();
     let hit_cursor = hit_state.clone();

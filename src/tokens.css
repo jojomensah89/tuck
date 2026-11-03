@@ -46,6 +46,7 @@
   --i-sm: 16px;
   --i-md: 20px;
   --i-lg: 24px;
+  --stroke: 1.5px; /* icon line weight, constant at every icon size */
   --status-dot: 6px;
   --meter-bar: 3px;
 

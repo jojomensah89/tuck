@@ -23,6 +23,8 @@
   --warn: #ff453a;
   --warn-ink: #ff766e;
   --accent: #ffffff;
+  /* Half a step above the surface: rail hover, below the --raise active step */
+  --raise-subtle: #121214;
 
   font-family: var(--font);
 }
@@ -72,11 +74,24 @@ div[tabindex="0"]:focus-visible {
   outline-offset: 2px;
 }
 
+/* One line family (src/icons.ts): 20px grid, 1.5px stroke at every size */
 svg.ico {
   width: var(--i-md);
   height: var(--i-md);
-  fill: currentColor;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: var(--stroke);
+  stroke-linecap: round;
+  stroke-linejoin: round;
   flex-shrink: 0;
+}
+
+svg.ico * {
+  vector-effect: non-scaling-stroke;
+}
+
+svg.ico .f {
+  fill: currentColor;
 }
 
 svg.ico.big {
@@ -576,10 +591,21 @@ body.fullscreen-hidden .island {
   color: var(--ink-3);
   transition:
     color var(--d-fast) var(--ease-out),
+    background-color var(--d-fast) var(--ease-out),
     transform var(--d-instant) var(--ease-out);
 }
 
-.rail-tab:hover,
+/* Hover is a lighter version of the active step: ink rises, no surface of its own
+   on the active tab, a faint one elsewhere so the target is visible */
+.rail-tab:hover {
+  color: var(--ink-2);
+}
+
+.rail-tabs .rail-tab:not(.on):hover,
+.rail-settings:hover {
+  background-color: var(--raise-subtle);
+}
+
 .rail-tab.on {
   color: var(--ink);
 }
@@ -597,7 +623,7 @@ body.fullscreen-hidden .island {
   height: var(--i-md);
 }
 
-/* One surface step that slides between tabs on the content spring */
+/* The active tab is one tone step (no outline, no glow) that slides between tabs */
 .rail-indicator {
   position: absolute;
   top: 0;
@@ -606,7 +632,6 @@ body.fullscreen-hidden .island {
   height: var(--hit);
   border-radius: var(--r-lg);
   background: var(--raise);
-  box-shadow: inset 0 0 0 1px var(--line);
   transform: translateY(calc(var(--tab-index, 0) * var(--hit)));
   transition: transform var(--d-base) var(--spring-enter);
   pointer-events: none;
@@ -1191,9 +1216,11 @@ body.fullscreen-hidden .island {
 
 /* ================= Browser Demo Header ================= */
 
+/* Pinned to the bottom of the window, below the open island (210px), so it never
+   covers island content in the browser preview or the screenshots */
 .demo-banner {
-  position: absolute;
-  top: var(--s-1);
+  position: fixed;
+  bottom: var(--s-2);
   right: var(--s-2);
   font-size: var(--t-2xs);
   padding: var(--s-half) var(--s-2);

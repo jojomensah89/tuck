@@ -13,7 +13,7 @@ Surface #000000; raised #1c1c1e / hover #2c2c2e / active #3a3a3c. Ink #ffffff, s
 - Spacing: 4px grid, `--s-1`..`--s-12` (4, 8, 12, 16, 20, 24, 32, 48). `--s-half` (2px) only for nudges inside small controls.
 - Radius: 2, 4, 8 (controls), 12 (chips), 16; island 16 idle, 20 peek, 32 open; notch ears 14.
 - Type: Segoe UI Variable Text, Segoe UI, system-ui. Sizes 10, 11, 12, 13, 14, 20, 28, 40. Weights 400 and 500; 600 only for rare emphasis such as the track title and page headings. No negative tracking below 28px. Numbers use `tabular-nums`.
-- Icons: one filled SVG set (`src/icons.ts`), sizes 10 (badge glyph), 14 (compact), 16, 20 (controls, chips), 24 (play/pause).
+- Icons: one hand-drawn line family (`src/icons.ts`) on a 20x20 grid: 1.5px stroke (`--stroke`, non-scaling so every size carries the same weight), round caps and joins, no icon fonts. Transport glyphs and small dots are filled with the same rounded outline. Sizes 10 (badge glyph), 14 (compact), 16, 20 (controls, chips, rail), 24 (play/pause).
 - Hit targets: 36px; 32px for media transport and the lyrics toggle.
 
 ## Geometry
@@ -43,7 +43,7 @@ Inside a tab the sections scroll vertically and snap one section per view, each 
 
 The rail is the leftover strip from the old previous-page arrow, so it costs no content space; the right arrow strip and the bottom dot row are reclaimed (content grew from 412x170 to 424x178). Its vertical order matches the vertical sections: scrolling past the last section of a tab continues into the next tab.
 
-- Rail: 20px icons, 36x36 hit targets, `title` and `aria-label` on each. `role="tablist"` (vertical), `role="tab"` with `aria-selected`, `aria-controls` and roving `tabindex`; each panel is a focusable `role="tabpanel"` so sections without controls can be scrolled from the keyboard. The active tab sits on one `--raise` surface with a hairline that slides between tabs on `--spring-enter`.
+- Rail: 20px icons, 36x36 hit targets, `title` and `aria-label` on each. `role="tablist"` (vertical), `role="tab"` with `aria-selected`, `aria-controls` and roving `tabindex`; each panel is a focusable `role="tabpanel"` so sections without controls can be scrolled from the keyboard. Icons: Media a pair of notes, Today a calendar, Tools a 2x2 grid, Usage a gauge, Settings a gear. Inactive icons are `--ink-3`; the active tab is one `--raise` tone step (no outline, no glow) with white ink that slides between tabs on `--spring-enter`; hover lifts the ink to `--ink-2` on a half step (`--raise-subtle`).
 - Keys: on the rail, arrows move and wrap, Home and End jump. Elsewhere in the open island, ArrowLeft/Right switch tabs and move focus into the new tab.
 - Wheel: vertical wheel scrolls the innermost scroller that still has room (a list, then the tab's sections). Only a fresh gesture that starts at the edge switches tabs, so momentum never flips a tab. Moving forward lands on the first section, moving back on the last. Horizontal wheel (trackpad swipe, wheel tilt) switches directly. A switch locks further switching for 350ms. Wheel and swipe stop at the first and last tab.
 - Drag: a horizontal pointer drag of 56px, or a 20px flick faster than 0.35px/ms, switches tabs (drag left for the next tab) and never also clicks what it started on. Vertical drags scroll. The seek bar, inputs and file drag-out are excluded.
@@ -70,4 +70,4 @@ Reduced motion: all durations and delays go to zero, nothing slides, scales or l
 
 ## Rules
 
-Consistent SVG icons; overflow-only marquee; tabular times; visible focus; state-synchronized ARIA and inert hidden layers. Real system and provider state always wins over illustrative content. The browser demo is explicitly labeled.
+Consistent SVG icons; overflow-only marquee; tabular times; visible focus; state-synchronized ARIA and inert hidden layers. Real system and provider state always wins over illustrative content. The browser demo is explicitly labeled, with a badge pinned to the bottom-right of the window, below the island, so it never covers content.

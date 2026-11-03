@@ -5,7 +5,7 @@
  */
 
 export type TabId = 'media' | 'today' | 'tools' | 'usage';
-export type TabIcon = 'note' | 'calendar' | 'tune' | 'gauge';
+export type TabIcon = 'note' | 'calendar' | 'grid' | 'gauge';
 
 export interface TabDef {
   id: TabId;
@@ -18,7 +18,7 @@ export interface TabDef {
 export const TABS: readonly TabDef[] = [
   { id: 'media', label: 'Media', icon: 'note', sections: ['media', 'visualizer'] },
   { id: 'today', label: 'Today', icon: 'calendar', sections: ['today', 'activities', 'calendar'] },
-  { id: 'tools', label: 'Tools', icon: 'tune', sections: ['quick', 'clipboard', 'extensions', 'dictation'] },
+  { id: 'tools', label: 'Tools', icon: 'grid', sections: ['quick', 'clipboard', 'extensions', 'dictation'] },
   { id: 'usage', label: 'Usage', icon: 'gauge', sections: ['usage', 'stats'] },
 ];
 

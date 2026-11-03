@@ -10,11 +10,14 @@ export interface LivePreferences {
   desktopPeeks: boolean;
   /** Last open-island tab, restored on the next launch */
   lastTab: TabId;
+  /** Bumped when a saved default changes meaning; 2 = collapse delay defaults to instant. */
+  prefsVersion: number;
 }
+export const PREFS_VERSION = 2;
 export const DEFAULT_LIVE_PREFERENCES: LivePreferences = {
-  hoverExpand: true, openDelayMs: 180, closeDelayMs: 900, pinned: false,
+  hoverExpand: true, openDelayMs: 180, closeDelayMs: 0, pinned: false,
   compactContent: 'lyrics', lyricsOpen: true, openWidth: 500,
-  desktopPeeks: true, lastTab: DEFAULT_TAB,
+  desktopPeeks: true, lastTab: DEFAULT_TAB, prefsVersion: PREFS_VERSION,
 };
 export function normalizePreferences(input: unknown): LivePreferences {
   const p = input && typeof input === 'object' ? input as Partial<LivePreferences> : {};
@@ -26,7 +29,11 @@ export function normalizePreferences(input: unknown): LivePreferences {
     compactContent: p.compactContent === 'title' ? 'title' : 'lyrics',
     desktopPeeks: p.desktopPeeks !== false,
     openDelayMs: bounded(p.openDelayMs, 180, 0, 2000),
-    closeDelayMs: bounded(p.closeDelayMs, 900, 100, 10000),
+    // Settings saved before version 2 that still hold the old 900ms default move to instant once
+    closeDelayMs: bounded(
+      (p.prefsVersion ?? 1) < 2 && p.closeDelayMs === 900 ? 0 : p.closeDelayMs, 0, 0, 10000,
+    ),
+    prefsVersion: PREFS_VERSION,
     openWidth: bounded(p.openWidth, 500, 440, 500),
     lastTab: isTabId(p.lastTab) ? p.lastTab : DEFAULT_TAB,
   };

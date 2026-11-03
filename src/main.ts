@@ -254,10 +254,9 @@ function onHover(inside: boolean): void {
     if (livePreferences.hoverExpand) openTimer = window.setTimeout(() => setState('open'), livePreferences.openDelayMs);
     else if (state === 'idle') setState('peek');
   } else {
-    closeTimer = window.setTimeout(
-      () => setState('idle'),
-      state === 'open' ? livePreferences.closeDelayMs : 120
-    );
+    const delay = state === 'open' ? livePreferences.closeDelayMs : 0;
+    if (delay === 0) setState('idle');
+    else closeTimer = window.setTimeout(() => setState('idle'), delay);
   }
 }
 

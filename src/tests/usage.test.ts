@@ -193,3 +193,19 @@ it('reports persistence failure instead of claiming a successful save', () => {
   try { expect(saveJson('test', {})).toBe(false); }
   finally { localStorage.setItem = original; }
 });
+
+describe('Logging a ChatGPT message counts at once', () => {
+  beforeEach(() => localStorage.clear());
+  it('never stamps a message in the future of the current window', () => {
+    saveJson(STORAGE_KEYS.CHATGPT, { cap: 10, hours: 3, label: 'Test' });
+    const realNow = Date.now;
+    try {
+      // Half a second past a whole second: rounding would land 0.5s in the future
+      Date.now = () => 1_700_000_000_600;
+      logChatGPTMessage();
+      expect(getChatGPTMeter()?.count).toBe(1);
+    } finally {
+      Date.now = realNow;
+    }
+  });
+});

@@ -774,7 +774,6 @@ body.fullscreen-hidden .island {
   display: grid;
   place-items: center;
   color: var(--ink-3);
-  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.5);
 }
 
 .meta {
@@ -800,6 +799,11 @@ body.fullscreen-hidden .island {
 
 .title.scroll span {
   animation: marquee-anim 10s linear infinite alternate;
+}
+
+/* An overflowing title fades out at its edges instead of being cut */
+.title.scroll {
+  mask-image: linear-gradient(to right, transparent, #000 var(--s-2), #000 calc(100% - var(--s-4)), transparent);
 }
 
 @keyframes marquee-anim {
@@ -865,13 +869,38 @@ body.fullscreen-hidden .island {
   transition: transform 0.2s linear; /* matches the 200ms position tick */
 }
 
+/* The lyrics toggle sits at the start; the transport group centres in the room
+   left, mirrored by an empty slot at the end so it stays on the page's axis.
+   With lyrics open (half the width) the mirror goes and the gaps tighten. */
 .ctl {
   position: relative;
   display: flex;
-  justify-content: center;
   align-items: center;
   gap: var(--s-6);
   min-height: var(--hit-sm);
+}
+
+.ctl::after {
+  content: "";
+  width: var(--hit-sm);
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+.ctl #prev {
+  margin-left: auto;
+}
+
+.page.media.with-lyrics .ctl {
+  gap: var(--s-3);
+}
+
+.page.media.with-lyrics .ctl::after {
+  display: none;
+}
+
+.page.media.with-lyrics .ctl #next {
+  margin-right: auto;
 }
 
 .ctl button {
@@ -903,6 +932,134 @@ body.fullscreen-hidden .island {
   height: var(--i-lg);
 }
 
+/* ================= Rings, icon buttons, status dots ================= */
+
+/* A ring is drawn in its own viewBox (src/rings.ts) and sized here. The track is
+   one tone step above the surface; the fill carries the tone. */
+.ring {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.ring-track {
+  fill: none;
+  stroke: var(--raise-hover);
+}
+
+.ring-fill {
+  fill: none;
+  stroke: var(--ink);
+  stroke-linecap: round;
+  transition:
+    stroke-dashoffset var(--d-shell) var(--spring-enter),
+    stroke var(--d-base) var(--ease-out),
+    opacity var(--d-fast) var(--ease-out);
+}
+
+.ring[data-tone="ok"] .ring-fill { stroke: var(--ok); }
+.ring[data-tone="caution"] .ring-fill { stroke: var(--caution); }
+.ring[data-tone="warn"] .ring-fill { stroke: var(--warn); }
+.ring[data-tone="muted"] .ring-fill { stroke: var(--ink-2); }
+/* A round cap at zero would draw a dot; an empty ring is the track alone */
+.ring[data-empty="true"] .ring-fill { opacity: 0; }
+
+/* The face holds a ring with something centred in it */
+.ring-face {
+  position: relative;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+}
+
+.ring-face > .ring {
+  position: absolute;
+  inset: 0;
+}
+
+.ring-glyph {
+  position: relative;
+  display: grid;
+  place-items: center;
+  color: var(--ink);
+}
+
+.ring-glyph svg.ico {
+  width: var(--i-md);
+  height: var(--i-md);
+}
+
+.ring-initial {
+  font-size: var(--t-base);
+  font-weight: var(--w-medium);
+  line-height: 1;
+}
+
+.ring-face[tabindex="0"]:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+  border-radius: var(--r-round);
+}
+
+/* Icon buttons: one line icon, a 36px target, the name in title and aria-label */
+.icon-btn {
+  width: var(--hit);
+  height: var(--hit);
+  flex-shrink: 0;
+  border-radius: var(--r-md);
+  color: var(--ink-2);
+  transition:
+    background var(--d-fast) var(--ease-out),
+    color var(--d-fast) var(--ease-out),
+    transform var(--d-instant) var(--ease-out);
+}
+
+.icon-btn:hover:not(:disabled) {
+  background: var(--raise);
+  color: var(--ink);
+}
+
+.icon-btn:active:not(:disabled) {
+  transform: scale(var(--press));
+}
+
+.icon-btn[aria-pressed="true"] {
+  color: var(--ink);
+}
+
+/* The one filled control of a group: play, record */
+.icon-btn.primary {
+  background: var(--raise);
+  color: var(--ink);
+  border-radius: var(--r-round);
+}
+
+.icon-btn.primary:hover:not(:disabled) {
+  background: var(--raise-hover);
+}
+
+.icon-btn:disabled {
+  opacity: 0.35;
+}
+
+/* A 6px status dot; grey idle, green live, amber paused, red fault */
+.status-dot {
+  display: inline-block;
+  width: var(--status-dot);
+  height: var(--status-dot);
+  border-radius: var(--r-round);
+  background: var(--ink-3);
+  flex-shrink: 0;
+  transition: background var(--d-base) var(--ease-out);
+}
+
+.status-dot[data-status="live"],
+.status-dot[data-status="running"] { background: var(--ok); }
+.status-dot[data-status="paused"] { background: var(--caution); }
+.status-dot[data-status="warn"] { background: var(--warn); }
+.status-dot[data-status="off"] { background: var(--raise-active); }
+
 /* ================= Today Page ================= */
 
 .page.today {
@@ -918,7 +1075,6 @@ body.fullscreen-hidden .island {
 .clock {
   font-size: var(--t-2xl);
   font-weight: var(--w-regular);
-  letter-spacing: -1px;
   line-height: 1;
   font-variant-numeric: tabular-nums;
 }
@@ -930,242 +1086,279 @@ body.fullscreen-hidden .island {
 }
 
 .batt {
-  width: 120px;
   display: flex;
   flex-direction: column;
-}
-
-.batt-top {
-  font-size: var(--t-lg);
-  font-weight: var(--w-medium);
-  margin-bottom: var(--s-2);
-  display: flex;
   align-items: center;
   gap: var(--s-2);
+  width: 88px;
 }
 
-.batt-bar {
-  height: 8px;
-  border-radius: var(--r-sm);
-  background: var(--wash-strong);
-  overflow: hidden;
+.batt-face {
+  width: 72px;
+  height: 72px;
 }
 
-#battFill {
-  height: 100%;
-  width: 100%;
-  background: var(--ink);
-  border-radius: var(--r-sm);
-  transition:
-    width var(--d-shell) var(--ease-out),
-    background var(--d-base) var(--ease-out);
+.batt-center {
+  gap: var(--s-half);
 }
 
-#battFill.charging {
-  background: var(--ok);
+.batt-pct {
+  font-size: var(--t-base);
+  font-weight: var(--w-medium);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
 }
 
-#battFill.low {
-  background: var(--warn);
+.batt-bolt {
+  color: var(--ok);
+  line-height: 0;
+}
+
+.batt-bolt svg.ico {
+  width: var(--i-xs);
+  height: var(--i-xs);
 }
 
 .batt-sub {
   font-size: var(--t-xs);
   color: var(--ink-2);
-  margin-top: var(--s-2);
+  font-variant-numeric: tabular-nums;
+  min-height: 14px;
+  line-height: 14px;
 }
 
-/* ================= Live Activities Page ================= */
+.batt-sub:empty {
+  visibility: hidden;
+}
 
+/* ================= Timer and Pomodoro ================= */
+
+/* Presets, the ring, then the controls: the ring is the centre of the section */
 .page.activities {
-  flex-direction: column;
-  justify-content: space-between;
-  gap: var(--s-1);
-}
-
-.act-header {
-  display: flex;
-  justify-content: space-between;
   align-items: center;
-  font-size: var(--t-sm);
-  color: var(--ink-2);
+  justify-content: center;
+  gap: var(--s-8);
 }
 
-.act-title {
+.act-presets,
+.act-controls {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+}
+
+.act-chip {
+  width: 44px;
+  height: var(--hit);
+  border-radius: var(--r-md);
+  background: var(--raise);
+  color: var(--ink-2);
+  font-size: var(--t-md);
   font-weight: var(--w-medium);
+  font-variant-numeric: tabular-nums;
+  transition:
+    background var(--d-fast) var(--ease-out),
+    color var(--d-fast) var(--ease-out),
+    transform var(--d-instant) var(--ease-out);
+}
+
+.act-chip:hover {
+  background: var(--raise-hover);
   color: var(--ink);
 }
 
-.act-display {
-  display: flex;
-  align-items: baseline;
-  gap: var(--s-3);
+.act-chip:active {
+  transform: scale(var(--press));
+}
+
+.act-chip[aria-pressed="true"] {
+  background: var(--raise-active);
+  color: var(--ink);
+}
+
+.act-face {
+  width: 140px;
+  height: 140px;
+}
+
+/* The timer ticks every 250ms; its ring follows linearly instead of springing */
+.act-face .ring-fill {
+  transition:
+    stroke-dashoffset 250ms linear,
+    stroke var(--d-base) var(--ease-out),
+    opacity var(--d-fast) var(--ease-out);
+}
+
+.act-center {
+  gap: var(--s-1);
 }
 
 .act-digits {
   font-size: var(--t-xl);
   font-weight: var(--w-regular);
   font-variant-numeric: tabular-nums;
-  letter-spacing: -0.5px;
-  line-height: 32px;
+  line-height: 1;
 }
 
-.act-status-pill {
-  font-size: var(--t-xs);
-  padding: var(--s-half) var(--s-2);
-  border-radius: var(--r-md);
-  background: var(--raise);
+.act-face[data-status="ready"] .act-digits {
   color: var(--ink-2);
 }
 
-.act-status-pill.active {
-  background: var(--ok-wash);
-  color: var(--ok);
-}
-
-/* Three columns keep all six controls inside the page without shrinking hit targets */
-.act-controls {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+.act-label {
+  display: flex;
+  align-items: center;
   gap: var(--s-1);
+  max-width: 104px;
+  font-size: var(--t-xs);
+  color: var(--ink-2);
 }
 
-.act-btn {
-  background: var(--raise);
-  border-radius: var(--r-md);
-  padding: var(--s-1) var(--s-2);
-  font-size: var(--t-sm);
-  font-weight: var(--w-medium);
-  min-height: var(--hit);
-  transition:
-    background var(--d-fast) var(--ease-out),
-    transform var(--d-instant) var(--ease-out);
+.act-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.act-btn:hover {
-  background: var(--raise-hover);
-}
-
-.act-btn:active {
-  transform: scale(var(--press));
-}
-
-.act-btn.primary {
-  background: var(--ink);
-  color: var(--surface);
-}
-
-.act-btn.primary:hover {
-  background: var(--ink-inverse-hover);
-}
-
-.act-btn.warn {
-  color: var(--warn-ink);
-}
-
-/* ================= Usage Page ================= */
+/* ================= AI Usage ================= */
 
 .page.usage {
   flex-direction: column;
+  justify-content: center;
   overflow-y: auto;
-  align-items: flex-start;
-  padding-right: var(--s-1);
-}
-
-.page.usage::-webkit-scrollbar {
-  width: 4px;
-}
-
-.page.usage::-webkit-scrollbar-thumb {
-  background: var(--raise-active);
-  border-radius: var(--r-xs);
+  scrollbar-width: none;
 }
 
 .u-list {
   width: 100%;
   display: flex;
-  flex-direction: column;
-  gap: var(--s-3);
-}
-
-.u-row {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  gap: var(--s-1) var(--s-2);
-  font-size: var(--t-sm);
-}
-
-.u-name {
-  font-weight: var(--w-medium);
-}
-
-.u-val {
-  color: var(--ink-2);
-  font-variant-numeric: tabular-nums;
-}
-
-.u-bar {
-  grid-column: 1 / -1;
-  height: 4px;
-  border-radius: var(--r-xs);
-  background: var(--wash-strong);
-  overflow: hidden;
-}
-
-.u-bar i {
-  display: block;
-  height: 100%;
-  background: var(--ink);
-  border-radius: var(--r-xs);
-  transition: width var(--d-shell) var(--ease-out);
-}
-
-.u-bar i.warn {
-  background: var(--caution);
-}
-
-.u-bar i.hot {
-  background: var(--warn);
-}
-
-.u-sub {
-  grid-column: 1 / -1;
-  font-size: var(--t-xs);
-  color: var(--ink-2);
-  display: flex;
-  gap: var(--s-2);
-  align-items: center;
   flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--s-3) var(--s-4);
 }
 
-.u-sub button {
-  background: var(--raise);
-  border-radius: var(--r-md);
-  padding: var(--s-1) var(--s-2);
-  font-size: var(--t-xs);
-  cursor: pointer;
-  min-height: 24px;
+.u-cell {
+  width: 76px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--s-1);
+  text-align: center;
+}
+
+.u-face {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 64px;
+  height: 64px;
+  border-radius: var(--r-round);
+  margin-bottom: var(--s-1);
+}
+
+.u-face > .ring {
+  position: absolute;
+  inset: 0;
+}
+
+.u-face > .ring-glyph svg.ico {
+  width: var(--i-lg);
+  height: var(--i-lg);
+}
+
+.u-face:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+}
+
+/* The ChatGPT estimate is logged by pressing its ring; a plus says so */
+.u-log {
+  transition: transform var(--d-instant) var(--ease-out);
+}
+
+.u-log:active {
+  transform: scale(var(--press));
+}
+
+.u-log-badge {
+  position: absolute;
+  right: -2px;
+  bottom: -2px;
+  width: 20px;
+  height: 20px;
+  border-radius: var(--r-round);
+  background: var(--raise-hover);
+  color: var(--ink);
+  display: grid;
+  place-items: center;
   transition: background var(--d-fast) var(--ease-out);
 }
 
-.u-sub button:hover {
-  background: var(--raise-hover);
+.u-log:hover .u-log-badge {
+  background: var(--raise-active);
+}
+
+.u-log-badge svg.ico {
+  width: var(--i-xs);
+  height: var(--i-xs);
+}
+
+.u-val {
+  font-size: var(--t-md);
+  font-weight: var(--w-medium);
+  font-variant-numeric: tabular-nums;
+  line-height: 16px;
+}
+
+.u-sub {
+  font-size: var(--t-xs);
+  color: var(--ink-2);
+  font-variant-numeric: tabular-nums;
+  line-height: 14px;
+  white-space: nowrap;
+}
+
+/* Stale or unavailable: the ring dims, the dash says there is no value */
+.u-cell[data-stale="true"] .ring,
+.u-cell[data-stale="true"] .ring-glyph {
+  opacity: 0.45;
+}
+
+.u-cell[data-stale="true"] .u-val {
+  color: var(--ink-2);
+}
+
+/* More than five sources: smaller rings so two rows fit the section */
+.u-list.dense {
+  gap: var(--s-2) var(--s-3);
+}
+
+.u-list.dense .u-cell {
+  width: 64px;
+  gap: 0;
+}
+
+.u-list.dense .u-face {
+  width: 44px;
+  height: 44px;
+}
+
+.u-list.dense .u-face > .ring-glyph svg.ico {
+  width: var(--i-sm);
+  height: var(--i-sm);
 }
 
 .u-empty {
   color: var(--ink-2);
   font-size: var(--t-sm);
   text-align: center;
-  padding: var(--s-6) 0;
+  margin: 0;
   width: 100%;
 }
 
 /* ================= Quick Actions Page ================= */
 
 .page.quick {
-  flex-direction: column;
-  justify-content: space-between;
-  gap: var(--s-2);
+  align-items: center;
 }
 
 .quick-grid {
@@ -1178,14 +1371,8 @@ body.fullscreen-hidden .island {
 .chip {
   background: var(--raise);
   border-radius: var(--r-lg);
-  height: 56px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: var(--s-1);
-  font-size: var(--t-xs);
-  font-weight: var(--w-medium);
+  height: 72px;
+  color: var(--ink);
   transition:
     background var(--d-fast) var(--ease-out),
     transform var(--d-instant) var(--ease-out);
@@ -1200,18 +1387,8 @@ body.fullscreen-hidden .island {
 }
 
 .chip svg {
-  width: var(--i-md);
-  height: var(--i-md);
-}
-
-.quick-footnote {
-  font-size: var(--t-2xs);
-  color: var(--ink-3);
-  text-align: center;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: var(--s-2);
+  width: var(--i-lg);
+  height: var(--i-lg);
 }
 
 /* ================= Browser Demo Header ================= */

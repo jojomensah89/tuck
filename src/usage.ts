@@ -1,4 +1,5 @@
 import type { Meter, ChatGPTConfig } from './types.js';
+import { formatSpan } from './rings.js';
 
 export const STORAGE_KEYS = {
   SHAPE: 'notch.shape',
@@ -69,7 +70,7 @@ export function getChatGPTMeter(nowSeconds = Date.now() / 1000): Meter | null {
 /**
  * Logs a new ChatGPT message timestamp into the rolling window log.
  */
-export function logChatGPTMessage(timestampSeconds = Math.round(Date.now() / 1000)): void {
+export function logChatGPTMessage(timestampSeconds = Math.floor(Date.now() / 1000)): void {
   const storedLogs = getJson<unknown>(STORAGE_KEYS.CHATGPT_LOG, []);
   const allLogs: unknown[] = Array.isArray(storedLogs) ? storedLogs : [];
   const cfg = getJson<ChatGPTConfig | null>(STORAGE_KEYS.CHATGPT, null);
@@ -80,20 +81,23 @@ export function logChatGPTMessage(timestampSeconds = Math.round(Date.now() / 100
 }
 
 /**
+ * Time until a reset in the island's one duration format ("2h 15m"), at least a
+ * minute; "now" once it has passed and '' when there is no reset time.
+ */
+export function resetSpan(resetsAt: number | null, nowSeconds = Date.now() / 1000): string {
+  if (!resetsAt) return '';
+  const diff = resetsAt - nowSeconds;
+  if (diff <= 0) return 'now';
+  return formatSpan(Math.max(60, diff));
+}
+
+/**
  * Formats countdown string to human-readable reset string.
  */
 export function formatUntil(resetsAt: number | null, nowSeconds = Date.now() / 1000): string {
-  if (!resetsAt) return '';
-  const diff = resetsAt - nowSeconds;
-  if (diff <= 0) return 'resetting now';
-
-  const d = Math.floor(diff / 86400);
-  const h = Math.floor((diff % 86400) / 3600);
-  const m = Math.floor((diff % 3600) / 60);
-
-  if (d > 0) return `resets in ${d}d ${h}h`;
-  if (h > 0) return `resets in ${h}h ${m}m`;
-  return `resets in ${Math.max(m, 1)}m`;
+  const span = resetSpan(resetsAt, nowSeconds);
+  if (!span) return '';
+  return span === 'now' ? 'resetting now' : `resets in ${span}`;
 }
 
 /**

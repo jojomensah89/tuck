@@ -3,6 +3,7 @@ import { SVG_ICONS } from './icons.js';
 import { nativeAction, nativeService, normalizeClipboard, normalizeDictation, normalizeTelemetry, type ClipboardSnapshot, type DictationSnapshot, type LyricsSnapshot, type MediaSession, type TelemetrySnapshot } from './live-services.js';
 import { historyPath, lyricIndex, matchesLyricRequest, measuredPercent, newRequestId, parseLrc, readPreferences, TelemetryGate, type LyricLine } from './live-state.js';
 import { formatClockTime } from './time-format.js';
+import { createRing, usageTone, type Ring } from './rings.js';
 import type { MediaState } from './types.js';
 
 const node = <K extends keyof HTMLElementTagNameMap>(tag: K, className = '', text = '') => {
@@ -11,11 +12,26 @@ const node = <K extends keyof HTMLElementTagNameMap>(tag: K, className = '', tex
 function button(label: string, action: () => void): HTMLButtonElement {
   const b = node('button', 'live-button', label); b.type = 'button'; b.onclick = e => { e.stopPropagation(); action(); }; return b;
 }
+/** An icon from the line family with its name as tooltip and accessible name */
+function iconButton(label: string, icon: string, action: () => void, className = ''): HTMLButtonElement {
+  const b = node('button', `icon-btn${className ? ` ${className}` : ''}`); b.type = 'button';
+  setIconLabel(b, label, icon);
+  b.onclick = e => { e.stopPropagation(); action(); }; return b;
+}
+function setIconLabel(b: HTMLElement, label: string, icon: string): void {
+  if (b.getAttribute('aria-label') === label) return;
+  b.setAttribute('aria-label', label); b.title = label; b.innerHTML = icon;
+}
+/** A 6px status dot: its tone carries the state, its name says it */
+function statusDot(): { el: HTMLElement; set(state: 'live' | 'idle' | 'warn' | 'off', label: string): void } {
+  const el = node('span', 'status-dot'); el.setAttribute('role', 'img');
+  return { el, set(state, label) { el.dataset.status = state; el.setAttribute('aria-label', label); el.title = label; } };
+}
 function makePage(id: string, title: string): HTMLElement {
   const page = node('section', `page live-page ${id}`); page.dataset.page = id; page.setAttribute('aria-label', title);
   document.querySelector('.pages-container')!.append(page); return page;
 }
-const friendlyError = (error: unknown) => error instanceof Error ? error.message : 'Action failed. Please try again.';
+const friendlyError = (error: unknown) => error instanceof Error ? error.message : 'Action failed, try again';
 
 export function mountLivePages(onLayout: () => void): {
   media: (state: MediaState, position: number) => void;
@@ -28,7 +44,7 @@ export function mountLivePages(onLayout: () => void): {
   const message = node('p', 'live-note'); message.setAttribute('role', 'status');
   const lyricsPane = node('div', 'lyrics-pane'); lyricsPane.setAttribute('aria-label', 'Lyrics');
   const lyricList = node('div', 'lyric-lines');
-  const lyricsStatus = node('p', 'lyrics-status', 'Enable online lyrics in Settings.');
+  const lyricsStatus = node('p', 'lyrics-status', 'Enable online lyrics in Settings');
   const lyricToggle = node('button', 'lyrics-toggle-btn');
   lyricToggle.type = 'button';
   lyricToggle.setAttribute('aria-label', 'Toggle lyrics');
@@ -76,10 +92,10 @@ export function mountLivePages(onLayout: () => void): {
     if (!snapshot || !matchesLyricRequest({ trackId: currentTrack, requestId: currentRequestId }, snapshot)) return;
     lines = snapshot.lines || parseLrc(snapshot.syncedLyrics || ''); activeLine = -2; currentLyric = ''; lyricList.replaceChildren();
     const statuses: Record<LyricsSnapshot['status'], string> = {
-      disabled: 'Enable online lyrics in Settings.', loading: 'Finding lyrics\u2026', synced: '', plain: 'Lyrics \u00b7 not synchronized',
-      instrumental: 'Instrumental', unavailable: 'No lyrics found for this track.', error: 'Lyrics unavailable. Check your connection and try another track.',
+      disabled: 'Enable online lyrics in Settings', loading: 'Finding lyrics\u2026', synced: '', plain: 'Lyrics \u00b7 not synchronized',
+      instrumental: 'Instrumental', unavailable: 'No lyrics for this track', error: 'Lyrics unavailable, check your connection',
     };
-    lyricsStatus.textContent = statuses[snapshot.status] ?? 'Lyrics unavailable.';
+    lyricsStatus.textContent = statuses[snapshot.status] ?? 'Lyrics unavailable';
     if (lines.length) {
       for (const line of lines) {
         const b = button(line.text || '\u266a', () => { void act(mediaSeek(line.atMs), message); });
@@ -94,56 +110,73 @@ export function mountLivePages(onLayout: () => void): {
     const request = ++generation;
     const requestId = newRequestId(); currentRequestId = state.active ? requestId : '';
     lines = []; currentLyric = ''; activeLine = -2; lyricList.replaceChildren();
-    lyricsStatus.textContent = state.active ? 'Finding lyrics\u2026' : 'Play music to see lyrics.';
+    lyricsStatus.textContent = state.active ? 'Finding lyrics\u2026' : 'Play music to see lyrics';
     if (!state.active) return;
     try {
       const data = await nativeService<LyricsSnapshot>('lyrics_lookup', {
         trackId: state.trackId, requestId, title: state.title, artist: state.artist, durationMs: state.durationMs,
       });
       if (request === generation) applyLyrics(data);
-    } catch { if (request === generation) lyricsStatus.textContent = isTauri() ? 'Lyrics unavailable. Enable lyrics in Settings.' : 'Online lyrics require the Windows app.'; }
+    } catch { if (request === generation) lyricsStatus.textContent = isTauri() ? 'Lyrics unavailable, enable them in Settings' : 'Online lyrics need the Windows app'; }
   }
 
+  // System stats: one ring per meter with the value inside, its name and a sparkline under it
   const stats = makePage('stats', 'System usage');
-  const statHead = node('div', 'live-heading'); statHead.append(node('h2', '', 'System usage'));
-  const statsStatus = node('span', 'live-note', 'Waiting for native samples'); statHead.append(statsStatus); stats.append(statHead);
-  const statRows = node('div', 'stat-rows'); stats.append(statRows);
+  const statHead = node('div', 'live-heading'); const statTitle = node('h2', '', 'System');
+  const statsStatus = statusDot(); statsStatus.set('idle', 'Waiting for native samples');
+  const statTitleRow = node('div', 'live-title'); statTitleRow.append(statTitle, statsStatus.el); statHead.append(statTitleRow); stats.append(statHead);
+  const statRows = node('div', 'stat-rings'); stats.append(statRows);
   const histories = new Map<string, (number | null)[]>();
   const telemetryGate = new TelemetryGate();
-  const rowNodes = new Map<string, { row: HTMLElement; value: HTMLElement; path: SVGPathElement }>();
-  function metric(id: string, label: string, pct: number | null, detail = ''): void {
+  const rowNodes = new Map<string, { row: HTMLElement; face: HTMLElement; ring: Ring; value: HTMLElement; path: SVGPathElement; name: string; detail: string }>();
+  function metric(id: string, label: string, pct: number | null, detail = '', fullName = label): void {
     let view = rowNodes.get(id);
     if (!view) {
-      const row = node('div', 'stat-row'); const name = node('span', 'stat-name', label); const value = node('span', 'stat-value');
-      const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); svg.setAttribute('viewBox', '0 0 180 40'); svg.setAttribute('aria-hidden', 'true');
-      const path = document.createElementNS(svg.namespaceURI, 'path') as SVGPathElement; svg.append(path); row.append(name, value, svg); statRows.append(row);
-      view = { row, value, path }; rowNodes.set(id, view);
+      const row = node('div', 'stat-cell');
+      const face = node('div', 'ring-face stat-face'); face.tabIndex = 0; face.setAttribute('role', 'img');
+      const ring = createRing(56, 6); const value = node('span', 'ring-glyph stat-value');
+      face.append(ring.root, value);
+      const name = node('span', 'stat-name', label);
+      const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); svg.setAttribute('viewBox', '0 0 180 40'); svg.setAttribute('preserveAspectRatio', 'none'); svg.setAttribute('aria-hidden', 'true'); svg.setAttribute('class', 'spark');
+      const path = document.createElementNS(svg.namespaceURI, 'path') as SVGPathElement; svg.append(path); row.append(face, name, svg); statRows.append(row);
+      view = { row, face, ring, value, path, name: fullName, detail }; rowNodes.set(id, view);
     }
+    view.name = fullName; view.detail = detail;
     const history = histories.get(id) || []; history.push(pct); if (history.length > 45) history.shift(); histories.set(id, history);
-    view.value.textContent = pct === null ? 'Unavailable' : `${Math.round(pct)}%${detail ? ` \u00b7 ${detail}` : ''}`;
+    paintMetric(view, pct);
     view.path.setAttribute('d', historyPath(history));
   }
-  const bytes = (value: number) => `${(value / 1073741824).toFixed(1)} GB`;
+  function paintMetric(view: { row: HTMLElement; face: HTMLElement; ring: Ring; value: HTMLElement; name: string; detail: string }, pct: number | null): void {
+    // Load reads in ink until it is high; green would make an idle machine the loudest thing here
+    const tone = usageTone(pct);
+    view.ring.set(pct, tone === 'ok' ? 'ink' : tone);
+    const text = pct === null ? '\u2013' : `${Math.round(pct)}%`;
+    if (view.value.textContent !== text) view.value.textContent = text;
+    view.row.dataset.unavailable = String(pct === null);
+    const label = pct === null ? `${view.name} unavailable` : `${view.name} ${Math.round(pct)}%${view.detail ? `, ${view.detail}` : ''}`;
+    view.face.setAttribute('aria-label', label); view.face.title = label;
+  }
+  const gb = (value: number) => (value / 1073741824).toFixed(1);
   function telemetry(data: TelemetrySnapshot): void {
     if (!data || !Array.isArray(data.gpus)) return;
     const sampled = Number.isFinite(data.sampledAt) ? data.sampledAt : 0;
     if (!telemetryGate.accept(sampled)) return;
     const stale = data.stale || !sampled || Date.now() - sampled > 10000;
-    if (stale) { invalidateTelemetry('Stale / warming up'); return; }
-    statsStatus.textContent = stale ? 'Stale / warming up' : `Live \u00b7 ${formatClockTime(sampled)}`;
+    if (stale) { invalidateTelemetry('Stale, warming up'); return; }
+    statsStatus.set('live', `Live, sampled ${formatClockTime(sampled)}`);
     metric('cpu', 'CPU', measuredPercent(data.cpuPct));
     const validRam = typeof data.ramUsedBytes === 'number' && typeof data.ramTotalBytes === 'number' && data.ramTotalBytes > 0 && data.ramUsedBytes >= 0;
-    metric('ram', 'Memory', validRam ? measuredPercent(data.ramUsedBytes! / data.ramTotalBytes! * 100) : null, validRam ? `${bytes(data.ramUsedBytes!)} / ${bytes(data.ramTotalBytes!)}` : '');
+    metric('ram', 'Memory', validRam ? measuredPercent(data.ramUsedBytes! / data.ramTotalBytes! * 100) : null, validRam ? `${gb(data.ramUsedBytes!)} of ${gb(data.ramTotalBytes!)} GB` : '');
     const ids = new Set(['cpu', 'ram']);
-    for (const gpu of data.gpus) { ids.add(gpu.id); metric(gpu.id, gpu.name, measuredPercent(gpu.usedPct)); }
+    data.gpus.forEach((gpu, i) => { ids.add(gpu.id); metric(gpu.id, data.gpus.length > 1 ? `GPU ${i + 1}` : 'GPU', measuredPercent(gpu.usedPct), '', gpu.name || 'GPU'); });
     if (!data.gpus.length) { ids.add('gpu-unknown'); metric('gpu-unknown', 'GPU', null); }
     for (const [id, view] of rowNodes) if (!ids.has(id)) { view.row.remove(); rowNodes.delete(id); histories.delete(id); }
   }
   metric('cpu', 'CPU', null); metric('ram', 'Memory', null); metric('gpu-unknown', 'GPU', null);
   function invalidateTelemetry(label: string): void {
-    statsStatus.textContent = label;
+    statsStatus.set(label.startsWith('Stale') ? 'idle' : 'warn', label);
     for (const [id, view] of rowNodes) {
-      view.value.textContent = 'Unavailable';
+      paintMetric(view, null);
       const history = histories.get(id) || []; history.push(null); if (history.length > 45) history.shift();
       histories.set(id, history); view.path.setAttribute('d', historyPath(history));
     }
@@ -158,24 +191,37 @@ export function mountLivePages(onLayout: () => void): {
     } finally { telemetryGate.finish(); }
   }
 
+  // Dictation: the transcript is the content; record (stop while recording), cancel and insert are icons
   const speech = makePage('dictation', 'Dictation');
-  const speechTitle = node('h2', '', 'Dictation'); const speechStatus = node('p', 'live-note', 'Offline \u00b7 set up a model in Settings');
-  const transcript = node('div', 'transcript', 'Your transcript appears here.'); transcript.setAttribute('role', 'status');
+  const speechHead = node('div', 'live-heading'); const speechTitleRow = node('div', 'live-title');
+  const speechDot = statusDot(); speechDot.set('off', 'Offline, set up a model in Settings');
+  speechTitleRow.append(node('h2', '', 'Dictation'), speechDot.el);
+  const speechStatus = node('p', 'live-note');
+  const transcript = node('div', 'transcript placeholder', 'Your transcript appears here'); transcript.setAttribute('role', 'status');
   const speechActions = node('div', 'live-actions');
-  const record = button('Record', () => { void act(nativeAction('dictation_toggle'), speechStatus); });
   let dictationPhase = 'disabled';
-  const stop = button('Finish', () => { void act(nativeAction('dictation_stop'), speechStatus); });
-  const cancel = button('Cancel', () => { void act(nativeAction('dictation_cancel'), speechStatus); });
-  const insert = button('Insert', () => { void act(nativeAction('dictation_insert'), speechStatus); }); insert.disabled = true;
-  speechActions.append(record, stop, cancel, insert); speech.append(speechTitle, speechStatus, transcript, speechActions);
+  const record = iconButton('Record', SVG_ICONS.mic, () => {
+    void act(nativeAction(dictationPhase === 'recording' ? 'dictation_stop' : 'dictation_toggle'), speechStatus);
+  }, 'primary');
+  const cancel = iconButton('Cancel', SVG_ICONS.close, () => { void act(nativeAction('dictation_cancel'), speechStatus); });
+  const insert = iconButton('Insert', SVG_ICONS.insert, () => { void act(nativeAction('dictation_insert'), speechStatus); }); insert.disabled = true;
+  speechActions.append(record, cancel, insert); speechHead.append(speechTitleRow, speechActions);
+  speech.append(speechHead, transcript, speechStatus);
   function dictation(data: DictationSnapshot): void {
     if (!data || typeof data.status !== 'string') return;
     dictationPhase = data.status;
-    speechStatus.textContent = data.error || `Offline \u00b7 ${data.status}`;
-    transcript.textContent = data.transcript?.slice(0, 32000) || (data.status === 'recording' ? 'Listening\u2026' : 'Your transcript appears here.');
-    insert.disabled = data.status !== 'review' || data.canInsert === false; stop.disabled = data.status !== 'recording';
+    // Visible text only for an error; the state itself is the dot
+    speechStatus.textContent = data.error || '';
+    const dotState = data.error || data.status === 'error' ? 'warn' : data.status === 'recording' ? 'live' : ['transcribing', 'review'].includes(data.status) ? 'idle' : 'off';
+    speechDot.set(dotState, `Offline, ${data.status}`);
+    transcript.textContent = data.transcript?.slice(0, 32000) || (data.status === 'recording' ? 'Listening\u2026' : 'Your transcript appears here');
+    transcript.classList.toggle('placeholder', !data.transcript);
+    insert.disabled = data.status !== 'review' || data.canInsert === false;
+    cancel.disabled = !['starting', 'downloadingModel', 'recording', 'transcribing', 'review'].includes(data.status);
     record.disabled = !['idle', 'recording', 'review', 'error'].includes(data.status) || data.modelReady === false;
-    record.textContent = data.status === 'recording' ? 'Finish recording' : 'Record';
+    if (data.status === 'recording') setIconLabel(record, 'Finish recording', SVG_ICONS.stop);
+    else setIconLabel(record, 'Record', SVG_ICONS.mic);
+    record.setAttribute('aria-pressed', String(data.status === 'recording'));
     document.getElementById('isl')!.dataset.dictation = data.status;
     const active = ['recording', 'transcribing', 'review'].includes(data.status);
     window.dispatchEvent(new CustomEvent('tuck-activity', { detail: {
@@ -190,13 +236,17 @@ export function mountLivePages(onLayout: () => void): {
   }
 
   const clipboard = makePage('clipboard', 'Clipboard history');
-  const clipboardHead = node('div', 'live-heading'); const clipboardStatus = node('p', 'live-note', 'Enable clipboard history in Settings.');
-  clipboardHead.append(node('h2', '', 'Clipboard'), button('Clear', () => { void act(nativeAction('clipboard_clear').then(refreshClipboard), clipboardStatus); }));
+  const clipboardHead = node('div', 'live-heading'); const clipboardStatus = node('p', 'live-note', 'Enable clipboard history in Settings');
+  const clearClipboard = iconButton('Clear unpinned history', SVG_ICONS.trash, () => { void act(nativeAction('clipboard_clear').then(refreshClipboard), clipboardStatus); });
+  clipboardHead.append(node('h2', '', 'Clipboard'), clearClipboard);
   const clipList = node('div', 'clipboard-list'); clipboard.append(clipboardHead, clipboardStatus, clipList);
   let clipboardSignature = '';
   function renderClipboard(data: ClipboardSnapshot): void {
     if (!data || !Array.isArray(data.items)) return;
-    clipboardStatus.textContent = data.enabled ? (data.items.length ? 'Select to copy \u00b7 pins stay at the top' : 'Nothing copied yet.') : 'Enable clipboard history in Settings.';
+    // A note only when there is nothing to show; a row explains itself (select to copy, pin to keep)
+    clipboardStatus.textContent = data.enabled ? (data.items.length ? '' : 'Nothing copied yet') : 'Enable clipboard history in Settings';
+    clipboardStatus.hidden = !clipboardStatus.textContent;
+    clearClipboard.disabled = !data.enabled || !data.items.length;
     const signature = JSON.stringify(data.items);
     if (signature === clipboardSignature) return; clipboardSignature = signature;
     const focus = (document.activeElement as HTMLElement)?.dataset.focus;
@@ -204,10 +254,11 @@ export function mountLivePages(onLayout: () => void): {
     for (const item of [...data.items].sort((a, b) => Number(b.pinned) - Number(a.pinned)).slice(0, 100)) {
       const row = node('div', 'clipboard-row');
       const copy = button(item.text.slice(0, 160), () => { void act(nativeAction('clipboard_copy', { id: item.id }), clipboardStatus); });
-      copy.classList.add('clipboard-text'); copy.dataset.focus = `copy-${item.id}`; copy.title = item.text.slice(0, 500);
-      const pin = button(item.pinned ? 'Unpin' : 'Pin', () => { void act(nativeAction('clipboard_pin', { id: item.id, pinned: !item.pinned }).then(refreshClipboard), clipboardStatus); });
+      copy.className = 'clipboard-text'; copy.dataset.focus = `copy-${item.id}`; copy.title = `Copy: ${item.text.slice(0, 500)}`;
+      const pin = iconButton(item.pinned ? 'Unpin' : 'Pin', SVG_ICONS.pin, () => { void act(nativeAction('clipboard_pin', { id: item.id, pinned: !item.pinned }).then(refreshClipboard), clipboardStatus); }, 'row-action pin-btn');
       pin.setAttribute('aria-pressed', String(item.pinned)); pin.dataset.focus = `pin-${item.id}`;
-      const remove = button('Remove', () => { void act(nativeAction('clipboard_remove', { id: item.id }).then(refreshClipboard), clipboardStatus); }); remove.dataset.focus = `remove-${item.id}`;
+      const remove = iconButton('Remove', SVG_ICONS.close, () => { void act(nativeAction('clipboard_remove', { id: item.id }).then(refreshClipboard), clipboardStatus); }, 'row-action'); remove.dataset.focus = `remove-${item.id}`;
+      row.dataset.pinned = String(item.pinned);
       row.append(copy, pin, remove); clipList.append(row);
     }
     if (focus) [...clipList.querySelectorAll<HTMLElement>('[data-focus]')].find(el => el.dataset.focus === focus)?.focus();
@@ -218,16 +269,38 @@ export function mountLivePages(onLayout: () => void): {
   const spectrum = node('div', 'live-spectrum'); spectrum.setAttribute('aria-label', 'System audio spectrum');
   const bars = Array.from({ length: 32 }, () => { const bar = node('i'); spectrum.append(bar); return bar; }); mediaPage.append(spectrum);
   const audioPage = makePage('visualizer', 'Audio visualizer');
-  const audioTitle = node('div', 'live-heading'); const audioStatus = node('p', 'live-note', 'Playback analysis is off until enabled in Settings.');
-  audioTitle.append(node('h2', '', 'System audio'), button('Enable', () => { void act(nativeAction('visualizer_set_enabled', { enabled: true }), audioStatus); }), button('Stop', () => { void act(nativeAction('visualizer_set_enabled', { enabled: false }), audioStatus); }));
+  const audioTitle = node('div', 'live-heading'); const audioStatus = node('p', 'live-note', 'Analysis off, no audio is stored');
+  // One toggle: the spectrum itself shows whether analysis runs
+  let visualizerOn = false;
+  // Frames still in flight (and the capture thread's final empty frame) arrive just after Stop
+  let stoppedAt = 0;
+  const visualizerToggle = iconButton('Start playback analysis', SVG_ICONS.power, () => {
+    const next = !visualizerOn;
+    void act(nativeAction('visualizer_set_enabled', { enabled: next }).then(() => { setVisualizer(next); }), audioStatus);
+  });
+  function setVisualizer(on: boolean): void {
+    if (visualizerOn && !on) stoppedAt = Date.now();
+    visualizerOn = on;
+    visualizerToggle.setAttribute('aria-pressed', String(on));
+    setIconLabel(visualizerToggle, on ? 'Stop playback analysis' : 'Start playback analysis', SVG_ICONS.power);
+    if (!on) audioStatus.textContent = 'Analysis off, no audio is stored';
+  }
+  setVisualizer(false);
+  void nativeService<{ enabled: boolean }>('visualizer_settings').then(status => setVisualizer(status.enabled === true)).catch(() => {});
+  audioTitle.append(node('h2', '', 'System audio'), visualizerToggle);
   const wideSpectrum = node('div', 'wide-spectrum'); wideSpectrum.setAttribute('aria-label', 'Measured playback frequency bands');
   const wideBars = Array.from({ length: 48 }, () => { const bar = node('i'); wideSpectrum.append(bar); return bar; });
   audioPage.append(audioTitle, wideSpectrum, audioStatus);
   let lastAudio = 0;
   function audio(data: { bands: number[]; active?: boolean }): void {
     if (!data || !Array.isArray(data.bands)) return;
+    if (!visualizerOn) {
+      // Ignore stragglers after a local Stop; later frames mean analysis was started elsewhere (Settings)
+      if (Date.now() - stoppedAt < 1500) return;
+      setVisualizer(true);
+    }
     lastAudio = Date.now();
-    audioStatus.textContent = data.active === false ? 'Silence \u00b7 no audio stored' : 'Live playback spectrum \u00b7 no audio stored';
+    audioStatus.textContent = data.active === false ? 'Silence, no audio is stored' : 'Live spectrum, no audio is stored';
     for (const group of [bars, wideBars]) group.forEach((bar, i) => {
       const source = i * Math.max(0, data.bands.length - 1) / (group.length - 1);
       const low = data.bands[Math.floor(source)] || 0, high = data.bands[Math.ceil(source)] || 0;
@@ -245,20 +318,21 @@ export function mountLivePages(onLayout: () => void): {
   void listenToEvent<{ text: string }>('dictation_partial', data => {
     if (dictationPhase !== 'recording' || typeof data?.text !== 'string') return;
     transcript.textContent = data.text.slice(0, 32000);
+    transcript.classList.toggle('placeholder', !data.text);
     window.dispatchEvent(new CustomEvent('tuck-activity', { detail: { id: 'dictation', type: 'dictation', phase: 'recording', active: true, title: 'Dictation', text: data.text.slice(-65), priority: 99 } }));
   }).then(unlisten => unlisteners.push(unlisten));
   void listenToEvent<{ enabled: boolean }>('lyrics-settings', data => {
-    if (!data.enabled) { generation++; currentRequestId = ''; lines = []; currentLyric = ''; lyricList.replaceChildren(); lyricsStatus.textContent = 'Enable online lyrics in Settings.'; }
+    if (!data.enabled) { generation++; currentRequestId = ''; lines = []; currentLyric = ''; lyricList.replaceChildren(); lyricsStatus.textContent = 'Enable online lyrics in Settings'; }
     else if (latestMedia?.active) void requestLyrics(latestMedia);
   }).then(unlisten => unlisteners.push(unlisten));
-  void listenToEvent<string>('visualizer-error', () => { audioStatus.textContent = 'Playback analysis unavailable. Check the output device.'; }).then(unlisten => unlisteners.push(unlisten));
+  void listenToEvent<string>('visualizer-error', () => { audioStatus.textContent = 'Playback analysis unavailable, check the output device'; }).then(unlisten => unlisteners.push(unlisten));
   void sessions();
   void refreshTelemetry();
-  void nativeService<DictationSnapshot>('dictation_snapshot').then(dictation).catch(() => { speechStatus.textContent = 'Dictation service unavailable. See Settings.'; });
-  void refreshClipboard().catch(() => { clipboardStatus.textContent = 'Clipboard service unavailable. See Settings.'; });
+  void nativeService<DictationSnapshot>('dictation_snapshot').then(dictation).catch(() => { speechStatus.textContent = 'Dictation service unavailable, see Settings'; });
+  void refreshClipboard().catch(() => { clipboardStatus.textContent = 'Clipboard service unavailable, see Settings'; });
   const interval = window.setInterval(() => {
     if (Date.now() - lastAudio > 1000) [...bars, ...wideBars].forEach(bar => bar.style.setProperty('--level', '0'));
-    if (telemetryGate.sampledAt && Date.now() - telemetryGate.sampledAt > 10000) invalidateTelemetry('Stale / warming up');
+    if (telemetryGate.sampledAt && Date.now() - telemetryGate.sampledAt > 10000) invalidateTelemetry('Stale, warming up');
     if (stats.closest('.tab-panel.on')) void refreshTelemetry();
   }, 1000);
   const sessionInterval = window.setInterval(() => { void sessions(); }, 5000);

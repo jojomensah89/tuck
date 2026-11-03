@@ -52,10 +52,22 @@ try {
     return [...el.querySelectorAll('button')].some(button => button.getBoundingClientRect().bottom > box.bottom + 1);
   });
   assert.equal(overflow,false,'Activity controls must fit');
+  // Timer: numeric presets, icon controls, a status dot and a progress ring
+  const timerTargets = await page.locator('.page.activities button').evaluateAll(nodes => nodes.map(n => { const r = n.getBoundingClientRect(); return Math.min(r.width, r.height); }));
+  assert.equal(timerTargets.every(size => size >= 32), true, 'Timer controls are at least 32px');
+  assert.equal(await page.locator('.page.activities .act-face .ring').count(), 1);
   await page.locator('#actQuick5').click();
-  assert.equal(await page.locator('#actStatus').textContent(),'Active');
+  assert.equal(await page.locator('#actStatus').getAttribute('data-status'),'running');
+  assert.equal(await page.locator('#actQuick5').getAttribute('aria-pressed'),'true');
   await page.locator('#actPause').click();
-  assert.equal(await page.locator('#actPause').textContent(),'Resume');
+  assert.equal(await page.locator('#actPause').getAttribute('aria-label'),'Resume');
+  assert.equal(await page.locator('#actStatus').getAttribute('aria-label'),'Paused');
+  await page.locator('#actReset').click();
+  assert.equal(await page.locator('#actStatus').getAttribute('data-status'),'ready');
+  assert.equal(await page.locator('#actReset').isDisabled(),true,'Nothing to reset when idle');
+  await page.locator('#actPause').click();
+  assert.equal(await page.locator('#actStatus').getAttribute('data-status'),'running','Play starts the last preset when idle');
+  await page.locator('#actPause').click();
   await mkdir(path.join(root,'artifacts'),{recursive:true});
   await page.screenshot({path:path.join(root,'artifacts','island-activities.png')});
   await page.keyboard.press('Escape');
@@ -149,9 +161,10 @@ try {
   assert.equal(await native.locator('.tab-panel.on').getAttribute('data-tab'),'tools');
   await native.getByRole('button',{name:'Calls',exact:true}).click();
   await native.getByRole('button',{name:'Start call timer',exact:true}).click();
-  await native.getByRole('button',{name:'End timer',exact:true}).waitFor({timeout:3000});
-  assert.equal(await native.getByRole('button',{name:'End timer',exact:true}).count(),1);
-  assert.equal(await native.locator('#extensionsPage .ext-note').textContent(),'Manual call timer. This does not place calls or control your microphone.');
+  await native.getByRole('button',{name:'End call timer',exact:true}).waitFor({timeout:3000});
+  assert.equal(await native.getByRole('button',{name:'End call timer',exact:true}).count(),1);
+  assert.equal(await native.locator('#extensionsPage .ext-note').textContent(),'Manual timer, it does not place calls or use the microphone');
+  assert.equal(await native.getByRole('button',{name:'Calls',exact:true}).locator('.ext-badge.dot').isVisible(),true,'A running call timer badges its view');
   await native.keyboard.press('Escape');
   await native.evaluate(()=>window.__emitNative('hover',true));
   await native.waitForTimeout(250);
@@ -162,9 +175,10 @@ try {
   await native.getByRole('button',{name:'Add files',exact:true}).click();
   assert.match(await native.locator('#extensionsPage .ext-body').textContent(),/sample.txt/);
   await native.getByRole('button',{name:'Radios',exact:true}).click();
-  await native.getByRole('button',{name:'Turn off',exact:true}).focus();
+  assert.equal(await native.getByRole('switch',{name:'Test Wi-Fi',exact:true}).getAttribute('aria-checked'),'true');
+  await native.getByRole('switch',{name:'Test Wi-Fi',exact:true}).focus();
   await native.evaluate(()=>{window.__nativeState.radios[0].state='Off';window.__emitNative('extension-state',structuredClone(window.__nativeState));});
-  assert.equal(await native.getByRole('button',{name:'Turn on',exact:true}).count(),1);
+  assert.equal(await native.getByRole('switch',{name:'Test Wi-Fi',exact:true}).getAttribute('aria-checked'),'false');
   assert.equal(await native.evaluate(()=>document.activeElement.dataset.actionKey),'radio-wifi-Test Wi-Fi');
   await native.evaluate(()=>window.dispatchEvent(new CustomEvent('tuck-drop-active',{detail:true})));
   assert.equal(await native.locator('#isl').getAttribute('data-state'),'open');
@@ -207,12 +221,13 @@ try {
       return {
         width: rect('#isl').width,
         titleClear: title.right + 12 <= lyrics.left,
-        togglePresent: toggle.width >= 12 && toggle.height >= 12,
+        togglePresent: toggle.width >= 32 && toggle.height >= 32,
+        toggleClear: toggle.right <= rect('#prev').left,
         controlsFit: controls.bottom <= page.bottom + 1,
       };
     });
     assert.equal(geometry.width, width);
-    assert.equal(geometry.titleClear && geometry.togglePresent && geometry.controlsFit, true, `Media regions must fit at ${width}px`);
+    assert.equal(geometry.titleClear && geometry.togglePresent && geometry.toggleClear && geometry.controlsFit, true, `Media regions must fit at ${width}px`);
     await native.screenshot({path:path.join(root,'artifacts',`island-unslop-${width}.png`)});
   }
   await native.evaluate(()=>{
@@ -227,14 +242,40 @@ try {
   await native.locator('.page.stats').scrollIntoViewIfNeeded();
   await native.evaluate(()=>window.__emitNative('telemetry',{sampledAt:Date.now(),cpuPct:43,ramUsedBytes:8589934592,ramTotalBytes:17179869184,gpus:[{id:'gpu0',name:'Fixture GPU',usedPct:null}]}));
   assert.match(await native.locator('.page.stats').textContent(),/43%/);
-  assert.match(await native.locator('.page.stats').textContent(),/8.0 GB \/ 16.0 GB/);
-  assert.match(await native.locator('.page.stats').textContent(),/Fixture GPUUnavailable/);
+  assert.equal(await native.locator('.page.stats .stat-face').count(),3,'One ring each for CPU, memory and the GPU');
+  assert.equal(await native.locator('.page.stats .stat-face').nth(1).getAttribute('aria-label'),'Memory 50%, 8.0 of 16.0 GB');
+  assert.equal(await native.locator('.page.stats .stat-face').nth(2).getAttribute('aria-label'),'Fixture GPU unavailable');
   await native.evaluate(()=>window.__emitNative('telemetry',{sampledAt:Date.now()-5000,cpuPct:99,ramUsedBytes:null,ramTotalBytes:null,gpus:[]}));
   assert.match(await native.locator('.page.stats').textContent(),/43%/,'An older snapshot cannot replace newer metrics');
   await native.waitForTimeout(1200);
-  assert.equal(await native.locator('.stat-value').first().textContent(),'Unavailable','Polling failures clear prior measurements');
+  assert.match(await native.locator('.stat-face').first().getAttribute('aria-label'),/unavailable/,'Polling failures clear prior measurements');
+  assert.equal(await native.locator('.stat-value').first().textContent(),'\u2013');
   await native.evaluate(()=>window.__emitNative('media',{active:true,trackId:'other',title:'Other fixture',artist:'Test',playing:true,positionMs:0,durationMs:10000}));
   assert.equal(await native.locator('.tab-panel.on').getAttribute('data-tab'),'usage','Track changes must not steal a selected tool');
+  // AI usage: one ring per meter, the provider mark inside, a threshold tone, details in the name
+  await native.evaluate(()=>{
+    localStorage.setItem('notch.chatgpt',JSON.stringify({label:'ChatGPT (estimate)',cap:10,hours:3}));
+    const now=Math.round(Date.now()/1000);
+    window.__emitNative('usage',[
+      {id:'claude-5h',provider:'claude',label:'Claude session (5 h)',usedPct:93,spentUsd:null,resetsAt:now+8130,source:'official',stale:false},
+      {id:'codex-installed-c-primary',provider:'codex',label:'Codex 5 h',usedPct:72,spentUsd:null,resetsAt:now+3630,source:'official',stale:false},
+      {id:'openai-api',provider:'openai-api',label:'OpenAI API',usedPct:null,spentUsd:null,resetsAt:null,source:'api',stale:false,status:'unavailable',error:'No admin key'}]);
+  });
+  await native.locator('.page.usage').scrollIntoViewIfNeeded();
+  assert.equal(await native.locator('#uList .u-cell').count(),4,'Three native meters and the ChatGPT estimate');
+  assert.equal(await native.locator('#uList .u-cell svg.mark').count(),4,'Every meter shows its provider mark');
+  await native.waitForTimeout(100);
+  assert.deepEqual(await native.locator('#uList .ring').evaluateAll(n=>n.map(x=>x.dataset.tone)),['warn','caution','none','ok']);
+  assert.equal(await native.locator('#uList .u-face').first().getAttribute('aria-label'),'Claude session (5 h), 93% used, resets in 2h 15m, official');
+  assert.deepEqual(await native.locator('#uList .u-sub').evaluateAll(n=>n.map(x=>x.textContent)),['5h \u00b7 2h 15m','5h \u00b7 1h','API \u00b7 off','Est']);
+  assert.equal(await native.locator('#uList .u-cell').nth(2).getAttribute('data-stale'),'true','An unavailable meter dims');
+  const logButton = native.getByRole('button',{name:/^Log a ChatGPT message/});
+  assert.equal(await logButton.count(),1);
+  await logButton.click();
+  assert.equal(await native.locator('#uList .u-cell').nth(3).locator('.u-val').textContent(),'1/10');
+  assert.equal(await logButton.evaluate(n=>document.activeElement===n),true,'Logging keeps focus on the ring');
+  const ringTargets = await native.locator('#uList .u-face').evaluateAll(nodes => nodes.map(n => n.getBoundingClientRect().width));
+  assert.equal(ringTargets.every(size => size >= 36), true, 'Usage rings are at least 36px');
   await native.getByRole('tab',{name:'Tools',exact:true}).click();
   await native.locator('.page.dictation').scrollIntoViewIfNeeded();
   await native.evaluate(()=>window.__emitNative('dictation_state',{status:'review',transcript:'<b>Text, not markup</b>',modelReady:true}));
@@ -245,6 +286,9 @@ try {
   await native.locator('.page.clipboard').scrollIntoViewIfNeeded();
   await native.evaluate(()=>window.__emitNative('clipboard_history_changed',{enabled:true,items:[{id:'clip',text:'<img src=x>clipboard fixture',pinned:false,createdAt:Date.now()}]}));
   assert.equal(await native.locator('.clipboard-text img').count(),0);
+  assert.deepEqual(await native.locator('.clipboard-row .icon-btn').evaluateAll(n=>n.map(x=>x.getAttribute('aria-label'))),['Pin','Remove']);
+  const toolTargets = await native.locator('.page.clipboard .icon-btn, .page.dictation .icon-btn').evaluateAll(nodes => nodes.map(n => { const r = n.getBoundingClientRect(); return Math.min(r.width, r.height); }));
+  assert.equal(toolTargets.every(size => size >= 32), true, 'Icon buttons are at least 32px');
   await native.locator('.clipboard-text').click();
   assert.equal(await native.evaluate(()=>window.__calls.some(call=>call.command==='clipboard_copy'&&call.args.id==='clip')),true);
   await native.locator('.clipboard-text').focus();
@@ -302,6 +346,6 @@ try {
   assert.equal(await native.evaluate(()=>window.__calls.findLast(call=>call.command==='extension_settings').args.settings.downloads),true);
   await native.screenshot({path:path.join(root,'artifacts','settings-activities.png')});
   assert.deepEqual(nativeErrors,[]);
-  console.log('UI smoke passed: geometry, tab rail (keys, wheel edges, swipe, memory), accessibility, keyboard seeking, timers, persistence errors, native-bridge call priority, shelf, focused radio updates, drag hold and previews.');
+  console.log('UI smoke passed: geometry, tab rail (keys, wheel edges, swipe, memory), accessibility, keyboard seeking, timers, usage rings, icon buttons, persistence errors, native-bridge call priority, shelf, focused radio updates, drag hold and previews.');
 } finally { await browser.close(); }
 

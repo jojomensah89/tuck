@@ -63,33 +63,37 @@
                   <div class="clock" id="clock">12:00</div>
                   <div class="date" id="date">Monday, 1 January</div>
                 </div>
-                <div class="batt">
-                  <div class="batt-top">
-                    <span id="pct">100%</span>
+                <div class="batt" id="batt" role="img" aria-label="Battery">
+                  <div class="ring-face batt-face" id="battFace">
+                    <span class="ring-glyph batt-center">
+                      <span class="batt-bolt" id="battBolt" hidden></span>
+                      <span class="batt-pct" id="pct">–</span>
+                    </span>
                   </div>
-                  <div class="batt-bar">
-                    <div id="battFill"></div>
-                  </div>
-                  <div class="batt-sub" id="battSub">AC power</div>
+                  <div class="batt-sub" id="battSub"></div>
                 </div>
               </section>
 
               <!-- Today tab: timer and pomodoro -->
               <section class="page activities" data-page="activities" aria-label="Live Activities">
-                <div class="act-header">
-                  <span class="act-title" id="actTitle">Timer &amp; Pomodoro</span>
-                  <span class="act-status-pill" id="actStatus">Ready</span>
+                <div class="act-presets" role="group" aria-label="Timer presets">
+                  <button class="act-chip" id="actQuick5" data-minutes="5" aria-label="Start a 5 minute timer" title="5 minute timer">5</button>
+                  <button class="act-chip" id="actQuick15" data-minutes="15" aria-label="Start a 15 minute timer" title="15 minute timer">15</button>
+                  <button class="act-chip" id="actQuick25" data-minutes="25" aria-label="Start a 25 minute focus session" title="25 minute focus (pomodoro)">25</button>
                 </div>
-                <div class="act-display">
-                  <div class="act-digits" id="actDigits">05:00</div>
+                <div class="ring-face act-face" id="actFace" role="timer" aria-live="off">
+                  <span class="ring-glyph act-center">
+                    <span class="act-digits" id="actDigits">05:00</span>
+                    <span class="act-label">
+                      <span class="status-dot" id="actStatus" data-status="ready" role="img" aria-label="Ready" title="Ready"></span>
+                      <span class="act-title" id="actTitle">Timer</span>
+                    </span>
+                  </span>
                 </div>
-                <div class="act-controls">
-                  <button class="act-btn primary" id="actQuick5">5m</button>
-                  <button class="act-btn primary" id="actQuick15">15m</button>
-                  <button class="act-btn primary" id="actQuick25">25m Focus</button>
-                  <button class="act-btn" id="actStopwatch">Stopwatch</button>
-                  <button class="act-btn" id="actPause">Pause</button>
-                  <button class="act-btn warn" id="actReset">Reset</button>
+                <div class="act-controls" role="group" aria-label="Timer controls">
+                  <button class="icon-btn primary" id="actPause" aria-label="Start" title="Start"></button>
+                  <button class="icon-btn" id="actStopwatch" aria-label="Start stopwatch" title="Stopwatch"></button>
+                  <button class="icon-btn" id="actReset" aria-label="Reset" title="Reset"></button>
                 </div>
               </section>
 
@@ -101,27 +105,10 @@
               <!-- Tools tab: quick actions -->
               <section class="page quick" data-page="quick" aria-label="Quick Actions">
                 <div class="quick-grid">
-                  <button class="chip" id="chipWifi" data-action="wifi" aria-label="Wi-Fi Settings">
-                    <span id="icoWifi"></span>
-                    <span>Wi-Fi</span>
-                  </button>
-                  <button class="chip" id="chipBt" data-action="bluetooth" aria-label="Bluetooth Settings">
-                    <span id="icoBt"></span>
-                    <span>Bluetooth</span>
-                  </button>
-                  <button class="chip" id="chipFocus" data-action="focus" aria-label="Focus Assist Settings">
-                    <span id="icoFocus"></span>
-                    <span>Focus</span>
-                  </button>
-                  <button class="chip" id="chipCapture" data-action="capture" aria-label="Screen Snip">
-                    <span id="icoCapture"></span>
-                    <span>Snip</span>
-                  </button>
-                </div>
-                <div class="quick-footnote">
-                  <span>Windows settings and screen snip</span>
-                  &middot;
-                  <button id="openSettingsBtn" style="text-decoration: underline; color: var(--ink-2);">Tuck settings</button>
+                  <button class="chip" id="chipWifi" data-action="wifi" aria-label="Wi-Fi settings" title="Wi-Fi settings"><span id="icoWifi"></span></button>
+                  <button class="chip" id="chipBt" data-action="bluetooth" aria-label="Bluetooth settings" title="Bluetooth settings"><span id="icoBt"></span></button>
+                  <button class="chip" id="chipFocus" data-action="focus" aria-label="Focus settings" title="Focus settings"><span id="icoFocus"></span></button>
+                  <button class="chip" id="chipCapture" data-action="capture" aria-label="Screen snip" title="Screen snip"><span id="icoCapture"></span></button>
                 </div>
               </section>
             </div>

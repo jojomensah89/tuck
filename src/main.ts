@@ -54,11 +54,36 @@ function $(id: string): HTMLElement {
 
 const isl = $('isl');
 
+/* ================= Diffed DOM writes ================= */
+
+// Live content is rewritten on 200ms/1s ticks. Writing only on change keeps
+// CSS animations (eq bars, marquee) running and preserves hover state.
+const slotMarkup = new WeakMap<Element, string>();
+
+function setText(el: HTMLElement, text: string): void {
+  if (!slotMarkup.has(el) && el.textContent === text) return;
+  slotMarkup.delete(el);
+  el.textContent = text;
+}
+
+function setMarkup(el: HTMLElement, html: string): void {
+  if (slotMarkup.get(el) === html) return;
+  slotMarkup.set(el, html);
+  el.innerHTML = html;
+}
+
+function setNode(el: HTMLElement, key: string, build: () => Node): void {
+  const marker = `node:${key}`;
+  if (slotMarkup.get(el) === marker) return;
+  slotMarkup.set(el, marker);
+  el.replaceChildren(build());
+}
+
 function runAction(action: Promise<unknown>, label: string): void {
   void action.catch(() => {
     const message = `${label} failed. Please try again.`;
     $('statusMessage').textContent = message;
-    $('cc').textContent = message;
+    setText($('cc'), message);
     if (state === 'open') $('artist').textContent = message;
   });
 }
@@ -114,6 +139,7 @@ function setState(next: IslandState): void {
   const [w, h] = next === 'open' ? [livePreferences.openWidth, 210] : SIZES[next];
   isl.style.setProperty('--w', `${w}px`);
   isl.style.setProperty('--h', `${h}px`);
+  isl.style.setProperty('--open-w', `${livePreferences.openWidth}px`);
   isl.style.width = `${w}px`;
   isl.style.height = `${h}px`;
   isl.dataset.state = next;
@@ -219,36 +245,80 @@ isl.addEventListener(
 
 /* ================= Pages Navigation ================= */
 
-function showPage(n: number, dir = 1): void {
-  if (pages.length === 0) return;
-  const focused = document.activeElement;
-  const relocateFocus = state === 'open' && focused instanceof HTMLElement &&
-    (pages[pageIndex]?.contains(focused) || $('dots').contains(focused));
-  pageIndex = (n + pages.length) % pages.length;
+const dotButtons: HTMLButtonElement[] = [];
 
-  pages.forEach((p, i) => {
-    p.classList.remove('on', 'fwd', 'back');
-    p.inert = i !== pageIndex;
-    p.setAttribute('aria-hidden', String(i !== pageIndex));
-    if (i === pageIndex) {
-      p.classList.add('on', dir > 0 ? 'fwd' : 'back');
-    }
-  });
-
+// Dots are built once and only their state changes, so the width transition plays.
+function buildDots(): void {
   const dotsContainer = $('dots');
   dotsContainer.replaceChildren();
-
-  pages.forEach((_, i) => {
+  dotButtons.length = 0;
+  pages.forEach((page, i) => {
     const btn = document.createElement('button');
-    btn.className = i === pageIndex ? 'on' : '';
-    btn.setAttribute('aria-label', `Go to ${pages[i].dataset.page} page`);
-    btn.title = pages[i].getAttribute('aria-label') || pages[i].dataset.page || 'Page';
-    btn.setAttribute('aria-current', String(i === pageIndex));
+    btn.setAttribute('aria-label', `Go to ${page.dataset.page} page`);
+    btn.title = page.getAttribute('aria-label') || page.dataset.page || 'Page';
     btn.onclick = (e) => {
       e.stopPropagation();
       showPage(i, i > pageIndex ? 1 : -1);
     };
+    dotButtons.push(btn);
     dotsContainer.appendChild(btn);
+  });
+}
+
+const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+const leavingHandlers = new WeakMap<HTMLElement, (e: AnimationEvent) => void>();
+
+function clearLeaving(page: HTMLElement): void {
+  const handler = leavingHandlers.get(page);
+  if (handler) {
+    page.removeEventListener('animationend', handler);
+    leavingHandlers.delete(page);
+  }
+  page.classList.remove('leaving');
+  if (!page.classList.contains('on')) page.classList.remove('fwd', 'back');
+}
+
+function showPage(n: number, dir = 1): void {
+  if (pages.length === 0) return;
+  if (dotButtons.length !== pages.length) buildDots();
+  const focused = document.activeElement;
+  const relocateFocus = state === 'open' && focused instanceof HTMLElement &&
+    (pages[pageIndex]?.contains(focused) || $('dots').contains(focused));
+  const previous = pageIndex;
+  pageIndex = (n + pages.length) % pages.length;
+  const changed = previous !== pageIndex;
+
+  pages.forEach((p, i) => {
+    const active = i === pageIndex;
+    p.inert = !active;
+    p.setAttribute('aria-hidden', String(!active));
+    if (active) {
+      clearLeaving(p);
+      if (changed || !p.classList.contains('on')) {
+        p.classList.remove('on', 'fwd', 'back');
+        void p.offsetWidth; // restart the enter animation, even when re-entering mid-exit
+        p.classList.add('on', dir > 0 ? 'fwd' : 'back');
+      }
+    } else if (i === previous && changed && p.classList.contains('on')) {
+      // The outgoing page stays painted while it fades out in the travel direction
+      p.classList.remove('on', 'fwd', 'back');
+      clearLeaving(p);
+      if (!reducedMotion.matches) {
+        p.classList.add('leaving', dir > 0 ? 'fwd' : 'back');
+        // Only the page's own exit animation ends the leave, not animations bubbling from children
+        const handler = (e: AnimationEvent) => { if (e.target === p) clearLeaving(p); };
+        leavingHandlers.set(p, handler);
+        p.addEventListener('animationend', handler);
+      }
+    } else {
+      p.classList.remove('on');
+      clearLeaving(p);
+    }
+  });
+
+  dotButtons.forEach((btn, i) => {
+    btn.classList.toggle('on', i === pageIndex);
+    btn.setAttribute('aria-current', String(i === pageIndex));
   });
 
   if (pageIndex === 0) {
@@ -311,8 +381,8 @@ function renderMediaHeader(): void {
   const badgeEl = document.getElementById('mediaBattBadge');
   const wavesEl = document.getElementById('mediaWaves');
   const now = new Date();
-  if (dateEl) dateEl.textContent = formatMediaDate(now);
-  if (timeEl) timeEl.textContent = formatMediaTime(now);
+  if (dateEl) setText(dateEl, formatMediaDate(now));
+  if (timeEl) setText(timeEl, formatMediaTime(now));
   if (badgeEl && !badgeEl.innerHTML) badgeEl.innerHTML = SVG_ICONS.bolt;
   if (wavesEl && !wavesEl.innerHTML) wavesEl.innerHTML = SVG_ICONS.eq;
 }
@@ -324,11 +394,9 @@ function formatIdleTime(now = new Date()): string {
 function setAccentColor(rgb: { r: number; g: number; b: number } | null): void {
   if (rgb) {
     isl.style.setProperty('--accent', `rgb(${rgb.r}, ${rgb.g}, ${rgb.b})`);
-    isl.style.setProperty('--tint', `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, 0.24)`);
     isl.style.setProperty('--art-wash', `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, 0.65)`);
   } else {
     isl.style.setProperty('--accent', '#ffffff');
-    isl.style.setProperty('--tint', 'transparent');
     isl.style.setProperty('--art-wash', 'transparent');
   }
 }
@@ -373,7 +441,7 @@ function renderMedia(): void {
 
 function syncTransportButtons(): void {
   const playBtn = $('play');
-  playBtn.innerHTML = mediaState.playing ? SVG_ICONS.pauseBig : SVG_ICONS.playBig;
+  setMarkup(playBtn, mediaState.playing ? SVG_ICONS.pauseBig : SVG_ICONS.playBig);
   playBtn.setAttribute('aria-label', mediaState.playing ? 'Pause' : 'Play');
 }
 
@@ -409,11 +477,11 @@ function tick(): void {
   if (state !== 'open') renderCompact();
   if (state !== 'open' || pageIndex !== 0) return;
   const pos = currentPosition();
-  $('cur').textContent = formatMs(pos);
-  $('left').textContent =
-    mediaState.durationMs > 0 ? `-${formatMs(mediaState.durationMs - pos)}` : 'Live';
+  setText($('cur'), formatMs(pos));
+  setText($('left'), mediaState.durationMs > 0 ? `-${formatMs(mediaState.durationMs - pos)}` : 'Live');
   const pct = mediaState.durationMs > 0 ? (pos / mediaState.durationMs) * 100 : 0;
-  $('fill').style.width = `${Math.min(100, Math.max(0, pct))}%`;
+  // The fill is a full-width bar translated into place (transform only, no layout)
+  $('fill').style.setProperty('--p', String(Math.min(100, Math.max(0, pct)) / 100));
 
   const trackSlider = $('track');
   trackSlider.setAttribute('aria-valuenow', String(Math.round(pct)));
@@ -485,51 +553,60 @@ function renderCompact(): void {
   const cc = $('cc');
   const cr = $('cr');
 
-  if(announcement&&announcement.until>Date.now()&&state==='peek') {
-    cl.innerHTML=SVG_ICONS.note;cc.textContent=announcement.text;cr.textContent='';return;
+  if (announcement && announcement.until > Date.now() && state === 'peek') {
+    setMarkup(cl, SVG_ICONS.note);
+    setText(cc, announcement.text);
+    setText(cr, '');
+    return;
   }
-  const external=[...externalActivities.values()].sort((a,b)=>b.priority-a.priority)[0];
+  const external = [...externalActivities.values()].sort((a, b) => b.priority - a.priority)[0];
   const actCompact = activitiesManager.getCompactView();
 
-  if(external&&external.priority>(actCompact?.priority??0)) {
-    cl.innerHTML=SVG_ICONS.timer;cc.textContent=state==='peek'?external.title:'';cr.textContent=external.text;return;
+  if (external && external.priority > (actCompact?.priority ?? 0)) {
+    setMarkup(cl, SVG_ICONS.timer);
+    setText(cc, state === 'peek' ? external.title : '');
+    setText(cr, external.text);
+    return;
   }
   // Priority stack: Active timer/stopwatch/pomodoro overrides media playback
   if (actCompact && (!mediaState.active || actCompact.priority > 50)) {
-    cl.innerHTML = actCompact.leftHtml;
-    cc.textContent = state === 'peek' ? actCompact.centerText : '';
-    cr.innerHTML = actCompact.rightHtml;
+    setMarkup(cl, actCompact.leftHtml);
+    setText(cc, state === 'peek' ? actCompact.centerText : '');
+    setMarkup(cr, actCompact.rightHtml);
     return;
   }
 
   const showLyrics = livePreferences.compactContent === 'lyrics' && livePreferences.lyricsOpen && mediaState.active;
 
   if (state === 'idle' && !showLyrics) {
-    cl.innerHTML = `<span class="battery-badge">${SVG_ICONS.bolt}</span>`;
-    cc.textContent = formatIdleTime();
-    cr.innerHTML = SVG_ICONS.eq;
+    setMarkup(cl, `<span class="battery-badge">${SVG_ICONS.bolt}</span>`);
+    setText(cc, formatIdleTime());
+    setMarkup(cr, SVG_ICONS.eq);
     return;
   }
 
   if (mediaState.active) {
-    if (currentArtwork) {
-      const miniArt = document.createElement('span');
-      miniArt.className = 'mini-art';
-      miniArt.style.backgroundImage = `url("${currentArtwork}")`;
-      cl.replaceChildren(miniArt);
+    const artwork = currentArtwork;
+    if (artwork) {
+      setNode(cl, `art:${artwork}`, () => {
+        const miniArt = document.createElement('span');
+        miniArt.className = 'mini-art';
+        miniArt.style.backgroundImage = `url("${artwork}")`;
+        return miniArt;
+      });
     } else {
-      cl.innerHTML = SVG_ICONS.note;
+      setMarkup(cl, SVG_ICONS.note);
     }
-    cc.textContent = livePreferences.compactContent === 'lyrics' ? live.compactLyric() || mediaState.title : mediaState.title;
-    cr.innerHTML = mediaState.playing ? SVG_ICONS.eq : SVG_ICONS.pause;
+    setText(cc, livePreferences.compactContent === 'lyrics' ? live.compactLyric() || mediaState.title : mediaState.title);
+    setMarkup(cr, mediaState.playing ? SVG_ICONS.eq : SVG_ICONS.pause);
   } else {
-    cl.innerHTML = `<span class="battery-badge">${SVG_ICONS.bolt}</span>`;
-    cc.textContent = new Date().toLocaleDateString([], {
+    setMarkup(cl, `<span class="battery-badge">${SVG_ICONS.bolt}</span>`);
+    setText(cc, new Date().toLocaleDateString([], {
       weekday: 'short',
       day: 'numeric',
       month: 'short',
-    });
-    cr.textContent = powerState.hasBattery && powerState.percentKnown !== false ? `${powerState.percent}%` : '';
+    }));
+    setText(cr, powerState.hasBattery && powerState.percentKnown !== false ? `${powerState.percent}%` : '');
   }
 }
 

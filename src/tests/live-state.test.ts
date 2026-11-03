@@ -12,6 +12,10 @@ describe('live island state', () => {
     expect(normalizePreferences({ closeDelayMs: -50, prefsVersion: 2 }).closeDelayMs).toBe(0);
     expect(normalizePreferences({ closeDelayMs: 400, prefsVersion: 2 }).closeDelayMs).toBe(400);
   });
+  test('hides in fullscreen by default and preserves an explicit opt-out', () => {
+    expect(normalizePreferences({}).fullscreenAutoHide).toBe(true);
+    expect(normalizePreferences({ fullscreenAutoHide: false }).fullscreenAutoHide).toBe(false);
+  });
   test('moves the old 900ms default to instant once, but keeps a chosen 900ms', () => {
     const migrated = normalizePreferences({ closeDelayMs: 900 });
     expect(migrated.closeDelayMs).toBe(0);

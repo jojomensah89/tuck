@@ -3,6 +3,7 @@ pub mod desktop_signals;
 pub mod dictation;
 pub mod extensions;
 pub mod installed_usage;
+pub mod lifecycle;
 pub mod lyrics;
 pub mod media;
 mod service_preferences;
@@ -41,6 +42,14 @@ pub fn run() {
     tauri::Builder::default()
         .manage(dictation_service)
         .manage(clipboard_service)
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            let handle = app.clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(error) = system::open_settings(&handle) {
+                    eprintln!("Single-instance settings focus: {error}");
+                }
+            });
+        }))
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(dictation::handle_shortcut)
@@ -108,6 +117,8 @@ pub fn run() {
             system::open_island_cmd,
             system::deactivate_island,
             system::fullscreen_now,
+            system::get_fullscreen_auto_hide,
+            system::set_fullscreen_auto_hide,
             system::get_autostart,
             system::set_autostart,
             media::media_now,
@@ -212,6 +223,9 @@ pub fn run() {
         .expect("error while building tauri application")
         .run(|app, event| {
             if matches!(event, tauri::RunEvent::Exit) {
+                lifecycle::stop();
+                media::stop();
+                desktop_signals::stop();
                 app.state::<Arc<dictation::DictationService>>().shutdown();
                 clipboard_history::stop(
                     &app.state::<Arc<clipboard_history::ClipboardHistoryService>>(),

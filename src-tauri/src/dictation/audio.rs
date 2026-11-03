@@ -240,6 +240,7 @@ fn open_input_stream(
     Ok((stream, sample_rate))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_stream<T, F>(
     device: &cpal::Device,
     config: &StreamConfig,

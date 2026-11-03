@@ -4,8 +4,24 @@ import { historyPath, lyricIndex, matchesLyricRequest, measuredPercent, normaliz
 describe('live island state', () => {
   test('bounds saved geometry and delays while retaining explicit choices', () => {
     const prefs = normalizePreferences({ openWidth: 9000, openDelayMs: -1, closeDelayMs: Infinity, hoverExpand: false, pinned: true });
-    expect(prefs.openWidth).toBe(500); expect(prefs.openDelayMs).toBe(0); expect(prefs.closeDelayMs).toBe(900);
+    expect(prefs.openWidth).toBe(500); expect(prefs.openDelayMs).toBe(0); expect(prefs.closeDelayMs).toBe(0);
     expect(prefs.hoverExpand).toBe(false); expect(prefs.pinned).toBe(true);
+  });
+  test('collapses instantly by default and allows zero', () => {
+    expect(normalizePreferences({}).closeDelayMs).toBe(0);
+    expect(normalizePreferences({ closeDelayMs: -50, prefsVersion: 2 }).closeDelayMs).toBe(0);
+    expect(normalizePreferences({ closeDelayMs: 400, prefsVersion: 2 }).closeDelayMs).toBe(400);
+  });
+  test('hides in fullscreen by default and preserves an explicit opt-out', () => {
+    expect(normalizePreferences({}).fullscreenAutoHide).toBe(true);
+    expect(normalizePreferences({ fullscreenAutoHide: false }).fullscreenAutoHide).toBe(false);
+  });
+  test('moves the old 900ms default to instant once, but keeps a chosen 900ms', () => {
+    const migrated = normalizePreferences({ closeDelayMs: 900 });
+    expect(migrated.closeDelayMs).toBe(0);
+    expect(migrated.prefsVersion).toBe(2);
+    expect(normalizePreferences({ closeDelayMs: 900, prefsVersion: 2 }).closeDelayMs).toBe(900);
+    expect(normalizePreferences({ closeDelayMs: 1500 }).closeDelayMs).toBe(1500);
   });
   test('parses repeated LRC timestamps, decimals, offsets and invalid seconds', () => {
     expect(parseLrc('[offset:-500]\n[00:01.5][00:03.25]Line\n[01:99]bad')).toEqual([{ atMs: 1000, text: 'Line' }, { atMs: 2750, text: 'Line' }]);

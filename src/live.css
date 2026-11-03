@@ -23,13 +23,11 @@
   align-items: center;
 }
 
+/* In the transport row's flow (not absolutely placed), so it can never cover the previous-track button */
 .ctl .media-tools {
-  position: absolute;
-  left: 0;
-  top: 50%;
-  transform: translateY(-50%);
   display: flex;
   align-items: center;
+  flex-shrink: 0;
 }
 
 .lyrics-toggle-btn {
@@ -102,7 +100,6 @@
   flex: 1;
   mask-image: linear-gradient(transparent, #000 13%, #000 83%, transparent);
   padding: var(--s-6) 0;
-  overscroll-behavior: contain;
 }
 
 .lyric-line {
@@ -152,6 +149,15 @@
   align-items: center;
   justify-content: space-between;
   gap: var(--s-2);
+  min-height: var(--hit);
+  flex-shrink: 0;
+}
+
+/* A heading with its status dot */
+.live-title {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
 }
 
 .live-note {
@@ -161,42 +167,65 @@
   line-height: 1.4;
 }
 
-.stat-rows {
-  overflow-y: auto;
-  scrollbar-width: thin;
+.live-note:empty {
+  display: none;
 }
 
-.stat-row {
-  display: grid;
-  grid-template-columns: 76px 1fr 100px;
+/* System stats: rings in a row, each with its name and a sparkline */
+.stat-rings {
+  flex: 1;
+  display: flex;
+  justify-content: center;
   align-items: center;
-  gap: var(--s-2);
-  min-height: var(--hit);
-  border-top: 1px solid var(--line);
+  gap: var(--s-6);
+}
+
+.stat-cell {
+  width: 72px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--s-1);
+}
+
+.stat-face {
+  width: 56px;
+  height: 56px;
+  margin-bottom: var(--s-1);
+}
+
+.stat-value {
+  font-size: var(--t-sm);
+  font-weight: var(--w-medium);
+  font-variant-numeric: tabular-nums;
+}
+
+.stat-cell[data-unavailable="true"] .stat-value {
+  color: var(--ink-3);
 }
 
 .stat-name {
   font-size: var(--t-xs);
+  color: var(--ink-2);
+  line-height: 14px;
+  max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.stat-value {
-  font-size: var(--t-xs);
-  font-variant-numeric: tabular-nums;
-}
-
-.stat-row svg {
-  width: 100px;
-  height: 28px;
+.stat-cell .spark {
+  width: 56px;
+  height: 16px;
   overflow: visible;
 }
 
-.stat-row path {
-  stroke: var(--accent);
+.stat-cell .spark path {
+  stroke: var(--ink-2);
   fill: none;
-  stroke-width: 2;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
   vector-effect: non-scaling-stroke;
 }
 
@@ -204,7 +233,7 @@
   min-height: var(--hit);
   padding: var(--s-1) var(--s-3);
   border-radius: var(--r-md);
-  background: var(--line);
+  background: var(--raise);
   font-size: var(--t-sm);
   transition:
     background var(--d-fast) var(--ease-out),
@@ -213,7 +242,7 @@
 }
 
 .live-button:hover {
-  background: var(--wash-strong);
+  background: var(--raise-hover);
 }
 
 .live-button:active {
@@ -222,7 +251,7 @@
 
 .live-actions {
   display: flex;
-  gap: var(--s-2);
+  gap: var(--s-1);
 }
 
 .transcript {
@@ -232,30 +261,73 @@
   line-height: 1.4;
   user-select: text;
   white-space: pre-wrap;
+  color: var(--ink);
+}
+
+.transcript.placeholder {
+  color: var(--ink-3);
 }
 
 .clipboard-list {
   overflow-y: auto;
   flex: 1;
-  scrollbar-width: thin;
+  scrollbar-width: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-half);
 }
 
+/* Rows are tone steps, not ruled lines: the row lifts on hover */
 .clipboard-row {
   display: flex;
   align-items: center;
-  gap: var(--s-2);
-  border-top: 1px solid var(--line);
-  padding: var(--s-1) 0;
+  gap: var(--s-half);
+  border-radius: var(--r-md);
+  padding-left: var(--s-2);
+  transition: background var(--d-fast) var(--ease-out);
 }
 
+.clipboard-row:hover,
+.clipboard-row:focus-within {
+  background: var(--raise-subtle);
+}
+
+/* Block, not the button default flex, so a long entry ends in an ellipsis */
 .clipboard-text {
+  display: block;
+  line-height: var(--hit);
   flex: 1;
   min-width: 0;
+  min-height: var(--hit);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   justify-content: flex-start;
   text-align: left;
+  font-size: var(--t-sm);
+  color: var(--ink);
+}
+
+.clipboard-text:hover {
+  color: var(--ink);
+}
+
+/* Row actions stay quiet until the row is in use; a pinned pin always shows */
+.clipboard-row .row-action {
+  color: var(--ink-3);
+}
+
+.clipboard-row:hover .row-action,
+.clipboard-row:focus-within .row-action {
+  color: var(--ink-2);
+}
+
+.pin-btn[aria-pressed="true"] {
+  color: var(--ink) !important;
+}
+
+.pin-btn[aria-pressed="true"] .pin-head {
+  fill: currentColor;
 }
 
 .live-page input,

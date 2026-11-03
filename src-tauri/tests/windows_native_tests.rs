@@ -128,6 +128,31 @@ fn test_fullscreen_rect_classification() {
 }
 
 #[test]
+fn test_maximized_window_with_auto_hidden_taskbar_is_not_fullscreen() {
+    let monitor = Rect {
+        left: 0,
+        top: 0,
+        right: 2560,
+        bottom: 1440,
+    };
+    // DWM extended frame bounds of a captioned maximized window when the taskbar
+    // auto-hides: identical to the monitor, so only the caption exclusion tells them apart.
+    let maximized_frame = monitor;
+    assert!(!is_fullscreen_rect(maximized_frame, monitor, true));
+    // A borderless fullscreen window covering the same rect is still fullscreen.
+    assert!(is_fullscreen_rect(maximized_frame, monitor, false));
+    // DWM bounds stop at the visible frame, so a large restored window that only reaches
+    // the edges through its invisible resize borders no longer counts.
+    let nearly_full = Rect {
+        left: 1,
+        top: 0,
+        right: 2559,
+        bottom: 1440,
+    };
+    assert!(!is_fullscreen_rect(nearly_full, monitor, false));
+}
+
+#[test]
 fn test_clamp_seek_validation() {
     let duration = Some(180_000); // 3 minutes
 

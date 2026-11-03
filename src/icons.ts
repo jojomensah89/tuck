@@ -1,35 +1,63 @@
 /**
- * Consistent SVG icons for Tuck Island.
- * All icons follow the 24x24 viewBox standard and scale seamlessly.
+ * Tuck's icon family: hand-drawn line icons on a 20x20 grid with a uniform
+ * 1.5px stroke, round caps and round joins (styled by `svg.ico` in styles.css).
+ * The stroke does not scale, so a 14px compact glyph and a 24px play button
+ * carry the same line weight. Shapes with class `f` are filled as well as
+ * stroked: the transport glyphs, which read as solid marks, and small dots.
  */
 
+const ico = (body: string, cls = '') =>
+  `<svg class="ico${cls ? ` ${cls}` : ''}" viewBox="0 0 20 20" aria-hidden="true">${body}</svg>`;
+
+const PLAY = '<path class="f" d="M6.5 4.6v10.8l8.8-5.4z"/>';
+const PAUSE = '<rect class="f" x="5.25" y="4.5" width="3" height="11" rx="1"/><rect class="f" x="11.75" y="4.5" width="3" height="11" rx="1"/>';
+
 export const SVG_ICONS = {
-  bolt: `<svg class="ico bolt" viewBox="0 0 24 24" aria-hidden="true"><path d="M13 2 4 14h6l-1 8 9-12h-6z"/></svg>`,
-  lyrics: `<svg class="ico lyrics-ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 2H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h4v3.5l4-3.5h8c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-11 9H7V7h2v4zm6 0h-2V7h2v4z"/></svg>`,
-  note: `<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 3v11.3A3.5 3.5 0 1 0 11 17.5V8h6V3z"/></svg>`,
-  clock: `<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm0 18a8 8 0 1 1 0-16 8 8 0 0 1 0 16zm1-13h-2v6l5.2 3.1 1-1.7-4.2-2.5V7z"/></svg>`,
-  mic: `<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 1 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21H8v2h8v-2h-3v-3.08A7 7 0 0 0 19 11h-2z"/></svg>`,
-  play: `<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>`,
-  pause: `<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5h4v14H6zm8 0h4v14h-4z"/></svg>`,
-  playBig: `<svg class="ico big" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>`,
-  pauseBig: `<svg class="ico big" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5h4v14H6zm8 0h4v14h-4z"/></svg>`,
-  prev: `<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 6v12L3 12zm9 0v12l-9-6z"/></svg>`,
-  next: `<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 6v12l9-6zM3 6v12l9-6z"/></svg>`,
-  navLeft: `<svg class="ico nav-ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5 8 12l7 7z"/></svg>`,
-  navRight: `<svg class="ico nav-ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5l7 7-7 7z"/></svg>`,
-  gear: `<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>`,
-  wifi: `<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4C7.31 4 3.07 5.9 0 8.98L12 21 24 8.98C20.93 5.9 16.69 4 12 4zm0 3.5c3.78 0 7.22 1.48 9.77 3.91L12 19.34 2.23 11.41C4.78 8.98 8.22 7.5 12 7.5z"/></svg>`,
-  bluetooth: `<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="m14.88 16.29 2.41-2.41-3.29-3.29V3.5h1.41l4.88 4.88-3.47 3.47 3.47 3.47-4.88 4.88H14V17.11l.88-.82zm-4.76-4.41L6.71 8.47 8.12 7.05l3.41 3.41v2.83l-3.41 3.41-1.41-1.41 3.41-3.41zm3.88-5.3 1.88 1.88-1.88 1.88V6.58zm0 10.84 1.88-1.88-1.88-1.88v3.76z"/></svg>`,
-  focus: `<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a9 9 0 1 0 9 9c0-.46-.04-.92-.1-1.36a5.389 5.389 0 0 1-4.4 2.26 5.403 5.403 0 0 1-5.4-5.4c0-1.81.89-3.42 2.26-4.4-.44-.06-.9-.1-1.36-.1z"/></svg>`,
-  capture: `<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h3V2H4c-1.1 0-2 .9-2 2v3h2V4zm16-2h-3v2h3v3h2V4c0-1.1-.9-2-2-2zm0 18h-3v2h3c1.1 0 2-.9 2-2v-3h-2v3zM4 17H2v3c0 1.1.9 2 2 2h3v-2H4v-3zm8-9a4 4 0 1 0 0 8 4 4 0 0 0 0-8zm0 6a2 2 0 1 1 0-4 2 2 0 0 1 0 4z"/></svg>`,
-  timer: `<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M15 1H9v2h6V1zm-4 13h2V8h-2v6zm8.03-6.61 1.42-1.42c-.43-.51-.9-.99-1.41-1.41l-1.42 1.42A8.962 8.962 0 0 0 12 4c-4.97 0-9 4.03-9 9s4.02 9 9 9a8.994 8.994 0 0 0 7.03-14.61zM12 20c-3.87 0-7-3.13-7-7s3.13-7 7-7 7 3.13 7 7-3.13 7-7 7z"/></svg>`,
-  stopwatch: `<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M19.03 7.39l1.42-1.42c-.45-.51-.9-.97-1.41-1.41L17.62 6c-1.55-1.26-3.5-2-5.62-2-4.97 0-9 4.03-9 9s4.02 9 9 9a8.994 8.994 0 0 0 7.03-14.61zM12 20c-3.87 0-7-3.13-7-7s3.13-7 7-7 7 3.13 7 7-3.13 7-7 7zm1-13h-2v7l5 3 1-1.6-4-2.4V7z"/></svg>`,
-  pomodoro: `<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2c-.6 0-1 .4-1 1v1.1c-4.4.5-8 4.2-8 8.9 0 5 4 9 9 9s9-4 9-9c0-4.7-3.6-8.4-8-8.9V3c0-.6-.4-1-1-1zm0 4.1c3.9 0 7 3.1 7 7s-3.1 7-7 7-7-3.1-7-7 3.1-7 7-7zm-1 3v4.2l3.4 2 1-1.7-2.4-1.4V9.1h-2z"/></svg>`,
-  check: `<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 16.17 4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>`,
-  refresh: `<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M17.65 6.35A7.958 7.958 0 0 0 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0 1 12 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>`,
-  external: `<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M19 19H5V5h7V3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"/></svg>`,
-  sparkle: `<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2 9.5 8.5 3 11l6.5 2.5L12 20l2.5-6.5L21 11l-6.5-2.5z"/></svg>`,
-  alert: `<svg class="ico warn" viewBox="0 0 24 24" aria-hidden="true"><path d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z"/></svg>`,
+  bolt: ico('<path class="f" d="M11 2.75 4.75 11H10l-1 6.25L15.25 9H10z"/>', 'bolt'),
+  lyrics: ico('<path d="M4.75 3.75h10.5a1.5 1.5 0 0 1 1.5 1.5v7a1.5 1.5 0 0 1-1.5 1.5H9.5l-3.75 3v-3h-1a1.5 1.5 0 0 1-1.5-1.5v-7a1.5 1.5 0 0 1 1.5-1.5z"/><path d="M6.75 7.25h6.5M6.75 10.25h4"/>', 'lyrics-ico'),
+  note: ico('<path d="M7.75 14.5V4.75l8.5-2v9.75"/><circle cx="5.75" cy="14.5" r="2"/><circle cx="14.25" cy="12.5" r="2"/>'),
+  clock: ico('<circle cx="10" cy="10" r="7.25"/><path d="M10 6v4l2.75 1.75"/>'),
+  mic: ico('<rect x="7.5" y="2.75" width="5" height="9" rx="2.5"/><path d="M4.75 9.5a5.25 5.25 0 0 0 10.5 0M10 14.75v2.5"/>'),
+  play: ico(PLAY),
+  pause: ico(PAUSE),
+  playBig: ico(PLAY, 'big'),
+  pauseBig: ico(PAUSE, 'big'),
+  prev: ico('<path d="M4.75 4.75v10.5"/><path class="f" d="M15.25 4.9v10.2L7.75 10z"/>'),
+  next: ico('<path d="M15.25 4.75v10.5"/><path class="f" d="M4.75 4.9v10.2L12.25 10z"/>'),
+  gear: ico('<path d="M8.52 4.49 8.81 2.49A7.6 7.6 0 0 1 11.19 2.49L11.48 4.49A5.7 5.7 0 0 1 12.85 5.06L14.47 3.85A7.6 7.6 0 0 1 16.15 5.53L14.94 7.15A5.7 5.7 0 0 1 15.51 8.52L17.51 8.81A7.6 7.6 0 0 1 17.51 11.19L15.51 11.48A5.7 5.7 0 0 1 14.94 12.85L16.15 14.47A7.6 7.6 0 0 1 14.47 16.15L12.85 14.94A5.7 5.7 0 0 1 11.48 15.51L11.19 17.51A7.6 7.6 0 0 1 8.81 17.51L8.52 15.51A5.7 5.7 0 0 1 7.15 14.94L5.53 16.15A7.6 7.6 0 0 1 3.85 14.47L5.06 12.85A5.7 5.7 0 0 1 4.49 11.48L2.49 11.19A7.6 7.6 0 0 1 2.49 8.81L4.49 8.52A5.7 5.7 0 0 1 5.06 7.15L3.85 5.53A7.6 7.6 0 0 1 5.53 3.85L7.15 5.06A5.7 5.7 0 0 1 8.52 4.49Z"/><circle cx="10" cy="10" r="2.25"/>'),
+  grid: ico('<rect x="3.25" y="3.25" width="5.5" height="5.5" rx="1.5"/><rect x="11.25" y="3.25" width="5.5" height="5.5" rx="1.5"/><rect x="3.25" y="11.25" width="5.5" height="5.5" rx="1.5"/><rect x="11.25" y="11.25" width="5.5" height="5.5" rx="1.5"/>'),
+  wifi: ico('<path d="M2.75 7.75a10.25 10.25 0 0 1 14.5 0M5.25 10.75a6.75 6.75 0 0 1 9.5 0M7.75 13.75a3.2 3.2 0 0 1 4.5 0"/><circle class="f" cx="10" cy="16.5" r=".5"/>'),
+  bluetooth: ico('<path d="m5.75 6.5 8.5 7L10 17.25V2.75l4.25 3.75-8.5 7"/>'),
+  focus: ico('<path d="M16.5 12.25A6.75 6.75 0 0 1 7.75 3.5a6.75 6.75 0 1 0 8.75 8.75z"/>'),
+  capture: ico('<path d="M3.25 7V5.25a2 2 0 0 1 2-2H7M13 3.25h1.75a2 2 0 0 1 2 2V7M16.75 13v1.75a2 2 0 0 1-2 2H13M7 16.75H5.25a2 2 0 0 1-2-2V13"/><circle cx="10" cy="10" r="2.5"/>'),
+  timer: ico('<circle cx="10" cy="11" r="6.25"/><path d="M8 2.75h4M10 11V7.75"/>'),
+  stopwatch: ico('<circle cx="10" cy="11" r="6.25"/><path d="M10 2.75v2M8.25 2.75h3.5M15.25 5.25l1 -1M10 11l2.25-2.25"/>'),
+  pomodoro: ico('<circle cx="10" cy="11.25" r="6"/><path d="M10 5.25v-2.5M10 5.25c-1-1.25-2.5-1.5-3.75-1.25M10 5.25c1-1.25 2.5-1.5 3.75-1.25"/>'),
+  calendar: ico('<rect x="3.25" y="4.25" width="13.5" height="12.5" rx="2.5"/><path d="M3.25 8.25h13.5M7 2.75v3M13 2.75v3"/><circle class="f" cx="7.25" cy="12.25" r=".75"/>'),
+  gauge: ico('<path d="M4.4 15.25a7.25 7.25 0 1 1 11.2 0"/><path d="M10 11.5l3-3"/><circle class="f" cx="10" cy="11.5" r=".75"/>'),
+  check: ico('<path d="m4.75 10.5 3.5 3.5 7-8"/>'),
+  refresh: ico('<path d="M16.25 10a6.25 6.25 0 1 1-1.85-4.45"/><path d="M15.25 2.75v3.5h-3.5"/>'),
+  external: ico('<path d="M11.25 3.25h5.5v5.5M16.75 3.25 9.5 10.5"/><path d="M14.25 12.25v2.5a2 2 0 0 1-2 2h-7a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h2.5"/>'),
+  sparkle: ico('<path d="M10 3q.9 6.1 7 7-6.1.9-7 7-.9-6.1-7-7 6.1-.9 7-7z"/>'),
+  alert: ico('<path d="M10 3.25 2.75 16.25h14.5z"/><path d="M10 8.25v3.5"/><circle class="f" cx="10" cy="14" r=".5"/>', 'warn'),
+  // Row and page actions
+  pin: ico('<path class="pin-head" d="M7.25 2.75h5.5l-.75 5 2.75 3v1.5h-9.5v-1.5l2.75-3z"/><path d="M10 12.25v5"/>'),
+  close: ico('<path d="m5.25 5.25 9.5 9.5M14.75 5.25l-9.5 9.5"/>'),
+  trash: ico('<path d="M3.75 5.75h12.5M8 5.75v-2h4v2M5.5 5.75l.75 10.5a1.5 1.5 0 0 0 1.5 1.25h4.5a1.5 1.5 0 0 0 1.5-1.25l.75-10.5"/><path d="M8.5 8.75v5.5M11.5 8.75v5.5"/>'),
+  plus: ico('<path d="M10 4.25v11.5M4.25 10h11.5"/>'),
+  folder: ico('<path d="M2.75 6.25v-1a1.5 1.5 0 0 1 1.5-1.5h3.5l2 2h6a1.5 1.5 0 0 1 1.5 1.5v7.5a1.5 1.5 0 0 1-1.5 1.5H4.25a1.5 1.5 0 0 1-1.5-1.5z"/><path d="M2.75 8.25h14.5"/>'),
+  grip: ico('<circle class="f" cx="7.5" cy="5" r=".75"/><circle class="f" cx="12.5" cy="5" r=".75"/><circle class="f" cx="7.5" cy="10" r=".75"/><circle class="f" cx="12.5" cy="10" r=".75"/><circle class="f" cx="7.5" cy="15" r=".75"/><circle class="f" cx="12.5" cy="15" r=".75"/>'),
+  video: ico('<rect x="2.75" y="5.25" width="10.5" height="9.5" rx="2"/><path d="m13.25 9 4-2.5v7l-4-2.5"/>'),
+  phone: ico('<path d="M5.5 2.75h2l1.5 4-2 1.25a8.5 8.5 0 0 0 5 5l1.25-2 4 1.5v2a2 2 0 0 1-2.25 2A13.5 13.5 0 0 1 3.5 5a2 2 0 0 1 2-2.25z"/>'),
+  download: ico('<path d="M10 3.25v9.5M6 9l4 4 4-4"/><path d="M3.75 13.75v1.5a1.5 1.5 0 0 0 1.5 1.5h9.5a1.5 1.5 0 0 0 1.5-1.5v-1.5"/>'),
+  power: ico('<path d="M10 2.75V10"/><path d="M6 5.25a6.25 6.25 0 1 0 8 0"/>'),
+  stop: ico('<rect class="f" x="5.25" y="5.25" width="9.5" height="9.5" rx="1.5"/>'),
+  record: ico('<circle class="f" cx="10" cy="10" r="4.75"/>'),
+  insert: ico('<path d="M16.25 3.75v5.5a2 2 0 0 1-2 2H4.25"/><path d="m8 7.25-3.75 4L8 15.25"/>'),
+  plug: ico('<path d="M7.25 2.75v4M12.75 2.75v4M5 6.75h10v2.5a5 5 0 0 1-10 0z"/><path d="M10 14.25v3"/>'),
+  // Provider marks: simplified monochrome glyphs for identification only
+  anthropic: ico('<path d="M10 2.75v4.5M10 12.75v4.5M2.75 10h4.5M12.75 10h4.5M4.9 4.9l3.2 3.2M11.9 11.9l3.2 3.2M15.1 4.9l-3.2 3.2M8.1 11.9l-3.2 3.2"/>', 'mark'),
+  openai: ico('<rect x="7.25" y="2.75" width="5.5" height="14.5" rx="2.75"/><rect x="7.25" y="2.75" width="5.5" height="14.5" rx="2.75" transform="rotate(60 10 10)"/><rect x="7.25" y="2.75" width="5.5" height="14.5" rx="2.75" transform="rotate(120 10 10)"/>', 'mark'),
   eq: `<span class="eq" aria-hidden="true"><i></i><i></i><i></i></span>`,
   eqPlaying: `<span class="eq playing" aria-hidden="true"><i></i><i></i><i></i></span>`,
 };

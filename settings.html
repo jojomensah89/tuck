@@ -4,324 +4,556 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Tuck Settings</title>
-    <style>
-      :root {
-        --bg: #141416;
-        --card: #1c1c1f;
-        --line: #2c2c30;
-        --ink: #f2f2f4;
-        --ink-2: #a1a1a6;
-        --ink-3: #a1a1a6;
-        --accent: #0063d1;
-        --ok: #30d158;
-        --warn: #ff453a;
-        color-scheme: dark;
-        font-family: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
-      }
-
-      @media (prefers-color-scheme: light) {
-        :root { --bg:#f4f3ef;--card:#ffffff;--line:#d8d6d0;--ink:#1c1c1e;--ink-2:#5c5c61;--ink-3:#5c5c61;--ok:#19783a;color-scheme:light; }
-      }
-      * {
-        box-sizing: border-box;
-      }
-
-      body {
-        margin: 0;
-        padding: 24px;
-        background: var(--bg);
-        color: var(--ink);
-        font-size: 14px;
-        line-height: 1.5;
-        -webkit-font-smoothing: antialiased;
-      }
-
-      header {
-        margin-bottom: 24px;
-      }
-
-      h1 {
-        font-size: 22px;
-        font-weight: 600;
-        margin: 0 0 4px;
-      }
-
-      h2 {
-        font-size: 14px;
-        font-weight: 600;
-        text-transform: uppercase;
-        letter-spacing: 0.5px;
-        color: var(--ink-2);
-        margin: 28px 0 10px;
-      }
-
-      p {
-        color: var(--ink-2);
-        margin: 0 0 12px;
-        font-size: 13px;
-      }
-
-      .card {
-        background: var(--card);
-        border: 1px solid var(--line);
-        border-radius: 12px;
-        padding: 16px;
-        margin-bottom: 14px;
-      }
-
-      label {
-        display: block;
-        margin: 10px 0 4px;
-        font-weight: 600;
-        font-size: 13px;
-      }
-
-      input[type="text"],
-      input[type="password"],
-      input[type="number"] {
-        width: 100%;
-        padding: 10px 12px;
-        border-radius: 8px;
-        border: 1px solid var(--line);
-        background: #111113;
-        color: var(--ink);
-        font: inherit;
-        outline: none;
-        transition: border-color 0.15s, box-shadow 0.15s;
-      }
-
-      input:focus {
-        border-color: var(--accent);
-        box-shadow: 0 0 0 2px rgba(10, 132, 255, 0.3);
-      }
-
-      .row {
-        display: flex;
-        gap: 12px;
-      }
-
-      .row > * {
-        flex: 1;
-      }
-
-      button {
-        font: inherit;
-        padding: 9px 16px;
-        border-radius: 8px;
-        border: 1px solid var(--line);
-        background: #242428;
-        color: var(--ink);
-        cursor: pointer;
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        transition: background 0.15s, border-color 0.15s;
-        min-height: 38px;
-      }
-
-      button:hover {
-        background: #2e2e34;
-        border-color: #3e3e46;
-      }
-
-      button:active {
-        transform: scale(0.98);
-      }
-
-      button:focus-visible {
-        outline: 2px solid var(--accent);
-        outline-offset: 2px;
-      }
-
-      button.primary {
-        background: var(--accent);
-        border-color: var(--accent);
-        color: #ffffff;
-        font-weight: 600;
-      }
-
-      button.primary:hover {
-        background: #0057b8;
-      }
-
-      .picks {
-        display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: 12px;
-      }
-
-      .pick {
-        padding: 16px 12px;
-        text-align: center;
-        background: var(--card);
-        border: 2px solid var(--line);
-        border-radius: 12px;
-        cursor: pointer;
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        transition: border-color 0.2s, box-shadow 0.2s;
-      }
-
-      .pick[aria-pressed="true"] {
-        border-color: var(--accent);
-        box-shadow: 0 0 0 2px rgba(10, 132, 255, 0.35);
-      }
-
-      .pv {
-        height: 44px;
-        width: 104px;
-        background: #000000;
-        margin-bottom: 12px;
-        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
-      }
-
-      .pv.notch {
-        border-radius: 0 0 16px 16px;
-      }
-
-      .pv.float {
-        border-radius: 20px;
-        margin-top: 6px;
-        height: 32px;
-      }
-
-      .saved-toast {
-        color: var(--ok);
-        font-size: 12px;
-        margin-left: 10px;
-        opacity: 0;
-        transition: opacity 0.2s;
-      }
-
-      .saved-toast.show {
-        opacity: 1;
-      }
-
-      .badge {
-        display: inline-block;
-        padding: 2px 6px;
-        border-radius: 4px;
-        font-size: 11px;
-        font-weight: 600;
-        background: #2a2a30;
-        color: var(--ink-2);
-        margin-left: 6px;
-      }
-
-      .sec-note {
-        font-size: 12px;
-        color: var(--ink-3);
-        margin-top: 8px;
-        line-height: 1.4;
-      }
-    </style>
   </head>
   <body>
-    <header>
-      <h1>Tuck Settings</h1>
-      <p>Configure appearance, AI usage monitors, and secure administrative keys.</p>
-    </header>
+    <svg class="sprite" aria-hidden="true" focusable="false">
+      <symbol id="i-general" viewBox="0 0 16 16"><path d="M2.5 4.5h6M11.5 4.5h2M2.5 11.5h2M7.5 11.5h6"/><circle cx="10" cy="4.5" r="1.5"/><circle cx="6" cy="11.5" r="1.5"/></symbol>
+      <symbol id="i-island" viewBox="0 0 16 16"><rect x="1.5" y="2.5" width="13" height="11" rx="2"/><rect x="5" y="2.5" width="6" height="2.5" rx="1.25"/></symbol>
+      <symbol id="i-media" viewBox="0 0 16 16"><path d="M6 12V3.5l7-1.5V10.5"/><circle cx="4.25" cy="12" r="1.75"/><circle cx="11.25" cy="10.5" r="1.75"/></symbol>
+      <symbol id="i-activities" viewBox="0 0 16 16"><path d="M4 6.5a4 4 0 0 1 8 0c0 3 1.25 4.5 1.25 4.5H2.75S4 9.5 4 6.5Z"/><path d="M6.5 13.5h3"/></symbol>
+      <symbol id="i-tools" viewBox="0 0 16 16"><rect x="3" y="2.5" width="10" height="11.5" rx="1.5"/><path d="M6 2.5V2h4v.5M5.5 7h5M5.5 10h3"/></symbol>
+      <symbol id="i-usage" viewBox="0 0 16 16"><path d="M2.5 11a5.5 5.5 0 1 1 11 0"/><path d="M8 11l2.5-3.5"/><path d="M2.5 13.5h11"/></symbol>
+      <symbol id="i-keys" viewBox="0 0 16 16"><circle cx="5" cy="10.5" r="2.75"/><path d="M7 8.5l6-6M11 4.5l1.5 1.5M9.5 6l1.25 1.25"/></symbol>
+      <symbol id="i-privacy" viewBox="0 0 16 16"><path d="M8 1.75l5 1.75v4c0 3.25-2.25 5.5-5 6.75-2.75-1.25-5-3.5-5-6.75v-4Z"/><path d="M6 8l1.5 1.5L10.25 6.5"/></symbol>
+      <symbol id="i-about" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.25"/><path d="M8 7.25v4M8 4.75v.5"/></symbol>
+      <symbol id="i-search" viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5l3 3"/></symbol>
+      <symbol id="i-check" viewBox="0 0 16 16"><path d="M3.5 8.5l3 3 6-7"/></symbol>
+      <symbol id="i-chevron" viewBox="0 0 16 16"><path d="M6 3.5L10.5 8 6 12.5"/></symbol>
+    </svg>
 
-    <label><input id="autostart" type="checkbox" /> Launch Tuck when I sign in</label>
-    <p id="autostartStatus" role="status"></p>
-    <h2>Style &amp; Geometry</h2>
-    <div class="picks">
-      <button class="pick" id="pickNotch" aria-pressed="true" type="button">
-        <div class="pv notch"></div>
-        <strong>Hanging Notch</strong>
-        <p style="margin: 4px 0 0; font-size: 12px;">Flush with top screen edge with concave ears</p>
-      </button>
-      <button class="pick" id="pickFloat" aria-pressed="false" type="button">
-        <div class="pv float"></div>
-        <strong>Floating Pill</strong>
-        <p style="margin: 4px 0 0; font-size: 12px;">Floats 10px below the edge as an island</p>
-      </button>
-    </div>
-
-    <h2>Installed account usage</h2>
-    <label><input type="checkbox" id="installedUsage" /> Read limits from installed Claude Code and Codex</label>
-    <p>Uses the signed-in clients through read-only control requests. No prompts, turns, token copying, or login changes. Codex limits describe Codex usage on your ChatGPT plan.</p>
-    <button id="refreshInstalledUsage" type="button">Refresh installed account limits</button>
-    <p id="installedUsageStatus" role="status"></p>
-    <h2>Claude Subscription (Pro / Max)</h2>
-    <div class="card">
-      <p>
-        Monitors 5-hour session and weekly rate limits via Claude Code status line
-        <code>%APPDATA%\Tuck\claude-status.json</code>.
-      </p>
-      <p class="sec-note">Refreshes automatically while Claude Code is running; marked stale after 10 minutes of inactivity.</p>
-    </div>
-
-    <h2>Monthly API Budgets (USD)</h2>
-    <div class="card">
-      <p>Budgets calculate month-to-date token spend percentages. Both reset automatically on the 1st of each month (UTC).</p>
-      <div class="row">
-        <div>
-          <label for="bAnthropic">Claude API Budget ($)</label>
-          <input id="bAnthropic" type="number" min="0" step="1" placeholder="e.g. 50" />
+    <div class="shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true"></span>
+          <span class="brand-name">Tuck</span>
+          <span class="brand-scope">Settings</span>
         </div>
-        <div>
-          <label for="bOpenai">OpenAI API Budget ($)</label>
-          <input id="bOpenai" type="number" min="0" step="1" placeholder="e.g. 50" />
+        <div class="search" role="search">
+          <svg class="i" aria-hidden="true"><use href="#i-search" /></svg>
+          <input id="settingsSearch" type="search" placeholder="Search settings" aria-label="Search settings" aria-controls="content" autocomplete="off" spellcheck="false" />
         </div>
-      </div>
-      <div style="margin-top: 14px; display: flex; align-items: center;">
-        <button id="saveBudgets" class="primary" type="button">Save Budgets</button>
-        <span class="saved-toast" id="s1">Saved</span>
-      </div>
-    </div>
+        <nav aria-label="Settings sections">
+          <ul class="nav" id="nav">
+            <li><a href="#general" data-view="general"><svg class="i" aria-hidden="true"><use href="#i-general" /></svg><span>General</span></a></li>
+            <li><a href="#island" data-view="island"><svg class="i" aria-hidden="true"><use href="#i-island" /></svg><span>Island</span></a></li>
+            <li><a href="#media" data-view="media"><svg class="i" aria-hidden="true"><use href="#i-media" /></svg><span>Media and lyrics</span></a></li>
+            <li><a href="#activities" data-view="activities"><svg class="i" aria-hidden="true"><use href="#i-activities" /></svg><span>Activities</span></a></li>
+            <li><a href="#tools" data-view="tools"><svg class="i" aria-hidden="true"><use href="#i-tools" /></svg><span>Dictation and clipboard</span></a></li>
+            <li><a href="#usage" data-view="usage"><svg class="i" aria-hidden="true"><use href="#i-usage" /></svg><span>AI usage</span></a></li>
+            <li><a href="#keys" data-view="keys"><svg class="i" aria-hidden="true"><use href="#i-keys" /></svg><span>API keys</span></a></li>
+            <li class="nav-gap"><a href="#privacy" data-view="privacy"><svg class="i" aria-hidden="true"><use href="#i-privacy" /></svg><span>Privacy</span></a></li>
+            <li><a href="#about" data-view="about"><svg class="i" aria-hidden="true"><use href="#i-about" /></svg><span>About</span></a></li>
+          </ul>
+        </nav>
+      </aside>
 
-    <h2>Admin API Keys <span class="badge">Credential Manager</span></h2>
-    <div class="card">
-      <p>
-        Admin keys fetch exact organization token spend. Stored securely in
-        <strong>Windows Credential Manager</strong> via native IPC.
-        <strong>Never written to localStorage or config files.</strong>
-      </p>
+      <main class="content" id="content" tabindex="-1">
+        <p class="search-summary" id="searchSummary" role="status" aria-live="polite"></p>
 
-      <label for="kAnthropic">Anthropic Admin Key (sk-ant-admin...)</label>
-      <input id="kAnthropic" type="password" autocomplete="off" placeholder="Paste to set or replace" />
-      <button id="removeAnthropic" type="button">Remove Anthropic key</button>
+        <!-- ============ General ============ -->
+        <section class="view" id="view-general" data-view="general" aria-labelledby="h-general">
+          <h1 id="h-general">General</h1>
+          <div class="group">
+            <h2>Startup</h2>
+            <div class="panel">
+              <div class="set-row" id="row-autostart">
+                <div class="row-text">
+                  <label class="row-title" for="autostart">Launch at sign-in</label>
+                  <p class="row-desc">Start Tuck when you sign in to Windows.</p>
+                </div>
+                <input id="autostart" class="switch" type="checkbox" role="switch" />
+              </div>
+              <p class="group-status" id="autostartStatus" role="status"></p>
+            </div>
+          </div>
+          <div class="group">
+            <h2>Appearance</h2>
+            <div class="panel">
+              <div class="set-row stack" id="row-shape" data-keywords="style geometry notch pill float shape">
+                <div class="row-text">
+                  <span class="row-title" id="shapeLabel">Island shape</span>
+                  <p class="row-desc">How the island meets the top edge of your screen.</p>
+                </div>
+                <div class="shape-picks" role="group" aria-labelledby="shapeLabel">
+                  <button class="shape-pick" id="pickNotch" aria-pressed="true" type="button">
+                    <span class="shape-preview" aria-hidden="true"><span class="pv notch"></span></span>
+                    <span class="shape-name">Hanging notch</span>
+                    <span class="shape-desc">Flush with the top edge, with curved ears</span>
+                  </button>
+                  <button class="shape-pick" id="pickFloat" aria-pressed="false" type="button">
+                    <span class="shape-preview" aria-hidden="true"><span class="pv float"></span></span>
+                    <span class="shape-name">Floating pill</span>
+                    <span class="shape-desc">Floats 10px below the edge</span>
+                  </button>
+                </div>
+              </div>
+              <div class="set-row" id="row-openWidth" data-keywords="size wide">
+                <div class="row-text">
+                  <label class="row-title" for="openWidth">Expanded width</label>
+                  <p class="row-desc">Width of the open island, from 440 to 500.</p>
+                </div>
+                <span class="num-field"><input id="openWidth" type="number" min="440" max="500" step="10" inputmode="numeric" /><span class="unit">px</span></span>
+              </div>
+              <p class="group-status" id="shapeStatus" role="status"></p>
+            </div>
+          </div>
+        </section>
 
-      <label for="kOpenai">OpenAI Admin Key (sk-admin...)</label>
-      <input id="kOpenai" type="password" autocomplete="off" placeholder="Paste to set or replace" />
-      <button id="removeOpenai" type="button">Remove OpenAI key</button>
+        <!-- ============ Island ============ -->
+        <section class="view" id="view-island" data-view="island" aria-labelledby="h-island" hidden>
+          <h1 id="h-island">Island</h1>
+          <div class="group">
+            <h2>Opening and closing</h2>
+            <div class="panel">
+              <div class="set-row" id="row-hoverExpand" data-keywords="hover mouse open">
+                <div class="row-text">
+                  <label class="row-title" for="hoverExpand">Expand on hover</label>
+                  <p class="row-desc">Open the island when the pointer enters it.</p>
+                </div>
+                <input id="hoverExpand" class="switch" type="checkbox" role="switch" />
+              </div>
+              <div class="set-row" id="row-openDelay" data-keywords="hover wait open timing">
+                <div class="row-text">
+                  <label class="row-title" for="openDelay">Expand delay</label>
+                  <p class="row-desc">Wait before opening, from 0 to 2000.</p>
+                </div>
+                <span class="num-field"><input id="openDelay" type="number" min="0" max="2000" step="10" inputmode="numeric" /><span class="unit">ms</span></span>
+              </div>
+              <div class="set-row" id="row-closeDelay" data-keywords="leave wait close timing instant">
+                <div class="row-text">
+                  <label class="row-title" for="closeDelay">Collapse delay</label>
+                  <p class="row-desc">Wait after the pointer leaves. 0 collapses instantly.</p>
+                </div>
+                <span class="num-field"><input id="closeDelay" type="number" min="0" max="10000" step="10" inputmode="numeric" /><span class="unit">ms</span></span>
+              </div>
+              <div class="set-row" id="row-pinOpen" data-keywords="pin sticky stay">
+                <div class="row-text">
+                  <label class="row-title" for="pinOpen">Keep open until dismissed</label>
+                  <p class="row-desc">Stay open after the pointer leaves, until you close it.</p>
+                </div>
+                <input id="pinOpen" class="switch" type="checkbox" role="switch" />
+              </div>
+              <div class="set-row" id="row-fullscreenAutoHide" data-keywords="fullscreen game presentation hide topmost">
+                <div class="row-text">
+                  <label class="row-title" for="fullscreenAutoHide">Hide in fullscreen</label>
+                  <p class="row-desc">Hide the island over fullscreen apps, games and presentations.</p>
+                </div>
+                <input id="fullscreenAutoHide" class="switch" type="checkbox" role="switch" />
+              </div>
+            </div>
+          </div>
+          <div class="group">
+            <h2>Peeks</h2>
+            <div class="panel">
+              <div class="set-row" id="row-desktopPeeks" data-keywords="volume brightness wifi bluetooth caps lock hud">
+                <div class="row-text">
+                  <label class="row-title" for="desktopPeeks">System peeks</label>
+                  <p class="row-desc">Show volume, brightness, connection and key changes in the island.</p>
+                </div>
+                <input id="desktopPeeks" class="switch" type="checkbox" role="switch" />
+              </div>
+              <p class="group-status" id="interactionStatus" role="status"></p>
+            </div>
+          </div>
+        </section>
 
-      <p class="sec-note">Blank fields keep existing keys. Use a Remove button to delete a saved key.</p>
+        <!-- ============ Media ============ -->
+        <section class="view" id="view-media" data-view="media" aria-labelledby="h-media" hidden>
+          <h1 id="h-media">Media and lyrics</h1>
+          <div class="group">
+            <h2>Player</h2>
+            <div class="panel">
+              <div class="set-row" id="row-lyricsOpen" data-keywords="music player side pane">
+                <div class="row-text">
+                  <label class="row-title" for="lyricsOpen">Lyrics beside the player</label>
+                  <p class="row-desc">Show synced lyrics next to the track when the island is open.</p>
+                </div>
+                <input id="lyricsOpen" class="switch" type="checkbox" role="switch" />
+              </div>
+              <div class="set-row" id="row-compactContent" data-keywords="idle peek collapsed title lyric">
+                <div class="row-text">
+                  <span class="row-title" id="compactLabel">Collapsed content</span>
+                  <p class="row-desc">What the closed island shows while music plays. Lyric falls back to the title.</p>
+                </div>
+                <div class="segmented" role="radiogroup" aria-labelledby="compactLabel">
+                  <label><input type="radio" name="compactContent" value="lyrics" /><span>Lyric</span></label>
+                  <label><input type="radio" name="compactContent" value="title" /><span>Title</span></label>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="group">
+            <h2>Online and audio</h2>
+            <div class="panel">
+              <div class="set-row" id="row-onlineLyrics" data-keywords="lrclib internet network privacy lookup">
+                <div class="row-text">
+                  <label class="row-title" for="onlineLyrics">Look up lyrics with LRCLIB</label>
+                  <p class="row-desc">Sends the song title, artist and duration to LRCLIB. Some tracks have no lyrics.</p>
+                </div>
+                <input id="onlineLyrics" class="switch" type="checkbox" role="switch" disabled />
+              </div>
+              <div class="set-row" id="row-audioVisualizer" data-keywords="spectrum visualiser audio analysis privacy">
+                <div class="row-text">
+                  <label class="row-title" for="audioVisualizer">Visualizer from system playback</label>
+                  <p class="row-desc">Analyzes playback in memory and never saves it. Reduced motion hides the spectrum.</p>
+                </div>
+                <input id="audioVisualizer" class="switch" type="checkbox" role="switch" disabled />
+              </div>
+              <p class="group-status" id="mediaServiceStatus" role="status"></p>
+            </div>
+          </div>
+        </section>
 
-      <div style="margin-top: 14px; display: flex; align-items: center;">
-        <button id="saveKeys" class="primary" type="button">Update Keys</button>
-        <span class="saved-toast" id="s2">Credentials updated</span>
-      </div>
-    </div>
+        <!-- ============ Activities ============ -->
+        <section class="view" id="view-activities" data-view="activities" aria-labelledby="h-activities" hidden>
+          <h1 id="h-activities">Activities</h1>
+          <div class="group">
+            <h2>Windows activities</h2>
+            <div class="panel">
+              <div class="set-row" id="row-ext-downloads" data-keywords="download progress files">
+                <div class="row-text">
+                  <label class="row-title" for="ext-downloads">Downloads</label>
+                  <p class="row-desc">Watch partial files in your Downloads folder.</p>
+                </div>
+                <input id="ext-downloads" class="switch" type="checkbox" role="switch" />
+              </div>
+              <div class="set-row" id="row-ext-calendar" data-keywords="calendar meeting reminder ics events">
+                <div class="row-text">
+                  <label class="row-title" for="ext-calendar">Calendar reminders</label>
+                  <p class="row-desc">Peek five minutes before events from an imported calendar.</p>
+                </div>
+                <input id="ext-calendar" class="switch" type="checkbox" role="switch" />
+              </div>
+              <div class="set-row" id="row-ext-notifications" data-keywords="notification toast preview permission">
+                <div class="row-text">
+                  <label class="row-title" for="ext-notifications">Notification previews</label>
+                  <p class="row-desc">Mirror Windows notifications in the island. Needs Windows permission.</p>
+                </div>
+                <input id="ext-notifications" class="switch" type="checkbox" role="switch" />
+              </div>
+              <div class="set-row" id="row-ext-radios" data-keywords="wifi wi-fi bluetooth radio wireless">
+                <div class="row-text">
+                  <label class="row-title" for="ext-radios">Wi-Fi and Bluetooth controls</label>
+                  <p class="row-desc">Read and switch radios from the island.</p>
+                </div>
+                <input id="ext-radios" class="switch" type="checkbox" role="switch" />
+              </div>
+              <p class="group-status" id="extStatus" role="status"></p>
+            </div>
+          </div>
+          <div class="group">
+            <h2>Calendar and notifications</h2>
+            <div class="panel">
+              <div class="set-row" id="row-calendarFile" data-keywords="ics import calendar file events">
+                <div class="row-text">
+                  <span class="row-title">Import calendar</span>
+                  <p class="row-desc">An ICS file up to 2 MB. Single, all-day and UTC events; recurring events are refused.</p>
+                </div>
+                <label class="button file-button">Choose file<input id="calendarFile" type="file" accept=".ics,text/calendar" aria-label="Import calendar ICS file" /></label>
+              </div>
+              <div class="set-row" id="row-notificationAccess" data-keywords="notification permission listener access">
+                <div class="row-text">
+                  <span class="row-title">Notification access</span>
+                  <p class="row-desc">Windows asks only when you press the button.</p>
+                </div>
+                <button class="button" id="requestNotificationAccess" type="button">Request access</button>
+              </div>
+            </div>
+          </div>
+        </section>
 
-    <p id="settingsStatus" role="status" aria-live="polite"></p>
-    <h2>ChatGPT App Message Estimate <span class="badge">Manual Rolling Window</span></h2>
-    <div class="card">
-      <p>
-        OpenAI does not provide an official usage API for ChatGPT Plus/Pro consumer apps.
-        Notch maintains a local rolling message counter with countdown to earliest expiry.
-      </p>
-      <div class="row">
-        <div>
-          <label for="cCap">Message Cap</label>
-          <input id="cCap" type="number" min="1" placeholder="e.g. 80" />
+        <!-- ============ Tools ============ -->
+        <section class="view" id="view-tools" data-view="tools" aria-labelledby="h-tools" hidden>
+          <h1 id="h-tools">Dictation and clipboard</h1>
+          <div class="group">
+            <h2>Offline dictation</h2>
+            <div class="panel">
+              <p class="panel-note">Click a text field, then use a shortcut. Tuck types the finished text without sending it. Audio stays on this computer.</p>
+              <div class="set-row" id="row-dictationShortcut" data-keywords="dictation shortcut hotkey toggle voice speech">
+                <div class="row-text">
+                  <label class="row-title" for="dictationShortcut">Start and stop</label>
+                  <p class="row-desc">Press once to start, again to finish.</p>
+                </div>
+                <input class="text-field short" id="dictationShortcut" type="text" placeholder="Ctrl+Shift+Space" disabled />
+              </div>
+              <div class="set-row" id="row-dictationHoldShortcut" data-keywords="dictation shortcut hotkey hold push to talk voice">
+                <div class="row-text">
+                  <label class="row-title" for="dictationHoldShortcut">Hold to talk</label>
+                  <p class="row-desc">Records while the keys are held down.</p>
+                </div>
+                <input class="text-field short" id="dictationHoldShortcut" type="text" placeholder="Ctrl+Alt+Space" disabled />
+              </div>
+              <div class="set-row" id="row-dictationReview" data-keywords="dictation review confirm">
+                <div class="row-text">
+                  <label class="row-title" for="dictationReview">Review before inserting</label>
+                  <p class="row-desc">Check the text in the island before it is typed.</p>
+                </div>
+                <input id="dictationReview" class="switch" type="checkbox" role="switch" disabled />
+              </div>
+              <div class="set-row" id="row-dictationPreview" data-keywords="dictation partial live transcript">
+                <div class="row-text">
+                  <label class="row-title" for="dictationPreview">Live transcript</label>
+                  <p class="row-desc">Show partial text while you speak.</p>
+                </div>
+                <input id="dictationPreview" class="switch" type="checkbox" role="switch" disabled />
+              </div>
+              <div class="set-row" id="row-dictationModel" data-keywords="dictation model download offline speech remove">
+                <div class="row-text">
+                  <span class="row-title">Speech model</span>
+                  <p class="row-desc" id="dictationSetupStatus" role="status">Reading model status…</p>
+                </div>
+                <div class="row-actions">
+                  <button class="button" id="cancelModelDownload" type="button" disabled>Cancel</button>
+                  <button class="button danger" id="removeModel" type="button" disabled>Remove</button>
+                  <button class="button" id="downloadModel" type="button" disabled>Download</button>
+                </div>
+              </div>
+              <p class="group-status" id="dictationStatus" role="status"></p>
+            </div>
+          </div>
+          <div class="group">
+            <h2>Clipboard history</h2>
+            <div class="panel">
+              <div class="set-row" id="row-clipboardEnabled" data-keywords="clipboard copy paste history privacy">
+                <div class="row-text">
+                  <label class="row-title" for="clipboardEnabled">Keep clipboard history</label>
+                  <p class="row-desc">Off by default. Private clipboard formats and Tuck's own dictation paste are skipped; other sensitive text may not be.</p>
+                </div>
+                <input id="clipboardEnabled" class="switch" type="checkbox" role="switch" disabled />
+              </div>
+              <div class="set-row" id="row-clipboardPersist" data-keywords="clipboard save restart persist disk privacy">
+                <div class="row-text">
+                  <label class="row-title" for="clipboardPersist">Keep after restart</label>
+                  <p class="row-desc">Otherwise history clears when Tuck exits. Pins follow the same choice.</p>
+                </div>
+                <input id="clipboardPersist" class="switch" type="checkbox" role="switch" disabled />
+              </div>
+              <p class="group-status" id="clipboardSetupStatus" role="status"></p>
+            </div>
+          </div>
+        </section>
+
+        <!-- ============ AI usage ============ -->
+        <section class="view" id="view-usage" data-view="usage" aria-labelledby="h-usage" hidden>
+          <h1 id="h-usage">AI usage</h1>
+          <div class="group">
+            <h2>Installed apps</h2>
+            <div class="panel">
+              <div class="set-row" id="row-installedUsage" data-keywords="claude code codex chatgpt plan limits installed">
+                <div class="row-text">
+                  <label class="row-title" for="installedUsage">Read limits from Claude Code and Codex</label>
+                  <p class="row-desc">Read-only requests to the signed-in apps. No prompts, no token copying, no login changes. Codex limits are your ChatGPT plan's Codex usage.</p>
+                </div>
+                <input id="installedUsage" class="switch" type="checkbox" role="switch" />
+              </div>
+              <div class="set-row" id="row-refreshInstalledUsage" data-keywords="refresh limits update">
+                <div class="row-text">
+                  <span class="row-title">Refresh limits</span>
+                  <p class="row-desc">Limits also refresh every five minutes.</p>
+                </div>
+                <button class="button" id="refreshInstalledUsage" type="button">Refresh now</button>
+              </div>
+              <div class="set-row" id="row-claudeStatus" data-keywords="claude subscription pro max status line session weekly">
+                <div class="row-text">
+                  <span class="row-title">Claude Pro and Max</span>
+                  <p class="row-desc">Session and weekly limits come from the Claude Code status line file, <code>%APPDATA%\Tuck\claude-status.json</code>. Marked stale after 10 minutes without an update.</p>
+                </div>
+              </div>
+              <p class="group-status" id="installedUsageStatus" role="status"></p>
+            </div>
+          </div>
+          <div class="group">
+            <h2>Monthly API budgets</h2>
+            <div class="panel">
+              <div class="set-row" id="row-bAnthropic" data-keywords="budget anthropic claude api spend dollars usd">
+                <div class="row-text">
+                  <label class="row-title" for="bAnthropic">Claude API</label>
+                  <p class="row-desc">Month-to-date spend is shown against this amount.</p>
+                </div>
+                <span class="num-field"><input id="bAnthropic" type="number" min="0" step="1" placeholder="None" inputmode="decimal" /><span class="unit">USD a month</span></span>
+              </div>
+              <div class="set-row" id="row-bOpenai" data-keywords="budget openai api spend dollars usd">
+                <div class="row-text">
+                  <label class="row-title" for="bOpenai">OpenAI API</label>
+                  <p class="row-desc">Both budgets reset on the 1st of each month, UTC.</p>
+                </div>
+                <span class="num-field"><input id="bOpenai" type="number" min="0" step="1" placeholder="None" inputmode="decimal" /><span class="unit">USD a month</span></span>
+              </div>
+              <p class="group-status" id="budgetStatus" role="status"></p>
+            </div>
+          </div>
+          <div class="group">
+            <h2>ChatGPT message estimate</h2>
+            <div class="panel">
+              <p class="panel-note">ChatGPT has no usage API for Plus and Pro. Tuck counts the messages you log and shows when the oldest one leaves the window.</p>
+              <div class="set-row" id="row-cCap" data-keywords="chatgpt cap messages limit estimate">
+                <div class="row-text">
+                  <label class="row-title" for="cCap">Message cap</label>
+                  <p class="row-desc">Messages allowed in one window.</p>
+                </div>
+                <span class="num-field"><input id="cCap" type="number" min="1" step="1" placeholder="80" inputmode="numeric" /><span class="unit">messages</span></span>
+              </div>
+              <div class="set-row" id="row-cHours" data-keywords="chatgpt window hours rolling estimate">
+                <div class="row-text">
+                  <label class="row-title" for="cHours">Rolling window</label>
+                  <p class="row-desc">How long each message counts.</p>
+                </div>
+                <span class="num-field"><input id="cHours" type="number" min="1" step="any" placeholder="3" inputmode="decimal" /><span class="unit">hours</span></span>
+              </div>
+              <div class="set-row" id="row-cLabel" data-keywords="chatgpt label name meter">
+                <div class="row-text">
+                  <label class="row-title" for="cLabel">Meter label</label>
+                  <p class="row-desc">Name shown on the usage meter.</p>
+                </div>
+                <input class="text-field" id="cLabel" type="text" placeholder="ChatGPT (estimate)" />
+              </div>
+              <div class="set-row" id="row-clearChatLog" data-keywords="chatgpt clear reset log messages delete">
+                <div class="row-text">
+                  <span class="row-title">Message log</span>
+                  <p class="row-desc">Clearing resets the estimate to zero messages.</p>
+                </div>
+                <button class="button danger" id="clearChatLog" type="button">Clear log</button>
+              </div>
+              <p class="group-status" id="chatStatus" role="status"></p>
+            </div>
+          </div>
+        </section>
+
+        <!-- ============ API keys ============ -->
+        <section class="view" id="view-keys" data-view="keys" aria-labelledby="h-keys" hidden>
+          <h1 id="h-keys">API keys</h1>
+          <p class="lead">Admin keys read exact organization spend. They are stored in Windows Credential Manager, never in settings files, and are never shown again after saving.</p>
+          <div class="group">
+            <h2>Admin keys</h2>
+            <div class="panel">
+              <div class="set-row stack" id="row-kAnthropic" data-keywords="anthropic claude admin key secret credential">
+                <div class="row-text">
+                  <label class="row-title" for="kAnthropic">Anthropic admin key</label>
+                  <p class="row-desc">Starts with sk-ant-admin. Leave blank to keep the saved key.</p>
+                </div>
+                <div class="key-line">
+                  <input class="text-field" id="kAnthropic" type="password" autocomplete="off" spellcheck="false" placeholder="Paste to set or replace" />
+                  <button class="button danger" id="removeAnthropic" type="button">Remove</button>
+                </div>
+              </div>
+              <div class="set-row stack" id="row-kOpenai" data-keywords="openai admin key secret credential">
+                <div class="row-text">
+                  <label class="row-title" for="kOpenai">OpenAI admin key</label>
+                  <p class="row-desc">Starts with sk-admin. Leave blank to keep the saved key.</p>
+                </div>
+                <div class="key-line">
+                  <input class="text-field" id="kOpenai" type="password" autocomplete="off" spellcheck="false" placeholder="Paste to set or replace" />
+                  <button class="button danger" id="removeOpenai" type="button">Remove</button>
+                </div>
+              </div>
+              <div class="panel-foot">
+                <p class="group-status inline" id="settingsStatus" role="status" aria-live="polite"></p>
+                <button id="saveKeys" class="button primary" type="button">Save keys</button>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ============ Privacy ============ -->
+        <section class="view" id="view-privacy" data-view="privacy" aria-labelledby="h-privacy" hidden>
+          <h1 id="h-privacy">Privacy</h1>
+          <p class="lead">Optional monitoring starts off. This is where each kind of data goes, with its current setting.</p>
+          <div class="group">
+            <h2>What leaves this computer</h2>
+            <div class="panel">
+              <div class="set-row" id="row-privacy-lyrics" data-keywords="privacy lrclib internet lyrics">
+                <div class="row-text">
+                  <span class="row-title">Lyrics lookup</span>
+                  <p class="row-desc">Song title, artist and duration, sent to LRCLIB.</p>
+                </div>
+                <a class="mirror" href="#media" data-mirror="onlineLyrics" data-focus="onlineLyrics"><span class="mirror-state"></span><svg class="i" aria-hidden="true"><use href="#i-chevron" /></svg></a>
+              </div>
+              <div class="set-row" id="row-privacy-api" data-keywords="privacy api spend anthropic openai">
+                <div class="row-text">
+                  <span class="row-title">API spend</span>
+                  <p class="row-desc">Fetched directly from Anthropic and OpenAI with your admin keys.</p>
+                </div>
+                <a class="mirror" href="#keys" data-focus="kAnthropic"><span class="mirror-state">Keys</span><svg class="i" aria-hidden="true"><use href="#i-chevron" /></svg></a>
+              </div>
+            </div>
+          </div>
+          <div class="group">
+            <h2>What stays on this computer</h2>
+            <div class="panel">
+              <div class="set-row" id="row-privacy-clipboard" data-keywords="privacy clipboard history">
+                <div class="row-text">
+                  <span class="row-title">Clipboard history</span>
+                  <p class="row-desc">Kept in memory; written to disk only with Keep after restart.</p>
+                </div>
+                <a class="mirror" href="#tools" data-mirror="clipboardEnabled" data-focus="clipboardEnabled"><span class="mirror-state"></span><svg class="i" aria-hidden="true"><use href="#i-chevron" /></svg></a>
+              </div>
+              <div class="set-row" id="row-privacy-audio" data-keywords="privacy audio visualizer dictation microphone">
+                <div class="row-text">
+                  <span class="row-title">Playback analysis</span>
+                  <p class="row-desc">Analyzed in memory for the visualizer, never recorded.</p>
+                </div>
+                <a class="mirror" href="#media" data-mirror="audioVisualizer" data-focus="audioVisualizer"><span class="mirror-state"></span><svg class="i" aria-hidden="true"><use href="#i-chevron" /></svg></a>
+              </div>
+              <div class="set-row" id="row-privacy-notifications" data-keywords="privacy notifications">
+                <div class="row-text">
+                  <span class="row-title">Notification previews</span>
+                  <p class="row-desc">Read from Windows and shown in the island only.</p>
+                </div>
+                <a class="mirror" href="#activities" data-mirror="ext-notifications" data-focus="ext-notifications"><span class="mirror-state"></span><svg class="i" aria-hidden="true"><use href="#i-chevron" /></svg></a>
+              </div>
+              <div class="set-row" id="row-privacy-installed" data-keywords="privacy claude code codex installed">
+                <div class="row-text">
+                  <span class="row-title">Installed app limits</span>
+                  <p class="row-desc">Read from Claude Code and Codex on this computer.</p>
+                </div>
+                <a class="mirror" href="#usage" data-mirror="installedUsage" data-focus="installedUsage"><span class="mirror-state"></span><svg class="i" aria-hidden="true"><use href="#i-chevron" /></svg></a>
+              </div>
+              <div class="set-row" id="row-privacy-keys" data-keywords="privacy credential manager secret keys">
+                <div class="row-text">
+                  <span class="row-title">Admin keys</span>
+                  <p class="row-desc">Windows Credential Manager only. ChatGPT counts are a local estimate.</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ============ About ============ -->
+        <section class="view" id="view-about" data-view="about" aria-labelledby="h-about" hidden>
+          <h1 id="h-about">About</h1>
+          <div class="about-head">
+            <span class="about-mark" aria-hidden="true"></span>
+            <div>
+              <p class="about-name">Tuck <span id="appVersion" class="num">0.1.0</span></p>
+              <p class="row-desc">A notch for Windows: media, live activities, AI usage and quick tools at the top of your screen.</p>
+            </div>
+          </div>
+          <div class="group">
+            <h2>Keyboard</h2>
+            <div class="panel">
+              <div class="set-row" id="row-kbd-search" data-keywords="keyboard shortcut search find">
+                <div class="row-text"><span class="row-title">Search settings</span></div>
+                <span class="keys"><kbd>Ctrl</kbd><kbd>F</kbd></span>
+              </div>
+              <div class="set-row" id="row-kbd-nav" data-keywords="keyboard arrows sections navigate">
+                <div class="row-text"><span class="row-title">Move between sections</span></div>
+                <span class="keys"><kbd>↑</kbd><kbd>↓</kbd></span>
+              </div>
+              <div class="set-row" id="row-kbd-clear" data-keywords="keyboard escape clear search">
+                <div class="row-text"><span class="row-title">Clear search</span></div>
+                <span class="keys"><kbd>Esc</kbd></span>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <div class="empty" id="searchEmpty" hidden>
+          <p class="empty-title">No settings match</p>
+          <p class="row-desc">Try a word such as lyrics, delay, budget or key.</p>
         </div>
-        <div>
-          <label for="cHours">Window (Hours)</label>
-          <input id="cHours" type="number" min="1" placeholder="e.g. 3" />
-        </div>
-      </div>
-      <label for="cLabel">Label</label>
-      <input id="cLabel" type="text" placeholder="ChatGPT Plus (estimate)" />
-
-      <div style="margin-top: 14px; display: flex; align-items: center; gap: 8px;">
-        <button id="saveChat" class="primary" type="button">Save Estimate Settings</button>
-        <button id="clearChatLog" type="button">Clear Message Log</button>
-        <span class="saved-toast" id="s3">Saved</span>
-      </div>
+      </main>
     </div>
+    <p class="sr-only" id="announce" role="status" aria-live="polite"></p>
 
     <script type="module" src="/src/settings.ts"></script>
   </body>

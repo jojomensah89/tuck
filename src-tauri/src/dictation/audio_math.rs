@@ -29,6 +29,7 @@ pub(super) fn release_audio_frames(queued_frames: &AtomicUsize, released_frames:
     debug_assert!(previous >= released_frames);
 }
 
+#[allow(clippy::needless_range_loop)]
 pub(super) fn resample_to_16k(input: &[f32], source_rate: u32) -> Vec<f32> {
     if input.is_empty() || source_rate == 0 {
         return Vec::new();

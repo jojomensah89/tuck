@@ -4,6 +4,7 @@ import {getCurrentWebviewWindow} from '@tauri-apps/api/webviewWindow';
 import {formatBytes,formatDuration} from './extensions-types.js';
 import type {ExtensionSnapshot,ExtensionSettings,CalendarEvent,TuckActivityEventDetail} from './extensions-types.js';
 import './extensions.css';
+import {markSaved} from './settings-ui.js';
 let current:ExtensionSnapshot={settings:{downloads:false,calendar:false,notifications:false,radios:false},downloads:[],call:null,calendar:[],shelf:[],radios:[],notificationStatus:'Disabled',errors:[]};
 function el<K extends keyof HTMLElementTagNameMap>(tag:K,text='',className=''):HTMLElementTagNameMap[K]{const node=document.createElement(tag);node.textContent=text;node.className=className;return node;}
 function button(text:string,action:()=>Promise<unknown>|void,key=text):HTMLButtonElement{const node=el('button',text,'ext-button');node.type='button';node.dataset.actionKey=key;node.addEventListener('click',event=>{event.stopPropagation();void run(action,node);});return node;}
@@ -72,16 +73,24 @@ export function mountExtensions():void {
   void refresh().catch(()=>{if(status)status.textContent='Windows integrations unavailable.';});
  }
 }
+/** Binds the Activities rows in settings.html. Each switch saves all four flags at once and reverts on failure. */
 export function mountExtensionSettings():void{
- if(document.getElementById('extensionSettings'))return;
- const section=el('section');section.id='extensionSettings';section.append(el('h2','Windows activities'));
- const message=el('p','','ext-settings-status');message.setAttribute('role','status');
+ const message=document.getElementById('extStatus');if(!message)return;
+ status=message;
+ const setMessage=(text:string,error=false)=>{message.textContent=text;if(error&&text)message.dataset.kind='error';else delete message.dataset.kind;};
  const checks=new Map<keyof ExtensionSettings,HTMLInputElement>();
- for(const [key,label]of [['downloads','Monitor partial downloads in Downloads'],['calendar','Calendar reminders from imported ICS'],['notifications','Preview Windows notifications (permission required)'],['radios','Read and control Wi-Fi and Bluetooth radios']] as const){const row=el('label','','ext-settings-toggle');const input=el('input');input.type='checkbox';input.id=`ext-${key}`;checks.set(key,input);row.append(input,document.createTextNode(label));section.append(row);}
- const save=button('Save activity settings',async()=>{const settings=Object.fromEntries([...checks].map(([key,input])=>[key,input.checked]));await invoke('extension_settings',{settings});message.textContent='Activity settings saved.';});section.append(save);
- const file=el('input');file.type='file';file.accept='.ics,text/calendar';file.id='calendarFile';file.setAttribute('aria-label','Import calendar ICS file');file.addEventListener('change',()=>{void run(async()=>{const selected=file.files?.[0];if(!selected)return;if(selected.size>2*1024*1024)throw new Error('Calendar must be no larger than 2 MB.');const count=await invoke<number>('calendar_import',{text:await selected.text()});message.textContent=`Imported ${count} calendar events.`;});});
- section.append(el('h3','Calendar import'),el('p','Supports individual UTC, local-time and all-day events. Recurrence and named time zones return an explicit error.'),file);
- section.append(el('h3','Notification permission'),el('p','Windows may require package identity and the User Notification Listener capability. Access is requested only when you press the button.'),button('Request notification access',async()=>{message.textContent=await invoke<string>('notification_access');}),message);
- document.body.append(section);status=message;
- if(isTauri())void invoke<ExtensionSnapshot>('extension_snapshot').then(value=>{for(const[key,input]of checks)input.checked=value.settings[key];message.textContent=value.notificationStatus;}).catch(()=>{message.textContent='Could not read activity settings.';});
+ for(const key of ['downloads','calendar','notifications','radios'] as const){const input=document.getElementById(`ext-${key}`) as HTMLInputElement|null;if(input)checks.set(key,input);}
+ const all=()=>Object.fromEntries([...checks].map(([key,input])=>[key,input.checked])) as unknown as ExtensionSettings;
+ for(const input of checks.values())input.addEventListener('change',async()=>{
+  const row=input.closest('.set-row');checks.forEach(check=>{check.disabled=true;});
+  try{if(!isTauri())throw new Error('Open the desktop app to use Windows integrations.');await invoke('extension_settings',{settings:all()});setMessage('');markSaved(input);}
+  catch(error){input.checked=!input.checked;row?.classList.remove('saved');setMessage(typeof error==='string'?error:error instanceof Error?error.message:'Could not save activity settings.',true);}
+  finally{checks.forEach(check=>{check.disabled=false;});}
+ });
+ const file=document.getElementById('calendarFile') as HTMLInputElement|null;
+ file?.addEventListener('change',()=>{void run(async()=>{const selected=file.files?.[0];if(!selected)return;if(selected.size>2*1024*1024)throw new Error('Calendar must be no larger than 2 MB.');const count=await invoke<number>('calendar_import',{text:await selected.text()});setMessage(`Imported ${count} calendar events.`);}).finally(()=>{file.value='';});});
+ const access=document.getElementById('requestNotificationAccess') as HTMLButtonElement|null;
+ access?.addEventListener('click',()=>{void run(async()=>{setMessage(await invoke<string>('notification_access'));},access);});
+ if(isTauri())void invoke<ExtensionSnapshot>('extension_snapshot').then(value=>{for(const[key,input]of checks)input.checked=value.settings[key];setMessage(value.notificationStatus==='Disabled'?'':value.notificationStatus);}).catch(()=>setMessage('Could not read activity settings.',true));
+ else{checks.forEach(check=>{check.disabled=true;});if(access)access.disabled=true;if(file)file.disabled=true;setMessage('Windows activities need the desktop app.');}
 }

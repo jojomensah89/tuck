@@ -45,22 +45,53 @@ try {
   await page.keyboard.press('Escape');
   assert.equal(await page.locator('.full').evaluate(el => el.inert),true);
   await page.goto('http://tuck.test/settings.html');
+  // Sidebar: one view at a time, arrow keys move between sections.
+  assert.equal(await page.locator('#view-general').isVisible(),true);
+  assert.equal(await page.locator('#view-keys').isVisible(),false);
+  await page.locator('#nav a[data-view="general"]').focus();
+  await page.keyboard.press('ArrowDown');
+  assert.equal(await page.locator('#view-island').isVisible(),true);
+  assert.equal(await page.locator('#nav a[data-view="island"]').getAttribute('aria-current'),'page');
+  // Search filters rows across every view, and clears with Escape.
+  await page.keyboard.press('Control+f');
+  assert.equal(await page.evaluate(() => document.activeElement.id),'settingsSearch');
+  await page.keyboard.type('anthropic key');
+  assert.equal(await page.locator('#row-kAnthropic').isVisible(),true);
+  assert.equal(await page.locator('#row-kOpenai').isVisible(),false);
+  assert.equal(await page.locator('#row-openDelay').isVisible(),false);
+  await page.keyboard.press('Escape');
+  assert.equal(await page.locator('#view-island').isVisible(),true);
+  assert.equal(await page.locator('#row-openDelay').isVisible(),true);
+  await page.locator('#nav a[data-view="keys"]').click();
   await page.locator('#kAnthropic').fill('test-placeholder-not-a-key');
   await page.locator('#saveKeys').click();
   assert.equal(await page.locator('#kAnthropic').inputValue(),'');
   assert.match(await page.locator('#settingsStatus').textContent(),/failed/);
+  // Removing a key asks first, inline.
   await page.locator('#removeOpenai').click();
+  assert.doesNotMatch(await page.locator('#settingsStatus').textContent(),/Key removed/);
+  await page.locator('#row-kOpenai').getByRole('button',{name:'Remove key',exact:true}).click();
   assert.match(await page.locator('#settingsStatus').textContent(),/failed/);
+  await page.locator('#nav a[data-view="usage"]').click();
   await page.locator('#cCap').fill('-1');
   await page.locator('#cHours').fill('3');
-  await page.locator('#saveChat').click();
-  assert.match(await page.locator('#settingsStatus').textContent(),/positive/);
+  await page.locator('#cHours').press('Enter');
+  assert.match(await page.locator('#chatStatus').textContent(),/positive/);
+  await page.locator('#nav a[data-view="general"]').click();
   await page.locator('#pickFloat').click();
   assert.equal(await page.evaluate(() => localStorage.getItem('notch.shape')),'float');
+  await page.locator('#nav a[data-view="island"]').click();
+  await page.locator('#openDelay').fill('150');
+  await page.locator('#openDelay').press('Enter');
+  assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem('tuck.live.v2')).openDelayMs),150,'Island settings save without a Save button');
+  assert.equal(await page.locator('#row-openDelay').evaluate(el => el.classList.contains('saved')),true);
   await page.evaluate(() => { Storage.prototype.setItem = () => { throw new Error('Storage disabled'); }; });
-  await page.locator('#saveBudgets').click();
-  assert.match(await page.locator('#settingsStatus').textContent(),/Could not save budgets/);
-  assert.equal(await page.locator('#s1').evaluate(el => el.classList.contains('show')),false);
+  await page.locator('#nav a[data-view="usage"]').click();
+  await page.locator('#bAnthropic').fill('50');
+  await page.locator('#bAnthropic').press('Enter');
+  assert.match(await page.locator('#budgetStatus').textContent(),/Could not save budgets/);
+  assert.equal(await page.locator('#row-bAnthropic').evaluate(el => el.classList.contains('saved')),false);
+  await page.screenshot({path:path.join(root,'artifacts','settings-usage.png')});
   assert.deepEqual(errors,[]);
 
   // A mocked native bridge exercises the actual controllers; this is not a hardware smoke.
@@ -193,16 +224,21 @@ try {
   assert.equal(await native.evaluate(()=>document.activeElement.closest('.page')===document.querySelector('.page.on')),true,'Keyboard navigation relocates focus into the visible page');
   await native.getByRole('button',{name:'Go to stats page',exact:true}).click();
   assert.equal(await native.evaluate(()=>document.activeElement===document.querySelector('.page.on')),true,'A page without controls receives focus after a navigation dot is replaced');
-  await native.goto('http://tuck.test/settings.html');
+  await native.goto('http://tuck.test/settings.html#tools');
   await native.evaluate(()=>window.__emitNative('dictation_state',{status:'review',modelInstalled:true,modelDownloadedBytes:0}));
   assert.equal(await native.locator('#removeModel').isDisabled(),true,'Review must be discarded before model removal');
-  await native.locator('#clipboardEnabled').check();
-  await native.locator('#clipboardPersist').check();
-  await native.locator('#saveClipboard').click();
+  await native.locator('#clipboardEnabled').click();
   await native.getByText('Could not save clipboard settings. Current preferences restored below.',{exact:true}).waitFor();
   assert.equal(await native.locator('#clipboardEnabled').isChecked(),false);
   assert.equal(await native.locator('#clipboardPersist').isChecked(),false);
   assert.deepEqual(await native.evaluate(()=>window.__calls.filter(call=>['clipboard_configure','clipboard_set_persistence','clipboard_set_enabled'].includes(call.command)).map(call=>call.command)),['clipboard_configure'],'Both clipboard flags use a single native mutation');
+  // Activity switches save immediately and revert when the native save fails.
+  await native.locator('#nav a[data-view="activities"]').click();
+  await native.locator('#ext-downloads').click();
+  await native.getByText('Activity settings could not be saved',{exact:true}).waitFor();
+  assert.equal(await native.locator('#ext-downloads').isChecked(),false);
+  assert.equal(await native.evaluate(()=>window.__calls.findLast(call=>call.command==='extension_settings').args.settings.downloads),true);
+  await native.screenshot({path:path.join(root,'artifacts','settings-activities.png')});
   assert.deepEqual(nativeErrors,[]);
   console.log('UI smoke passed: geometry, accessibility, keyboard seeking, timers, persistence errors, native-bridge call priority, shelf, focused radio updates, drag hold and previews.');
 } finally { await browser.close(); }

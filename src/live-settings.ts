@@ -1,4 +1,4 @@
-import { LIVE_SETTINGS_KEY, normalizePreferences, readPreferences } from './live-state.js';
+import { LIVE_SETTINGS_KEY, normalizePreferences, PREFS_VERSION, readPreferences } from './live-state.js';
 import { nativeAction, nativeService } from './live-services.js';
 import { listenToEvent } from './ipc.js';
 
@@ -11,7 +11,7 @@ export function mountLiveSettings(): void {
     <label><input id="desktopPeeks" type="checkbox"> Show volume, brightness, connection and key peeks</label>
     <label for="compactContent">Collapsed content</label><select id="compactContent"><option value="lyrics">Current lyric, with track title fallback</option><option value="title">Track title</option></select>
     <label for="openDelay">Expand delay (milliseconds)</label><input id="openDelay" type="number" min="0" max="2000" step="50">
-    <label for="closeDelay">Collapse delay (milliseconds)</label><input id="closeDelay" type="number" min="100" max="10000" step="100">
+    <label for="closeDelay">Collapse delay after pointer leaves (ms), 0 = instant</label><input id="closeDelay" type="number" min="0" max="10000" step="50">
     <label for="openWidth">Expanded width (logical pixels)</label><input id="openWidth" type="number" min="440" max="500" step="10">
     <button id="saveLive">Save interaction settings</button><p id="interactionStatus" role="status"></p>
   </div>
@@ -52,7 +52,7 @@ export function mountLiveSettings(): void {
     }
     const next = normalizePreferences({ hoverExpand: input('hoverExpand').checked, pinned: input('pinOpen').checked,
       lyricsOpen: input('lyricsOpen').checked, desktopPeeks: input('desktopPeeks').checked, compactContent: select('compactContent').value,
-      openDelayMs: Number(input('openDelay').value), closeDelayMs: Number(input('closeDelay').value), openWidth: Number(input('openWidth').value) });
+      openDelayMs: Number(input('openDelay').value), closeDelayMs: Number(input('closeDelay').value), openWidth: Number(input('openWidth').value), prefsVersion: PREFS_VERSION });
     try {
       localStorage.setItem(LIVE_SETTINGS_KEY, JSON.stringify(next));
       window.dispatchEvent(new StorageEvent('storage', { key: LIVE_SETTINGS_KEY, newValue: JSON.stringify(next) }));

@@ -145,14 +145,22 @@
           <div class="group">
             <h2>Peeks</h2>
             <div class="panel">
-              <div class="set-row" id="row-desktopPeeks" data-keywords="volume brightness wifi bluetooth caps lock hud">
+              <div class="set-row" id="row-desktopPeeks" data-keywords="wifi bluetooth caps lock charger audio output keyboard language">
                 <div class="row-text">
                   <label class="row-title" for="desktopPeeks">System peeks</label>
-                  <p class="row-desc">Show volume, brightness, connection and key changes in the island.</p>
+                  <p class="row-desc">Show connection, charger and key changes in the island. Volume and brightness always show.</p>
                 </div>
                 <input id="desktopPeeks" class="switch" type="checkbox" role="switch" />
               </div>
               <p class="group-status" id="interactionStatus" role="status"></p>
+              <div class="set-row" id="row-hideSystemFlyout" data-keywords="volume brightness flyout osd hud overlay windows popup hide">
+                <div class="row-text">
+                  <label class="row-title" for="hideSystemFlyout">Hide the Windows volume flyout</label>
+                  <p class="row-desc">Only the island shows volume and brightness. Uses an undocumented method and turns itself off if it stops working.</p>
+                </div>
+                <input id="hideSystemFlyout" class="switch" type="checkbox" role="switch" />
+              </div>
+              <p class="group-status" id="flyoutStatus" role="status"></p>
             </div>
           </div>
         </section>

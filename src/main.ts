@@ -826,6 +826,9 @@ function setupActivitiesUI(): void {
   $('actReset').innerHTML = SVG_ICONS.refresh;
 
   activitiesManager.subscribe((_list, top) => {
+    // A timer started anywhere (chips, compact, native) becomes what play restarts
+    const started = presetOf(top);
+    if (started === 5 || started === 15 || started === 25) actPreset = started;
     renderCompact();
     renderActivitiesPage(top);
   });
@@ -897,7 +900,7 @@ function renderActivitiesPage(top: Activity | null): void {
   face.dataset.kind = top?.type ?? 'timer';
   actRing.set(top ? (activityProgress(top) ?? 0) * 100 : null, running ? 'ink' : 'muted');
 
-  if (!top) setControl(pauseBtn, `Start ${actPreset}m timer`, SVG_ICONS.play);
+  if (!top) setControl(pauseBtn, actPreset === 25 ? 'Start 25m pomodoro' : `Start ${actPreset}m timer`, SVG_ICONS.play);
   else if (running) setControl(pauseBtn, 'Pause', SVG_ICONS.pause);
   else setControl(pauseBtn, 'Resume', SVG_ICONS.play);
   ($('actReset') as HTMLButtonElement).disabled = !top;

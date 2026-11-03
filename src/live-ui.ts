@@ -217,7 +217,7 @@ export function mountLivePages(onLayout: () => void): {
     transcript.textContent = data.transcript?.slice(0, 32000) || (data.status === 'recording' ? 'Listening\u2026' : 'Your transcript appears here');
     transcript.classList.toggle('placeholder', !data.transcript);
     insert.disabled = data.status !== 'review' || data.canInsert === false;
-    cancel.disabled = !['recording', 'transcribing', 'review'].includes(data.status);
+    cancel.disabled = !['starting', 'downloadingModel', 'recording', 'transcribing', 'review'].includes(data.status);
     record.disabled = !['idle', 'recording', 'review', 'error'].includes(data.status) || data.modelReady === false;
     if (data.status === 'recording') setIconLabel(record, 'Finish recording', SVG_ICONS.stop);
     else setIconLabel(record, 'Record', SVG_ICONS.mic);
@@ -272,17 +272,21 @@ export function mountLivePages(onLayout: () => void): {
   const audioTitle = node('div', 'live-heading'); const audioStatus = node('p', 'live-note', 'Analysis off, no audio is stored');
   // One toggle: the spectrum itself shows whether analysis runs
   let visualizerOn = false;
+  // Frames still in flight (and the capture thread's final empty frame) arrive just after Stop
+  let stoppedAt = 0;
   const visualizerToggle = iconButton('Start playback analysis', SVG_ICONS.power, () => {
     const next = !visualizerOn;
     void act(nativeAction('visualizer_set_enabled', { enabled: next }).then(() => { setVisualizer(next); }), audioStatus);
   });
   function setVisualizer(on: boolean): void {
+    if (visualizerOn && !on) stoppedAt = Date.now();
     visualizerOn = on;
     visualizerToggle.setAttribute('aria-pressed', String(on));
     setIconLabel(visualizerToggle, on ? 'Stop playback analysis' : 'Start playback analysis', SVG_ICONS.power);
     if (!on) audioStatus.textContent = 'Analysis off, no audio is stored';
   }
   setVisualizer(false);
+  void nativeService<{ enabled: boolean }>('visualizer_settings').then(status => setVisualizer(status.enabled === true)).catch(() => {});
   audioTitle.append(node('h2', '', 'System audio'), visualizerToggle);
   const wideSpectrum = node('div', 'wide-spectrum'); wideSpectrum.setAttribute('aria-label', 'Measured playback frequency bands');
   const wideBars = Array.from({ length: 48 }, () => { const bar = node('i'); wideSpectrum.append(bar); return bar; });
@@ -290,8 +294,12 @@ export function mountLivePages(onLayout: () => void): {
   let lastAudio = 0;
   function audio(data: { bands: number[]; active?: boolean }): void {
     if (!data || !Array.isArray(data.bands)) return;
+    if (!visualizerOn) {
+      // Ignore stragglers after a local Stop; later frames mean analysis was started elsewhere (Settings)
+      if (Date.now() - stoppedAt < 1500) return;
+      setVisualizer(true);
+    }
     lastAudio = Date.now();
-    if (!visualizerOn) setVisualizer(true);
     audioStatus.textContent = data.active === false ? 'Silence, no audio is stored' : 'Live spectrum, no audio is stored';
     for (const group of [bars, wideBars]) group.forEach((bar, i) => {
       const source = i * Math.max(0, data.bands.length - 1) / (group.length - 1);

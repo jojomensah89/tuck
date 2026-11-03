@@ -138,3 +138,11 @@ describe('timer ring progress', () => {
     expect(activityProgress(timer({ totalDurationMs: 0 }), now)).toBeNull();
   });
 });
+
+describe('ring wrap', () => {
+  it('the stopwatch wraps to zero each minute', () => {
+    const base = { id: 's', type: 'stopwatch', title: 'Stopwatch', active: true, paused: false, startTime: 1_000 } as unknown as Parameters<typeof activityProgress>[0];
+    expect(activityProgress(base, 60_900)!).toBeGreaterThan(0.99);
+    expect(activityProgress(base, 61_100)!).toBeLessThan(0.01);
+  });
+});

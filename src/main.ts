@@ -21,6 +21,8 @@ import { currentPositionMs, retainedArtwork, hitGeometry } from './runtime.js';
 import { extractAccentColor } from './accent.js';
 import { batteryGlyph, SVG_ICONS } from './icons.js';
 import { activitiesManager } from './activities.js';
+import { renderUsageRings } from './usage-rings.js';
+import { activityProgress, batteryTone, createRing, formatSpan } from './rings.js';
 import { selectCompactActivity, type CompactActivityCandidate } from './compact-slots.js';
 import { formatClockTime } from './time-format.js';
 import {
@@ -28,7 +30,6 @@ import {
   mergeMeters,
   checkResets,
   logChatGPTMessage,
-  formatUntil,
 } from './usage.js';
 import type {
   IslandState,
@@ -157,7 +158,7 @@ function compactIndicator(
 
 function runAction(action: Promise<unknown>, label: string): void {
   void action.catch(() => {
-    const message = `${label} failed. Please try again.`;
+    const message = `${label} failed, try again`;
     $('statusMessage').textContent = message;
     setText($('cc'), message);
     if (state === 'open') $('artist').textContent = message;
@@ -760,36 +761,43 @@ function renderToday(): void {
   });
 }
 
-function renderPower(): void {
-  $('pct').textContent = powerState.hasBattery ? `${powerState.percent}%` : 'AC power';
-  const fill = $('battFill');
-  fill.style.width = `${powerState.hasBattery ? powerState.percent : 100}%`;
-  fill.className = powerState.charging
-    ? 'charging'
-    : powerState.hasBattery && powerState.percent <= 15
-      ? 'low'
-      : '';
+const battRing = createRing(72, 6, 'batt-ring');
+$('battFace').prepend(battRing.root);
+$('battBolt').innerHTML = SVG_ICONS.bolt;
 
+function renderPower(): void {
+  const pctEl = $('pct');
   const sub = $('battSub');
+  const bolt = $('battBolt');
+  const batt = $('batt');
+  let label: string;
+  let subText = '';
+  bolt.hidden = true;
   if (!powerState.hasBattery && powerState.statusKnown !== false) {
-    $('pct').textContent = 'AC power';
-    fill.style.width = '100%';
-    fill.className = '';
-    sub.textContent = 'No system battery';
-  } else if (powerState.statusKnown === false || powerState.percentKnown === false) {
-    $('pct').textContent = 'Battery unavailable';
-    fill.style.width = '0%';
-    fill.className = '';
-    sub.textContent = 'Windows has not reported battery status';
-  } else if (powerState.charging) {
-    sub.textContent = 'Charging';
-  } else if (powerState.minutesLeft != null) {
-    const h = Math.floor(powerState.minutesLeft / 60);
-    const m = powerState.minutesLeft % 60;
-    sub.textContent = `${h}h ${m}m left`;
+    // A desktop on mains power: a plug in an empty track
+    battRing.set(null);
+    setMarkup(pctEl, SVG_ICONS.plug);
+    label = 'No system battery, on AC power';
+  } else if (powerState.statusKnown === false || powerState.percentKnown === false || !Number.isFinite(powerState.percent)) {
+    battRing.set(null);
+    setText(pctEl, '–');
+    label = 'Battery level unavailable';
   } else {
-    sub.textContent = powerState.acConnected === true ? 'Plugged in' : powerState.hasBattery ? 'On battery' : 'AC power';
+    const pct = Math.max(0, Math.min(100, Math.round(powerState.percent)));
+    battRing.set(pct, batteryTone(pct, powerState.charging));
+    setText(pctEl, `${pct}%`);
+    bolt.hidden = !powerState.charging;
+    label = `Battery ${pct}%`;
+    if (powerState.charging) label += ', charging';
+    else if (powerState.minutesLeft != null && powerState.minutesLeft > 0) {
+      subText = `${formatSpan(powerState.minutesLeft * 60)} left`;
+      label += `, ${subText}`;
+    } else if (powerState.acConnected === true) label += ', plugged in';
   }
+  // Status text only when it adds information: the time left
+  if (sub.textContent !== subText) sub.textContent = subText;
+  batt.setAttribute('aria-label', label);
+  batt.title = label;
 
   renderCompact();
 }
@@ -802,26 +810,32 @@ setInterval(() => {
 
 /* ================= Live Activities ================= */
 
+const actRing = createRing(128, 6, 'act-ring');
+$('actFace').prepend(actRing.root);
+/** The preset the play button starts when nothing is running */
+let actPreset = 5;
+
+function startPreset(minutes: number): void {
+  actPreset = minutes;
+  if (minutes === 25) activitiesManager.startPomodoro(25);
+  else activitiesManager.startTimer(minutes * 60, `${minutes}m timer`);
+}
+
 function setupActivitiesUI(): void {
+  $('actStopwatch').innerHTML = SVG_ICONS.stopwatch;
+  $('actReset').innerHTML = SVG_ICONS.refresh;
+
   activitiesManager.subscribe((_list, top) => {
     renderCompact();
     renderActivitiesPage(top);
   });
 
-  $('actQuick5').onclick = (e) => {
-    e.stopPropagation();
-    activitiesManager.startTimer(5 * 60, '5m Timer');
-  };
-
-  $('actQuick15').onclick = (e) => {
-    e.stopPropagation();
-    activitiesManager.startTimer(15 * 60, '15m Timer');
-  };
-
-  $('actQuick25').onclick = (e) => {
-    e.stopPropagation();
-    activitiesManager.startPomodoro(25);
-  };
+  document.querySelectorAll<HTMLButtonElement>('.act-chip').forEach((chip) => {
+    chip.onclick = (e) => {
+      e.stopPropagation();
+      startPreset(Number(chip.dataset.minutes) || 5);
+    };
+  });
 
   $('actStopwatch').onclick = (e) => {
     e.stopPropagation();
@@ -831,7 +845,7 @@ function setupActivitiesUI(): void {
   $('actPause').onclick = (e) => {
     e.stopPropagation();
     const top = activitiesManager.getTopActivity();
-    if (!top) return;
+    if (!top) { startPreset(actPreset); return; }
     if (top.type === 'stopwatch') {
       if (top.paused) activitiesManager.startStopwatch();
       else activitiesManager.pauseStopwatch();
@@ -851,26 +865,51 @@ function setupActivitiesUI(): void {
   };
 }
 
+function presetOf(top: Activity | null): number | null {
+  if (!top || top.type === 'stopwatch') return null;
+  if (top.type === 'pomodoro') return 25;
+  return Math.round((top.totalDurationMs || 0) / 60000);
+}
+
+function setControl(btn: HTMLElement, label: string, icon: string): void {
+  if (btn.getAttribute('aria-label') === label) return;
+  btn.setAttribute('aria-label', label);
+  btn.title = label;
+  btn.innerHTML = icon;
+}
+
 function renderActivitiesPage(top: Activity | null): void {
-  const digitsEl = $('actDigits');
-  const titleEl = $('actTitle');
-  const statusEl = $('actStatus');
+  const status = $('actStatus');
   const pauseBtn = $('actPause');
+  const face = $('actFace');
+  const running = !!top && !top.paused;
+  const phase = !top ? 'ready' : top.paused ? 'paused' : 'running';
+  const phaseLabel = { ready: 'Ready', paused: 'Paused', running: 'Running' }[phase];
 
-  if (!top) {
-    digitsEl.textContent = '05:00';
-    titleEl.textContent = 'Timer & Pomodoro';
-    statusEl.textContent = 'Ready';
-    statusEl.className = 'act-status-pill';
-    pauseBtn.textContent = 'Pause';
-    return;
+  setText($('actDigits'), top ? activitiesManager.formatRemaining(top) : `${String(actPreset).padStart(2, '0')}:00`);
+  setText($('actTitle'), top ? top.title : 'Timer');
+  if (status.dataset.status !== phase) {
+    status.dataset.status = phase;
+    status.setAttribute('aria-label', phaseLabel);
+    status.title = phaseLabel;
   }
+  face.dataset.status = phase;
+  face.dataset.kind = top?.type ?? 'timer';
+  actRing.set(top ? (activityProgress(top) ?? 0) * 100 : null, running ? 'ink' : 'muted');
 
-  digitsEl.textContent = activitiesManager.formatRemaining(top);
-  titleEl.textContent = top.title;
-  statusEl.textContent = top.paused ? 'Paused' : 'Active';
-  statusEl.className = `act-status-pill ${top.paused ? '' : 'active'}`;
-  pauseBtn.textContent = top.paused ? 'Resume' : 'Pause';
+  if (!top) setControl(pauseBtn, `Start ${actPreset}m timer`, SVG_ICONS.play);
+  else if (running) setControl(pauseBtn, 'Pause', SVG_ICONS.pause);
+  else setControl(pauseBtn, 'Resume', SVG_ICONS.play);
+  ($('actReset') as HTMLButtonElement).disabled = !top;
+
+  const preset = presetOf(top);
+  document.querySelectorAll<HTMLButtonElement>('.act-chip').forEach((chip) => {
+    const on = String(Number(chip.dataset.minutes) === preset);
+    if (chip.getAttribute('aria-pressed') !== on) chip.setAttribute('aria-pressed', on);
+  });
+  const sw = $('actStopwatch');
+  const swOn = String(top?.type === 'stopwatch');
+  if (sw.getAttribute('aria-pressed') !== swOn) sw.setAttribute('aria-pressed', swOn);
 }
 
 /* ================= AI Usage ================= */
@@ -881,89 +920,9 @@ let prevPcts: Record<string, number> = {};
 function announceReset(meter: Meter): void { showAnnouncement(`${meter.label} reset`); }
 
 function renderUsage(): void {
-  const list = $('uList');
-  list.replaceChildren();
-
-  const allMeters = mergeMeters(rawMeters);
-
-  if (allMeters.length === 0) {
-    const empty = document.createElement('div');
-    empty.className = 'u-empty';
-    empty.textContent =
-      'No AI usage sources configured yet. Open Settings from the quick actions or tray to connect API keys or track ChatGPT.';
-    list.appendChild(empty);
-    return;
-  }
-
-  allMeters.forEach((m) => {
-    const row = document.createElement('div');
-    row.className = 'u-row';
-
-    const name = document.createElement('span');
-    name.className = 'u-name';
-    name.textContent = m.label;
-    row.appendChild(name);
-
-    const val = document.createElement('span');
-    val.className = 'u-val';
-    if (m.usedPct != null) {
-      val.textContent = `${Math.round(m.usedPct)}%`;
-    } else if (m.spentUsd != null) {
-      val.textContent = `$${m.spentUsd.toFixed(2)}`;
-    } else {
-      val.textContent = '\u2014';
-    }
-    row.appendChild(val);
-
-    if (m.usedPct != null) {
-      const bar = document.createElement('div');
-      bar.className = 'u-bar';
-      const fill = document.createElement('i');
-      if (m.usedPct >= 90) fill.className = 'hot';
-      else if (m.usedPct >= 70) fill.className = 'warn';
-      fill.style.width = `${Math.min(100, Math.max(0, m.usedPct))}%`;
-      bar.appendChild(fill);
-      row.appendChild(bar);
-    }
-
-    const sub = document.createElement('div');
-    sub.className = 'u-sub';
-
-    const parts: string[] = [];
-    if (m.spentUsd != null && m.usedPct != null) parts.push(`$${m.spentUsd.toFixed(2)} spent`);
-    if (m.error) parts.push(m.error);
-    if (m.status && m.status !== 'ok') parts.push(m.status);
-    if (m.id === 'chatgpt' && m.count != null && m.cap != null) {
-      parts.push(`${m.count}/${m.cap} messages`);
-    }
-
-    const when = formatUntil(m.resetsAt);
-    if (when) {
-      parts.push(m.id === 'chatgpt' ? `slot frees ${when.replace('resets ', '')}` : when);
-    }
-
-    parts.push(m.source === 'manual' ? 'estimate' : m.source === 'api' ? 'API' : 'official');
-    if (m.stale) {
-      parts.push(m.provider === 'claude' ? 'stale: open Claude Code to refresh' : 'stale: waiting for provider refresh');
-    }
-
-    const partsSpan = document.createElement('span');
-    partsSpan.textContent = parts.join(' \u00b7 ');
-    sub.appendChild(partsSpan);
-
-    if (m.id === 'chatgpt') {
-      const logBtn = document.createElement('button');
-      logBtn.textContent = 'Log message';
-      logBtn.onclick = (e) => {
-        e.stopPropagation();
-        logChatGPTMessage();
-        renderUsage();
-      };
-      sub.appendChild(logBtn);
-    }
-
-    row.appendChild(sub);
-    list.appendChild(row);
+  renderUsageRings($('uList'), mergeMeters(rawMeters), () => {
+    logChatGPTMessage();
+    renderUsage();
   });
 }
 
@@ -976,7 +935,7 @@ function onUsageUpdate(meters: Meter[]): void {
 
 window.addEventListener('storage', () => { renderUsage(); });
 setInterval(() => {
-  if (!document.querySelector('#uList button:focus')) renderUsage();
+  renderUsage();
 }, 30000);
 
 /* ================= Quick Actions ================= */
@@ -1001,10 +960,6 @@ function setupQuickActions(): void {
     };
   });
 
-  $('openSettingsBtn').onclick = (e) => {
-    e.stopPropagation();
-    runAction(openSettingsCmd(), 'Open settings');
-  };
 }
 
 function showAnnouncement(text:string):void {

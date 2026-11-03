@@ -14,7 +14,20 @@ Surface #000000; raised #1c1c1e / hover #2c2c2e / active #3a3a3c. Ink #ffffff, s
 - Radius: 2, 4, 8 (controls), 12 (chips), 16; island 16 idle, 20 peek, 32 open; notch ears 14.
 - Type: Segoe UI Variable Text, Segoe UI, system-ui. Sizes 10, 11, 12, 13, 14, 20, 28, 40. Weights 400 and 500; 600 only for rare emphasis such as the track title and page headings. No negative tracking below 28px. Numbers use `tabular-nums`.
 - Icons: one hand-drawn line family (`src/icons.ts`) on a 20x20 grid: 1.5px stroke (`--stroke`, non-scaling so every size carries the same weight), round caps and joins, no icon fonts. Transport glyphs and small dots are filled with the same rounded outline. Sizes 10 (badge glyph), 14 (compact), 16, 20 (controls, chips, rail), 24 (play/pause).
-- Hit targets: 36px; 32px for media transport and the lyrics toggle.
+- Hit targets: 36px; 32px for media transport, the lyrics toggle and inline row actions (grip, radio icon). Nothing smaller.
+- Icon buttons (`.icon-btn`): one line icon, 36px, `--ink-2` at rest and `--ink` with a `--raise` step on hover; the name is both `title` and `aria-label`. The one primary control of a group (play, record, start call timer) is a round `--raise` fill. Text labels stay only where an icon would be ambiguous (timer presets are numerals, row text is the content itself). Provider marks (`anthropic`, `openai`) are simplified monochrome glyphs for identification only; providers without one show their initial.
+
+## Graphics instead of text
+
+Every value that has a range is drawn, not written. Rings come from `src/rings.ts` (pure geometry, tones and labels, unit tested; `createRing` is the one DOM builder): a track one tone step above the surface (`--raise-hover`), a round-capped fill starting at 12 o'clock, and the value changing by dash offset so it animates on `--spring-enter` over `--d-shell`. An empty or missing value is the track alone (a round cap at zero would draw a dot). Reduced motion sets the change instantly.
+
+- AI usage: a row of 64px rings (6px stroke), centred; more than five sources switch to 44px so two rows fit 178px. The provider mark sits in the centre; under it the value (`62%`, `$12.40`, or `31/40` for the ChatGPT estimate) and one line of window and reset (`5h · 2h 15m`, `API · off`, `Est`). The fill is a threshold tone, not a brand colour: green below 70%, amber from 70%, red from 90%. The mark already names the provider, OpenAI's brand colour is black and white, and the question this section answers is "how close am I to a limit". Stale or unavailable sources dim to 45% and show a dash. Full details (label, %, messages, spend, reset, source, error) are the tooltip and accessible name. The ChatGPT ring is itself the "Log message" button, marked by a small plus.
+- System: CPU, memory and each GPU as 56px rings with the value inside, the name and a 56x16 sparkline under. Load is ink until it is high (amber 70%, red 90%), so an idle machine is not the loudest thing on screen. Unavailable is a dim track with a dash. A status dot beside the heading replaces the "Live · 14:02" text.
+- Today: battery as a 72px ring with the level inside and the bolt above it while charging; green charging, red below 20% on battery, ink otherwise. A line under it only when it adds information (`47m left`). A desktop shows a plug in an empty track.
+- Timer: presets 5 / 15 / 25 as numeric chips on the left, a 140px ring in the centre with tabular digits and the title with a status dot, and play/pause, stopwatch and reset as icon buttons on the right. Countdowns drain the ring; a stopwatch sweeps it once a minute. The ring follows the 250ms tick linearly instead of springing. Play with nothing running starts the last preset.
+- Status dots (6px): grey ready or stale, green live or running, amber paused, red fault, dark off. The word is the dot's name.
+
+Copy: no trailing period on labels, notes or empty states; one sentence at most. Durations use one format everywhere (`3d 4h`, `2h 15m`, `45m`, `<1m`), timers `mm:ss`, clock times the Windows locale (`formatClockTime`).
 
 ## Geometry
 
@@ -28,7 +41,9 @@ An activity owns both slots by explicit priority, highest first: dictation (reco
 
 Peek is one line: a leading glyph or artwork, a center title that marquees only when it overflows, and a trailing status indicator. The no-activity peek uses a clock glyph, the same locale-formatted time, and the battery glyph. It never adds a date. Compact slot owners cross-fade and scale using the shared motion tokens; value updates within the same owner do not restart the transition. Reduced motion removes the transition and all looping indicators while preserving their resting shapes.
 
-The open media header contains only the battery glyph beside its existing metadata. Date, clock, and duplicate equalizer chrome are omitted so the track title cannot clip.
+The open media header contains only the battery glyph beside its existing metadata. Date, clock, and duplicate equalizer chrome are omitted so the track title cannot clip. An overflowing title marquees with its edges faded by a mask instead of a hard cut. Artwork has no shadow. The lyrics toggle is in the transport row's flow at its start; the transport group centres in the remaining room (mirrored by an empty slot while lyrics are closed) and tightens its gaps to 12px with lyrics open, so the toggle never touches the previous-track button at the 440px minimum.
+
+Tools: quick actions are four icon tiles (72px tall, 24px icons, names in tooltips). Clipboard rows are the text itself (select to copy) with pin and remove icons that brighten with the row; a pinned pin stays solid; clear is a trash icon in the heading. Dictation's heading carries its status dot and three icons: record (a stop square while recording), cancel and insert; visible text only for an error. The visualizer has one power toggle. Files, calls, radios and downloads are icon views (folder, phone, Wi-Fi, download) with a count badge, or a green dot while the call timer runs; each view's own actions sit at the right of the same row. Radios are switches (`role="switch"`), shelf rows have a grip to drag out, show-in-folder and remove icons, and calendar rows a video icon to join.
 
 ### Open navigation
 

@@ -7,6 +7,8 @@ export const SVG_ICONS = {
   bolt: `<svg class="ico bolt" viewBox="0 0 24 24" aria-hidden="true"><path d="M13 2 4 14h6l-1 8 9-12h-6z"/></svg>`,
   lyrics: `<svg class="ico lyrics-ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 2H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h4v3.5l4-3.5h8c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-11 9H7V7h2v4zm6 0h-2V7h2v4z"/></svg>`,
   note: `<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 3v11.3A3.5 3.5 0 1 0 11 17.5V8h6V3z"/></svg>`,
+  clock: `<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm0 18a8 8 0 1 1 0-16 8 8 0 0 1 0 16zm1-13h-2v6l5.2 3.1 1-1.7-4.2-2.5V7z"/></svg>`,
+  mic: `<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 1 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21H8v2h8v-2h-3v-3.08A7 7 0 0 0 19 11h-2z"/></svg>`,
   play: `<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>`,
   pause: `<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5h4v14H6zm8 0h4v14h-4z"/></svg>`,
   playBig: `<svg class="ico big" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>`,
@@ -29,4 +31,28 @@ export const SVG_ICONS = {
   sparkle: `<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2 9.5 8.5 3 11l6.5 2.5L12 20l2.5-6.5L21 11l-6.5-2.5z"/></svg>`,
   alert: `<svg class="ico warn" viewBox="0 0 24 24" aria-hidden="true"><path d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z"/></svg>`,
   eq: `<span class="eq" aria-hidden="true"><i></i><i></i><i></i></span>`,
+  eqPlaying: `<span class="eq playing" aria-hidden="true"><i></i><i></i><i></i></span>`,
 };
+
+export function batteryGlyph(
+  percent: number,
+  charging: boolean,
+  known = true,
+  hasBattery = true,
+): string {
+  const levelKnown = known && hasBattery && Number.isFinite(percent);
+  const normalized = levelKnown ? Math.max(0, Math.min(100, Math.round(percent))) : 0;
+  const fillWidth = Math.max(normalized > 0 ? 1 : 0, 16 * normalized / 100);
+  const stateClass = charging
+    ? ' charging'
+    : !levelKnown
+      ? ' unknown'
+      : normalized < 20
+        ? ' low'
+        : '';
+  const bolt = charging
+    ? '<path class="battery-bolt" d="m12.4 7.4-3.8 5h2.7l-.5 4.2 4.1-5.5h-2.6z"/>'
+    : '';
+
+  return `<svg class="battery-glyph${stateClass}" viewBox="0 0 24 18" aria-hidden="true"><rect class="battery-outline" x="1" y="3" width="20" height="12" rx="2"/><rect class="battery-terminal" x="22" y="7" width="2" height="4" rx="1"/><rect class="battery-fill" x="3" y="5" width="${fillWidth.toFixed(2)}" height="8" rx="1"/>${bolt}</svg>`;
+}

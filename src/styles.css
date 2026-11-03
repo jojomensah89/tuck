@@ -232,6 +232,10 @@ body.fullscreen-hidden .island {
     transform var(--d-base) var(--d-instant) var(--spring-enter);
 }
 
+.island[data-state="peek"] .compact {
+  grid-template-columns: var(--s-8) minmax(0, 1fr) var(--s-12);
+}
+
 .island[data-state="open"] .compact {
   opacity: 0;
   transform: scale(0.92);
@@ -242,28 +246,107 @@ body.fullscreen-hidden .island {
 }
 
 .cl,
+.cc,
 .cr {
-  display: flex;
+  display: grid;
   align-items: center;
-  gap: var(--s-2);
+  min-width: 0;
 }
 
 .cl {
   justify-self: start;
+  justify-items: start;
 }
 
 .cr {
   justify-self: end;
+  justify-items: end;
 }
 
 .cc {
-  justify-self: center;
-  max-width: 190px;
+  justify-self: stretch;
+  justify-items: center;
+  min-width: 0;
   overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
   color: var(--ink);
   text-align: center;
+}
+
+.compact-slot {
+  grid-area: 1 / 1;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  opacity: 1;
+  transform: scale(1);
+  transition:
+    opacity var(--d-fast) var(--ease-out),
+    transform var(--d-base) var(--spring-enter);
+}
+
+.cc .compact-slot {
+  width: 100%;
+}
+
+.compact-slot.entering,
+.compact-slot.leaving {
+  opacity: 0;
+  transform: scale(var(--press));
+  pointer-events: none;
+}
+
+.compact-title {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-align: left;
+}
+
+.compact-title-track {
+  display: inline-block;
+}
+
+.compact-title.scroll .compact-title-track {
+  animation: compact-marquee var(--d-marquee) var(--ease-out) var(--d-marquee-hold) infinite alternate;
+}
+
+@keyframes compact-marquee {
+  0%, 15% { transform: translateX(0); }
+  85%, 100% { transform: translateX(var(--compact-shift, 0)); }
+}
+
+.compact-time,
+.compact-metric {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.compact-time {
+  font-size: var(--t-sm);
+  font-weight: var(--w-medium);
+}
+
+.compact-indicator,
+.battery-status {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-1);
+  min-width: 0;
+}
+
+.live-activity-dot,
+.peek-indicator {
+  width: var(--status-dot);
+  height: var(--status-dot);
+  border-radius: var(--r-round);
+  background: var(--ok);
+  flex: 0 0 auto;
+}
+
+.peek-indicator {
+  background: var(--ink-2);
 }
 
 .mini-art {
@@ -276,8 +359,50 @@ body.fullscreen-hidden .island {
   flex-shrink: 0;
 }
 
-.bolt {
+.island[data-state="peek"] .mini-art {
+  width: var(--i-lg);
+  height: var(--i-lg);
+}
+
+.compact .cl svg.ico {
+  width: var(--i-sm);
+  height: var(--i-sm);
+  color: var(--ink-2);
+}
+
+.battery-glyph {
+  width: var(--i-lg);
+  height: var(--s-3);
+  color: var(--ink-2);
+  overflow: visible;
+}
+
+.battery-glyph.charging {
   color: var(--ok);
+}
+
+.battery-glyph.low {
+  color: var(--warn);
+}
+
+.battery-outline {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+}
+
+/* Level unknown: dashed outline so it never reads as an empty battery */
+.battery-glyph.unknown .battery-outline {
+  stroke-dasharray: 2 2;
+}
+
+.battery-terminal,
+.battery-fill {
+  fill: currentColor;
+}
+
+.battery-bolt {
+  fill: var(--surface);
 }
 
 /* Equalizer: transform-only so it never relayouts the row */
@@ -289,20 +414,31 @@ body.fullscreen-hidden .island {
 }
 
 .eq i {
-  width: 3px;
+  width: var(--meter-bar);
   height: 100%;
   border-radius: var(--r-xs);
   background: var(--accent);
-  transform: scaleY(0.3);
+  transform: scaleY(0.45);
   transform-origin: bottom;
-  animation: eq-bounce 0.9s infinite ease-in-out;
 }
 
 .eq i:nth-child(2) {
-  animation-delay: 0.2s;
+  transform: scaleY(0.75);
 }
 
 .eq i:nth-child(3) {
+  transform: scaleY(0.35);
+}
+
+.eq.playing i {
+  animation: eq-bounce 0.9s infinite var(--ease-out);
+}
+
+.eq.playing i:nth-child(2) {
+  animation-delay: 0.2s;
+}
+
+.eq.playing i:nth-child(3) {
   animation-delay: 0.4s;
 }
 
@@ -313,6 +449,48 @@ body.fullscreen-hidden .island {
   50% {
     transform: scaleY(1);
   }
+}
+
+.dictation-level {
+  display: flex;
+  align-items: end;
+  gap: var(--s-half);
+  width: var(--i-xs);
+  height: var(--i-xs);
+}
+
+.dictation-level i {
+  width: var(--meter-bar);
+  height: 100%;
+  border-radius: var(--r-xs);
+  background: var(--warn);
+  transform: scaleY(0.25);
+  transform-origin: bottom;
+}
+
+.dictation-level i:nth-child(2) {
+  transform: scaleY(0.45);
+}
+
+.dictation-level i:nth-child(3) {
+  transform: scaleY(0.3);
+}
+
+.dictation-level.recording i {
+  animation: dictation-level 0.8s infinite var(--ease-out);
+}
+
+.dictation-level.recording i:nth-child(2) {
+  animation-delay: var(--d-fast);
+}
+
+.dictation-level.recording i:nth-child(3) {
+  animation-delay: calc(var(--d-fast) * 2);
+}
+
+@keyframes dictation-level {
+  0%, 100% { transform: scaleY(0.25); }
+  50% { transform: scaleY(1); }
 }
 
 .act-compact-icon {
@@ -531,6 +709,8 @@ body.fullscreen-hidden .island {
 .meta {
   min-width: 0;
   flex: 1;
+  position: relative;
+  padding-right: calc(var(--i-lg) + var(--s-2));
 }
 
 .title {
@@ -1003,6 +1183,8 @@ body.fullscreen-hidden .island {
   }
 
   .eq i,
+  .dictation-level i,
+  .compact-title.scroll .compact-title-track,
   .title.scroll span,
   .page.on {
     animation: none !important;
@@ -1016,4 +1198,6 @@ body.fullscreen-hidden .island {
   .eq i { transform: scaleY(0.5); }
   .eq i:nth-child(2) { transform: scaleY(0.8); }
   .eq i:nth-child(3) { transform: scaleY(0.4); }
+
+  .dictation-level i { transform: scaleY(0.3); }
 }

@@ -12,13 +12,23 @@ Surface #000000; raised #1c1c1e / hover #2c2c2e / active #3a3a3c. Ink #ffffff, s
 
 - Spacing: 4px grid, `--s-1`..`--s-12` (4, 8, 12, 16, 20, 24, 32, 48). `--s-half` (2px) only for nudges inside small controls.
 - Radius: 2, 4, 8 (controls), 12 (chips), 16; island 16 idle, 20 peek, 32 open; notch ears 14.
-- Type: Segoe UI Variable Text, Segoe UI, system-ui. Sizes 10, 11, 12, 13, 14, 20, 28, 40. Weights 400 and 500; 600 only for the track title, the idle and header time, and page headings. No negative tracking below 28px. Numbers use `tabular-nums`.
+- Type: Segoe UI Variable Text, Segoe UI, system-ui. Sizes 10, 11, 12, 13, 14, 20, 28, 40. Weights 400 and 500; 600 only for rare emphasis such as the track title and page headings. No negative tracking below 28px. Numbers use `tabular-nums`.
 - Icons: one filled SVG set (`src/icons.ts`), sizes 10 (badge glyph), 14 (compact), 16, 20 (controls, chips), 24 (play/pause).
 - Hit targets: 36px; 32px for media transport and the lyrics toggle.
 
 ## Geometry
 
 Idle 212x32, peek 300x38, open `openWidth` x 210 (default 500, setting range 440-500). The notch is flush with the top edge with 14px concave ears; float has a 10px top gap. Open pages sit inside `16px 44px 24px` insets (the side inset meets the 36px nav buttons).
+
+### Idle and peek
+
+Idle follows compact leading/trailing Live Activity slots. With no activity, locale-formatted time occupies the leading slot and a 24x12 battery glyph occupies the trailing slot. The glyph fill tracks the reported percentage, adds a bolt while charging, and turns red below 20 percent while discharging. There are no labels, date strings, or decorative visualizers.
+
+An activity owns both slots by explicit priority, highest first: dictation (recording, transcribing or in review), calls, playing media, running timers, downloads, then paused timers and paused media. All share one pure selector. Media uses artwork or the note glyph with a three-bar indicator that moves only during playback; paused playback keeps uneven resting bars. Timers use their activity glyph and tabular `mm:ss`. Dictation uses the microphone glyph and a recording-state meter. When any activity other than the one shown is running, the trailing slot adds one 6px live dot. Without a system battery the idle pill shows only the time; an unknown battery level draws a dashed outline. Settings > Collapsed content can show the current lyric line instead of the track title.
+
+Peek is one line: a leading glyph or artwork, a center title that marquees only when it overflows, and a trailing status indicator. The no-activity peek uses a clock glyph, the same locale-formatted time, and the battery glyph. It never adds a date. Compact slot owners cross-fade and scale using the shared motion tokens; value updates within the same owner do not restart the transition. Reduced motion removes the transition and all looping indicators while preserving their resting shapes.
+
+The open media header contains only the battery glyph beside its existing metadata. Date, clock, and duplicate equalizer chrome are omitted so the track title cannot clip.
 
 ## Motion
 

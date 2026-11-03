@@ -20,7 +20,7 @@
       >
         <div class="island-clip">
           <!-- Compact layer (Idle & Peek) -->
-          <div class="compact" aria-hidden="false">
+          <div class="compact" role="group" aria-hidden="false">
             <div class="cl" id="cl"></div>
             <div class="cc" id="cc"></div>
             <div class="cr" id="cr"></div>
@@ -37,16 +37,7 @@
                 <div class="now">
                   <div class="art" id="art" aria-label="Album Artwork"></div>
                   <div class="meta">
-                    <div class="meta-header" id="metaHeader">
-                      <div class="meta-header-left">
-                        <span class="battery-badge" id="mediaBattBadge"></span>
-                        <span class="media-date" id="mediaDate">Mon 2 Nov 2026</span>
-                        <span class="media-time" id="mediaTime">18:48</span>
-                      </div>
-                      <div class="meta-header-right" id="mediaWaves">
-                        <span class="eq" aria-hidden="true"><i></i><i></i><i></i></span>
-                      </div>
-                    </div>
+                    <span class="media-battery" id="mediaBattBadge"></span>
                     <div class="title" id="title"><span>Nothing playing</span></div>
                     <div class="artist" id="artist">Play something in any app</div>
                   </div>

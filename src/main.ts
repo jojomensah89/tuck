@@ -18,8 +18,10 @@ import {
 } from './ipc.js';
 import { currentPositionMs, retainedArtwork, hitGeometry } from './runtime.js';
 import { extractAccentColor } from './accent.js';
-import { SVG_ICONS } from './icons.js';
+import { batteryGlyph, SVG_ICONS } from './icons.js';
 import { activitiesManager } from './activities.js';
+import { selectCompactActivity, type CompactActivityCandidate } from './compact-slots.js';
+import { formatClockTime } from './time-format.js';
 import {
   STORAGE_KEYS,
   mergeMeters,
@@ -53,6 +55,12 @@ function $(id: string): HTMLElement {
 }
 
 const isl = $('isl');
+// Set once the live pages mount; renderCompact can run before that during startup
+let compactLyric: () => string = () => '';
+// The compact title is measured mid-morph on state changes; refit once the shell settles
+isl.addEventListener('transitionend', e => {
+  if (e.target === isl && (e.propertyName === 'width' || e.propertyName === 'height')) fitCompactTitle();
+});
 
 /* ================= Diffed DOM writes ================= */
 
@@ -72,11 +80,78 @@ function setMarkup(el: HTMLElement, html: string): void {
   el.innerHTML = html;
 }
 
-function setNode(el: HTMLElement, key: string, build: () => Node): void {
-  const marker = `node:${key}`;
-  if (slotMarkup.get(el) === marker) return;
-  slotMarkup.set(el, marker);
-  el.replaceChildren(build());
+interface CompactSlotRenderState {
+  key: string;
+  signature: string;
+  layer: HTMLElement;
+}
+
+const compactSlotState = new WeakMap<HTMLElement, CompactSlotRenderState>();
+
+function setCompactSlot(
+  slot: HTMLElement,
+  key: string,
+  signature: string,
+  build: () => HTMLElement,
+): void {
+  const previous = compactSlotState.get(slot);
+  if (previous?.key === key) {
+    if (previous.signature !== signature) {
+      previous.layer.replaceChildren(build());
+      previous.signature = signature;
+    }
+    return;
+  }
+
+  const layer = document.createElement('span');
+  layer.className = 'compact-slot current';
+  layer.append(build());
+
+  if (previous) {
+    previous.layer.classList.remove('current');
+    previous.layer.classList.add('leaving');
+    layer.classList.add('entering');
+    previous.layer.addEventListener('transitionend', () => previous.layer.remove(), { once: true });
+    window.setTimeout(() => previous.layer.remove(), 320);
+    requestAnimationFrame(() => layer.classList.remove('entering'));
+  }
+
+  slot.append(layer);
+  compactSlotState.set(slot, { key, signature, layer });
+}
+
+function compactText(text: string, className = ''): HTMLElement {
+  const span = document.createElement('span');
+  span.className = className;
+  span.textContent = text;
+  return span;
+}
+
+function compactMarkup(markup: string, className = ''): HTMLElement {
+  const span = document.createElement('span');
+  span.className = className;
+  span.innerHTML = markup;
+  return span;
+}
+
+function compactIndicator(
+  markup: string,
+  ariaLabel: string,
+  hasBackgroundActivity: boolean,
+): HTMLElement {
+  const indicator = compactMarkup(markup, 'compact-indicator');
+  indicator.setAttribute('role', 'img');
+  indicator.setAttribute(
+    'aria-label',
+    hasBackgroundActivity ? `${ariaLabel}, another activity is running` : ariaLabel,
+  );
+  if (hasBackgroundActivity) {
+    const dot = document.createElement('span');
+    dot.className = 'live-activity-dot';
+    dot.setAttribute('aria-hidden', 'true');
+    indicator.append(dot);
+  }
+  return indicator;
 }
 
 function runAction(action: Promise<unknown>, label: string): void {
@@ -130,7 +205,14 @@ let hoverInside = false;
 let nativeDragActive = false;
 let keyboardMode = false;
 let announcement: { text: string; until: number } | null = null;
-const externalActivities = new Map<string, { title: string; text: string; priority: number }>();
+interface ExternalActivityState {
+  title: string;
+  text: string;
+  priority: number;
+  type: string;
+  phase: string;
+}
+const externalActivities = new Map<string, ExternalActivityState>();
 
 function setState(next: IslandState): void {
   if (state === 'open' && next !== 'open' && isTauri()) runAction(invokeCommand('deactivate_island'), 'Restore desktop interaction');
@@ -195,6 +277,7 @@ isl.addEventListener('click', (e) => {
 
 mountExtensions();
 const live = mountLivePages(() => setState(state));
+compactLyric = live.compactLyric;
 const pages = Array.from(document.querySelectorAll<HTMLElement>('.page'));
 
 window.addEventListener('storage', event => {
@@ -363,32 +446,37 @@ function formatMs(ms: number): string {
   return `${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
 }
 
-function formatMediaDate(d = new Date()): string {
-  const weekday = d.toLocaleDateString('en-GB', { weekday: 'short' });
-  const day = d.getDate();
-  const month = d.toLocaleDateString('en-GB', { month: 'short' });
-  const year = d.getFullYear();
-  return `${weekday} ${day} ${month} ${year}`;
+function batteryAriaLabel(): string {
+  if (!powerState.hasBattery && powerState.statusKnown !== false) return 'No system battery';
+  if (powerState.statusKnown === false || powerState.percentKnown === false || !Number.isFinite(powerState.percent)) {
+    return 'Battery level unavailable';
+  }
+  return `Battery ${Math.max(0, Math.min(100, Math.round(powerState.percent)))} percent${powerState.charging ? ', charging' : ''}`;
 }
 
-function formatMediaTime(d = new Date()): string {
-  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+function buildBatteryStatus(): HTMLElement {
+  const status = compactMarkup(batteryGlyph(
+    powerState.percent,
+    powerState.charging,
+    powerState.percentKnown !== false && powerState.statusKnown !== false,
+    powerState.hasBattery,
+  ), 'battery-status');
+  status.setAttribute('role', 'img');
+  status.setAttribute('aria-label', batteryAriaLabel());
+  return status;
 }
 
 function renderMediaHeader(): void {
-  const dateEl = document.getElementById('mediaDate');
-  const timeEl = document.getElementById('mediaTime');
   const badgeEl = document.getElementById('mediaBattBadge');
-  const wavesEl = document.getElementById('mediaWaves');
-  const now = new Date();
-  if (dateEl) setText(dateEl, formatMediaDate(now));
-  if (timeEl) setText(timeEl, formatMediaTime(now));
-  if (badgeEl && !badgeEl.innerHTML) badgeEl.innerHTML = SVG_ICONS.bolt;
-  if (wavesEl && !wavesEl.innerHTML) wavesEl.innerHTML = SVG_ICONS.eq;
-}
-
-function formatIdleTime(now = new Date()): string {
-  return now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+  if (!badgeEl) return;
+  setMarkup(badgeEl, batteryGlyph(
+    powerState.percent,
+    powerState.charging,
+    powerState.percentKnown !== false && powerState.statusKnown !== false,
+    powerState.hasBattery,
+  ));
+  badgeEl.setAttribute('role', 'img');
+  badgeEl.setAttribute('aria-label', batteryAriaLabel());
 }
 
 function setAccentColor(rgb: { r: number; g: number; b: number } | null): void {
@@ -548,66 +636,216 @@ new ResizeObserver(fitTitle).observe($('title'));
 
 /* ================= Compact View Arbitration ================= */
 
+function compactTitle(text: string): HTMLElement {
+  const title = document.createElement('span');
+  title.className = 'compact-title';
+  const track = compactText(text, 'compact-title-track');
+  title.append(track);
+  return title;
+}
+
+/** Writes an accessible label only when it changes, so the 200ms tick doesn't churn the tree. */
+function setLabel(el: Element, label: string): void {
+  if (el.getAttribute('aria-label') !== label) el.setAttribute('aria-label', label);
+}
+
+function fitCompactTitle(): void {
+  requestAnimationFrame(() => {
+    // The leaving layer is still in the DOM during the cross-fade; measure the current one
+    const title = document.querySelector<HTMLElement>('#cc .compact-slot.current .compact-title');
+    const track = title?.querySelector<HTMLElement>('.compact-title-track');
+    if (!title || !track) return;
+    const overflow = Math.max(0, track.scrollWidth - title.clientWidth);
+    title.classList.toggle('scroll', overflow > 2);
+    title.style.setProperty('--compact-shift', `-${overflow}px`);
+  });
+}
+
+function compactTextIndicator(
+  text: string,
+  ariaLabel: string,
+  hasBackgroundActivity: boolean,
+): HTMLElement {
+  const indicator = document.createElement('span');
+  indicator.className = 'compact-indicator';
+  indicator.setAttribute('role', 'img');
+  indicator.setAttribute(
+    'aria-label',
+    hasBackgroundActivity ? `${ariaLabel}, another activity is running` : ariaLabel,
+  );
+  indicator.append(compactText(text, 'compact-metric'));
+  if (hasBackgroundActivity) {
+    const dot = document.createElement('span');
+    dot.className = 'live-activity-dot';
+    dot.setAttribute('aria-hidden', 'true');
+    indicator.append(dot);
+  }
+  return indicator;
+}
+
 function renderCompact(): void {
   const cl = $('cl');
   const cc = $('cc');
   const cr = $('cr');
+  const compact = document.querySelector<HTMLElement>('.compact')!;
 
   if (announcement && announcement.until > Date.now() && state === 'peek') {
-    setMarkup(cl, SVG_ICONS.note);
-    setText(cc, announcement.text);
-    setText(cr, '');
-    return;
-  }
-  const external = [...externalActivities.values()].sort((a, b) => b.priority - a.priority)[0];
-  const actCompact = activitiesManager.getCompactView();
-
-  if (external && external.priority > (actCompact?.priority ?? 0)) {
-    setMarkup(cl, SVG_ICONS.timer);
-    setText(cc, state === 'peek' ? external.title : '');
-    setText(cr, external.text);
-    return;
-  }
-  // Priority stack: Active timer/stopwatch/pomodoro overrides media playback
-  if (actCompact && (!mediaState.active || actCompact.priority > 50)) {
-    setMarkup(cl, actCompact.leftHtml);
-    setText(cc, state === 'peek' ? actCompact.centerText : '');
-    setMarkup(cr, actCompact.rightHtml);
+    setCompactSlot(cl, 'announcement:leading', 'note', () => compactMarkup(SVG_ICONS.note));
+    setCompactSlot(cc, 'announcement:title', announcement.text, () => compactTitle(announcement!.text));
+    setCompactSlot(cr, 'announcement:trailing', 'notification', () => compactIndicator(
+      '<span class="peek-indicator"></span>',
+      'Notification',
+      false,
+    ));
+    setLabel(compact, announcement.text);
+    fitCompactTitle();
     return;
   }
 
-  const showLyrics = livePreferences.compactContent === 'lyrics' && livePreferences.lyricsOpen && mediaState.active;
+  const timerActivities = activitiesManager.getAll().filter(activity => activity.active);
+  const externalEntries = [...externalActivities.entries()];
+  const candidates: CompactActivityCandidate[] = [
+    ...externalEntries.map(([id, activity]) => ({
+      id: `external:${id}`,
+      kind: activity.type === 'dictation' ? 'dictation' as const : 'external' as const,
+      title: activity.title,
+      priority: activity.priority,
+      active: true,
+      running: activity.type !== 'dictation' || activity.phase === 'recording',
+    })),
+    {
+      id: 'media',
+      kind: 'media',
+      title: mediaState.title || 'Media',
+      // Playing media outranks timers and downloads; paused media yields to everything running
+      priority: mediaState.playing ? 85 : 40,
+      active: mediaState.active,
+      running: mediaState.playing,
+    },
+    ...timerActivities.map(activity => ({
+      id: `timer:${activity.id}`,
+      kind: 'timer' as const,
+      title: activity.title,
+      priority: activity.paused ? activity.priority - 30 : activity.priority,
+      active: true,
+      running: !activity.paused,
+    })),
+  ];
+  const selection = selectCompactActivity(candidates);
+  const primary = selection.primary;
 
-  if (state === 'idle' && !showLyrics) {
-    setMarkup(cl, `<span class="battery-badge">${SVG_ICONS.bolt}</span>`);
-    setText(cc, formatIdleTime());
-    setMarkup(cr, SVG_ICONS.eq);
-    return;
-  }
-
-  if (mediaState.active) {
-    const artwork = currentArtwork;
-    if (artwork) {
-      setNode(cl, `art:${artwork}`, () => {
-        const miniArt = document.createElement('span');
-        miniArt.className = 'mini-art';
-        miniArt.style.backgroundImage = `url("${artwork}")`;
-        return miniArt;
-      });
+  if (!primary) {
+    const time = formatClockTime();
+    if (state === 'peek') {
+      setCompactSlot(cl, 'idle-peek:leading', 'clock', () => compactMarkup(SVG_ICONS.clock));
+      setCompactSlot(cc, 'idle-peek:title', time, () => compactTitle(time));
+      fitCompactTitle();
     } else {
-      setMarkup(cl, SVG_ICONS.note);
+      setCompactSlot(cl, 'idle:leading', time, () => compactText(time, 'compact-time'));
+      setCompactSlot(cc, 'idle:center', '', () => compactText(''));
     }
-    setText(cc, livePreferences.compactContent === 'lyrics' ? live.compactLyric() || mediaState.title : mediaState.title);
-    setMarkup(cr, mediaState.playing ? SVG_ICONS.eq : SVG_ICONS.pause);
-  } else {
-    setMarkup(cl, `<span class="battery-badge">${SVG_ICONS.bolt}</span>`);
-    setText(cc, new Date().toLocaleDateString([], {
-      weekday: 'short',
-      day: 'numeric',
-      month: 'short',
-    }));
-    setText(cr, powerState.hasBattery && powerState.percentKnown !== false ? `${powerState.percent}%` : '');
+    const batteryLabel = batteryAriaLabel();
+    // Desktops without a battery show only the time
+    if (!powerState.hasBattery && powerState.statusKnown !== false) {
+      setCompactSlot(cr, 'idle:trailing-empty', '', () => compactText(''));
+      setLabel(compact, `Time ${time}`);
+    } else {
+      setCompactSlot(cr, 'idle:trailing', `${batteryLabel}:${powerState.percent}`, buildBatteryStatus);
+      setLabel(compact, `Time ${time}. ${batteryLabel}`);
+    }
+    return;
   }
+
+  // Media can show the current lyric line instead of the track title (Settings > Collapsed content)
+  const lyric = primary.kind === 'media' && livePreferences.compactContent === 'lyrics' ? compactLyric() : '';
+  const title = lyric || primary.title;
+  if (state === 'peek') {
+    setCompactSlot(cc, `${primary.id}:title`, title, () => compactTitle(title));
+    fitCompactTitle();
+  } else {
+    setCompactSlot(cc, 'activity:center', '', () => compactText(''));
+  }
+
+  if (primary.kind === 'media') {
+    const artwork = currentArtwork;
+    setCompactSlot(cl, 'media:leading', artwork || 'note', () => {
+      if (!artwork) return compactMarkup(SVG_ICONS.note);
+      const miniArt = document.createElement('span');
+      miniArt.className = 'mini-art';
+      miniArt.style.backgroundImage = `url("${artwork}")`;
+      miniArt.setAttribute('role', 'img');
+      miniArt.setAttribute('aria-label', 'Album artwork');
+      return miniArt;
+    });
+    const mediaLabel = mediaState.playing ? 'Media playing' : 'Media paused';
+    setCompactSlot(
+      cr,
+      'media:trailing',
+      `${mediaState.playing}:${selection.hasBackgroundActivity}`,
+      () => compactIndicator(
+        mediaState.playing ? SVG_ICONS.eqPlaying : SVG_ICONS.eq,
+        mediaLabel,
+        selection.hasBackgroundActivity,
+      ),
+    );
+    setLabel(compact, `${mediaLabel}: ${title}`);
+    return;
+  }
+
+  if (primary.kind === 'timer') {
+    const activity = timerActivities.find(item => `timer:${item.id}` === primary.id)!;
+    const icon = activity.type === 'stopwatch'
+      ? SVG_ICONS.stopwatch
+      : activity.type === 'pomodoro'
+        ? SVG_ICONS.pomodoro
+        : SVG_ICONS.timer;
+    const remaining = activitiesManager.formatRemaining(activity);
+    setCompactSlot(cl, `${primary.id}:leading`, activity.type, () => compactMarkup(icon));
+    setCompactSlot(
+      cr,
+      `${primary.id}:trailing`,
+      `${remaining}:${selection.hasBackgroundActivity}`,
+      () => compactTextIndicator(
+        remaining,
+        `${title}, ${remaining}${activity.paused ? ', paused' : ' remaining'}`,
+        selection.hasBackgroundActivity,
+      ),
+    );
+    setLabel(compact, `${title}, ${remaining}${activity.paused ? ', paused' : ' remaining'}`);
+    return;
+  }
+
+  const externalId = primary.id.slice('external:'.length);
+  const external = externalActivities.get(externalId)!;
+  if (primary.kind === 'dictation') {
+    const recording = external.phase === 'recording';
+    setCompactSlot(cl, 'dictation:leading', 'mic', () => compactMarkup(SVG_ICONS.mic));
+    setCompactSlot(
+      cr,
+      'dictation:trailing',
+      `${recording}:${selection.hasBackgroundActivity}`,
+      () => compactIndicator(
+        `<span class="dictation-level${recording ? ' recording' : ''}" aria-hidden="true"><i></i><i></i><i></i></span>`,
+        recording ? 'Dictation recording' : 'Dictation active',
+        selection.hasBackgroundActivity,
+      ),
+    );
+    setLabel(compact, recording ? 'Dictation recording' : 'Dictation active');
+    return;
+  }
+
+  setCompactSlot(cl, `${primary.id}:leading`, external.type, () => compactMarkup(SVG_ICONS.external));
+  setCompactSlot(
+    cr,
+    `${primary.id}:trailing`,
+    `${external.text}:${selection.hasBackgroundActivity}`,
+    () => compactTextIndicator(
+      external.text,
+      `${external.title}, ${external.text}`,
+      selection.hasBackgroundActivity,
+    ),
+  );
+  setLabel(compact, `${external.title}, ${external.text}`);
 }
 
 /* ================= Today & Battery ================= */
@@ -621,10 +859,7 @@ let powerState: PowerState = {
 
 function renderToday(): void {
   const now = new Date();
-  $('clock').textContent = now.toLocaleTimeString([], {
-    hour: '2-digit',
-    minute: '2-digit',
-  });
+  $('clock').textContent = formatClockTime(now);
   $('date').textContent = now.toLocaleDateString([], {
     weekday: 'long',
     day: 'numeric',
@@ -893,7 +1128,13 @@ function showAnnouncement(text:string):void {
 window.addEventListener('tuck-activity',event=>{
   const detail=(event as CustomEvent).detail;
   if(!detail||typeof detail.id!=='string'||typeof detail.title!=='string'||typeof detail.text!=='string'||!Number.isFinite(detail.priority))return;
-  if(detail.active)externalActivities.set(detail.id,{title:detail.title.slice(0,80),text:detail.text.slice(0,80),priority:Math.max(0,Math.min(100,detail.priority))});else externalActivities.delete(detail.id);
+  if(detail.active)externalActivities.set(detail.id,{
+    title:detail.title.slice(0,80),
+    text:detail.text.slice(0,80),
+    priority:Math.max(0,Math.min(100,detail.priority)),
+    type:typeof detail.type==='string'?detail.type:'external',
+    phase:typeof detail.phase==='string'?detail.phase:'active',
+  });else externalActivities.delete(detail.id);
   renderCompact();
 });
 window.addEventListener('tuck-preview',event=>{

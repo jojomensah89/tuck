@@ -6,6 +6,7 @@ pub mod installed_usage;
 pub mod lifecycle;
 pub mod lyrics;
 pub mod media;
+pub mod osd_flyout;
 mod service_preferences;
 pub mod system;
 pub mod telemetry;
@@ -112,6 +113,10 @@ pub fn run() {
             extensions::notification_access,
             usage::usage_now,
             usage::set_secret,
+            desktop_signals::volume_step,
+            desktop_signals::volume_toggle_mute,
+            osd_flyout::get_hide_system_flyout,
+            osd_flyout::set_hide_system_flyout,
             system::quick_action,
             system::open_settings_cmd,
             system::open_island_cmd,
@@ -213,6 +218,7 @@ pub fn run() {
             media::start(handle.clone());
             lyrics::start(&handle);
             telemetry::start(handle.clone());
+            osd_flyout::start(handle.clone());
             desktop_signals::start(handle.clone());
             visualizer::start(handle.clone());
             system::start(handle, hit_state_setup);
@@ -226,6 +232,7 @@ pub fn run() {
                 lifecycle::stop();
                 media::stop();
                 desktop_signals::stop();
+                osd_flyout::shutdown();
                 app.state::<Arc<dictation::DictationService>>().shutdown();
                 clipboard_history::stop(
                     &app.state::<Arc<clipboard_history::ClipboardHistoryService>>(),

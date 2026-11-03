@@ -540,6 +540,8 @@ mod native {
                     LRESULT(0)
                 }
                 value if value == context.taskbar_created => {
+                    // Explorer restarted: its flyout host is new and visible again.
+                    crate::osd_flyout::reapply();
                     context.refresh_layout();
                     LRESULT(0)
                 }

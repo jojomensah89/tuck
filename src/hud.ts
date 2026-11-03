@@ -96,6 +96,70 @@ export function hudLabel(reading: HudReading): string {
   return reading.muted ? `${name} muted, ${reading.level}%` : `${name} ${reading.level}%`;
 }
 
+/** Where the island goes when a peek (HUD or announcement) ends */
+export function peekReturnTarget(context: {
+  /** The island was open before the peek took over */
+  returnOpen: boolean;
+  hover: boolean;
+  pinned: boolean;
+  dragging: boolean;
+}): 'open' | 'peek' | 'idle' {
+  if (context.returnOpen && (context.hover || context.pinned)) return 'open';
+  // Hovering stays at peek so scrolling never opens the island
+  return context.hover || context.dragging ? 'peek' : 'idle';
+}
+
+/** A charger change ramps the panel's brightness for a few seconds on many laptops */
+export const CHARGER_RAMP_MS = 8000;
+
+/**
+ * Whether a native level event gets a HUD: the Volume and brightness HUD setting
+ * must be on, and brightness is ignored right after a charger change. Wheel and
+ * middle-click feedback on the island itself does not pass through here.
+ */
+export function levelEventShowsHud(
+  reading: HudReading,
+  enabled: boolean,
+  now: number,
+  lastChargerChange: number | null,
+): boolean {
+  if (!enabled) return false;
+  return reading.kind !== 'brightness'
+    || lastChargerChange === null
+    || now - lastChargerChange >= CHARGER_RAMP_MS;
+}
+
+/** Announcements older than this are no longer worth interrupting anything for */
+const ANNOUNCEMENT_QUEUE_MAX_AGE_MS = 15000;
+const ANNOUNCEMENT_QUEUE_LIMIT = 3;
+
+/**
+ * Text that arrived while the HUD owned the shell, or that the HUD interrupted.
+ * It is shown once the HUD settles, oldest first.
+ */
+export class AnnouncementQueue {
+  private items: { text: string; at: number }[] = [];
+
+  /** Waits behind whatever is already queued */
+  add(text: string, now: number): void {
+    if (this.items.some(item => item.text === text)) return;
+    this.items.push({ text, at: now });
+    if (this.items.length > ANNOUNCEMENT_QUEUE_LIMIT) this.items.shift();
+  }
+
+  /** The announcement the HUD just interrupted goes first */
+  addFirst(text: string, now: number): void {
+    this.items = this.items.filter(item => item.text !== text);
+    this.items.unshift({ text, at: now });
+    if (this.items.length > ANNOUNCEMENT_QUEUE_LIMIT) this.items.pop();
+  }
+
+  next(now: number): string | null {
+    this.items = this.items.filter(item => now - item.at < ANNOUNCEMENT_QUEUE_MAX_AGE_MS);
+    return this.items.shift()?.text ?? null;
+  }
+}
+
 /**
  * Visibility and announcement timing. Each change re-arms the dismiss deadline;
  * the live region only gets the value once changes pause, and the same value is

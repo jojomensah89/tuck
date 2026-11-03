@@ -26,9 +26,12 @@ import { activityProgress, batteryTone, createRing, formatSpan } from './rings.j
 import { selectCompactActivity, type CompactActivityCandidate } from './compact-slots.js';
 import { formatClockTime } from './time-format.js';
 import {
+  AnnouncementQueue,
   HUD_ANNOUNCE_QUIET_MS,
   HudModel,
   hudLabel,
+  levelEventShowsHud,
+  peekReturnTarget,
   readHudPayload,
   stepVolume,
   volumeGlyph,
@@ -216,6 +219,10 @@ let nativeDragActive = false;
 let keyboardMode = false;
 let announcement: { text: string; until: number } | null = null;
 const hud = new HudModel();
+const pendingAnnouncements = new AnnouncementQueue();
+/** The current peek interrupted the open island, which comes back when the peek ends */
+let returnOpenAfterPeek = false;
+let lastChargerChange: number | null = null;
 let hudTimer = 0;
 let hudAnnounceTimer = 0;
 interface ExternalActivityState {
@@ -230,6 +237,7 @@ const externalActivities = new Map<string, ExternalActivityState>();
 function setState(next: IslandState): void {
   if (state === 'open' && next !== 'open' && isTauri()) runAction(invokeCommand('deactivate_island'), 'Restore desktop interaction');
   if (next !== 'open') keyboardMode = false;
+  if (next !== 'peek') returnOpenAfterPeek = false;
   state = next;
   const [w, h] = next === 'open' ? [livePreferences.openWidth, 210] : SIZES[next];
   isl.style.setProperty('--w', `${w}px`);
@@ -988,13 +996,25 @@ function setupQuickActions(): void {
 
 }
 
-function showAnnouncement(text:string):void {
-  $('statusMessage').textContent=text;
-  const returnOpen = state === 'open';
-  if(returnOpen && (rail.active() !== 'media' || keyboardMode))return;
+/** A peek ended: next queued announcement first, then back to where the island belongs */
+function finishPeek(): void {
+  const next = pendingAnnouncements.next(Date.now());
+  if (next) { showAnnouncement(next, false); return; }
+  if (state === 'open') return;
+  setState(peekReturnTarget({ returnOpen: returnOpenAfterPeek, hover: hoverInside, pinned: livePreferences.pinned, dragging: nativeDragActive }));
+}
+
+function showAnnouncement(text:string, speak=true):void {
+  // Screen readers hear it right away, even when the text has to wait for the HUD
+  if(speak)$('statusMessage').textContent=text;
+  const wasOpen = state === 'open';
+  if(wasOpen && (rail.active() !== 'media' || keyboardMode))return;
+  if(wasOpen)returnOpenAfterPeek=true;
+  // The HUD owns the shell until it times out; the text follows it
+  if(hud.visible(Date.now())){pendingAnnouncements.add(text,Date.now());return;}
   announcement={text:text.slice(0,180),until:Date.now()+3500};
   window.clearTimeout(closeTimer);setState('peek');
-  closeTimer=window.setTimeout(()=>{announcement=null;setState(returnOpen && (hoverInside || livePreferences.pinned) ? 'open' : hoverInside?'peek':'idle');},3500);
+  closeTimer=window.setTimeout(()=>{announcement=null;finishPeek();},3500);
 }
 
 /* ================= Volume & Brightness HUD ================= */
@@ -1028,15 +1048,16 @@ function renderHud(reading: HudReading, compact: HTMLElement): void {
 function settleHud(): void {
   hud.dismiss();
   window.clearTimeout(hudAnnounceTimer);
-  if (state === 'open') return;
-  // Back to whatever the pointer says; hovering stays at peek so scrolling never opens the island
-  setState(hoverInside || nativeDragActive ? 'peek' : 'idle');
+  finishPeek();
 }
 
 function showHud(reading: HudReading): void {
   // The open island is already in use; it keeps its content
   if (state === 'open') return;
   const now = Date.now();
+  // An interrupted announcement gets its full time back once the HUD settles
+  if (announcement && announcement.until > now) pendingAnnouncements.addFirst(announcement.text, now);
+  announcement = null;
   hud.show(reading, now);
   window.clearTimeout(openTimer);
   window.clearTimeout(closeTimer);
@@ -1125,19 +1146,21 @@ void listenToEvent<PowerState>('power', (payload) => {
   const previous = powerState;
   powerState = payload;
   renderPower();
+  if (previous.statusKnown && payload.statusKnown && previous.acConnected !== payload.acConnected) lastChargerChange = Date.now();
   if (livePreferences.desktopPeeks && previous.statusKnown && payload.statusKnown && previous.acConnected !== payload.acConnected) showAnnouncement(payload.acConnected ? 'Charger connected' : 'Charger disconnected');
 });
 void listenToEvent<{title: string; text: string}>('desktop-peek', payload => {
   if (livePreferences.desktopPeeks && typeof payload?.title === 'string' && typeof payload.text === 'string') showAnnouncement(`${payload.title}: ${payload.text}`);
 });
-// The HUD is always on, independent of the System peeks setting
 void listenToEvent<unknown>('system-level', payload => {
   const reading = readHudPayload(payload);
-  if (reading) showHud(reading);
+  if (reading && levelEventShowsHud(reading, livePreferences.levelHud, Date.now(), lastChargerChange)) showHud(reading);
 });
-void listenToEvent<{ state?: string; message?: string | null }>('system-flyout', payload => {
-  if (payload?.state === 'unavailable' && typeof payload.message === 'string') showAnnouncement(payload.message);
-});
+interface FlyoutStatus { state?: string; message?: string | null }
+function announceFlyoutFailure(status: FlyoutStatus | null | undefined): void {
+  if (status?.state === 'unavailable' && typeof status.message === 'string') showAnnouncement(status.message);
+}
+void listenToEvent<FlyoutStatus>('system-flyout', announceFlyoutFailure);
 void listenToEvent<Meter[]>('usage', (payload) => onUsageUpdate(payload));
 
 /* ================= First Run & Browser Preview ================= */
@@ -1215,6 +1238,8 @@ if (isTauri()) {
   runAction(invokeCommand('set_fullscreen_auto_hide', { enabled: livePreferences.fullscreenAutoHide }), 'Apply fullscreen preference');
   runAction(invokeCommand<MediaState>('media_now').then(onMediaUpdate), 'Read media session');
   runAction(invokeCommand<boolean>('fullscreen_now').then(hidden => document.body.classList.toggle('fullscreen-hidden', hidden)), 'Read fullscreen state');
+  // A failure before this listener existed is still pending natively
+  runAction(invokeCommand<FlyoutStatus>('get_hide_system_flyout').then(announceFlyoutFailure), 'Read flyout state');
 }
 
 // Fetch initial usage if running in native app

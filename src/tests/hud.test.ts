@@ -1,10 +1,14 @@
 import './setup.js';
 import { describe, expect, it } from 'bun:test';
 import {
+  AnnouncementQueue,
+  CHARGER_RAMP_MS,
   HUD_ANNOUNCE_QUIET_MS,
   HUD_DISMISS_MS,
   HudModel,
   hudLabel,
+  levelEventShowsHud,
+  peekReturnTarget,
   readHudPayload,
   stepVolume,
   volumeGlyph,
@@ -13,6 +17,71 @@ import {
 
 const wheel = (deltaY: number, extra: Partial<{ deltaX: number; deltaMode: number; shiftKey: boolean }> = {}) => ({
   deltaX: 0, deltaMode: 0, shiftKey: false, deltaY, ...extra,
+});
+
+describe('peekReturnTarget', () => {
+  const context = { returnOpen: false, hover: false, pinned: false, dragging: false };
+
+  it('goes back to an open island the user is still using', () => {
+    expect(peekReturnTarget({ ...context, returnOpen: true, pinned: true })).toBe('open');
+    expect(peekReturnTarget({ ...context, returnOpen: true, hover: true })).toBe('open');
+  });
+
+  it('collapses an open island nobody is using', () => {
+    expect(peekReturnTarget({ ...context, returnOpen: true })).toBe('idle');
+  });
+
+  it('never opens an island that was collapsed, even when pinned or hovered', () => {
+    expect(peekReturnTarget({ ...context, hover: true })).toBe('peek');
+    expect(peekReturnTarget({ ...context, pinned: true })).toBe('idle');
+    expect(peekReturnTarget({ ...context, dragging: true })).toBe('peek');
+    expect(peekReturnTarget(context)).toBe('idle');
+  });
+});
+
+describe('levelEventShowsHud', () => {
+  const volume = { kind: 'volume', level: 40, muted: false } as const;
+  const brightness = { kind: 'brightness', level: 40, muted: false } as const;
+
+  it('follows the setting', () => {
+    expect(levelEventShowsHud(volume, true, 1000, null)).toBe(true);
+    expect(levelEventShowsHud(volume, false, 1000, null)).toBe(false);
+    expect(levelEventShowsHud(brightness, false, 1000, null)).toBe(false);
+  });
+
+  it('ignores brightness ramps right after a charger change, but not volume', () => {
+    expect(levelEventShowsHud(brightness, true, 5000, 1000)).toBe(false);
+    expect(levelEventShowsHud(brightness, true, 1000 + CHARGER_RAMP_MS, 1000)).toBe(true);
+    expect(levelEventShowsHud(volume, true, 1001, 1000)).toBe(true);
+  });
+});
+
+describe('AnnouncementQueue', () => {
+  it('releases text oldest first, once each', () => {
+    const queue = new AnnouncementQueue();
+    queue.add('first', 0);
+    queue.add('second', 0);
+    queue.add('first', 0);
+    expect(queue.next(10)).toBe('first');
+    expect(queue.next(10)).toBe('second');
+    expect(queue.next(10)).toBeNull();
+  });
+
+  it('puts an interrupted announcement ahead of what arrived later', () => {
+    const queue = new AnnouncementQueue();
+    queue.add('failure', 0);
+    queue.addFirst('caps lock', 0);
+    expect(queue.next(10)).toBe('caps lock');
+    expect(queue.next(10)).toBe('failure');
+  });
+
+  it('drops stale text and stays bounded', () => {
+    const queue = new AnnouncementQueue();
+    queue.add('old', 0);
+    expect(queue.next(60000)).toBeNull();
+    for (const text of ['a', 'b', 'c', 'd']) queue.add(text, 0);
+    expect(queue.next(10)).toBe('b');
+  });
 });
 
 describe('stepVolume', () => {

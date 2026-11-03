@@ -9,6 +9,8 @@ export interface LivePreferences {
   fullscreenAutoHide: boolean;
   compactContent: 'lyrics' | 'title'; lyricsOpen: boolean; openWidth: number;
   desktopPeeks: boolean;
+  /** Volume and brightness changes from outside the island show the HUD */
+  levelHud: boolean;
   /** Last open-island tab, restored on the next launch */
   lastTab: TabId;
   /** Bumped when a saved default changes meaning; 2 = collapse delay defaults to instant. */
@@ -18,7 +20,7 @@ export const PREFS_VERSION = 2;
 export const DEFAULT_LIVE_PREFERENCES: LivePreferences = {
   hoverExpand: true, openDelayMs: 180, closeDelayMs: 0, pinned: false,
   compactContent: 'lyrics', lyricsOpen: true, openWidth: 500,
-  desktopPeeks: true, fullscreenAutoHide: true, lastTab: DEFAULT_TAB, prefsVersion: PREFS_VERSION,
+  desktopPeeks: true, levelHud: true, fullscreenAutoHide: true, lastTab: DEFAULT_TAB, prefsVersion: PREFS_VERSION,
 };
 export function normalizePreferences(input: unknown): LivePreferences {
   const p = input && typeof input === 'object' ? input as Partial<LivePreferences> : {};
@@ -29,6 +31,7 @@ export function normalizePreferences(input: unknown): LivePreferences {
     pinned: p.pinned === true, lyricsOpen: p.lyricsOpen !== false,
     compactContent: p.compactContent === 'title' ? 'title' : 'lyrics',
     desktopPeeks: p.desktopPeeks !== false,
+    levelHud: p.levelHud !== false,
     fullscreenAutoHide: p.fullscreenAutoHide !== false,
     openDelayMs: bounded(p.openDelayMs, 180, 0, 2000),
     // Settings saved before version 2 that still hold the old 900ms default move to instant once

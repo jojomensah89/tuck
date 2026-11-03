@@ -153,7 +153,7 @@ try {
       if(command==='volume_step')return {kind:'volume',level:40+args.delta,muted:false};
       if(command==='volume_toggle_mute')return {kind:'volume',level:40,muted:true};
       if(command==='get_hide_system_flyout')return {enabled:false,state:'off',message:null};
-      if(command==='set_hide_system_flyout')return {enabled:false,state:'unavailable',message:"Couldn't find the Windows flyout on this version of Windows, so it stays visible"};
+      if(command==='set_hide_system_flyout')return {enabled:false,state:'unavailable',message:"Turned off: Windows showed its volume flyout several times, but Tuck couldn't find it on this version of Windows"};
       return null;
     }};
   });
@@ -189,6 +189,46 @@ try {
   assert.equal(await native.locator('#isl').getAttribute('data-state'),'peek','Scrolling never opens the island');
   await native.waitForFunction(()=>document.getElementById('isl').dataset.state==='idle',null,{timeout:3000});
   await native.mouse.move(0, 220);
+  // The flyout failure follows the HUD that triggered it (native emits the level first)
+  const flyoutFailure = {enabled:false,state:'unavailable',message:'Turned off: flyout not found'};
+  await native.evaluate(failure=>{window.__emitNative('system-level',{kind:'volume',level:50,muted:false});window.__emitNative('system-flyout',failure);},flyoutFailure);
+  assert.deepEqual(await hudState(),['peek','volume'],'The HUD comes first');
+  assert.equal(await native.locator('#statusMessage').textContent(),flyoutFailure.message,'Screen readers hear the failure immediately');
+  await native.locator('#cc .compact-slot.current').filter({hasText:flyoutFailure.message}).waitFor({timeout:3000});
+  assert.deepEqual(await hudState(),['peek',null],'The queued failure takes over once the HUD settles');
+  await native.waitForFunction(()=>document.getElementById('isl').dataset.state==='idle',null,{timeout:5000});
+  const setLive = update => native.evaluate(([key,update])=>{localStorage.setItem(key,JSON.stringify({...JSON.parse(localStorage.getItem(key)||'{}'),...update}));window.dispatchEvent(new StorageEvent('storage',{key}));},['tuck.live.v2',update]);
+  const toIdle = () => native.waitForFunction(()=>document.getElementById('isl').dataset.state==='idle',null,{timeout:6000});
+  // The HUD setting silences native level events; scrolling over the island still shows the level
+  await setLive({levelHud:false});
+  await native.evaluate(()=>window.__emitNative('system-level',{kind:'volume',level:61,muted:false}));
+  assert.equal(await native.locator('#isl').getAttribute('data-state'),'idle','No HUD with the setting off');
+  await native.mouse.move(pill.x + pill.width / 2, pill.y + pill.height / 2);
+  await native.mouse.wheel(0,-100);
+  await native.locator('.compact[aria-label="Volume 42%"]').waitFor({timeout:2000});
+  await native.mouse.move(0, 220);
+  await toIdle();
+  await setLive({levelHud:true});
+  // A brightness ramp right after a charger change stays quiet
+  const power = {statusKnown:true,percentKnown:true,hasBattery:true,percent:80,minutesLeft:null};
+  await native.evaluate(power=>{window.__emitNative('power',{...power,acConnected:false,charging:false});window.__emitNative('power',{...power,acConnected:true,charging:true});window.__emitNative('system-level',{kind:'brightness',level:33,muted:false});},power);
+  assert.equal(await native.locator('#isl').getAttribute('data-hud'),null,'No brightness HUD during a charger ramp');
+  await toIdle();
+  // Caps Lock then a volume key over a pinned open island: both peeks pass and it comes back open
+  await setLive({pinned:true});
+  await native.locator('#isl').click();
+  assert.equal(await native.locator('#isl').getAttribute('data-state'),'open');
+  await native.evaluate(()=>window.__emitNative('desktop-peek',{title:'Caps Lock',text:'On'}));
+  assert.equal(await native.locator('#isl').getAttribute('data-state'),'peek');
+  await native.evaluate(()=>window.__emitNative('system-level',{kind:'volume',level:55,muted:false}));
+  assert.deepEqual(await hudState(),['peek','volume'],'The HUD interrupts the announcement');
+  await native.locator('#cc .compact-slot.current').filter({hasText:'Caps Lock: On'}).waitFor({timeout:3000});
+  await native.waitForFunction(()=>document.getElementById('isl').dataset.state==='open',null,{timeout:6000});
+  await setLive({pinned:false});
+  await native.evaluate(()=>window.__emitNative('hover',false));
+  await toIdle();
+  await native.mouse.move(0, 220);
+  const volumeCallsBeforeOpen = (await volumeCalls()).length;
   await native.evaluate(()=>window.__emitNative('open-island',null));
   await native.getByRole('tab',{name:'Tools',exact:true}).click();
   assert.equal(await native.locator('.tab-panel.on').getAttribute('data-tab'),'tools');
@@ -347,7 +387,7 @@ try {
   assert.ok(await panelTop() > 0,'Moving back lands on the last section');
   await native.mouse.wheel(120,0); await native.waitForTimeout(400);
   assert.equal(await activeTab(),'today','Horizontal wheel switches tabs');
-  assert.equal((await volumeCalls()).length,3,'Wheel over the open island never changes the volume');
+  assert.equal((await volumeCalls()).length,volumeCallsBeforeOpen,'Wheel over the open island never changes the volume');
   // Pointer drag swipe: dragging left moves to the next tab
   const area = await native.locator('.pages-container').boundingBox();
   await native.mouse.move(area.x + area.width - 40, area.y + 60);
@@ -382,12 +422,13 @@ try {
   // Hiding the Windows flyout is opt-in and reports when it turned itself off
   await native.locator('#nav a[data-view="island"]').click();
   await native.locator('#row-hideSystemFlyout').waitFor({state:'visible'});
+  assert.equal(await native.locator('#levelHud').isChecked(),true,'The HUD is on by default');
   assert.equal(await native.locator('#hideSystemFlyout').isChecked(),false,'Off by default');
   await native.locator('#hideSystemFlyout').click();
-  await native.locator('#flyoutStatus').filter({hasText:'stays visible'}).waitFor({timeout:2000});
+  await native.locator('#flyoutStatus').filter({hasText:'Turned off'}).waitFor({timeout:2000});
   assert.equal(await native.locator('#hideSystemFlyout').isChecked(),false,'An unavailable flyout turns the setting back off');
   assert.equal(await native.locator('#flyoutStatus').getAttribute('data-kind'),'error');
   assert.deepEqual(nativeErrors,[]);
-  console.log('UI smoke passed: geometry, tab rail (keys, wheel edges, swipe, memory), accessibility, keyboard seeking, timers, usage rings, icon buttons, persistence errors, volume/brightness HUD, wheel and middle-click volume, flyout opt-in, native-bridge call priority, shelf, focused radio updates, drag hold and previews.');
+  console.log('UI smoke passed: geometry, tab rail (keys, wheel edges, swipe, memory), accessibility, keyboard seeking, timers, usage rings, icon buttons, persistence errors, volume/brightness HUD, wheel and middle-click volume, queued flyout failure, return to open after HUD, HUD setting, charger-ramp brightness, flyout opt-in, native-bridge call priority, shelf, focused radio updates, drag hold and previews.');
 } finally { await browser.close(); }
 

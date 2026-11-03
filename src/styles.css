@@ -391,6 +391,11 @@ body.fullscreen-hidden .island {
   stroke-width: 1.5;
 }
 
+/* Level unknown: dashed outline so it never reads as an empty battery */
+.battery-glyph.unknown .battery-outline {
+  stroke-dasharray: 2 2;
+}
+
 .battery-terminal,
 .battery-fill {
   fill: currentColor;

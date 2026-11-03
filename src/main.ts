@@ -55,6 +55,12 @@ function $(id: string): HTMLElement {
 }
 
 const isl = $('isl');
+// Set once the live pages mount; renderCompact can run before that during startup
+let compactLyric: () => string = () => '';
+// The compact title is measured mid-morph on state changes; refit once the shell settles
+isl.addEventListener('transitionend', e => {
+  if (e.target === isl && (e.propertyName === 'width' || e.propertyName === 'height')) fitCompactTitle();
+});
 
 /* ================= Diffed DOM writes ================= */
 
@@ -271,6 +277,7 @@ isl.addEventListener('click', (e) => {
 
 mountExtensions();
 const live = mountLivePages(() => setState(state));
+compactLyric = live.compactLyric;
 const pages = Array.from(document.querySelectorAll<HTMLElement>('.page'));
 
 window.addEventListener('storage', event => {
@@ -441,9 +448,10 @@ function formatMs(ms: number): string {
 
 function batteryAriaLabel(): string {
   if (!powerState.hasBattery && powerState.statusKnown !== false) return 'No system battery';
-  if (powerState.statusKnown === false || powerState.percentKnown === false) return 'Battery level unavailable';
-  const percent = Number.isFinite(powerState.percent) ? powerState.percent : 0;
-  return `Battery ${Math.max(0, Math.min(100, Math.round(percent)))} percent${powerState.charging ? ', charging' : ''}`;
+  if (powerState.statusKnown === false || powerState.percentKnown === false || !Number.isFinite(powerState.percent)) {
+    return 'Battery level unavailable';
+  }
+  return `Battery ${Math.max(0, Math.min(100, Math.round(powerState.percent)))} percent${powerState.charging ? ', charging' : ''}`;
 }
 
 function buildBatteryStatus(): HTMLElement {
@@ -636,9 +644,15 @@ function compactTitle(text: string): HTMLElement {
   return title;
 }
 
+/** Writes an accessible label only when it changes, so the 200ms tick doesn't churn the tree. */
+function setLabel(el: Element, label: string): void {
+  if (el.getAttribute('aria-label') !== label) el.setAttribute('aria-label', label);
+}
+
 function fitCompactTitle(): void {
   requestAnimationFrame(() => {
-    const title = document.querySelector<HTMLElement>('#cc .compact-title');
+    // The leaving layer is still in the DOM during the cross-fade; measure the current one
+    const title = document.querySelector<HTMLElement>('#cc .compact-slot.current .compact-title');
     const track = title?.querySelector<HTMLElement>('.compact-title-track');
     if (!title || !track) return;
     const overflow = Math.max(0, track.scrollWidth - title.clientWidth);
@@ -683,7 +697,7 @@ function renderCompact(): void {
       'Notification',
       false,
     ));
-    compact.setAttribute('aria-label', announcement.text);
+    setLabel(compact, announcement.text);
     fitCompactTitle();
     return;
   }
@@ -703,7 +717,8 @@ function renderCompact(): void {
       id: 'media',
       kind: 'media',
       title: mediaState.title || 'Media',
-      priority: 50,
+      // Playing media outranks timers and downloads; paused media yields to everything running
+      priority: mediaState.playing ? 85 : 40,
       active: mediaState.active,
       running: mediaState.playing,
     },
@@ -726,20 +741,24 @@ function renderCompact(): void {
       setCompactSlot(cc, 'idle-peek:title', time, () => compactTitle(time));
       fitCompactTitle();
     } else {
-      setCompactSlot(cl, 'idle:leading', time, () => {
-        const timeElement = compactText(time, 'compact-time');
-        timeElement.setAttribute('aria-label', `Time ${time}`);
-        return timeElement;
-      });
+      setCompactSlot(cl, 'idle:leading', time, () => compactText(time, 'compact-time'));
       setCompactSlot(cc, 'idle:center', '', () => compactText(''));
     }
     const batteryLabel = batteryAriaLabel();
-    setCompactSlot(cr, 'idle:trailing', `${batteryLabel}:${powerState.percent}`, buildBatteryStatus);
-    compact.setAttribute('aria-label', `Time ${time}. ${batteryLabel}`);
+    // Desktops without a battery show only the time
+    if (!powerState.hasBattery && powerState.statusKnown !== false) {
+      setCompactSlot(cr, 'idle:trailing-empty', '', () => compactText(''));
+      setLabel(compact, `Time ${time}`);
+    } else {
+      setCompactSlot(cr, 'idle:trailing', `${batteryLabel}:${powerState.percent}`, buildBatteryStatus);
+      setLabel(compact, `Time ${time}. ${batteryLabel}`);
+    }
     return;
   }
 
-  const title = primary.title;
+  // Media can show the current lyric line instead of the track title (Settings > Collapsed content)
+  const lyric = primary.kind === 'media' && livePreferences.compactContent === 'lyrics' ? compactLyric() : '';
+  const title = lyric || primary.title;
   if (state === 'peek') {
     setCompactSlot(cc, `${primary.id}:title`, title, () => compactTitle(title));
     fitCompactTitle();
@@ -769,7 +788,7 @@ function renderCompact(): void {
         selection.hasBackgroundActivity,
       ),
     );
-    compact.setAttribute('aria-label', `${mediaLabel}: ${title}`);
+    setLabel(compact, `${mediaLabel}: ${title}`);
     return;
   }
 
@@ -792,7 +811,7 @@ function renderCompact(): void {
         selection.hasBackgroundActivity,
       ),
     );
-    compact.setAttribute('aria-label', `${title}, ${remaining}${activity.paused ? ', paused' : ' remaining'}`);
+    setLabel(compact, `${title}, ${remaining}${activity.paused ? ', paused' : ' remaining'}`);
     return;
   }
 
@@ -811,7 +830,7 @@ function renderCompact(): void {
         selection.hasBackgroundActivity,
       ),
     );
-    compact.setAttribute('aria-label', recording ? 'Dictation recording' : 'Dictation active');
+    setLabel(compact, recording ? 'Dictation recording' : 'Dictation active');
     return;
   }
 
@@ -826,7 +845,7 @@ function renderCompact(): void {
       selection.hasBackgroundActivity,
     ),
   );
-  compact.setAttribute('aria-label', `${external.title}, ${external.text}`);
+  setLabel(compact, `${external.title}, ${external.text}`);
 }
 
 /* ================= Today & Battery ================= */

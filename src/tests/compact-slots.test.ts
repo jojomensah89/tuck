@@ -58,3 +58,24 @@ describe('compact slot activity priority', () => {
     });
   });
 });
+
+describe('compact slot background dot', () => {
+  it('shows the dot when a paused primary hides a running activity', () => {
+    const selection = selectCompactActivity([
+      activity({ priority: 90, running: false }),
+      activity({ id: 'timer', kind: 'timer', title: 'Timer', priority: 60 }),
+    ]);
+
+    expect(selection.primary?.id).toBe('media');
+    expect(selection.hasBackgroundActivity).toBe(true);
+  });
+
+  it('hides the dot when only the primary is running', () => {
+    const selection = selectCompactActivity([
+      activity({ priority: 90 }),
+      activity({ id: 'timer', kind: 'timer', title: 'Timer', priority: 60, running: false }),
+    ]);
+
+    expect(selection.hasBackgroundActivity).toBe(false);
+  });
+});

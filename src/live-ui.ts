@@ -176,12 +176,12 @@ export function mountLivePages(onLayout: () => void): {
     record.disabled = !['idle', 'recording', 'review', 'error'].includes(data.status) || data.modelReady === false;
     record.textContent = data.status === 'recording' ? 'Finish recording' : 'Record';
     document.getElementById('isl')!.dataset.dictation = data.status;
-    const recording = data.status === 'recording';
+    const active = ['recording', 'transcribing', 'review'].includes(data.status);
     window.dispatchEvent(new CustomEvent('tuck-activity', { detail: {
       id: 'dictation',
       type: 'dictation',
       phase: data.status,
-      active: recording,
+      active,
       title: 'Dictation',
       text: data.transcript?.slice(-65) || data.status,
       priority: 99,

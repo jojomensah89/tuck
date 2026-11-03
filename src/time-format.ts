@@ -5,7 +5,8 @@ const localeHourCycle = (new Intl.DateTimeFormat(undefined, {
 }).hourCycle;
 
 const clockFormatter = new Intl.DateTimeFormat(undefined, {
-  hour: '2-digit',
+  // 24-hour clocks keep the leading zero (07:33); 12-hour clocks drop it (7:33 AM)
+  hour: localeHourCycle === 'h23' || localeHourCycle === 'h24' ? '2-digit' : 'numeric',
   minute: '2-digit',
   ...(localeHourCycle ? { hourCycle: localeHourCycle } : {}),
 });

@@ -30,6 +30,6 @@ export function selectCompactActivity(
 
   return {
     primary: active[0] ?? null,
-    hasBackgroundActivity: active.filter(candidate => candidate.running).length > 1,
+    hasBackgroundActivity: active.some(candidate => candidate.running && candidate !== active[0]),
   };
 }

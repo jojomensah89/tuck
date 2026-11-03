@@ -40,16 +40,16 @@ export function batteryGlyph(
   known = true,
   hasBattery = true,
 ): string {
-  const safePercent = Number.isFinite(percent) ? percent : 0;
-  const normalized = known && hasBattery
-    ? Math.max(0, Math.min(100, Math.round(safePercent)))
-    : 0;
+  const levelKnown = known && hasBattery && Number.isFinite(percent);
+  const normalized = levelKnown ? Math.max(0, Math.min(100, Math.round(percent))) : 0;
   const fillWidth = Math.max(normalized > 0 ? 1 : 0, 16 * normalized / 100);
   const stateClass = charging
     ? ' charging'
-    : known && hasBattery && normalized < 20
-      ? ' low'
-      : '';
+    : !levelKnown
+      ? ' unknown'
+      : normalized < 20
+        ? ' low'
+        : '';
   const bolt = charging
     ? '<path class="battery-bolt" d="m12.4 7.4-3.8 5h2.7l-.5 4.2 4.1-5.5h-2.6z"/>'
     : '';

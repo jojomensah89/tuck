@@ -11,10 +11,10 @@ Combined from `competitor-landscape.md`, `island-ux-motion.md`, `how-notch-apps-
   - Tools: quick toggles, clipboard, file shelf, dictation
   - Usage: AI meters, system stats
   - Settings (opens the settings window)
-- Wheel: over the idle pill it changes system volume and shows the HUD; over the open island it switches tabs.
+- Wheel: over the pill-sized strip at the top centre of the island it changes system volume and shows the level, in the idle, peek and open states alike (middle click there toggles mute). Elsewhere on the open island it switches tabs.
 - Motion: spring easing with a 3-6% overshoot (about 0.4s), via CSS `linear()`. Outgoing content fades/scales out in the first ~100ms; incoming content enters once the shell is about 65% open. No `filter: blur` on the shell. Reduced motion calms animations rather than hiding content.
 - Icons over text: progress rings for usage, battery and timers; status dots instead of status pills; SVG glyphs, never emoji.
-- Volume/brightness HUD: island HUD always on; hiding the Windows flyout is an opt-in, off-by-default setting that disables itself if it fails.
+- Volume/brightness HUD: island HUD on by default with its own switch; hiding the Windows flyout is an opt-in, off-by-default setting that disables itself if it fails, and that gives the flyout back while the island would show nothing.
 - Out of scope: novelty extras (JSON tools, Discord/OBS, mascots), and reading other apps' credential files.
 
 ## PR stack
@@ -29,7 +29,7 @@ Frontend round (each PR stacks on the previous one):
 Native round (in order):
 
 5. Reliability and performance. Event-driven media/volume/power instead of polling, sleep/resume and display-change handling, TOPMOST re-assertion, fullscreen auto-hide, single-instance guard, monitor selection, idle CPU/RAM budget.
-6. Volume/brightness HUD plus wheel-over-idle volume.
+6. Volume/brightness HUD plus volume on the pill-sized strip: wheel and middle click in every island state.
 7. Device events. Bluetooth connect + battery, charging, mic/camera in use (ConsentStore registry), focus state.
 8. Notifications and calendar. Notification mirror with swipe-to-dismiss (needs a spike on unpackaged UserNotificationListener access), next-event countdown.
 9. File shelf. Open on system-wide drag (needs a spike: click-through windows get no OLE drag-enter), drag out.

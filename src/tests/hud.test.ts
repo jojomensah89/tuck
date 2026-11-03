@@ -8,6 +8,8 @@ import {
   HudModel,
   hudLabel,
   levelEventShowsHud,
+  levelInputApplies,
+  overPillStrip,
   peekReturnTarget,
   readHudPayload,
   stepVolume,
@@ -39,20 +41,61 @@ describe('peekReturnTarget', () => {
   });
 });
 
+describe('pill strip hit test', () => {
+  const pill = { width: 212, height: 32 };
+  const open = { left: 10, top: 0, width: 500 };
+
+  it('covers the idle pill size at the top centre of the open island', () => {
+    expect(overPillStrip(open, pill, 260, 16)).toBe(true);
+    expect(overPillStrip(open, pill, 154, 0)).toBe(true);
+    expect(overPillStrip(open, pill, 365.5, 31.5)).toBe(true);
+  });
+
+  it('stops at the edges of the strip', () => {
+    expect(overPillStrip(open, pill, 153.5, 16)).toBe(false);
+    expect(overPillStrip(open, pill, 366, 16)).toBe(false);
+    expect(overPillStrip(open, pill, 260, 32)).toBe(false);
+    expect(overPillStrip(open, pill, 260, -1)).toBe(false);
+  });
+
+  it('follows the island down in the floating shape and stays centred at any width', () => {
+    const float = { left: 40, top: 10, width: 440 };
+    expect(overPillStrip(float, pill, 260, 5)).toBe(false);
+    expect(overPillStrip(float, pill, 260, 10)).toBe(true);
+    expect(overPillStrip(float, pill, 260, 41)).toBe(true);
+    expect(overPillStrip(float, pill, 260, 42)).toBe(false);
+    expect(overPillStrip(float, pill, 154, 20)).toBe(true);
+  });
+
+  it('means volume on the whole collapsed island and only the strip when open', () => {
+    const peek = { left: 110, top: 0, width: 300 };
+    expect(levelInputApplies('idle', peek, pill, 115, 30)).toBe(true);
+    expect(levelInputApplies('peek', peek, pill, 115, 37)).toBe(true);
+    expect(levelInputApplies('open', open, pill, 260, 16)).toBe(true);
+    expect(levelInputApplies('open', open, pill, 260, 120)).toBe(false);
+    expect(levelInputApplies('open', open, pill, 30, 16)).toBe(false);
+  });
+});
+
 describe('levelEventShowsHud', () => {
   const volume = { kind: 'volume', level: 40, muted: false } as const;
   const brightness = { kind: 'brightness', level: 40, muted: false } as const;
 
   it('follows the setting', () => {
-    expect(levelEventShowsHud(volume, true, 1000, null)).toBe(true);
-    expect(levelEventShowsHud(volume, false, 1000, null)).toBe(false);
-    expect(levelEventShowsHud(brightness, false, 1000, null)).toBe(false);
+    expect(levelEventShowsHud(volume, true, 1000, null, false)).toBe(true);
+    expect(levelEventShowsHud(volume, false, 1000, null, false)).toBe(false);
+    expect(levelEventShowsHud(brightness, false, 1000, null, false)).toBe(false);
   });
 
   it('ignores brightness ramps right after a charger change, but not volume', () => {
-    expect(levelEventShowsHud(brightness, true, 5000, 1000)).toBe(false);
-    expect(levelEventShowsHud(brightness, true, 1000 + CHARGER_RAMP_MS, 1000)).toBe(true);
-    expect(levelEventShowsHud(volume, true, 1001, 1000)).toBe(true);
+    expect(levelEventShowsHud(brightness, true, 5000, 1000, false)).toBe(false);
+    expect(levelEventShowsHud(brightness, true, 1000 + CHARGER_RAMP_MS, 1000, false)).toBe(true);
+    expect(levelEventShowsHud(volume, true, 1001, 1000, false)).toBe(true);
+  });
+
+  it('drops the charger quiet period while the Windows flyout is hidden, but not the setting', () => {
+    expect(levelEventShowsHud(brightness, true, 5000, 1000, true)).toBe(true);
+    expect(levelEventShowsHud(brightness, false, 5000, 1000, true)).toBe(false);
   });
 });
 

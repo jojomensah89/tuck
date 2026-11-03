@@ -31,6 +31,7 @@ import {
   HudModel,
   hudLabel,
   levelEventShowsHud,
+  levelInputApplies,
   peekReturnTarget,
   readHudPayload,
   stepVolume,
@@ -61,6 +62,9 @@ const SIZES: Record<IslandState, [number, number]> = {
   open: [440, 210],
 };
 
+/** The strip of the open island that keeps acting like the idle pill */
+const PILL_STRIP = { width: SIZES.idle[0], height: SIZES.idle[1] };
+
 let livePreferences = readPreferences();
 
 function $(id: string): HTMLElement {
@@ -70,6 +74,8 @@ function $(id: string): HTMLElement {
 }
 
 const isl = $('isl');
+isl.style.setProperty('--pill-w', `${PILL_STRIP.width}px`);
+isl.style.setProperty('--pill-h', `${PILL_STRIP.height}px`);
 // Set once the live pages mount; renderCompact can run before that during startup
 let compactLyric: () => string = () => '';
 // The compact title is measured mid-morph on state changes; refit once the shell settles
@@ -219,6 +225,14 @@ let nativeDragActive = false;
 let keyboardMode = false;
 let announcement: { text: string; until: number } | null = null;
 const hud = new HudModel();
+/** Level feedback while the island is open; it has no shell to morph */
+const openLevel = new HudModel();
+const levelStrip = $('levelStrip');
+let openLevelTimer = 0;
+/** The Windows flyout is minimized right now, so the island is the only level feedback */
+let flyoutHidden = false;
+/** The last hand-back request sent to native */
+let flyoutPause = '';
 const pendingAnnouncements = new AnnouncementQueue();
 /** The current peek interrupted the open island, which comes back when the peek ends */
 let returnOpenAfterPeek = false;
@@ -238,7 +252,10 @@ function setState(next: IslandState): void {
   if (state === 'open' && next !== 'open' && isTauri()) runAction(invokeCommand('deactivate_island'), 'Restore desktop interaction');
   if (next !== 'open') keyboardMode = false;
   if (next !== 'peek') returnOpenAfterPeek = false;
+  // The value still reaches the status region; only the painted strip goes
+  if (next !== 'open') delete levelStrip.dataset.on;
   state = next;
+  syncFlyoutPause();
   const [w, h] = next === 'open' ? [livePreferences.openWidth, 210] : SIZES[next];
   isl.style.setProperty('--w', `${w}px`);
   isl.style.setProperty('--h', `${h}px`);
@@ -266,6 +283,21 @@ function setState(next: IslandState): void {
     renderMediaHeader();
     tick();
   }
+}
+
+/**
+ * The Windows flyout comes back while the island would not show a level change: the
+ * HUD switch is off, or the island is pinned open. A peek over a pinned island is
+ * only a pause in being open, so it does not count as leaving.
+ */
+function syncFlyoutPause(): void {
+  if (!isTauri()) return;
+  const hudOff = !livePreferences.levelHud;
+  const pinnedOpen = livePreferences.pinned && (state === 'open' || returnOpenAfterPeek);
+  const key = `${hudOff}:${pinnedOpen}`;
+  if (key === flyoutPause) return;
+  flyoutPause = key;
+  void invokeCommand('set_flyout_island_pause', { hudOff, pinnedOpen }).catch(() => { flyoutPause = ''; });
 }
 
 function onHover(inside: boolean): void {
@@ -1029,9 +1061,13 @@ function buildHudBar(): HTMLElement {
   return bar;
 }
 
+function hudGlyph(reading: HudReading): 'brightness' | ReturnType<typeof volumeGlyph> {
+  return reading.kind === 'brightness' ? 'brightness' : volumeGlyph(reading.level, reading.muted);
+}
+
 /** Glyph, level bar and tabular value; the bar is built once per kind so its fill eases between values */
 function renderHud(reading: HudReading, compact: HTMLElement): void {
-  const glyph = reading.kind === 'brightness' ? 'brightness' : volumeGlyph(reading.level, reading.muted);
+  const glyph = hudGlyph(reading);
   setCompactSlot($('cl'), 'hud:leading', glyph, () => compactMarkup(SVG_ICONS[glyph], 'hud-glyph'));
   setCompactSlot($('cc'), `hud:bar:${reading.kind}`, 'bar', buildHudBar);
   const bar = $('cc').querySelector<HTMLElement>('.compact-slot.current .hud-bar');
@@ -1051,10 +1087,42 @@ function settleHud(): void {
   finishPeek();
 }
 
+/** Screen readers hear the value once input pauses; a newer change replaces the wait */
+function announceWhenSettled(model: HudModel): void {
+  window.clearTimeout(hudAnnounceTimer);
+  hudAnnounceTimer = window.setTimeout(() => {
+    const text = model.dueAnnouncement(Date.now());
+    if (text) $('statusMessage').textContent = text;
+  }, HUD_ANNOUNCE_QUIET_MS + 20);
+}
+
+/** The open island keeps its size and content; the level paints over the strip for a moment */
+function showOpenLevel(reading: HudReading, now: number): void {
+  openLevel.show(reading, now);
+  announceWhenSettled(openLevel);
+  if (!levelStrip.firstChild) {
+    levelStrip.append(compactMarkup('', 'hud-glyph'), buildHudBar(), compactText('', 'compact-metric hud-value'));
+  }
+  const [glyph, bar, value] = levelStrip.children as HTMLCollectionOf<HTMLElement>;
+  setMarkup(glyph, SVG_ICONS[hudGlyph(reading)]);
+  bar.classList.toggle('muted', reading.muted);
+  bar.style.setProperty('--level', String(reading.level / 100));
+  value.textContent = `${reading.level}%`;
+  value.classList.toggle('muted', reading.muted);
+  levelStrip.dataset.on = reading.kind;
+  window.clearTimeout(openLevelTimer);
+  openLevelTimer = window.setTimeout(() => {
+    openLevel.dismiss();
+    delete levelStrip.dataset.on;
+  }, openLevel.remaining(now));
+}
+
 function showHud(reading: HudReading): void {
-  // The open island is already in use; it keeps its content
-  if (state === 'open') return;
   const now = Date.now();
+  if (state === 'open') {
+    showOpenLevel(reading, now);
+    return;
+  }
   // An interrupted announcement gets its full time back once the HUD settles
   if (announcement && announcement.until > now) pendingAnnouncements.addFirst(announcement.text, now);
   announcement = null;
@@ -1063,11 +1131,7 @@ function showHud(reading: HudReading): void {
   window.clearTimeout(closeTimer);
   window.clearTimeout(hudTimer);
   hudTimer = window.setTimeout(settleHud, hud.remaining(now));
-  window.clearTimeout(hudAnnounceTimer);
-  hudAnnounceTimer = window.setTimeout(() => {
-    const text = hud.dueAnnouncement(Date.now());
-    if (text) $('statusMessage').textContent = text;
-  }, HUD_ANNOUNCE_QUIET_MS + 20);
+  announceWhenSettled(hud);
   if (state !== 'peek') setState('peek');
   else {
     isl.dataset.hud = reading.kind;
@@ -1091,23 +1155,31 @@ function applyVolume(command: 'volume_step' | 'volume_toggle_mute', args?: Recor
   }).catch(() => { /* no output device; the HUD simply does not appear */ });
 }
 
-// Wheel over the collapsed island changes the system volume; the open island's rail owns the wheel
+function overLevelInput(event: MouseEvent): boolean {
+  return levelInputApplies(state, isl.getBoundingClientRect(), PILL_STRIP, event.clientX, event.clientY);
+}
+
+// The pill-sized strip always means volume, in every state. These listeners capture, so
+// whatever sits under the strip on the open island (a scroller, the rail's tab switching)
+// never sees the event. Only wheel and middle click are taken: left clicks go through.
 let wheelRest = 0;
 isl.addEventListener('wheel', event => {
-  if (state === 'open') return;
+  if (!overLevelInput(event)) return;
   event.preventDefault();
+  event.stopPropagation();
   const result = wheelVolumeDelta(wheelRest, event);
   wheelRest = result.rest;
   if (result.delta !== 0) applyVolume('volume_step', { delta: result.delta });
-}, { passive: false });
+}, { passive: false, capture: true });
 
-// Middle click on the collapsed island toggles mute
-isl.addEventListener('mousedown', event => { if (event.button === 1 && state !== 'open') event.preventDefault(); });
+// Middle click toggles mute; stopping the press also stops the browser's autoscroll
+isl.addEventListener('mousedown', event => { if (event.button === 1 && overLevelInput(event)) event.preventDefault(); }, { capture: true });
 isl.addEventListener('auxclick', event => {
-  if (event.button !== 1 || state === 'open') return;
+  if (event.button !== 1 || !overLevelInput(event)) return;
   event.preventDefault();
+  event.stopPropagation();
   applyVolume('volume_toggle_mute');
-});
+}, { capture: true });
 
 window.addEventListener('tuck-activity',event=>{
   const detail=(event as CustomEvent).detail;
@@ -1154,13 +1226,14 @@ void listenToEvent<{title: string; text: string}>('desktop-peek', payload => {
 });
 void listenToEvent<unknown>('system-level', payload => {
   const reading = readHudPayload(payload);
-  if (reading && levelEventShowsHud(reading, livePreferences.levelHud, Date.now(), lastChargerChange)) showHud(reading);
+  if (reading && levelEventShowsHud(reading, livePreferences.levelHud, Date.now(), lastChargerChange, flyoutHidden)) showHud(reading);
 });
 interface FlyoutStatus { state?: string; message?: string | null }
-function announceFlyoutFailure(status: FlyoutStatus | null | undefined): void {
+function onFlyoutStatus(status: FlyoutStatus | null | undefined): void {
+  flyoutHidden = status?.state === 'hidden';
   if (status?.state === 'unavailable' && typeof status.message === 'string') showAnnouncement(status.message);
 }
-void listenToEvent<FlyoutStatus>('system-flyout', announceFlyoutFailure);
+void listenToEvent<FlyoutStatus>('system-flyout', onFlyoutStatus);
 void listenToEvent<Meter[]>('usage', (payload) => onUsageUpdate(payload));
 
 /* ================= First Run & Browser Preview ================= */
@@ -1239,7 +1312,7 @@ if (isTauri()) {
   runAction(invokeCommand<MediaState>('media_now').then(onMediaUpdate), 'Read media session');
   runAction(invokeCommand<boolean>('fullscreen_now').then(hidden => document.body.classList.toggle('fullscreen-hidden', hidden)), 'Read fullscreen state');
   // A failure before this listener existed is still pending natively
-  runAction(invokeCommand<FlyoutStatus>('get_hide_system_flyout').then(announceFlyoutFailure), 'Read flyout state');
+  runAction(invokeCommand<FlyoutStatus>('get_hide_system_flyout').then(onFlyoutStatus), 'Read flyout state');
 }
 
 // Fetch initial usage if running in native app

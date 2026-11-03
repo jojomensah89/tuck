@@ -1,8 +1,10 @@
 /**
  * Volume and brightness HUD: pure rules for the island's level display and for
- * turning wheel input over the idle pill into volume steps. The DOM side lives in
- * main.ts; native levels arrive as `system-level` events.
+ * turning wheel and middle-click input over the pill-sized strip into volume
+ * changes. The DOM side lives in main.ts; native levels arrive as `system-level`
+ * events.
  */
+import type { IslandState } from './types.js';
 
 export type HudKind = 'volume' | 'brightness';
 
@@ -82,6 +84,37 @@ export function wheelVolumeDelta(rest: number, sample: WheelSample): { delta: nu
   return { delta: -steps * size, rest: carry };
 }
 
+/** The island's box in client coordinates */
+export interface IslandBox {
+  left: number;
+  top: number;
+  width: number;
+}
+
+export interface PillSize {
+  width: number;
+  height: number;
+}
+
+/**
+ * Whether a point is over the strip at the island's top centre that has the idle
+ * pill's size. The strip is measured from the island's centre and top, which stay
+ * put while the shell morphs.
+ */
+export function overPillStrip(island: IslandBox, pill: PillSize, x: number, y: number): boolean {
+  const left = island.left + island.width / 2 - pill.width / 2;
+  return x >= left && x < left + pill.width && y >= island.top && y < island.top + pill.height;
+}
+
+/**
+ * Whether wheel and middle click at a point mean volume. The collapsed island is
+ * all pill; on the open island only the strip is, and the wheel switches tabs
+ * everywhere else.
+ */
+export function levelInputApplies(state: IslandState, island: IslandBox, pill: PillSize, x: number, y: number): boolean {
+  return state !== 'open' || overPillStrip(island, pill, x, y);
+}
+
 export type VolumeGlyph = 'volumeMute' | 'volumeOff' | 'volumeLow' | 'volumeHigh';
 
 export function volumeGlyph(level: number, muted: boolean): VolumeGlyph {
@@ -114,17 +147,21 @@ export const CHARGER_RAMP_MS = 8000;
 
 /**
  * Whether a native level event gets a HUD: the Volume and brightness HUD setting
- * must be on, and brightness is ignored right after a charger change. Wheel and
- * middle-click feedback on the island itself does not pass through here.
+ * must be on, and brightness is ignored right after a charger change. While the
+ * Windows flyout is hidden the island is the only feedback, so the charger quiet
+ * period does not apply. Wheel and middle-click feedback on the island itself does
+ * not pass through here.
  */
 export function levelEventShowsHud(
   reading: HudReading,
   enabled: boolean,
   now: number,
   lastChargerChange: number | null,
+  flyoutHidden: boolean,
 ): boolean {
   if (!enabled) return false;
   return reading.kind !== 'brightness'
+    || flyoutHidden
     || lastChargerChange === null
     || now - lastChargerChange >= CHARGER_RAMP_MS;
 }

@@ -426,6 +426,39 @@ body.fullscreen-hidden .island {
   color: var(--ink-3);
 }
 
+/* The same level display on the open island, in the strip the wheel acts on. It only
+   paints: clicks and hover pass through to whatever sits underneath. */
+.level-strip {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  width: var(--pill-w);
+  height: var(--pill-h);
+  transform: translateX(-50%);
+  display: grid;
+  grid-template-columns: var(--s-6) minmax(0, 1fr) var(--s-8);
+  align-items: center;
+  gap: var(--s-2);
+  padding: 0 var(--s-3);
+  background: var(--surface);
+  border-radius: 0 0 var(--r-idle) var(--r-idle);
+  font-size: var(--t-sm);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--d-fast) var(--ease-out);
+}
+
+.level-strip[data-on] {
+  opacity: 1;
+}
+
+.level-strip .hud-glyph svg.ico {
+  display: block;
+  width: var(--i-md);
+  height: var(--i-md);
+  color: var(--ink);
+}
+
 .battery-glyph {
   width: var(--i-lg);
   height: var(--s-3);

@@ -265,7 +265,15 @@ function buildDots(): void {
   });
 }
 
+const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+const leavingHandlers = new WeakMap<HTMLElement, (e: AnimationEvent) => void>();
+
 function clearLeaving(page: HTMLElement): void {
+  const handler = leavingHandlers.get(page);
+  if (handler) {
+    page.removeEventListener('animationend', handler);
+    leavingHandlers.delete(page);
+  }
   page.classList.remove('leaving');
   if (!page.classList.contains('on')) page.classList.remove('fwd', 'back');
 }
@@ -294,8 +302,14 @@ function showPage(n: number, dir = 1): void {
     } else if (i === previous && changed && p.classList.contains('on')) {
       // The outgoing page stays painted while it fades out in the travel direction
       p.classList.remove('on', 'fwd', 'back');
-      p.classList.add('leaving', dir > 0 ? 'fwd' : 'back');
-      p.addEventListener('animationend', () => clearLeaving(p), { once: true });
+      clearLeaving(p);
+      if (!reducedMotion.matches) {
+        p.classList.add('leaving', dir > 0 ? 'fwd' : 'back');
+        // Only the page's own exit animation ends the leave, not animations bubbling from children
+        const handler = (e: AnimationEvent) => { if (e.target === p) clearLeaving(p); };
+        leavingHandlers.set(p, handler);
+        p.addEventListener('animationend', handler);
+      }
     } else {
       p.classList.remove('on');
       clearLeaving(p);

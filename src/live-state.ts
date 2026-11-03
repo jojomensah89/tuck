@@ -6,6 +6,7 @@ export function newRequestId(): string {
 }
 export interface LivePreferences {
   hoverExpand: boolean; openDelayMs: number; closeDelayMs: number; pinned: boolean;
+  fullscreenAutoHide: boolean;
   compactContent: 'lyrics' | 'title'; lyricsOpen: boolean; openWidth: number;
   desktopPeeks: boolean;
   /** Last open-island tab, restored on the next launch */
@@ -17,7 +18,7 @@ export const PREFS_VERSION = 2;
 export const DEFAULT_LIVE_PREFERENCES: LivePreferences = {
   hoverExpand: true, openDelayMs: 180, closeDelayMs: 0, pinned: false,
   compactContent: 'lyrics', lyricsOpen: true, openWidth: 500,
-  desktopPeeks: true, lastTab: DEFAULT_TAB, prefsVersion: PREFS_VERSION,
+  desktopPeeks: true, fullscreenAutoHide: true, lastTab: DEFAULT_TAB, prefsVersion: PREFS_VERSION,
 };
 export function normalizePreferences(input: unknown): LivePreferences {
   const p = input && typeof input === 'object' ? input as Partial<LivePreferences> : {};
@@ -28,6 +29,7 @@ export function normalizePreferences(input: unknown): LivePreferences {
     pinned: p.pinned === true, lyricsOpen: p.lyricsOpen !== false,
     compactContent: p.compactContent === 'title' ? 'title' : 'lyrics',
     desktopPeeks: p.desktopPeeks !== false,
+    fullscreenAutoHide: p.fullscreenAutoHide !== false,
     openDelayMs: bounded(p.openDelayMs, 180, 0, 2000),
     // Settings saved before version 2 that still hold the old 900ms default move to instant once
     closeDelayMs: bounded(

@@ -1,11 +1,13 @@
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::{mpsc, Mutex};
 use tauri::{AppHandle, Emitter};
 
 static SNAPSHOT: Mutex<Option<MediaState>> = Mutex::new(None);
 static SELECTED_SESSION_ID: Mutex<Option<String>> = Mutex::new(None);
 static GENERATION: AtomicU64 = AtomicU64::new(1);
+#[cfg(windows)]
+static SERVICE_TX: Mutex<Option<mpsc::Sender<MediaSignal>>> = Mutex::new(None);
 
 fn default_true() -> bool {
     true
@@ -85,15 +87,20 @@ const MAX_THUMBNAIL_BYTES: usize = 5 * 1024 * 1024;
 #[cfg(windows)]
 use base64::Engine;
 #[cfg(windows)]
-use windows::Media::Control::{
-    GlobalSystemMediaTransportControlsSession, GlobalSystemMediaTransportControlsSessionManager,
-    GlobalSystemMediaTransportControlsSessionMediaProperties,
-    GlobalSystemMediaTransportControlsSessionPlaybackStatus,
-};
-#[cfg(windows)]
 use windows::Storage::Streams::DataReader;
 #[cfg(windows)]
 use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_MULTITHREADED};
+#[cfg(windows)]
+use windows::{
+    Foundation::{EventRegistrationToken, TypedEventHandler},
+    Media::Control::{
+        CurrentSessionChangedEventArgs, GlobalSystemMediaTransportControlsSession,
+        GlobalSystemMediaTransportControlsSessionManager,
+        GlobalSystemMediaTransportControlsSessionMediaProperties,
+        GlobalSystemMediaTransportControlsSessionPlaybackStatus, MediaPropertiesChangedEventArgs,
+        PlaybackInfoChangedEventArgs, SessionsChangedEventArgs, TimelinePropertiesChangedEventArgs,
+    },
+};
 #[cfg(windows)]
 static SESSION_CATALOG: Mutex<Vec<(String, GlobalSystemMediaTransportControlsSession)>> =
     Mutex::new(Vec::new());
@@ -135,6 +142,31 @@ fn current_session() -> Option<GlobalSystemMediaTransportControlsSession> {
         return None;
     }
 
+    mgr.GetCurrentSession().ok()
+}
+
+#[cfg(windows)]
+fn session_from_manager(
+    mgr: &GlobalSystemMediaTransportControlsSessionManager,
+) -> Option<GlobalSystemMediaTransportControlsSession> {
+    let selected = SELECTED_SESSION_ID.lock().ok()?.clone();
+    if let Some(target_id) = selected {
+        let pinned = SESSION_CATALOG
+            .lock()
+            .ok()?
+            .iter()
+            .find(|(id, _)| *id == target_id)
+            .map(|(_, session)| session.clone())?;
+        let sessions = mgr.GetSessions().ok()?;
+        for index in 0..sessions.Size().ok()? {
+            if let Ok(current) = sessions.GetAt(index) {
+                if same_session(&current, &pinned) {
+                    return Some(current);
+                }
+            }
+        }
+        return None;
+    }
     mgr.GetCurrentSession().ok()
 }
 
@@ -412,60 +444,358 @@ fn select_session_id(session_id: Option<String>) -> Result<(), String> {
             *selected = None;
         }
     }
+    #[cfg(windows)]
+    request(MediaSignal::ManagerChanged);
     Ok(())
 }
 
-/// Starts the 500ms background SMTC poller.
+#[cfg(windows)]
+#[derive(Clone, Copy)]
+enum MediaSignal {
+    SessionChanged,
+    ManagerChanged,
+    RebindAll,
+    Suspend,
+    Stop,
+}
+
+#[cfg(windows)]
+fn request(signal: MediaSignal) {
+    if let Ok(guard) = SERVICE_TX.lock() {
+        if let Some(sender) = guard.as_ref() {
+            let _ = sender.send(signal);
+        }
+    }
+}
+
+#[cfg(windows)]
+fn callback_send(sender: &mpsc::Sender<MediaSignal>, signal: MediaSignal) {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = sender.send(signal);
+    }));
+    if result.is_err() {
+        eprintln!("Media callback panicked");
+    }
+}
+
+#[cfg(windows)]
+struct ManagerSubscriptions {
+    manager: GlobalSystemMediaTransportControlsSessionManager,
+    sessions: EventRegistrationToken,
+    current: EventRegistrationToken,
+}
+
+#[cfg(windows)]
+impl ManagerSubscriptions {
+    fn new(
+        manager: &GlobalSystemMediaTransportControlsSessionManager,
+        sender: &mpsc::Sender<MediaSignal>,
+    ) -> windows::core::Result<Self> {
+        let sessions_sender = sender.clone();
+        let sessions = manager.SessionsChanged(&TypedEventHandler::<
+            GlobalSystemMediaTransportControlsSessionManager,
+            SessionsChangedEventArgs,
+        >::new(move |_, _| {
+            callback_send(&sessions_sender, MediaSignal::ManagerChanged);
+            Ok(())
+        }))?;
+        let current_sender = sender.clone();
+        let current = manager.CurrentSessionChanged(&TypedEventHandler::<
+            GlobalSystemMediaTransportControlsSessionManager,
+            CurrentSessionChangedEventArgs,
+        >::new(move |_, _| {
+            callback_send(&current_sender, MediaSignal::ManagerChanged);
+            Ok(())
+        }))?;
+        Ok(Self {
+            manager: manager.clone(),
+            sessions,
+            current,
+        })
+    }
+}
+
+#[cfg(windows)]
+impl Drop for ManagerSubscriptions {
+    fn drop(&mut self) {
+        if let Err(error) = self.manager.RemoveSessionsChanged(self.sessions) {
+            eprintln!("Media SessionsChanged cleanup: {error}");
+        }
+        if let Err(error) = self.manager.RemoveCurrentSessionChanged(self.current) {
+            eprintln!("Media CurrentSessionChanged cleanup: {error}");
+        }
+    }
+}
+
+#[cfg(windows)]
+struct SessionSubscriptions {
+    session: GlobalSystemMediaTransportControlsSession,
+    media: EventRegistrationToken,
+    playback: EventRegistrationToken,
+    timeline: EventRegistrationToken,
+}
+
+#[cfg(windows)]
+impl SessionSubscriptions {
+    fn new(
+        session: &GlobalSystemMediaTransportControlsSession,
+        sender: &mpsc::Sender<MediaSignal>,
+    ) -> windows::core::Result<Self> {
+        let media_sender = sender.clone();
+        let media = session.MediaPropertiesChanged(&TypedEventHandler::<
+            GlobalSystemMediaTransportControlsSession,
+            MediaPropertiesChangedEventArgs,
+        >::new(move |_, _| {
+            callback_send(&media_sender, MediaSignal::SessionChanged);
+            Ok(())
+        }))?;
+        let playback_sender = sender.clone();
+        let playback = session.PlaybackInfoChanged(&TypedEventHandler::<
+            GlobalSystemMediaTransportControlsSession,
+            PlaybackInfoChangedEventArgs,
+        >::new(move |_, _| {
+            callback_send(&playback_sender, MediaSignal::SessionChanged);
+            Ok(())
+        }))?;
+        let timeline_sender = sender.clone();
+        let timeline = session.TimelinePropertiesChanged(&TypedEventHandler::<
+            GlobalSystemMediaTransportControlsSession,
+            TimelinePropertiesChangedEventArgs,
+        >::new(move |_, _| {
+            callback_send(&timeline_sender, MediaSignal::SessionChanged);
+            Ok(())
+        }))?;
+        Ok(Self {
+            session: session.clone(),
+            media,
+            playback,
+            timeline,
+        })
+    }
+}
+
+#[cfg(windows)]
+impl Drop for SessionSubscriptions {
+    fn drop(&mut self) {
+        if let Err(error) = self.session.RemoveMediaPropertiesChanged(self.media) {
+            eprintln!("MediaPropertiesChanged cleanup: {error}");
+        }
+        if let Err(error) = self.session.RemovePlaybackInfoChanged(self.playback) {
+            eprintln!("PlaybackInfoChanged cleanup: {error}");
+        }
+        if let Err(error) = self.session.RemoveTimelinePropertiesChanged(self.timeline) {
+            eprintln!("TimelinePropertiesChanged cleanup: {error}");
+        }
+    }
+}
+
+#[cfg(windows)]
+fn emit_snapshot(
+    app: &AppHandle,
+    session: Option<&GlobalSystemMediaTransportControlsSession>,
+    last_track_id: &mut String,
+    last_artwork: &mut Option<String>,
+    last_state: &mut MediaState,
+    art_attempts: &mut u8,
+) {
+    if let Some(session) = session {
+        if let Some((state, track_id, artwork)) =
+            poll_session(session, last_track_id, last_artwork, art_attempts)
+        {
+            let art_changed = track_id != *last_track_id || artwork != *last_artwork;
+            *last_track_id = track_id;
+            *last_artwork = artwork;
+            *last_state = state.clone();
+            if let Ok(mut cached) = SNAPSHOT.lock() {
+                *cached = Some(state.clone());
+            }
+            let mut event = state;
+            if !art_changed {
+                event.artwork = None;
+            }
+            let _ = app.emit("media", event);
+            return;
+        }
+    }
+
+    if last_state.active {
+        *last_state = MediaState::default();
+        last_track_id.clear();
+        *last_artwork = None;
+        if let Ok(mut cached) = SNAPSHOT.lock() {
+            *cached = Some(last_state.clone());
+        }
+        let _ = app.emit("media", last_state.clone());
+    }
+}
+
+/// Safety refresh interval while a GSMTC manager is bound.
+pub const MEDIA_SAFETY_REFRESH: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Delay before retrying a failed GSMTC manager request: 2s, 5s, 10s, then every 30s.
+pub fn manager_retry_delay(failures: u32) -> std::time::Duration {
+    const STEPS: [u64; 3] = [2, 5, 10];
+    let index = failures.saturating_sub(1) as usize;
+    STEPS
+        .get(index)
+        .map(|seconds| std::time::Duration::from_secs(*seconds))
+        .unwrap_or(MEDIA_SAFETY_REFRESH)
+}
+
+/// Starts an event-driven GSMTC service. A 30-second safety refresh remains because
+/// some players miss artwork/timeline notifications during process startup.
 pub fn start(app: AppHandle) {
-    std::thread::spawn(move || {
-        #[cfg(windows)]
-        unsafe {
-            let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+    #[cfg(windows)]
+    {
+        let (sender, receiver) = mpsc::channel();
+        if let Ok(mut guard) = SERVICE_TX.lock() {
+            *guard = Some(sender.clone());
+        }
+        if let Err(error) = std::thread::Builder::new()
+            .name("tuck-media-events".into())
+            .spawn(move || run_event_service(app, sender, receiver))
+        {
+            eprintln!("Could not start media service: {error}");
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = app;
+}
+
+#[cfg(windows)]
+fn run_event_service(
+    app: AppHandle,
+    sender: mpsc::Sender<MediaSignal>,
+    receiver: mpsc::Receiver<MediaSignal>,
+) {
+    unsafe {
+        if let Err(error) = CoInitializeEx(None, COINIT_MULTITHREADED).ok() {
+            eprintln!("Media COM startup: {error}");
+            return;
+        }
+    }
+
+    let mut manager: Option<GlobalSystemMediaTransportControlsSessionManager> = None;
+    let mut manager_subscriptions: Option<ManagerSubscriptions> = None;
+    let mut session_subscriptions: Option<SessionSubscriptions> = None;
+    let mut current: Option<GlobalSystemMediaTransportControlsSession> = None;
+    let mut last_track_id = String::new();
+    let mut last_artwork: Option<String> = None;
+    let mut last_state = MediaState::default();
+    let mut art_attempts = 0;
+    let mut suspended = false;
+    let mut rebuild_all = true;
+    let mut rebind_session = true;
+    let mut manager_failures = 0u32;
+
+    loop {
+        if !suspended && rebuild_all {
+            drop(session_subscriptions.take());
+            drop(manager_subscriptions.take());
+            current = None;
+            manager = GlobalSystemMediaTransportControlsSessionManager::RequestAsync()
+                .ok()
+                .and_then(|operation| operation.get().ok());
+            if let Some(value) = manager.as_ref() {
+                manager_failures = 0;
+                manager_subscriptions = ManagerSubscriptions::new(value, &sender)
+                    .map_err(|error| eprintln!("Media manager subscription: {error}"))
+                    .ok();
+                // Without subscriptions new players are never seen; retry like a failed manager
+                if manager_subscriptions.is_none() {
+                    manager = None;
+                    manager_failures = manager_failures.saturating_add(1);
+                }
+            } else {
+                manager_failures = manager_failures.saturating_add(1);
+                eprintln!("Media manager unavailable (attempt {manager_failures})");
+            }
+            rebuild_all = false;
+            rebind_session = true;
         }
 
-        let mut last_track_id = String::new();
-        let mut last_artwork: Option<String> = None;
-        let mut last_state = MediaState::default();
-        let mut art_attempts = 0;
-
-        loop {
-            std::thread::sleep(std::time::Duration::from_millis(500));
-
-            #[cfg(windows)]
-            {
-                if let Some(session) = current_session() {
-                    if let Some((state, track_id, artwork)) =
-                        poll_session(&session, &last_track_id, &last_artwork, &mut art_attempts)
-                    {
-                        let art_changed = track_id != last_track_id || artwork != last_artwork;
-                        last_track_id = track_id;
-                        last_artwork = artwork;
-                        last_state = state.clone();
-                        if let Ok(mut cached) = SNAPSHOT.lock() {
-                            *cached = Some(state.clone());
-                        }
-                        let mut event = state;
-                        if !art_changed {
-                            event.artwork = None;
-                        }
-                        let _ = app.emit("media", event);
-                        continue;
-                    }
-                }
+        if !suspended && rebind_session {
+            drop(session_subscriptions.take());
+            current = manager.as_ref().and_then(session_from_manager);
+            if let Some(value) = current.as_ref() {
+                session_subscriptions = SessionSubscriptions::new(value, &sender)
+                    .map_err(|error| eprintln!("Media session subscription: {error}"))
+                    .ok();
             }
+            emit_snapshot(
+                &app,
+                current.as_ref(),
+                &mut last_track_id,
+                &mut last_artwork,
+                &mut last_state,
+                &mut art_attempts,
+            );
+            rebind_session = false;
+        }
 
-            // No active session or player exited
-            if last_state.active {
-                last_state = MediaState::default();
-                last_track_id.clear();
-                last_artwork = None;
-                if let Ok(mut cached) = SNAPSHOT.lock() {
-                    *cached = Some(last_state.clone());
+        let waiting_for_manager = !suspended && manager.is_none();
+        let timeout = if waiting_for_manager {
+            manager_retry_delay(manager_failures)
+        } else {
+            MEDIA_SAFETY_REFRESH
+        };
+        let signal = receiver.recv_timeout(timeout);
+        match signal {
+            Ok(MediaSignal::Stop) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            Ok(MediaSignal::Suspend) => {
+                suspended = true;
+                drop(session_subscriptions.take());
+                drop(manager_subscriptions.take());
+                current = None;
+                manager = None;
+            }
+            Ok(MediaSignal::RebindAll) => {
+                suspended = false;
+                rebuild_all = true;
+                manager_failures = 0;
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) if waiting_for_manager => rebuild_all = true,
+            Ok(MediaSignal::ManagerChanged) => rebind_session = true,
+            Ok(MediaSignal::SessionChanged) | Err(mpsc::RecvTimeoutError::Timeout) => {
+                if !suspended {
+                    emit_snapshot(
+                        &app,
+                        current.as_ref(),
+                        &mut last_track_id,
+                        &mut last_artwork,
+                        &mut last_state,
+                        &mut art_attempts,
+                    );
                 }
-                let _ = app.emit("media", last_state.clone());
             }
         }
-    });
+    }
+
+    drop((
+        session_subscriptions,
+        manager_subscriptions,
+        current,
+        manager,
+    ));
+    if let Ok(mut guard) = SERVICE_TX.lock() {
+        *guard = None;
+    }
+    unsafe { CoUninitialize() };
+}
+
+pub fn suspend() {
+    #[cfg(windows)]
+    request(MediaSignal::Suspend);
+}
+
+pub fn resume() {
+    #[cfg(windows)]
+    request(MediaSignal::RebindAll);
+}
+
+pub fn stop() {
+    #[cfg(windows)]
+    request(MediaSignal::Stop);
 }
 
 #[cfg(windows)]
@@ -576,6 +906,18 @@ pub async fn media_seek(ms: i64) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn manager_retry_backs_off_to_safety_refresh() {
+        use std::time::Duration;
+        assert_eq!(manager_retry_delay(0), Duration::from_secs(2));
+        assert_eq!(manager_retry_delay(1), Duration::from_secs(2));
+        assert_eq!(manager_retry_delay(2), Duration::from_secs(5));
+        assert_eq!(manager_retry_delay(3), Duration::from_secs(10));
+        assert_eq!(manager_retry_delay(4), MEDIA_SAFETY_REFRESH);
+        assert_eq!(manager_retry_delay(u32::MAX), MEDIA_SAFETY_REFRESH);
+        assert_eq!(MEDIA_SAFETY_REFRESH, Duration::from_secs(30));
+    }
 
     #[test]
     fn test_clamp_seek_ms() {

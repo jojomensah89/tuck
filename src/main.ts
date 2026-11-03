@@ -292,6 +292,7 @@ const rail = mountTabRail({
 window.addEventListener('storage', event => {
   if (event.key !== LIVE_SETTINGS_KEY) return;
   livePreferences = readPreferences();
+  if (isTauri()) void invokeCommand('set_fullscreen_auto_hide', { enabled: livePreferences.fullscreenAutoHide });
   document.querySelector('.page.media')?.classList.toggle('with-lyrics', livePreferences.lyricsOpen);
   document.querySelector<HTMLButtonElement>('button[aria-label="Toggle lyrics"], .media-tools button')?.setAttribute('aria-pressed', String(livePreferences.lyricsOpen));
   setState(state);
@@ -1089,6 +1090,7 @@ if (!isTauri()) {
 }
 
 if (isTauri()) {
+  runAction(invokeCommand('set_fullscreen_auto_hide', { enabled: livePreferences.fullscreenAutoHide }), 'Apply fullscreen preference');
   runAction(invokeCommand<MediaState>('media_now').then(onMediaUpdate), 'Read media session');
   runAction(invokeCommand<boolean>('fullscreen_now').then(hidden => document.body.classList.toggle('fullscreen-hidden', hidden)), 'Read fullscreen state');
 }

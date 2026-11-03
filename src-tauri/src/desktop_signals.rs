@@ -1,6 +1,7 @@
-//! Desktop peeks and the source of the volume/brightness HUD. Only lock-key state and
-//! foreground input-language identity are examined; arbitrary key presses and typed
-//! text are never collected. Volume and brightness are event-driven
+//! Desktop peeks and the source of the volume/brightness HUD. Only lock-key state,
+//! volume-key state (when a level changes) and foreground input-language identity are
+//! examined, plus the time of the last input; arbitrary key presses and typed text are
+//! never collected. Volume and brightness are event-driven
 //! (`IAudioEndpointVolumeCallback`, WMI `WmiMonitorBrightnessEvent`); neither is polled.
 use serde::Serialize;
 use std::sync::mpsc;
@@ -70,6 +71,53 @@ pub fn step_volume(current: u32, delta: i32) -> u32 {
     next.clamp(0, 100) as u32
 }
 
+/// Brightness HUDs need input this recent; see `brightness_from_user`.
+pub(crate) const BRIGHTNESS_INPUT_WINDOW: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Whether a brightness change looks user-driven. Brightness keys and the Quick Settings
+/// slider come with input; adaptive brightness, idle dimming and charger ramps usually
+/// happen while nobody is typing. Unknown input age shows the HUD. Laptops whose
+/// brightness keys bypass Windows input entirely only get a HUD while in use.
+pub(crate) fn brightness_from_user(input_age: Option<std::time::Duration>) -> bool {
+    input_age.is_none_or(|age| age <= BRIGHTNESS_INPUT_WINDOW)
+}
+
+/// Milliseconds between two `GetTickCount` readings, across the 49.7-day wrap.
+pub(crate) fn input_age_from_ticks(last_input: u32, now: u32) -> std::time::Duration {
+    std::time::Duration::from_millis(u64::from(now.wrapping_sub(last_input)))
+}
+
+/// Time since the last user input anywhere; `None` when it cannot be read.
+pub(crate) fn user_input_age() -> Option<std::time::Duration> {
+    #[cfg(windows)]
+    return native::input_age();
+    #[cfg(not(windows))]
+    None
+}
+
+/// Whether a volume key is down or was just pressed. Only those three keys are read.
+pub(crate) fn volume_key_active() -> bool {
+    #[cfg(windows)]
+    return native::volume_key_active();
+    #[cfg(not(windows))]
+    false
+}
+
+/// Whether a step left the level stuck although it could have moved: the device only
+/// takes coarse steps, so `VolumeStepUp`/`VolumeStepDown` should finish the job.
+pub(crate) fn needs_step_fallback(before: u32, after: u32, delta: i32) -> bool {
+    match delta.signum() {
+        1 => before < 100 && after <= before,
+        -1 => before > 0 && after >= before,
+        _ => false,
+    }
+}
+
+/// Wheel steps the `volume_step` command accepts: non-zero, at most 100 either way.
+pub(crate) fn valid_volume_step(delta: i32) -> bool {
+    delta != 0 && delta.unsigned_abs() <= 100
+}
+
 #[cfg(windows)]
 mod native {
     use super::*;
@@ -99,7 +147,10 @@ mod native {
                 },
             },
             UI::{
-                Input::KeyboardAndMouse::{GetKeyState, GetKeyboardLayout, VK_CAPITAL},
+                Input::KeyboardAndMouse::{
+                    GetAsyncKeyState, GetKeyState, GetKeyboardLayout, GetLastInputInfo,
+                    LASTINPUTINFO, VK_CAPITAL, VK_VOLUME_DOWN, VK_VOLUME_MUTE, VK_VOLUME_UP,
+                },
                 Shell::PropertiesSystem::PROPERTYKEY,
                 WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId},
             },
@@ -317,16 +368,16 @@ mod native {
         }
     }
 
-    /// Subscribes only when a panel answers the brightness query once, so machines with
-    /// external monitors only hold no WMI subscription at all.
+    /// Subscribes whenever the `ROOT\WMI` service connects. The first read only seeds
+    /// the previous level: the provider can be slow to answer right after sign-in or
+    /// resume, and a missed first read must not cost the HUD for the whole session.
+    /// Machines with only external monitors simply never receive an event.
     fn watch_brightness(sender: &mpsc::Sender<Signal>) -> (Option<BrightnessWatch>, Option<u32>) {
         let Some(service) = brightness_service() else {
             return (None, None);
         };
-        let Some(level) = brightness(&service) else {
-            return (None, None);
-        };
-        (BrightnessWatch::new(service, sender), Some(level))
+        let level = brightness(&service);
+        (BrightnessWatch::new(service, sender), level)
     }
 
     /// Device enumerator and default-device callback, registered once for the thread's
@@ -421,6 +472,16 @@ mod native {
                         self.endpoint
                             .SetMasterVolumeLevelScalar(next as f32 / 100.0, std::ptr::null())
                             .ok()?;
+                        // Coarse-step devices round a small change back to where it was;
+                        // their own step always moves.
+                        let after = self.volume().map_or(level, |(after, _)| after);
+                        if needs_step_fallback(level, after, delta) {
+                            let _ = if delta > 0 {
+                                self.endpoint.VolumeStepUp(std::ptr::null())
+                            } else {
+                                self.endpoint.VolumeStepDown(std::ptr::null())
+                            };
+                        }
                         // Raising the volume unmutes, like the hardware keys.
                         if muted && delta > 0 {
                             self.endpoint.SetMute(false, std::ptr::null()).ok()?;
@@ -567,6 +628,8 @@ mod native {
         let mut layout = None;
         let mut cycles = 0u32;
         loop {
+            // A flyout lookup scheduled by a level change runs once Explorer settled.
+            crate::osd_flyout::tick();
             match receiver.recv_timeout(std::time::Duration::from_millis(250)) {
                 Ok(Signal::Stop) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
                 Ok(Signal::Suspend) => {
@@ -580,6 +643,8 @@ mod native {
                     let _ = sender.send(Signal::Rebind);
                 }
                 Ok(Signal::Adjust(request, reply)) => {
+                    // The resulting level change is Tuck's, not a flyout key press.
+                    crate::osd_flyout::note_self_change();
                     let result = audio
                         .as_ref()
                         .and_then(|audio| audio.adjust(request))
@@ -588,8 +653,14 @@ mod native {
                 }
                 Ok(Signal::Brightness(level)) => {
                     if previous_brightness != Some(level) {
-                        emit_level(&app, SystemLevel::brightness(level));
-                        crate::osd_flyout::on_level_change();
+                        // Adaptive, idle-dim and charger ramps arrive with nobody at the
+                        // keyboard; only changes right after input get a HUD.
+                        if brightness_from_user(input_age()) {
+                            emit_level(&app, SystemLevel::brightness(level));
+                        }
+                        crate::osd_flyout::on_level_change(
+                            crate::osd_flyout::LevelChange::Brightness,
+                        );
                     }
                     previous_brightness = Some(level);
                 }
@@ -614,7 +685,7 @@ mod native {
                     let current = (level, muted);
                     if previous_volume.is_some_and(|old| old != current) {
                         emit_level(&app, SystemLevel::volume(level, muted));
-                        crate::osd_flyout::on_level_change();
+                        crate::osd_flyout::on_level_change(crate::osd_flyout::LevelChange::Volume);
                     }
                     previous_volume = Some(current);
                 }
@@ -655,6 +726,26 @@ mod native {
             CoUninitialize();
         }
     }
+    /// Whether a volume key is down or was pressed since the last check.
+    pub(super) fn volume_key_active() -> bool {
+        [VK_VOLUME_MUTE, VK_VOLUME_DOWN, VK_VOLUME_UP]
+            .iter()
+            .any(|key| unsafe { GetAsyncKeyState(i32::from(key.0)) } != 0)
+    }
+
+    /// Time since the last keyboard, mouse or touch input in any app.
+    pub(super) fn input_age() -> Option<std::time::Duration> {
+        let mut info = LASTINPUTINFO {
+            cbSize: std::mem::size_of::<LASTINPUTINFO>() as u32,
+            dwTime: 0,
+        };
+        if !unsafe { GetLastInputInfo(&mut info) }.as_bool() {
+            return None;
+        }
+        let now = unsafe { windows::Win32::System::SystemInformation::GetTickCount() };
+        Some(input_age_from_ticks(info.dwTime, now))
+    }
+
     fn emit_level(app: &AppHandle, level: SystemLevel) {
         let _ = app.emit("system-level", level);
     }
@@ -787,7 +878,7 @@ async fn run_volume_request(request: VolumeRequest) -> Result<SystemLevel, Strin
 /// Island wheel: step the system volume by a signed percentage (2, or 10 with Shift).
 #[tauri::command]
 pub async fn volume_step(delta: i32) -> Result<SystemLevel, String> {
-    if delta == 0 || delta.abs() > 100 {
+    if !valid_volume_step(delta) {
         return Err("Volume step out of range".into());
     }
     run_volume_request(VolumeRequest::Step(delta)).await
@@ -822,6 +913,55 @@ mod tests {
         assert_eq!(step_volume(0, -10), 0);
         assert_eq!(step_volume(250, -2), 98);
         assert_eq!(step_volume(50, 0), 50);
+    }
+
+    #[test]
+    fn step_validation_survives_extreme_deltas() {
+        assert!(!valid_volume_step(0));
+        assert!(!valid_volume_step(i32::MIN));
+        assert!(!valid_volume_step(i32::MAX));
+        assert!(!valid_volume_step(101));
+        assert!(!valid_volume_step(-101));
+        assert!(valid_volume_step(100));
+        assert!(valid_volume_step(-100));
+        assert!(valid_volume_step(2));
+        // step_volume itself never overflows either
+        assert_eq!(step_volume(50, i32::MIN), 0);
+        assert_eq!(step_volume(50, i32::MAX), 100);
+    }
+
+    #[test]
+    fn stuck_steps_fall_back_to_the_device_step() {
+        // A coarse device rounded 50 -> 52 back to 50
+        assert!(needs_step_fallback(50, 50, 2));
+        assert!(needs_step_fallback(50, 50, -2));
+        // Rounded the wrong way
+        assert!(needs_step_fallback(50, 49, 2));
+        assert!(needs_step_fallback(50, 51, -2));
+        // Moved as asked, or nowhere to go
+        assert!(!needs_step_fallback(50, 52, 2));
+        assert!(!needs_step_fallback(50, 48, -2));
+        assert!(!needs_step_fallback(100, 100, 2));
+        assert!(!needs_step_fallback(0, 0, -2));
+        assert!(!needs_step_fallback(50, 50, 0));
+    }
+
+    #[test]
+    fn brightness_hud_needs_recent_input() {
+        use std::time::Duration;
+        assert!(brightness_from_user(Some(Duration::from_millis(200))));
+        assert!(brightness_from_user(Some(BRIGHTNESS_INPUT_WINDOW)));
+        assert!(!brightness_from_user(Some(Duration::from_secs(120))));
+        assert!(brightness_from_user(None));
+        assert_eq!(
+            input_age_from_ticks(1_000, 1_500),
+            Duration::from_millis(500)
+        );
+        // GetTickCount wraps after 49.7 days
+        assert_eq!(
+            input_age_from_ticks(u32::MAX - 99, 100),
+            Duration::from_millis(200)
+        );
     }
 
     #[test]

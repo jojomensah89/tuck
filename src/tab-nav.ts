@@ -82,9 +82,13 @@ export interface WheelState {
   lastWheelAt: number;
   /** The current gesture already scrolled content, so it may not also change tabs */
   gestureScrolled: boolean;
+  /** The current gesture already changed tabs; the rest of it (trackpad momentum) is swallowed */
+  gestureSwitched: boolean;
 }
 
-export const INITIAL_WHEEL_STATE: WheelState = { lockedUntil: 0, lastWheelAt: -Infinity, gestureScrolled: false };
+export const INITIAL_WHEEL_STATE: WheelState = {
+  lockedUntil: 0, lastWheelAt: -Infinity, gestureScrolled: false, gestureSwitched: false,
+};
 
 export interface WheelInput {
   deltaX: number;
@@ -118,17 +122,20 @@ export function wheelStep(state: WheelState, input: WheelInput): { state: WheelS
     lockedUntil: state.lockedUntil,
     lastWheelAt: now,
     gestureScrolled: freshGesture ? false : state.gestureScrolled,
+    gestureSwitched: freshGesture ? false : state.gestureSwitched,
   };
   const horizontal = Math.abs(deltaX) > Math.abs(deltaY);
   const delta = horizontal ? deltaX : deltaY;
   if (delta === 0) return { state: next, action: { kind: 'none' } };
-  if (now < state.lockedUntil) return { state: next, action: { kind: 'block' } };
+  // One gesture moves one tab: momentum can outlast the lock, so block until the gesture ends
+  if (next.gestureSwitched || now < state.lockedUntil) return { state: next, action: { kind: 'block' } };
   if (!horizontal && chain.some(m => canScroll(m, delta))) {
     next.gestureScrolled = true;
     return { state: next, action: { kind: 'scroll' } };
   }
   if (!horizontal && next.gestureScrolled) return { state: next, action: { kind: 'none' } };
   next.lockedUntil = now + SWITCH_LOCK_MS;
+  next.gestureSwitched = true;
   return { state: next, action: { kind: 'switch', delta: delta > 0 ? 1 : -1 } };
 }
 

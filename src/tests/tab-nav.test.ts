@@ -136,3 +136,33 @@ describe('remembered tab', () => {
     expect(normalizePreferences({}).lastTab).toBe('media');
   });
 });
+
+describe('wheel momentum', () => {
+  const bottom: ScrollMetrics = { scrollTop: 178, scrollHeight: 356, clientHeight: 178 };
+  const stream = (deltaX: number, deltaY: number, from: number, to: number, state = INITIAL_WHEEL_STATE) => {
+    const actions: string[] = [];
+    for (let now = from; now <= to; now += 16) {
+      const r = wheelStep(state, { deltaX, deltaY, now, chain: [bottom] });
+      state = r.state;
+      actions.push(r.action.kind);
+    }
+    return { actions, state };
+  };
+
+  test('moves one tab per continuous vertical gesture, even past the lock', () => {
+    const { actions } = stream(0, 40, 1000, 2000);
+    expect(actions.filter(a => a === 'switch')).toHaveLength(1);
+    expect(actions.filter(a => a === 'scroll')).toHaveLength(0);
+  });
+
+  test('moves one tab per continuous horizontal swipe', () => {
+    const { actions } = stream(40, 0, 1000, 2000);
+    expect(actions.filter(a => a === 'switch')).toHaveLength(1);
+  });
+
+  test('lets a new gesture switch again after a pause', () => {
+    const first = stream(40, 0, 1000, 1400);
+    const second = stream(40, 0, 2000, 2100, first.state);
+    expect(second.actions[0]).toBe('switch');
+  });
+});

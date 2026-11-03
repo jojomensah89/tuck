@@ -71,7 +71,7 @@ pub fn step_volume(current: u32, delta: i32) -> u32 {
     next.clamp(0, 100) as u32
 }
 
-/// Brightness HUDs need input this recent; see `brightness_from_user`.
+/// Brightness HUDs need input this recent; see `brightness_shows_hud`.
 pub(crate) const BRIGHTNESS_INPUT_WINDOW: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// Whether a brightness change looks user-driven. Brightness keys and the Quick Settings
@@ -111,12 +111,15 @@ pub(crate) struct BrightnessRamp {
 }
 
 impl BrightnessRamp {
-    /// `previous` is the level before this change, when known.
+    /// `previous` is the level before this change, when known. With `keep_final` a run
+    /// still releases its last level once it ends: quick presses of a small brightness
+    /// key look like a ramp, and with the Windows flyout hidden they have no other feedback.
     pub(crate) fn observe(
         &mut self,
         previous: Option<u32>,
         level: u32,
         now: std::time::Instant,
+        keep_final: bool,
     ) -> RampVerdict {
         let close = self
             .last_change
@@ -128,7 +131,7 @@ impl BrightnessRamp {
             self.held = None;
             RampVerdict::Show
         } else if close {
-            self.held = None;
+            self.held = keep_final.then_some((level, now + RAMP_MAX_GAP));
             RampVerdict::Ignore
         } else {
             self.held = Some((level, now + RAMP_MAX_GAP));
@@ -718,12 +721,15 @@ mod native {
                         .map(|(level, muted)| SystemLevel::volume(level, muted));
                     let _ = reply.send(result);
                 }
+                // Queued after Suspend: the subscription is gone and the level may be stale.
+                Ok(Signal::Brightness(_)) if brightness_watch.is_none() => {}
                 Ok(Signal::Brightness(level)) => {
                     if previous_brightness != Some(level) {
                         let verdict = brightness_ramp.observe(
                             previous_brightness,
                             level,
                             std::time::Instant::now(),
+                            crate::osd_flyout::flyout_hidden(),
                         );
                         if verdict == RampVerdict::Show {
                             emit_brightness(&app, level);
@@ -1056,13 +1062,38 @@ mod tests {
         let at = |ms: u64| start + Duration::from_millis(ms);
         let mut ramp = BrightnessRamp::default();
         // The first small step waits: it may be the start of a ramp
-        assert_eq!(ramp.observe(Some(50), 49, at(0)), RampVerdict::Hold);
+        assert_eq!(ramp.observe(Some(50), 49, at(0), false), RampVerdict::Hold);
         assert_eq!(ramp.due(at(100)), None);
         // It was: nothing of it ever shows, however long the run lasts
-        assert_eq!(ramp.observe(Some(49), 47, at(200)), RampVerdict::Ignore);
-        assert_eq!(ramp.observe(Some(47), 46, at(1_100)), RampVerdict::Ignore);
-        assert_eq!(ramp.observe(Some(46), 44, at(2_100)), RampVerdict::Ignore);
+        assert_eq!(
+            ramp.observe(Some(49), 47, at(200), false),
+            RampVerdict::Ignore
+        );
+        assert_eq!(
+            ramp.observe(Some(47), 46, at(1_100), false),
+            RampVerdict::Ignore
+        );
+        assert_eq!(
+            ramp.observe(Some(46), 44, at(2_100), false),
+            RampVerdict::Ignore
+        );
         assert_eq!(ramp.due(at(10_000)), None);
+    }
+
+    #[test]
+    fn a_run_shows_its_last_level_when_the_flyout_is_hidden() {
+        use std::time::{Duration, Instant};
+        let start = Instant::now();
+        let at = |ms: u64| start + Duration::from_millis(ms);
+        let mut ramp = BrightnessRamp::default();
+        assert_eq!(ramp.observe(Some(50), 47, at(0), true), RampVerdict::Hold);
+        assert_eq!(
+            ramp.observe(Some(47), 44, at(300), true),
+            RampVerdict::Ignore
+        );
+        assert_eq!(ramp.due(at(1_000)), None);
+        assert_eq!(ramp.due(at(1_300)), Some(44));
+        assert_eq!(ramp.due(at(1_400)), None);
     }
 
     #[test]
@@ -1071,24 +1102,42 @@ mod tests {
         let start = Instant::now();
         let at = |ms: u64| start + Duration::from_millis(ms);
         let mut ramp = BrightnessRamp::default();
-        assert_eq!(ramp.observe(Some(50), 53, at(0)), RampVerdict::Hold);
+        assert_eq!(ramp.observe(Some(50), 53, at(0), false), RampVerdict::Hold);
         assert_eq!(ramp.due(at(999)), None);
         assert_eq!(ramp.due(at(1_000)), Some(53));
         assert_eq!(ramp.due(at(1_001)), None, "Released once");
         // Brightness keys move further, even in quick succession
-        assert_eq!(ramp.observe(Some(53), 63, at(5_000)), RampVerdict::Show);
-        assert_eq!(ramp.observe(Some(63), 73, at(5_100)), RampVerdict::Show);
+        assert_eq!(
+            ramp.observe(Some(53), 63, at(5_000), false),
+            RampVerdict::Show
+        );
+        assert_eq!(
+            ramp.observe(Some(63), 73, at(5_100), false),
+            RampVerdict::Show
+        );
         // A key press during a held step replaces it
-        assert_eq!(ramp.observe(Some(73), 72, at(9_000)), RampVerdict::Hold);
-        assert_eq!(ramp.observe(Some(72), 62, at(9_100)), RampVerdict::Show);
+        assert_eq!(
+            ramp.observe(Some(73), 72, at(9_000), false),
+            RampVerdict::Hold
+        );
+        assert_eq!(
+            ramp.observe(Some(72), 62, at(9_100), false),
+            RampVerdict::Show
+        );
         assert_eq!(ramp.due(at(20_000)), None);
         // Small steps apart from each other are separate changes
-        assert_eq!(ramp.observe(Some(62), 61, at(30_000)), RampVerdict::Hold);
+        assert_eq!(
+            ramp.observe(Some(62), 61, at(30_000), false),
+            RampVerdict::Hold
+        );
         assert_eq!(ramp.due(at(31_000)), Some(61));
-        assert_eq!(ramp.observe(Some(61), 60, at(32_001)), RampVerdict::Hold);
+        assert_eq!(
+            ramp.observe(Some(61), 60, at(32_001), false),
+            RampVerdict::Hold
+        );
         // No known previous level: show it
         let mut fresh = BrightnessRamp::default();
-        assert_eq!(fresh.observe(None, 60, at(0)), RampVerdict::Show);
+        assert_eq!(fresh.observe(None, 60, at(0), false), RampVerdict::Show);
     }
 
     #[test]

@@ -27,8 +27,9 @@
 //!   identified.
 //! - The stored window is re-checked (class pair and shell process) before every
 //!   `ShowWindowAsync`, so a recycled handle is never touched.
-//! - Restored on disable, on exit, and while the island would not show a level change:
+//! - Restored on disable, on exit, and while the island is not the main level feedback:
 //!   hidden for a fullscreen app, the HUD switch off, or pinned open (`pause_reason`).
+//!   A pinned island still shows the level in its strip, so both appear there.
 //!   A marker file records that something may be minimized; it is only removed once a
 //!   restore really ran, so a crash (release builds abort on panic) is repaired on the
 //!   next start. Nothing is minimized if the marker cannot be written.
@@ -68,7 +69,7 @@ pub enum FlyoutState {
     Off,
     /// The flyout host was found and is minimized.
     Hidden,
-    /// Enabled, but the flyout is not hidden yet (or paused for a fullscreen app).
+    /// Enabled, but the flyout is not hidden yet (or given back for now; `pause_reason`).
     Waiting,
     /// The flyout could not be identified; the setting turned itself off.
     Unavailable,
@@ -321,7 +322,7 @@ struct Inner {
     fullscreen: bool,
     /// The HUD switch is off, so the island would show nothing; likewise given back.
     hud_off: bool,
-    /// The island is pinned open and shows no HUD; likewise given back.
+    /// The island is pinned open, with only its in-strip level; likewise given back.
     pinned_open: bool,
     /// Raw HWND of the minimized host, 0 when not hidden.
     hidden: isize,
@@ -663,7 +664,7 @@ pub fn set_fullscreen(active: bool) {
     update_pause(|inner| inner.fullscreen = active);
 }
 
-/// The island would not show a level change: the HUD switch is off, or it is pinned open
+/// The island is not the main level feedback: the HUD switch is off, or it is pinned open
 /// and in use. The flyout is given back the same way as for a fullscreen app.
 pub fn set_island_pause(hud_off: bool, pinned_open: bool) {
     update_pause(|inner| {

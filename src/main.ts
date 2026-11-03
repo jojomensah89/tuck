@@ -286,9 +286,10 @@ function setState(next: IslandState): void {
 }
 
 /**
- * The Windows flyout comes back while the island would not show a level change: the
- * HUD switch is off, or the island is pinned open. A peek over a pinned island is
- * only a pause in being open, so it does not count as leaving.
+ * The Windows flyout comes back while the HUD switch is off (the island shows nothing)
+ * or the island is pinned open (it stays in use, and the in-strip level is easy to miss
+ * there, so both show). A peek over a pinned island is only a pause in being open, so
+ * it does not count as leaving.
  */
 function syncFlyoutPause(): void {
   if (!isTauri()) return;
@@ -1083,7 +1084,8 @@ function renderHud(reading: HudReading, compact: HTMLElement): void {
 
 function settleHud(): void {
   hud.dismiss();
-  window.clearTimeout(hudAnnounceTimer);
+  // An island opened meanwhile owns the announcement timer for its in-strip level
+  if (state !== 'open') window.clearTimeout(hudAnnounceTimer);
   finishPeek();
 }
 
@@ -1172,8 +1174,8 @@ isl.addEventListener('wheel', event => {
   if (result.delta !== 0) applyVolume('volume_step', { delta: result.delta });
 }, { passive: false, capture: true });
 
-// Middle click toggles mute; stopping the press also stops the browser's autoscroll
-isl.addEventListener('mousedown', event => { if (event.button === 1 && overLevelInput(event)) event.preventDefault(); }, { capture: true });
+// Middle click toggles mute over the strip; stopping the press stops the browser's autoscroll everywhere
+isl.addEventListener('mousedown', event => { if (event.button === 1) event.preventDefault(); }, { capture: true });
 isl.addEventListener('auxclick', event => {
   if (event.button !== 1 || !overLevelInput(event)) return;
   event.preventDefault();

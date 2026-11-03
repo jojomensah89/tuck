@@ -94,6 +94,6 @@ export function mountExtensionSettings():void{
  file?.addEventListener('change',()=>{void run(async()=>{const selected=file.files?.[0];if(!selected)return;if(selected.size>2*1024*1024)throw new Error('Calendar must be no larger than 2 MB.');const count=await invoke<number>('calendar_import',{text:await selected.text()});setMessage(`Imported ${count} calendar events.`);}).finally(()=>{file.value='';});});
  const access=document.getElementById('requestNotificationAccess') as HTMLButtonElement|null;
  access?.addEventListener('click',()=>{void run(async()=>{setMessage(await invoke<string>('notification_access'));},access);});
- if(isTauri())void invoke<ExtensionSnapshot>('extension_snapshot').then(value=>{for(const[key,input]of checks)input.checked=value.settings[key];setMessage(value.notificationStatus==='Disabled'?'':value.notificationStatus);}).catch(()=>setMessage('Could not read activity settings.',true));
+ if(isTauri())void invoke<ExtensionSnapshot>('extension_snapshot').then(value=>{for(const[key,input]of checks)input.checked=value.settings[key];window.dispatchEvent(new Event('settings-loaded'));setMessage(value.notificationStatus==='Disabled'?'':value.notificationStatus);}).catch(()=>setMessage('Could not read activity settings.',true));
  else{checks.forEach(check=>{check.disabled=true;});if(access)access.disabled=true;if(file)file.disabled=true;setMessage('Windows activities need the desktop app.');}
 }

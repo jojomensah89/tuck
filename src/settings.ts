@@ -145,6 +145,11 @@ function mountPrivacy(): void {
   for (const link of document.querySelectorAll<HTMLAnchorElement>('.mirror[data-focus]')) {
     link.addEventListener('click', () => {
       const id = link.dataset.focus!;
+      const search = $<HTMLInputElement>('settingsSearch');
+      if (search?.value) { search.value = ''; applySearch(''); }
+      // Same view: the hash won't change, so show the target view directly
+      const view = link.getAttribute('href')?.slice(1);
+      if (view && location.hash === `#${view}`) showView(view);
       // Focus after the hash change has swapped the view in.
       window.setTimeout(() => $(id)?.focus(), 0);
     });
@@ -152,6 +157,7 @@ function mountPrivacy(): void {
   const privacyLabel = document.querySelector<HTMLAnchorElement>('#row-privacy-api .mirror');
   privacyLabel?.setAttribute('aria-label', 'API spend: change keys');
   document.addEventListener('change', refreshPrivacy);
+  window.addEventListener('settings-loaded', refreshPrivacy);
 }
 
 /* ================= Island shape ================= */

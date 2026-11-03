@@ -66,7 +66,7 @@ try {
   assert.equal(await page.locator('#view-keys').isVisible(),false);
   await page.locator('#nav a[data-view="general"]').focus();
   await page.keyboard.press('ArrowDown');
-  assert.equal(await page.locator('#view-island').isVisible(),true);
+  await page.locator('#view-island').waitFor({state:'visible'});
   assert.equal(await page.locator('#nav a[data-view="island"]').getAttribute('aria-current'),'page');
   // Search filters rows across every view, and clears with Escape.
   await page.keyboard.press('Control+f');
@@ -76,7 +76,15 @@ try {
   assert.equal(await page.locator('#row-kOpenai').isVisible(),false);
   assert.equal(await page.locator('#row-openDelay').isVisible(),false);
   await page.keyboard.press('Escape');
-  assert.equal(await page.locator('#view-island').isVisible(),true);
+  await page.locator('#view-island').waitFor({state:'visible'});
+  // A default profile (180ms expand delay) must save a switch change straight away
+  await page.evaluate(() => localStorage.removeItem('tuck.live.v2'));
+  await page.reload(); await page.locator('#nav a[data-view="island"]').click();
+  await page.locator('#view-island').waitFor({state:'visible'});
+  const hoverBefore = await page.locator('#hoverExpand').isChecked();
+  await page.locator('#hoverExpand').click();
+  assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem('tuck.live.v2') || '{}').hoverExpand), !hoverBefore, 'Default delays do not block saving');
+  await page.locator('#hoverExpand').click(); // restore for the island checks below
   assert.equal(await page.locator('#row-openDelay').isVisible(),true);
   await page.locator('#nav a[data-view="keys"]').click();
   await page.locator('#kAnthropic').fill('test-placeholder-not-a-key');

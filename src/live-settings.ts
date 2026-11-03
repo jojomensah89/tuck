@@ -25,6 +25,12 @@ export function mountLiveSettings(): void {
     }
     if (invalid) {
       const field = input(invalid);
+      // A blocked save must not leave a switch showing a state that was never stored
+      if (changed.type === 'checkbox') changed.checked = !changed.checked;
+      if (changed.type === 'radio') {
+        const stored = readPreferences().compactContent;
+        for (const radio of compact()) radio.checked = radio.value === stored;
+      }
       clearSaved(changed);
       setStatus(statusFor(invalid), `Enter a value from ${field.min} to ${field.max}${field.step && field.step !== '1' ? ` in steps of ${field.step}` : ''}.`, 'error');
       return;
@@ -51,6 +57,7 @@ export function mountLiveSettings(): void {
   for (const [id, family] of [['onlineLyrics', 'lyrics'], ['audioVisualizer', 'visualizer']] as const) {
     void nativeService<{ enabled: boolean }>(`${family}_settings`).then(data => {
       input(id).checked = data.enabled === true; input(id).disabled = false;
+      window.dispatchEvent(new Event('settings-loaded'));
     }).catch(() => setStatus('mediaServiceStatus', 'Lyrics lookup and the visualizer need the desktop app.'));
     input(id).onchange = async () => {
       const enabled = input(id).checked; input(id).disabled = true;
@@ -77,12 +84,16 @@ export function mountLiveSettings(): void {
     dictationStatus(data.modelReady ? 'Offline model ready.' : 'Download the model before recording.');
   }).catch(() => dictationStatus('Dictation needs the desktop app.'));
   const saveDictation = async (changed: HTMLInputElement) => {
+    // Lock the fields so two saves can't finish out of order and revert to stale values
+    dictationFields.forEach(id => { input(id).disabled = true; });
     const settings: DictationSettings = { toggleShortcut: input('dictationShortcut').value.trim(), holdToTalkShortcut: input('dictationHoldShortcut').value.trim(), reviewBeforeInsert: input('dictationReview').checked, partialPreview: input('dictationPreview').checked };
     try { await nativeAction('dictation_set_settings', { settings }); savedDictation = settings; setStatus('dictationStatus', ''); markSaved(changed); }
     catch {
       if (savedDictation) applyDictation(savedDictation);
       clearSaved(changed);
       setStatus('dictationStatus', 'Could not save shortcut or dictation settings. The previous values are back.', 'error');
+    } finally {
+      dictationFields.forEach(id => { input(id).disabled = false; });
     }
   };
   for (const id of ['dictationReview', 'dictationPreview']) input(id).addEventListener('change', () => { void saveDictation(input(id)); });
@@ -111,6 +122,7 @@ export function mountLiveSettings(): void {
   /* ---------- Clipboard: both flags in one native mutation ---------- */
   const clipboardIds = ['clipboardEnabled', 'clipboardPersist'];
   void nativeService<{ enabled: boolean; persist: boolean }>('clipboard_settings').then(data => {
+    window.dispatchEvent(new Event('settings-loaded'));
     input('clipboardEnabled').checked = data.enabled; input('clipboardPersist').checked = data.persist;
     clipboardIds.forEach(id => { input(id).disabled = false; });
   }).catch(() => setStatus('clipboardSetupStatus', 'Clipboard history needs the desktop app.'));

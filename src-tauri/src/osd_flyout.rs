@@ -18,19 +18,23 @@
 //! The same host draws the brightness and media-key flyouts, so those are hidden too.
 //! Safety rules:
 //! - Off by default; only applied while Tuck runs.
-//! - Explorer creates the host on the first flyout of a session, so nothing is looked
-//!   up before a hardware key changed the level (`hardware_originated`); at autostart
+//! - Explorer creates the host on the first flyout of a session, so a new host is only
+//!   accepted after a volume key changed the level (`flyout_evidence`); at autostart
 //!   another shell window could otherwise pass for it. Tuck's own changes, the Quick
 //!   Settings slider and apps changing the volume show no flyout, so they neither
-//!   trigger a lookup nor count towards giving up.
+//!   trigger a lookup nor count towards giving up. Brightness keys have no key code and
+//!   look like the slider, so a brightness change can only re-minimize a host already
+//!   identified.
 //! - The stored window is re-checked (class pair and shell process) before every
 //!   `ShowWindowAsync`, so a recycled handle is never touched.
-//! - Restored on disable, on exit and while the island is hidden for a fullscreen app
-//!   (so fullscreen apps keep their volume feedback). A marker file records that
-//!   something may be minimized; it is only removed once a restore really ran, so a
-//!   crash (release builds abort on panic) is repaired on the next start.
-//! - If the window cannot be identified after changes that should have shown it, the
-//!   setting turns itself off and says so until the user changes it again.
+//! - Restored on disable, on exit, and while the island would not show a level change:
+//!   hidden for a fullscreen app, the HUD switch off, or pinned open (`pause_reason`).
+//!   A marker file records that something may be minimized; it is only removed once a
+//!   restore really ran, so a crash (release builds abort on panic) is repaired on the
+//!   next start. Nothing is minimized if the marker cannot be written.
+//! - If the window cannot be identified after volume keys that should have shown it,
+//!   the setting turns itself off and says so until the user changes it or Tuck
+//!   restarts. Only the switched-off preference is saved; the message is not.
 //! - Explorer restarts create a fresh host; `reapply` forgets the old one.
 //! - Only `ShowWindowAsync` is used on the foreign window, so a hung Explorer can
 //!   never block Tuck.
@@ -49,7 +53,7 @@ pub(crate) const GIVE_UP_ATTEMPTS: u32 = 3;
 pub(crate) const GIVE_UP_AFTER: Duration = Duration::from_secs(60);
 /// Level changes this soon after Tuck's own wheel or mute request are Tuck's.
 pub(crate) const SELF_CHANGE_WINDOW: Duration = Duration::from_millis(750);
-/// Brightness keys have no key code, so a brightness change counts as hardware-originated
+/// Brightness keys have no key code, so a brightness change may have shown the flyout
 /// when the user touched an input device this recently.
 pub(crate) const FLYOUT_INPUT_WINDOW: Duration = Duration::from_secs(2);
 /// The lookup waits this long after a change, so Explorer has created the host.
@@ -219,29 +223,44 @@ pub enum LevelChange {
     Brightness,
 }
 
-/// Whether a level change came from a hardware key, so Windows showed its flyout and
-/// the host exists. A volume change needs a volume key seen down. Brightness keys have
-/// no key code, so recent input stands in; unknown input age counts.
-pub(crate) fn hardware_originated(
+/// What a level change says about the Windows flyout.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FlyoutEvidence {
+    /// Nothing: no flyout showed, or there is no telling.
+    None,
+    /// A flyout may have shown, so a host already identified should be checked. A
+    /// brightness change after input may just as well be the Quick Settings slider.
+    MaybeShown,
+    /// A volume key changed the level, so Windows showed its flyout and the host exists.
+    /// Only this proves a new host.
+    Shown,
+}
+
+/// A volume change needs a volume key seen down. Brightness keys have no key code, so
+/// recent input stands in; unknown input age counts.
+pub(crate) fn flyout_evidence(
     change: LevelChange,
     own_request: bool,
     volume_key: bool,
     input_age: Option<Duration>,
-) -> bool {
-    !own_request
-        && match change {
-            LevelChange::Volume => volume_key,
-            LevelChange::Brightness => input_age.is_none_or(|age| age <= FLYOUT_INPUT_WINDOW),
+) -> FlyoutEvidence {
+    if own_request {
+        return FlyoutEvidence::None;
+    }
+    match change {
+        LevelChange::Volume if volume_key => FlyoutEvidence::Shown,
+        LevelChange::Brightness if input_age.is_none_or(|age| age <= FLYOUT_INPUT_WINDOW) => {
+            FlyoutEvidence::MaybeShown
         }
+        _ => FlyoutEvidence::None,
+    }
 }
 
-/// Give-up accounting for one lookup. Returns the message to give up with. Only a lookup
-/// after a volume key counts (`counts`): a brightness change right after input may be the
-/// Quick Settings slider, which shows no flyout. A found host starts the count over.
+/// Give-up accounting for one lookup, which always follows a volume key. Returns the
+/// message to give up with. A found host starts the count over.
 pub(crate) fn account_lookup(
     misses: &mut Misses,
     pick: &Pick<()>,
-    counts: bool,
     now: Instant,
 ) -> Option<&'static str> {
     let message = match pick {
@@ -252,7 +271,7 @@ pub(crate) fn account_lookup(
         Pick::NotFound => NOT_FOUND,
         Pick::Ambiguous => AMBIGUOUS,
     };
-    (counts && misses.record(now)).then_some(message)
+    misses.record(now).then_some(message)
 }
 
 /// Failed lookups since the setting was last enabled or the host was last found.
@@ -286,8 +305,12 @@ impl Misses {
 const NOT_FOUND: &str = "Turned off: Windows showed its volume flyout several times, but Tuck couldn't find it on this version of Windows";
 const AMBIGUOUS: &str =
     "Turned off: Tuck couldn't tell the Windows volume flyout apart from other shell windows";
-const WAITING: &str = "Takes effect after the next volume or brightness key press";
-const PAUSED: &str = "Paused while a fullscreen app hides the island";
+const WAITING: &str = "Waiting for a volume key Windows can see";
+const PAUSED_FULLSCREEN: &str = "Paused while a fullscreen app hides the island";
+const PAUSED_HUD_OFF: &str = "Paused while the volume and brightness HUD is off";
+const PAUSED_PINNED: &str = "Paused while the island is pinned open";
+const MARKER_FAILED: &str =
+    "Waiting: Tuck couldn't save the file that lets it repair the flyout after a crash";
 
 struct Inner {
     app: Option<AppHandle>,
@@ -296,38 +319,30 @@ struct Inner {
     stopping: bool,
     /// The island is hidden for a fullscreen app; the flyout is given back meanwhile.
     fullscreen: bool,
+    /// The HUD switch is off, so the island would show nothing; likewise given back.
+    hud_off: bool,
+    /// The island is pinned open and shows no HUD; likewise given back.
+    pinned_open: bool,
     /// Raw HWND of the minimized host, 0 when not hidden.
     hidden: isize,
-    /// A hardware key changed a level since Explorer started, so its host exists and a
+    /// A volume key changed the level since Explorer started, so its host exists and a
     /// lookup is meaningful.
     flyout_seen: bool,
     /// When Tuck last changed the volume itself.
     last_request: Option<Instant>,
-    /// A lookup due at this time, after a hardware-originated change.
+    /// A lookup due at this time, after a volume key.
     lookup_at: Option<Instant>,
-    /// The due lookup follows a volume key, so a failure counts towards giving up.
-    lookup_counts: bool,
     misses: Misses,
     /// A restore could not run (Explorer not up yet); retried on later events.
     repair_pending: bool,
-    /// Why the setting last turned itself off; shown until the user changes it.
+    /// The marker could not be written, so the host found was left alone.
+    marker_failed: bool,
+    /// Why the setting last turned itself off; shown until the user changes it. Kept in
+    /// memory only, so a restart forgets it (the preference stays off).
     failure: Option<&'static str>,
 }
 
-static STATE: Mutex<Inner> = Mutex::new(Inner {
-    app: None,
-    enabled: false,
-    stopping: false,
-    fullscreen: false,
-    hidden: 0,
-    flyout_seen: false,
-    last_request: None,
-    lookup_at: None,
-    lookup_counts: false,
-    misses: Misses::new(),
-    repair_pending: false,
-    failure: None,
-});
+static STATE: Mutex<Inner> = Mutex::new(Inner::new());
 
 fn state() -> std::sync::MutexGuard<'static, Inner> {
     STATE
@@ -336,6 +351,25 @@ fn state() -> std::sync::MutexGuard<'static, Inner> {
 }
 
 impl Inner {
+    const fn new() -> Self {
+        Self {
+            app: None,
+            enabled: false,
+            stopping: false,
+            fullscreen: false,
+            hud_off: false,
+            pinned_open: false,
+            hidden: 0,
+            flyout_seen: false,
+            last_request: None,
+            lookup_at: None,
+            misses: Misses::new(),
+            repair_pending: false,
+            marker_failed: false,
+            failure: None,
+        }
+    }
+
     fn status(&self) -> FlyoutStatus {
         if !self.enabled {
             match self.failure {
@@ -344,10 +378,25 @@ impl Inner {
             }
         } else if self.hidden != 0 {
             FlyoutStatus::new(FlyoutState::Hidden, None)
-        } else if self.fullscreen {
-            FlyoutStatus::new(FlyoutState::Waiting, Some(PAUSED))
+        } else if let Some(reason) = self.pause_reason() {
+            FlyoutStatus::new(FlyoutState::Waiting, Some(reason))
+        } else if self.marker_failed {
+            FlyoutStatus::new(FlyoutState::Waiting, Some(MARKER_FAILED))
         } else {
             FlyoutStatus::new(FlyoutState::Waiting, Some(WAITING))
+        }
+    }
+
+    /// Why the flyout is given back for now, if it is.
+    fn pause_reason(&self) -> Option<&'static str> {
+        if self.fullscreen {
+            Some(PAUSED_FULLSCREEN)
+        } else if self.hud_off {
+            Some(PAUSED_HUD_OFF)
+        } else if self.pinned_open {
+            Some(PAUSED_PINNED)
+        } else {
+            None
         }
     }
 
@@ -359,16 +408,17 @@ impl Inner {
 
     /// Whether the host should be minimized right now.
     fn active(&self) -> bool {
-        self.enabled && !self.stopping && !self.fullscreen
+        self.enabled && !self.stopping && self.pause_reason().is_none()
     }
 
-    fn marker(&self, present: bool) {
+    /// Writes or removes the marker. False when that failed.
+    fn marker(&self, present: bool) -> bool {
         let Some(dir) = self
             .app
             .as_ref()
             .and_then(|app| app.path().app_config_dir().ok())
         else {
-            return;
+            return false;
         };
         let path = dir.join(MARKER);
         let result = if present {
@@ -379,9 +429,10 @@ impl Inner {
                 other => other,
             }
         };
-        if let Err(error) = result {
+        if let Err(error) = &result {
             eprintln!("Flyout marker: {error}");
         }
+        result.is_ok()
     }
 
     fn marker_present(&self) -> bool {
@@ -391,14 +442,21 @@ impl Inner {
             .is_some_and(|dir| dir.join(MARKER).exists())
     }
 
-    /// Looks the host up and minimizes it. Returns false when it was not identified.
+    /// Minimizes an identified host. The marker comes first: a crash must still be
+    /// repaired, so without a marker the host is left alone and the next key retries.
+    fn adopt_host(&mut self, hwnd: isize) {
+        self.marker_failed = !self.marker(true);
+        if !self.marker_failed {
+            native::hide(hwnd);
+            self.hidden = hwnd;
+        }
+    }
+
+    /// Looks the host up and minimizes it. `Found` only says the host was identified.
     fn lookup_and_hide(&mut self) -> Pick<()> {
         match native::find_host() {
             Pick::Found(hwnd) => {
-                // Mark first: a crash between the two calls must still be repaired.
-                self.marker(true);
-                native::hide(hwnd);
-                self.hidden = hwnd;
+                self.adopt_host(hwnd);
                 self.misses.reset();
                 Pick::Found(())
             }
@@ -407,13 +465,13 @@ impl Inner {
         }
     }
 
-    /// A lookup that follows a hardware-originated change.
-    fn scheduled_lookup(&mut self, counts: bool, now: Instant) {
+    /// A lookup that follows a volume key.
+    fn scheduled_lookup(&mut self, now: Instant) {
         let pick = self.lookup_and_hide();
         if pick == Pick::Found(()) {
             self.emit_status();
         }
-        if let Some(message) = account_lookup(&mut self.misses, &pick, counts, now) {
+        if let Some(message) = account_lookup(&mut self.misses, &pick, now) {
             self.give_up(message);
         }
     }
@@ -439,13 +497,13 @@ impl Inner {
             self.hidden = 0;
         }
         self.lookup_at = None;
-        self.lookup_counts = false;
         self.misses.reset();
         // Without a confirmed restore, sweep every minimized host the marker may mean.
         let present = self.marker_present();
         let repaired = done || !present || native::restore_leftovers().is_some();
         if repaired && present {
-            self.marker(false);
+            // A marker that stays only means a harmless sweep on the next start.
+            let _ = self.marker(false);
         }
         self.repair_pending = !repaired;
     }
@@ -477,6 +535,12 @@ pub fn status() -> FlyoutStatus {
     state().status()
 }
 
+/// Whether the Windows flyout is minimized right now, leaving the island as the only
+/// level feedback.
+pub fn flyout_hidden() -> bool {
+    state().hidden != 0
+}
+
 pub fn set_enabled(app: &AppHandle, enabled: bool) -> Result<FlyoutStatus, String> {
     if !native::SUPPORTED && enabled {
         return Ok(FlyoutStatus::new(
@@ -493,11 +557,11 @@ pub fn set_enabled(app: &AppHandle, enabled: bool) -> Result<FlyoutStatus, Strin
     inner.enabled = enabled;
     // The user decided again; the last failure no longer applies.
     inner.failure = None;
+    inner.marker_failed = false;
     inner.misses.reset();
     inner.lookup_at = None;
-    inner.lookup_counts = false;
     if enabled {
-        // Only look now if a flyout already appeared this session; a miss here does
+        // Only look now if a volume key already showed one this session; a miss here does
         // not count, the next key press retries.
         if inner.active() && inner.hidden == 0 && inner.flyout_seen {
             let _ = inner.lookup_and_hide();
@@ -527,10 +591,13 @@ pub fn on_level_change(change: LevelChange) {
     let own = self_initiated(inner.last_request, now);
     let volume_key = crate::desktop_signals::volume_key_active();
     let input_age = crate::desktop_signals::user_input_age();
-    if !hardware_originated(change, own, volume_key, input_age) {
+    let evidence = flyout_evidence(change, own, volume_key, input_age);
+    if evidence == FlyoutEvidence::None {
         return;
     }
-    inner.flyout_seen = true;
+    if evidence == FlyoutEvidence::Shown {
+        inner.flyout_seen = true;
+    }
     if !inner.active() {
         return;
     }
@@ -542,14 +609,16 @@ pub fn on_level_change(change: LevelChange) {
                 native::hide(inner.hidden);
                 return;
             }
-            native::HostCondition::Gone => inner.hidden = 0,
+            native::HostCondition::Gone => {
+                inner.hidden = 0;
+                inner.emit_status();
+            }
         }
     }
     // Explorer may still be creating the host; look once things settle.
-    if inner.lookup_at.is_none() {
+    if evidence == FlyoutEvidence::Shown && inner.lookup_at.is_none() {
         inner.lookup_at = Some(now + LOOKUP_DELAY);
     }
-    inner.lookup_counts |= change == LevelChange::Volume;
 }
 
 /// Runs a due lookup. Called from the desktop-signals loop, at most every 250ms.
@@ -563,30 +632,44 @@ pub fn tick() {
         return;
     }
     inner.lookup_at = None;
-    let counts = std::mem::take(&mut inner.lookup_counts);
     if inner.active() && inner.hidden == 0 {
-        inner.scheduled_lookup(counts, now);
+        inner.scheduled_lookup(now);
     }
+}
+
+/// Applies a change to what pauses the hiding, and gives the flyout back or takes it away
+/// when that flips.
+fn update_pause(change: impl FnOnce(&mut Inner)) {
+    let mut inner = state();
+    let before = inner.pause_reason();
+    change(&mut inner);
+    let after = inner.pause_reason();
+    if inner.stopping || !inner.enabled || before == after {
+        return;
+    }
+    match (before, after) {
+        (None, Some(_)) => inner.restore(),
+        (Some(_), None) if inner.flyout_seen => {
+            let _ = inner.lookup_and_hide();
+        }
+        _ => {}
+    }
+    inner.emit_status();
 }
 
 /// The island was hidden for (or came back from) a fullscreen app. While hidden, the
 /// Windows flyout is the only volume feedback, so it is given back meanwhile.
 pub fn set_fullscreen(active: bool) {
-    let mut inner = state();
-    if inner.fullscreen == active || inner.stopping {
-        inner.fullscreen = active;
-        return;
-    }
-    inner.fullscreen = active;
-    if !inner.enabled {
-        return;
-    }
-    if active {
-        inner.restore();
-    } else if inner.flyout_seen {
-        let _ = inner.lookup_and_hide();
-    }
-    inner.emit_status();
+    update_pause(|inner| inner.fullscreen = active);
+}
+
+/// The island would not show a level change: the HUD switch is off, or it is pinned open
+/// and in use. The flyout is given back the same way as for a fullscreen app.
+pub fn set_island_pause(hud_off: bool, pinned_open: bool) {
+    update_pause(|inner| {
+        inner.hud_off = hud_off;
+        inner.pinned_open = pinned_open;
+    });
 }
 
 /// Explorer restarted (TaskbarCreated): a stored host that is gone belongs to the old
@@ -598,7 +681,7 @@ pub fn reapply() {
     }
     inner.retry_repair();
     if inner.hidden == 0 {
-        // Possibly a new Explorer without a host yet; the next key press proves it.
+        // Possibly a new Explorer without a host yet; the next volume key proves it.
         inner.flyout_seen = false;
         return;
     }
@@ -637,6 +720,14 @@ pub async fn set_hide_system_flyout(app: AppHandle, enabled: bool) -> Result<Fly
     tauri::async_runtime::spawn_blocking(move || set_enabled(&app, enabled))
         .await
         .map_err(|_| "Could not update the flyout setting".to_string())?
+}
+
+#[tauri::command]
+pub async fn set_flyout_island_pause(hud_off: bool, pinned_open: bool) -> Result<(), String> {
+    // Window lookups touch another process; keep them off the async runtime's workers.
+    tauri::async_runtime::spawn_blocking(move || set_island_pause(hud_off, pinned_open))
+        .await
+        .map_err(|_| "Could not update the flyout".to_string())
 }
 
 #[cfg(windows)]
@@ -876,7 +967,8 @@ mod native {
     }
 
     /// Restores the stored host. True when nothing Tuck minimized can remain: it was
-    /// restored, or it no longer exists.
+    /// restored, or it no longer exists. Unconditional for a validated host: a minimize
+    /// Tuck queued may not have run yet, so `IsIconic` could still say no.
     pub fn restore(raw: isize) -> bool {
         let hwnd = HWND(raw as _);
         if !unsafe { IsWindow(hwnd) }.as_bool() {
@@ -890,9 +982,7 @@ mod native {
             // shell process could not be read; then let the sweep decide.
             return shell_process().is_some();
         }
-        if unsafe { IsIconic(hwnd) }.as_bool() {
-            give_back(hwnd);
-        }
+        give_back(hwnd);
         true
     }
 
@@ -1067,68 +1157,56 @@ mod tests {
     }
 
     #[test]
-    fn only_hardware_keys_count_as_flyout_changes() {
+    fn only_a_volume_key_proves_a_new_host() {
+        use FlyoutEvidence::{MaybeShown, None as Nothing, Shown};
         use LevelChange::{Brightness, Volume};
         let recent = Some(Duration::from_millis(100));
         let stale = Some(Duration::from_secs(30));
         // A volume key: yes. The Quick Settings slider or an app: recent input, no key.
-        assert!(hardware_originated(Volume, false, true, recent));
-        assert!(!hardware_originated(Volume, false, false, recent));
-        assert!(!hardware_originated(Volume, false, false, None));
+        assert_eq!(flyout_evidence(Volume, false, true, recent), Shown);
+        assert_eq!(flyout_evidence(Volume, false, false, recent), Nothing);
+        assert_eq!(flyout_evidence(Volume, false, false, None), Nothing);
         // Tuck's own wheel step, even if a key happens to be down
-        assert!(!hardware_originated(Volume, true, true, recent));
-        // Brightness keys have no key code: recent input stands in
-        assert!(hardware_originated(Brightness, false, false, recent));
-        assert!(hardware_originated(Brightness, false, false, None));
-        assert!(hardware_originated(
-            Brightness,
-            false,
-            false,
-            Some(FLYOUT_INPUT_WINDOW)
-        ));
-        assert!(!hardware_originated(Brightness, false, false, stale));
-        assert!(!hardware_originated(Brightness, true, false, recent));
+        assert_eq!(flyout_evidence(Volume, true, true, recent), Nothing);
+        // Brightness keys have no key code: recent input may mean a flyout, never a new host
+        assert_eq!(
+            flyout_evidence(Brightness, false, false, recent),
+            MaybeShown
+        );
+        assert_eq!(flyout_evidence(Brightness, false, false, None), MaybeShown);
+        assert_eq!(
+            flyout_evidence(Brightness, false, false, Some(FLYOUT_INPUT_WINDOW)),
+            MaybeShown
+        );
+        assert_eq!(flyout_evidence(Brightness, false, true, recent), MaybeShown);
+        assert_eq!(flyout_evidence(Brightness, false, false, stale), Nothing);
+        assert_eq!(flyout_evidence(Brightness, true, false, recent), Nothing);
     }
 
     #[test]
-    fn only_volume_key_lookups_count_towards_giving_up() {
+    fn failed_lookups_give_up_and_a_found_host_starts_over() {
         let start = Instant::now();
         let later = |seconds| start + Duration::from_secs(seconds);
         let mut misses = Misses::new();
-        // Lookups after brightness changes never give up, however many fail
-        for seconds in 0..10 {
-            let outcome = account_lookup(&mut misses, &Pick::NotFound, false, later(seconds * 60));
-            assert_eq!(outcome, None);
-        }
-        // Volume keys do, once there are enough misses over enough time
+        assert_eq!(account_lookup(&mut misses, &Pick::NotFound, start), None);
         assert_eq!(
-            account_lookup(&mut misses, &Pick::NotFound, true, start),
+            account_lookup(&mut misses, &Pick::Ambiguous, later(1)),
             None
         );
-        assert_eq!(
-            account_lookup(&mut misses, &Pick::Ambiguous, true, later(1)),
-            None
-        );
-        assert_eq!(
-            account_lookup(&mut misses, &Pick::NotFound, true, later(2)),
-            None
-        );
+        assert_eq!(account_lookup(&mut misses, &Pick::NotFound, later(2)), None);
         // Finding the host starts over
         assert_eq!(
-            account_lookup(&mut misses, &Pick::Found(()), true, later(3)),
+            account_lookup(&mut misses, &Pick::Found(()), later(3)),
             None
         );
         assert_eq!(misses, Misses::new());
+        assert_eq!(account_lookup(&mut misses, &Pick::NotFound, start), None);
         assert_eq!(
-            account_lookup(&mut misses, &Pick::NotFound, true, start),
+            account_lookup(&mut misses, &Pick::NotFound, later(30)),
             None
         );
         assert_eq!(
-            account_lookup(&mut misses, &Pick::NotFound, true, later(30)),
-            None
-        );
-        assert_eq!(
-            account_lookup(&mut misses, &Pick::Ambiguous, true, later(60)),
+            account_lookup(&mut misses, &Pick::Ambiguous, later(60)),
             Some(AMBIGUOUS)
         );
     }
@@ -1172,18 +1250,9 @@ mod tests {
     #[test]
     fn a_failure_stays_visible_until_the_user_changes_the_setting() {
         let mut inner = Inner {
-            app: None,
-            enabled: false,
-            stopping: false,
-            fullscreen: false,
-            hidden: 0,
             flyout_seen: true,
-            last_request: None,
-            lookup_at: None,
-            lookup_counts: false,
-            misses: Misses::new(),
-            repair_pending: false,
             failure: Some(NOT_FOUND),
+            ..Inner::new()
         };
         let status = inner.status();
         assert_eq!(status.state, FlyoutState::Unavailable);
@@ -1193,10 +1262,46 @@ mod tests {
         assert_eq!(inner.status().state, FlyoutState::Off);
         inner.enabled = true;
         inner.fullscreen = true;
-        assert_eq!(inner.status().message.as_deref(), Some(PAUSED));
+        assert_eq!(inner.status().message.as_deref(), Some(PAUSED_FULLSCREEN));
         assert!(!inner.active());
         inner.fullscreen = false;
         inner.stopping = true;
         assert!(!inner.active(), "Nothing is minimized again after exit");
+    }
+
+    #[test]
+    fn the_flyout_is_given_back_while_the_island_would_show_nothing() {
+        let mut inner = Inner {
+            enabled: true,
+            ..Inner::new()
+        };
+        assert!(inner.active());
+        assert_eq!(inner.status().message.as_deref(), Some(WAITING));
+        inner.pinned_open = true;
+        assert!(!inner.active());
+        assert_eq!(inner.status().message.as_deref(), Some(PAUSED_PINNED));
+        assert_eq!(inner.status().state, FlyoutState::Waiting);
+        inner.hud_off = true;
+        assert_eq!(inner.status().message.as_deref(), Some(PAUSED_HUD_OFF));
+        inner.fullscreen = true;
+        assert_eq!(inner.status().message.as_deref(), Some(PAUSED_FULLSCREEN));
+        inner.fullscreen = false;
+        inner.hud_off = false;
+        inner.pinned_open = false;
+        assert!(inner.active());
+    }
+
+    #[test]
+    fn nothing_is_minimized_without_a_marker() {
+        // No app handle means no config dir, so the marker cannot be written.
+        let mut inner = Inner {
+            enabled: true,
+            ..Inner::new()
+        };
+        inner.adopt_host(0x1234);
+        assert_eq!(inner.hidden, 0);
+        assert!(inner.marker_failed);
+        assert_eq!(inner.status().state, FlyoutState::Waiting);
+        assert_eq!(inner.status().message.as_deref(), Some(MARKER_FAILED));
     }
 }

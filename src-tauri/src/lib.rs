@@ -117,6 +117,7 @@ pub fn run() {
             desktop_signals::volume_toggle_mute,
             osd_flyout::get_hide_system_flyout,
             osd_flyout::set_hide_system_flyout,
+            osd_flyout::set_flyout_island_pause,
             system::quick_action,
             system::open_settings_cmd,
             system::open_island_cmd,

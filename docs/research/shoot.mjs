@@ -12,11 +12,31 @@ async function ctx(ls){
     try{await r.fulfill({body:await readFile(f),contentType:types[path.extname(f)]||'application/octet-stream'});}catch{await r.fulfill({status:404,body:'nf'});}});
   return c;
 }
-// idle + peek (hover expand off)
+async function mockNative(c){
+  await c.addInitScript(()=>{
+    window.isTauri=true;
+    let serial=0;const callbacks=new Map();const listeners=new Map();
+    window.__emitNative=(event,payload)=>{for(const id of listeners.get(event)||[])callbacks.get(id)?.({event,id,payload});};
+    window.__TAURI_INTERNALS__={metadata:{currentWindow:{label:'main'},currentWebview:{label:'main'}},transformCallback(callback){const id=++serial;callbacks.set(id,callback);return id;},async invoke(command,args={}){
+      if(command==='plugin:event|listen'){const ids=listeners.get(args.event)||[];ids.push(args.handler);listeners.set(args.event,ids);return ++serial;}
+      if(command==='media_now')return {active:false,trackId:'',title:'',artist:'',playing:false,positionMs:0,durationMs:0,artwork:null};
+      if(command==='usage_now')return [];
+      if(command==='fullscreen_now')return false;
+      if(command==='clipboard_get_state')return {enabled:false,persistOnExit:false,items:[]};
+      if(command==='dictation_get_state')return {status:'idle',modelInstalled:false,modelDownloadedBytes:0,transcript:null,message:null,settings:{},canInsert:false};
+      return null;
+    }};
+  });
+}
+// True idle, then active-media peek (hover expand off)
 let c = await ctx({hoverExpand:false}); let p = await c.newPage();
-await p.goto('http://tuck.test/'); await p.waitForTimeout(600);
+await mockNative(c);
+await p.goto('http://tuck.test/'); await p.waitForTimeout(200);
+await p.evaluate(()=>{document.body.classList.add('dev-mode');window.__emitNative('power',{percent:82,charging:true,hasBattery:true,minutesLeft:null,statusKnown:true,percentKnown:true,acConnected:true});});
+await p.waitForTimeout(200);
 await p.screenshot({path:path.join(out,'01-idle.png')});
-await p.mouse.move(280,10); await p.waitForTimeout(800);
+await p.evaluate(()=>{window.__emitNative('media',{active:true,trackId:'fixture-track',title:'How I Use Grok Bot Every Single Day',artist:'Ras Mic',playing:true,positionMs:401000,durationMs:1128000,artwork:null});window.__emitNative('hover',true);});
+await p.waitForTimeout(800);
 await p.screenshot({path:path.join(out,'02-peek.png')});
 await c.close();
 // open pages

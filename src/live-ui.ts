@@ -2,6 +2,7 @@ import { listenToEvent, mediaSeek, isTauri } from './ipc.js';
 import { SVG_ICONS } from './icons.js';
 import { nativeAction, nativeService, normalizeClipboard, normalizeDictation, normalizeTelemetry, type ClipboardSnapshot, type DictationSnapshot, type LyricsSnapshot, type MediaSession, type TelemetrySnapshot } from './live-services.js';
 import { historyPath, lyricIndex, matchesLyricRequest, measuredPercent, newRequestId, parseLrc, readPreferences, TelemetryGate, type LyricLine } from './live-state.js';
+import { formatClockTime } from './time-format.js';
 import type { MediaState } from './types.js';
 
 const node = <K extends keyof HTMLElementTagNameMap>(tag: K, className = '', text = '') => {
@@ -128,7 +129,7 @@ export function mountLivePages(onLayout: () => void): {
     if (!telemetryGate.accept(sampled)) return;
     const stale = data.stale || !sampled || Date.now() - sampled > 10000;
     if (stale) { invalidateTelemetry('Stale / warming up'); return; }
-    statsStatus.textContent = stale ? 'Stale / warming up' : `Live \u00b7 ${new Date(sampled).toLocaleTimeString()}`;
+    statsStatus.textContent = stale ? 'Stale / warming up' : `Live \u00b7 ${formatClockTime(sampled)}`;
     metric('cpu', 'CPU', measuredPercent(data.cpuPct));
     const validRam = typeof data.ramUsedBytes === 'number' && typeof data.ramTotalBytes === 'number' && data.ramTotalBytes > 0 && data.ramUsedBytes >= 0;
     metric('ram', 'Memory', validRam ? measuredPercent(data.ramUsedBytes! / data.ramTotalBytes! * 100) : null, validRam ? `${bytes(data.ramUsedBytes!)} / ${bytes(data.ramTotalBytes!)}` : '');
@@ -175,9 +176,16 @@ export function mountLivePages(onLayout: () => void): {
     record.disabled = !['idle', 'recording', 'review', 'error'].includes(data.status) || data.modelReady === false;
     record.textContent = data.status === 'recording' ? 'Finish recording' : 'Record';
     document.getElementById('isl')!.dataset.dictation = data.status;
-    if (['recording', 'transcribing', 'review'].includes(data.status)) {
-      window.dispatchEvent(new CustomEvent('tuck-activity', { detail: { id: 'dictation', active: true, title: 'Dictation', text: data.transcript?.slice(-65) || data.status, priority: 99 } }));
-    } else window.dispatchEvent(new CustomEvent('tuck-activity', { detail: { id: 'dictation', active: false, title: '', text: '', priority: 99 } }));
+    const recording = data.status === 'recording';
+    window.dispatchEvent(new CustomEvent('tuck-activity', { detail: {
+      id: 'dictation',
+      type: 'dictation',
+      phase: data.status,
+      active: recording,
+      title: 'Dictation',
+      text: data.transcript?.slice(-65) || data.status,
+      priority: 99,
+    } }));
   }
 
   const clipboard = makePage('clipboard', 'Clipboard history');
@@ -236,7 +244,7 @@ export function mountLivePages(onLayout: () => void): {
   void listenToEvent<{ text: string }>('dictation_partial', data => {
     if (dictationPhase !== 'recording' || typeof data?.text !== 'string') return;
     transcript.textContent = data.text.slice(0, 32000);
-    window.dispatchEvent(new CustomEvent('tuck-activity', { detail: { id: 'dictation', active: true, title: 'Dictation', text: data.text.slice(-65), priority: 99 } }));
+    window.dispatchEvent(new CustomEvent('tuck-activity', { detail: { id: 'dictation', type: 'dictation', phase: 'recording', active: true, title: 'Dictation', text: data.text.slice(-65), priority: 99 } }));
   }).then(unlisten => unlisteners.push(unlisten));
   void listenToEvent<{ enabled: boolean }>('lyrics-settings', data => {
     if (!data.enabled) { generation++; currentRequestId = ''; lines = []; currentLyric = ''; lyricList.replaceChildren(); lyricsStatus.textContent = 'Enable online lyrics in Settings.'; }

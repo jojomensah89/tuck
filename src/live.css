@@ -8,69 +8,19 @@
 
 .island[data-state="idle"] .cc {
   font-size: var(--t-md);
-  font-weight: var(--w-strong);
+  font-weight: var(--w-medium);
   color: var(--ink);
   font-variant-numeric: tabular-nums;
-}
-
-.battery-badge {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: var(--i-sm);
-  height: var(--i-sm);
-  border-radius: var(--r-round);
-  background: var(--ok);
-  color: var(--surface);
-  flex-shrink: 0;
-}
-
-.battery-badge svg {
-  width: var(--i-2xs);
-  height: var(--i-2xs);
-  fill: var(--surface);
 }
 
 /* ================= Media page additions ================= */
 
-.meta-header {
-  display: flex;
+.media-battery {
+  position: absolute;
+  top: 0;
+  right: 0;
+  display: inline-flex;
   align-items: center;
-  justify-content: space-between;
-  gap: var(--s-2);
-  margin-bottom: var(--s-half);
-}
-
-.meta-header-left {
-  display: flex;
-  align-items: center;
-  gap: var(--s-2);
-  min-width: 0;
-  overflow: hidden;
-  white-space: nowrap;
-}
-
-.media-date {
-  font-size: var(--t-xs);
-  font-weight: var(--w-medium);
-  color: var(--ink-2);
-}
-
-.media-time {
-  font-size: var(--t-xs);
-  font-weight: var(--w-strong);
-  color: var(--ink);
-  font-variant-numeric: tabular-nums;
-}
-
-.meta-header-right {
-  display: flex;
-  align-items: center;
-  flex-shrink: 0;
-}
-
-.meta-header-right .eq {
-  height: var(--s-3);
 }
 
 .ctl .media-tools {

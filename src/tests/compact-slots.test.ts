@@ -1,0 +1,60 @@
+import './setup.js';
+import { describe, expect, it } from 'bun:test';
+import {
+  selectCompactActivity,
+  type CompactActivityCandidate,
+} from '../compact-slots.js';
+
+const activity = (
+  overrides: Partial<CompactActivityCandidate> = {},
+): CompactActivityCandidate => ({
+  id: 'media',
+  kind: 'media',
+  title: 'Now playing',
+  priority: 50,
+  active: true,
+  running: true,
+  ...overrides,
+});
+
+describe('compact slot activity priority', () => {
+  it('gives the slots to the highest-priority active activity', () => {
+    const selection = selectCompactActivity([
+      activity(),
+      activity({ id: 'timer', kind: 'timer', title: 'Timer', priority: 80 }),
+      activity({ id: 'dictation', kind: 'dictation', title: 'Dictation', priority: 99 }),
+    ]);
+
+    expect(selection.primary?.id).toBe('dictation');
+    expect(selection.hasBackgroundActivity).toBe(true);
+  });
+
+  it('ignores inactive candidates and keeps equal priorities stable', () => {
+    const selection = selectCompactActivity([
+      activity({ id: 'first', kind: 'timer', priority: 80 }),
+      activity({ id: 'inactive', kind: 'dictation', priority: 99, active: false }),
+      activity({ id: 'second', kind: 'timer', priority: 80 }),
+    ]);
+
+    expect(selection.primary?.id).toBe('first');
+  });
+
+  it('counts only actually running activities for the background dot', () => {
+    const selection = selectCompactActivity([
+      activity({ running: false }),
+      activity({ id: 'timer', kind: 'timer', title: 'Timer', priority: 80 }),
+    ]);
+
+    expect(selection.primary?.id).toBe('timer');
+    expect(selection.hasBackgroundActivity).toBe(false);
+  });
+
+  it('returns the idle selection when nothing is active', () => {
+    expect(selectCompactActivity([
+      activity({ active: false, running: false }),
+    ])).toEqual({
+      primary: null,
+      hasBackgroundActivity: false,
+    });
+  });
+});

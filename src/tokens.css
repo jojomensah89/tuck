@@ -46,6 +46,8 @@
   --i-sm: 16px;
   --i-md: 20px;
   --i-lg: 24px;
+  --status-dot: 6px;
+  --meter-bar: 3px;
 
   /* Sizes */
   --hit: 36px;
@@ -60,6 +62,8 @@
   --d-close: 300ms;
   --d-shell: 420ms;
   --d-content-in: 90ms;  /* the shell is ~65% open on --spring at this point */
+  --d-marquee: 8s;
+  --d-marquee-hold: 1s;
 
   /* Motion: easings (damped springs sampled into linear()) */
   /* Shell morph, zeta 0.68: ~5% overshoot, settles by the end */

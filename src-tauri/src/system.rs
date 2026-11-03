@@ -16,6 +16,7 @@ use windows::{
     core::HSTRING,
     Win32::{
         Foundation::{HWND, POINT, RECT},
+        Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_EXTENDED_FRAME_BOUNDS},
         Graphics::Gdi::{
             GetMonitorInfoW, MonitorFromWindow, HMONITOR, MONITORINFO, MONITOR_DEFAULTTONULL,
             MONITOR_DEFAULTTOPRIMARY,
@@ -26,14 +27,15 @@ use windows::{
         },
         UI::{
             Shell::{
-                SHQueryUserNotificationState, ShellExecuteW, QUNS_BUSY, QUNS_PRESENTATION_MODE,
+                SHQueryUserNotificationState, ShellExecuteW, QUNS_BUSY,
                 QUNS_RUNNING_D3D_FULL_SCREEN,
             },
             WindowsAndMessaging::{
                 GetClassNameW, GetCursorPos, GetDesktopWindow, GetForegroundWindow, GetShellWindow,
-                GetWindowLongPtrW, GetWindowRect, IsIconic, IsWindowVisible, SetWindowLongPtrW,
-                SetWindowPos, GWL_EXSTYLE, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
-                SW_SHOWNORMAL, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+                GetWindowLongPtrW, GetWindowRect, IsIconic, IsWindowVisible, IsZoomed,
+                SetWindowLongPtrW, SetWindowPos, GWL_EXSTYLE, GWL_STYLE, HWND_TOPMOST,
+                SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_SHOWNORMAL, WS_CAPTION,
+                WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
             },
         },
     },
@@ -188,6 +190,8 @@ pub struct Rect {
 
 /// Pure helper to classify whether a window covers the entire monitor rectangle,
 /// indicating true fullscreen on that monitor without inaccurate maximized tolerance heuristics.
+/// `is_excluded` marks windows that can cover the monitor without being fullscreen, such as a
+/// captioned maximized window while the taskbar auto-hides.
 pub fn is_fullscreen_rect(window_rect: Rect, monitor_rect: Rect, is_excluded: bool) -> bool {
     if is_excluded {
         return false;
@@ -277,7 +281,17 @@ pub(crate) fn reassert_topmost(win: &WebviewWindow) {
     }
 }
 
+fn lock_cursor_gate() -> std::sync::MutexGuard<'static, ()> {
+    CURSOR_GATE
+        .0
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+}
+
+/// Updates a pause reason under the gate mutex so the cursor thread cannot miss the
+/// wakeup, and so a hit-test that started before a pause cannot apply its result after it.
 pub(crate) fn set_cursor_pause(reason: u8, paused: bool) {
+    let _guard = lock_cursor_gate();
     if paused {
         CURSOR_PAUSE_REASONS.fetch_or(reason, Ordering::SeqCst);
     } else {
@@ -286,17 +300,34 @@ pub(crate) fn set_cursor_pause(reason: u8, paused: bool) {
     CURSOR_GATE.1.notify_all();
 }
 
-fn wait_for_cursor_resume() {
-    let mut guard = CURSOR_GATE
-        .0
-        .lock()
-        .unwrap_or_else(|error| error.into_inner());
+/// Parks the cursor thread while any pause reason is set. Before parking it forces
+/// click-through from this thread, so that request is queued after any hit-test result
+/// this thread sent earlier. `on_park` runs once before waiting. Returns true when parked.
+fn park_cursor_while_paused(win: &WebviewWindow, on_park: impl FnOnce()) -> bool {
+    let mut guard = lock_cursor_gate();
+    if CURSOR_PAUSE_REASONS.load(Ordering::SeqCst) == 0 {
+        return false;
+    }
+    let _ = win.set_ignore_cursor_events(true);
+    on_park();
     while CURSOR_PAUSE_REASONS.load(Ordering::SeqCst) != 0 {
         guard = CURSOR_GATE
             .1
             .wait(guard)
             .unwrap_or_else(|error| error.into_inner());
     }
+    true
+}
+
+/// Applies a hit-test result only if no pause began since the test ran. The window
+/// setter only queues a message to the event loop, so holding the gate cannot deadlock.
+fn apply_hit_test(win: &WebviewWindow, hovered: bool) -> bool {
+    let _guard = lock_cursor_gate();
+    if CURSOR_PAUSE_REASONS.load(Ordering::SeqCst) != 0 {
+        return false;
+    }
+    let _ = win.set_ignore_cursor_events(!hovered);
+    true
 }
 
 #[cfg(windows)]
@@ -345,13 +376,11 @@ pub(crate) fn check_fullscreen(island_hwnd: HWND, settings_hwnd: Option<HWND>) -
             return false;
         }
 
-        // 1. Shell user notification state for apps on the same monitor
+        // 1. Shell user notification state for apps on the same monitor. Presentation
+        // mode is a global user setting, not a property of the foreground window, so it is
+        // ignored; slideshows are caught by the size check below.
         let shell_fullscreen = SHQueryUserNotificationState()
-            .map(|state| {
-                state == QUNS_RUNNING_D3D_FULL_SCREEN
-                    || state == QUNS_BUSY
-                    || state == QUNS_PRESENTATION_MODE
-            })
+            .map(|state| state == QUNS_RUNNING_D3D_FULL_SCREEN || state == QUNS_BUSY)
             .unwrap_or(false);
         if shell_fullscreen {
             return true;
@@ -366,10 +395,21 @@ pub(crate) fn check_fullscreen(island_hwnd: HWND, settings_hwnd: Option<HWND>) -
             return false;
         }
 
+        // The DWM frame excludes the invisible resize borders that GetWindowRect includes.
         let mut fg_rect = RECT::default();
-        if GetWindowRect(fg, &mut fg_rect).is_err() {
+        let dwm_ok = DwmGetWindowAttribute(
+            fg,
+            DWMWA_EXTENDED_FRAME_BOUNDS,
+            (&mut fg_rect as *mut RECT).cast(),
+            std::mem::size_of::<RECT>() as u32,
+        )
+        .is_ok();
+        if !dwm_ok && GetWindowRect(fg, &mut fg_rect).is_err() {
             return false;
         }
+        // With an auto-hidden taskbar a maximized window covers the whole monitor too.
+        let style = GetWindowLongPtrW(fg, GWL_STYLE) as u32;
+        let maximized_with_caption = IsZoomed(fg).as_bool() && style & WS_CAPTION.0 == WS_CAPTION.0;
 
         let win_rect = Rect {
             left: fg_rect.left,
@@ -384,7 +424,7 @@ pub(crate) fn check_fullscreen(island_hwnd: HWND, settings_hwnd: Option<HWND>) -
             bottom: mi.rcMonitor.bottom,
         };
 
-        is_fullscreen_rect(win_rect, mon_rect, false)
+        is_fullscreen_rect(win_rect, mon_rect, maximized_with_caption)
     }
 }
 
@@ -426,13 +466,17 @@ pub(crate) fn get_fullscreen_auto_hide() -> bool {
 #[tauri::command]
 pub(crate) fn set_fullscreen_auto_hide(app: AppHandle, enabled: bool) -> Result<(), String> {
     FULLSCREEN_AUTO_HIDE.store(enabled, Ordering::Relaxed);
-    refresh_window_state(&app);
+    // The lifecycle thread owns fullscreen re-evaluation and its follow-up timers.
+    if !crate::lifecycle::request_refresh() {
+        refresh_window_state(&app);
+    }
     Ok(())
 }
 
-pub(crate) fn refresh_window_state(app: &AppHandle) {
+/// Re-evaluates fullscreen auto-hide. Returns true while the island is hidden for fullscreen.
+pub(crate) fn refresh_window_state(app: &AppHandle) -> bool {
     let Some(win) = app.get_webview_window("main") else {
-        return;
+        return false;
     };
     #[cfg(windows)]
     let detected = win
@@ -460,6 +504,7 @@ pub(crate) fn refresh_window_state(app: &AppHandle) {
     if hidden != previous {
         let _ = app.emit("fullscreen", hidden);
     }
+    hidden
 }
 
 /// Collapsing the island must undo the tray keyboard activation path.
@@ -492,12 +537,20 @@ pub fn start(app: AppHandle, hit_state: Arc<HitState>) {
         let mut was_hovered = false;
 
         loop {
-            wait_for_cursor_resume();
             std::thread::sleep(std::time::Duration::from_millis(40));
 
             let Some(win) = app_cursor.get_webview_window("main") else {
                 continue;
             };
+            let parked = park_cursor_while_paused(&win, || {
+                if was_hovered {
+                    let _ = app_cursor.emit("hover", false);
+                }
+            });
+            if parked {
+                was_hovered = false;
+                continue;
+            }
 
             // Hit test: physical cursor vs scaled CSS geometry
             let mut is_hovered = false;
@@ -519,7 +572,9 @@ pub fn start(app: AppHandle, hit_state: Arc<HitState>) {
             }
 
             // Reconcile even without an enter/leave transition: tray activation changes this externally.
-            let _ = win.set_ignore_cursor_events(!is_hovered);
+            if !apply_hit_test(&win, is_hovered) {
+                continue;
+            }
             if is_hovered != was_hovered {
                 was_hovered = is_hovered;
                 let _ = app_cursor.emit("hover", is_hovered);
@@ -580,6 +635,7 @@ pub(crate) fn quick_action(name: String) -> Result<(), String> {
 /// Opens or focuses the reusable 760x600 settings.html window (sidebar layout; 640x440 minimum).
 pub fn open_settings(app: &AppHandle) -> Result<(), String> {
     if let Some(win) = app.get_webview_window("settings") {
+        win.unminimize().map_err(|e| e.to_string())?;
         win.show().map_err(|e| e.to_string())?;
         win.set_focus().map_err(|e| e.to_string())?;
         Ok(())

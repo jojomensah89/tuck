@@ -629,6 +629,19 @@ fn emit_snapshot(
     }
 }
 
+/// Safety refresh interval while a GSMTC manager is bound.
+pub const MEDIA_SAFETY_REFRESH: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Delay before retrying a failed GSMTC manager request: 2s, 5s, 10s, then every 30s.
+pub fn manager_retry_delay(failures: u32) -> std::time::Duration {
+    const STEPS: [u64; 3] = [2, 5, 10];
+    let index = failures.saturating_sub(1) as usize;
+    STEPS
+        .get(index)
+        .map(|seconds| std::time::Duration::from_secs(*seconds))
+        .unwrap_or(MEDIA_SAFETY_REFRESH)
+}
+
 /// Starts an event-driven GSMTC service. A 30-second safety refresh remains because
 /// some players miss artwork/timeline notifications during process startup.
 pub fn start(app: AppHandle) {
@@ -673,6 +686,7 @@ fn run_event_service(
     let mut suspended = false;
     let mut rebuild_all = true;
     let mut rebind_session = true;
+    let mut manager_failures = 0u32;
 
     loop {
         if !suspended && rebuild_all {
@@ -683,9 +697,13 @@ fn run_event_service(
                 .ok()
                 .and_then(|operation| operation.get().ok());
             if let Some(value) = manager.as_ref() {
+                manager_failures = 0;
                 manager_subscriptions = ManagerSubscriptions::new(value, &sender)
                     .map_err(|error| eprintln!("Media manager subscription: {error}"))
                     .ok();
+            } else {
+                manager_failures = manager_failures.saturating_add(1);
+                eprintln!("Media manager unavailable (attempt {manager_failures})");
             }
             rebuild_all = false;
             rebind_session = true;
@@ -710,7 +728,13 @@ fn run_event_service(
             rebind_session = false;
         }
 
-        let signal = receiver.recv_timeout(std::time::Duration::from_secs(30));
+        let waiting_for_manager = !suspended && manager.is_none();
+        let timeout = if waiting_for_manager {
+            manager_retry_delay(manager_failures)
+        } else {
+            MEDIA_SAFETY_REFRESH
+        };
+        let signal = receiver.recv_timeout(timeout);
         match signal {
             Ok(MediaSignal::Stop) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
             Ok(MediaSignal::Suspend) => {
@@ -723,7 +747,9 @@ fn run_event_service(
             Ok(MediaSignal::RebindAll) => {
                 suspended = false;
                 rebuild_all = true;
+                manager_failures = 0;
             }
+            Err(mpsc::RecvTimeoutError::Timeout) if waiting_for_manager => rebuild_all = true,
             Ok(MediaSignal::ManagerChanged) => rebind_session = true,
             Ok(MediaSignal::SessionChanged) | Err(mpsc::RecvTimeoutError::Timeout) => {
                 if !suspended {
@@ -875,6 +901,18 @@ pub async fn media_seek(ms: i64) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn manager_retry_backs_off_to_safety_refresh() {
+        use std::time::Duration;
+        assert_eq!(manager_retry_delay(0), Duration::from_secs(2));
+        assert_eq!(manager_retry_delay(1), Duration::from_secs(2));
+        assert_eq!(manager_retry_delay(2), Duration::from_secs(5));
+        assert_eq!(manager_retry_delay(3), Duration::from_secs(10));
+        assert_eq!(manager_retry_delay(4), MEDIA_SAFETY_REFRESH);
+        assert_eq!(manager_retry_delay(u32::MAX), MEDIA_SAFETY_REFRESH);
+        assert_eq!(MEDIA_SAFETY_REFRESH, Duration::from_secs(30));
+    }
 
     #[test]
     fn test_clamp_seek_ms() {

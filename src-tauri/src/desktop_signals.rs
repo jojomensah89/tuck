@@ -75,11 +75,76 @@ pub fn step_volume(current: u32, delta: i32) -> u32 {
 pub(crate) const BRIGHTNESS_INPUT_WINDOW: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// Whether a brightness change looks user-driven. Brightness keys and the Quick Settings
-/// slider come with input; adaptive brightness, idle dimming and charger ramps usually
-/// happen while nobody is typing. Unknown input age shows the HUD. Laptops whose
-/// brightness keys bypass Windows input entirely only get a HUD while in use.
-pub(crate) fn brightness_from_user(input_age: Option<std::time::Duration>) -> bool {
-    input_age.is_none_or(|age| age <= BRIGHTNESS_INPUT_WINDOW)
+/// slider come with input; idle dimming happens while nobody is typing. Unknown input
+/// age shows the HUD. Laptops whose brightness keys bypass Windows input entirely only
+/// get a HUD while in use, unless the Windows flyout is hidden: the island is then the
+/// only feedback, so a missed key is worse than a stray HUD.
+pub(crate) fn brightness_shows_hud(
+    input_age: Option<std::time::Duration>,
+    flyout_hidden: bool,
+) -> bool {
+    flyout_hidden || input_age.is_none_or(|age| age <= BRIGHTNESS_INPUT_WINDOW)
+}
+
+/// Brightness steps this small can be a ramp (adaptive brightness, charger changes).
+/// Brightness keys normally move further.
+pub(crate) const RAMP_MAX_STEP: u32 = 3;
+/// Small steps this close together form a ramp, however recent the last input was.
+pub(crate) const RAMP_MAX_GAP: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// What to do with one brightness change.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RampVerdict {
+    /// A real step: show it now.
+    Show,
+    /// A small step that may start a ramp: `BrightnessRamp::due` releases it if none follows.
+    Hold,
+    /// Part of a ramp.
+    Ignore,
+}
+
+/// Tells runs of small closely spaced brightness steps from single changes.
+#[derive(Debug, Default)]
+pub(crate) struct BrightnessRamp {
+    last_change: Option<std::time::Instant>,
+    held: Option<(u32, std::time::Instant)>,
+}
+
+impl BrightnessRamp {
+    /// `previous` is the level before this change, when known.
+    pub(crate) fn observe(
+        &mut self,
+        previous: Option<u32>,
+        level: u32,
+        now: std::time::Instant,
+    ) -> RampVerdict {
+        let close = self
+            .last_change
+            .and_then(|at| now.checked_duration_since(at))
+            .is_some_and(|gap| gap <= RAMP_MAX_GAP);
+        self.last_change = Some(now);
+        let small = previous.is_some_and(|before| before.abs_diff(level) <= RAMP_MAX_STEP);
+        if !small {
+            self.held = None;
+            RampVerdict::Show
+        } else if close {
+            self.held = None;
+            RampVerdict::Ignore
+        } else {
+            self.held = Some((level, now + RAMP_MAX_GAP));
+            RampVerdict::Hold
+        }
+    }
+
+    /// A held step that no other step followed, once that is certain.
+    pub(crate) fn due(&mut self, now: std::time::Instant) -> Option<u32> {
+        let (level, at) = self.held?;
+        if now < at {
+            return None;
+        }
+        self.held = None;
+        Some(level)
+    }
 }
 
 /// Milliseconds between two `GetTickCount` readings, across the 49.7-day wrap.
@@ -617,6 +682,7 @@ mod native {
             }
         }
         let (mut brightness_watch, mut previous_brightness) = watch_brightness(&sender);
+        let mut brightness_ramp = BrightnessRamp::default();
         let mut watcher = DeviceWatcher::new(&sender)
             .map_err(|error| eprintln!("Audio device watcher: {error}"))
             .ok();
@@ -635,6 +701,7 @@ mod native {
                 Ok(Signal::Suspend) => {
                     audio = None;
                     brightness_watch = None;
+                    brightness_ramp = BrightnessRamp::default();
                 }
                 Ok(Signal::Resume) => {
                     if brightness_watch.is_none() {
@@ -653,10 +720,13 @@ mod native {
                 }
                 Ok(Signal::Brightness(level)) => {
                     if previous_brightness != Some(level) {
-                        // Adaptive, idle-dim and charger ramps arrive with nobody at the
-                        // keyboard; only changes right after input get a HUD.
-                        if brightness_from_user(input_age()) {
-                            emit_level(&app, SystemLevel::brightness(level));
+                        let verdict = brightness_ramp.observe(
+                            previous_brightness,
+                            level,
+                            std::time::Instant::now(),
+                        );
+                        if verdict == RampVerdict::Show {
+                            emit_brightness(&app, level);
                         }
                         crate::osd_flyout::on_level_change(
                             crate::osd_flyout::LevelChange::Brightness,
@@ -690,6 +760,9 @@ mod native {
                     previous_volume = Some(current);
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
+            }
+            if let Some(level) = brightness_ramp.due(std::time::Instant::now()) {
+                emit_brightness(&app, level);
             }
 
             let next_caps = unsafe { GetKeyState(VK_CAPITAL.0 as i32) } & 1 != 0;
@@ -748,6 +821,13 @@ mod native {
 
     fn emit_level(app: &AppHandle, level: SystemLevel) {
         let _ = app.emit("system-level", level);
+    }
+
+    /// Idle dimming arrives with nobody at the keyboard; see `brightness_shows_hud`.
+    fn emit_brightness(app: &AppHandle, level: u32) {
+        if brightness_shows_hud(input_age(), crate::osd_flyout::flyout_hidden()) {
+            emit_level(app, SystemLevel::brightness(level));
+        }
     }
 
     fn peek(app: &AppHandle, title: &str, text: &str) {
@@ -949,10 +1029,15 @@ mod tests {
     #[test]
     fn brightness_hud_needs_recent_input() {
         use std::time::Duration;
-        assert!(brightness_from_user(Some(Duration::from_millis(200))));
-        assert!(brightness_from_user(Some(BRIGHTNESS_INPUT_WINDOW)));
-        assert!(!brightness_from_user(Some(Duration::from_secs(120))));
-        assert!(brightness_from_user(None));
+        assert!(brightness_shows_hud(
+            Some(Duration::from_millis(200)),
+            false
+        ));
+        assert!(brightness_shows_hud(Some(BRIGHTNESS_INPUT_WINDOW), false));
+        assert!(!brightness_shows_hud(Some(Duration::from_secs(120)), false));
+        assert!(brightness_shows_hud(None, false));
+        // Firmware keys leave no input behind; with the flyout hidden they must still show
+        assert!(brightness_shows_hud(Some(Duration::from_secs(120)), true));
         assert_eq!(
             input_age_from_ticks(1_000, 1_500),
             Duration::from_millis(500)
@@ -962,6 +1047,48 @@ mod tests {
             input_age_from_ticks(u32::MAX - 99, 100),
             Duration::from_millis(200)
         );
+    }
+
+    #[test]
+    fn a_run_of_small_close_steps_is_a_ramp() {
+        use std::time::{Duration, Instant};
+        let start = Instant::now();
+        let at = |ms: u64| start + Duration::from_millis(ms);
+        let mut ramp = BrightnessRamp::default();
+        // The first small step waits: it may be the start of a ramp
+        assert_eq!(ramp.observe(Some(50), 49, at(0)), RampVerdict::Hold);
+        assert_eq!(ramp.due(at(100)), None);
+        // It was: nothing of it ever shows, however long the run lasts
+        assert_eq!(ramp.observe(Some(49), 47, at(200)), RampVerdict::Ignore);
+        assert_eq!(ramp.observe(Some(47), 46, at(1_100)), RampVerdict::Ignore);
+        assert_eq!(ramp.observe(Some(46), 44, at(2_100)), RampVerdict::Ignore);
+        assert_eq!(ramp.due(at(10_000)), None);
+    }
+
+    #[test]
+    fn a_lone_small_step_shows_late_and_a_real_step_shows_at_once() {
+        use std::time::{Duration, Instant};
+        let start = Instant::now();
+        let at = |ms: u64| start + Duration::from_millis(ms);
+        let mut ramp = BrightnessRamp::default();
+        assert_eq!(ramp.observe(Some(50), 53, at(0)), RampVerdict::Hold);
+        assert_eq!(ramp.due(at(999)), None);
+        assert_eq!(ramp.due(at(1_000)), Some(53));
+        assert_eq!(ramp.due(at(1_001)), None, "Released once");
+        // Brightness keys move further, even in quick succession
+        assert_eq!(ramp.observe(Some(53), 63, at(5_000)), RampVerdict::Show);
+        assert_eq!(ramp.observe(Some(63), 73, at(5_100)), RampVerdict::Show);
+        // A key press during a held step replaces it
+        assert_eq!(ramp.observe(Some(73), 72, at(9_000)), RampVerdict::Hold);
+        assert_eq!(ramp.observe(Some(72), 62, at(9_100)), RampVerdict::Show);
+        assert_eq!(ramp.due(at(20_000)), None);
+        // Small steps apart from each other are separate changes
+        assert_eq!(ramp.observe(Some(62), 61, at(30_000)), RampVerdict::Hold);
+        assert_eq!(ramp.due(at(31_000)), Some(61));
+        assert_eq!(ramp.observe(Some(61), 60, at(32_001)), RampVerdict::Hold);
+        // No known previous level: show it
+        let mut fresh = BrightnessRamp::default();
+        assert_eq!(fresh.observe(None, 60, at(0)), RampVerdict::Show);
     }
 
     #[test]

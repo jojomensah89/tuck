@@ -28,11 +28,10 @@
 
           <!-- Full layer (Open) -->
           <div class="full" aria-hidden="true" inert>
-            <button class="nav l" id="prevPage" aria-label="Previous Page"></button>
-            <button class="nav r" id="nextPage" aria-label="Next Page"></button>
-
+            <!-- The tab rail and one tabpanel per tab are built by src/tab-rail.ts,
+                 which moves these sections into their tabs (see TABS in src/tab-nav.ts) -->
             <div class="pages-container">
-              <!-- Page 0: Media -->
+              <!-- Media tab: now playing -->
               <section class="page media" data-page="media" aria-label="Now Playing">
                 <div class="now">
                   <div class="art" id="art" aria-label="Album Artwork"></div>
@@ -58,7 +57,7 @@
                 </div>
               </section>
 
-              <!-- Page 1: Today & Battery -->
+              <!-- Today tab: clock and battery -->
               <section class="page today" data-page="today" aria-label="Today and Battery">
                 <div class="clock-col">
                   <div class="clock" id="clock">12:00</div>
@@ -75,7 +74,7 @@
                 </div>
               </section>
 
-              <!-- Page 2: Live Activities (Timer / Pomodoro) -->
+              <!-- Today tab: timer and pomodoro -->
               <section class="page activities" data-page="activities" aria-label="Live Activities">
                 <div class="act-header">
                   <span class="act-title" id="actTitle">Timer &amp; Pomodoro</span>
@@ -94,12 +93,12 @@
                 </div>
               </section>
 
-              <!-- Page 3: AI Usage Meters -->
+              <!-- Usage tab: AI usage meters -->
               <section class="page usage" data-page="usage" aria-label="AI Usage Meters">
                 <div class="u-list" id="uList"></div>
               </section>
 
-              <!-- Page 4: Quick Actions -->
+              <!-- Tools tab: quick actions -->
               <section class="page quick" data-page="quick" aria-label="Quick Actions">
                 <div class="quick-grid">
                   <button class="chip" id="chipWifi" data-action="wifi" aria-label="Wi-Fi Settings">
@@ -126,8 +125,6 @@
                 </div>
               </section>
             </div>
-
-            <div class="dots" id="dots"></div>
           </div>
         </div>
       </div>

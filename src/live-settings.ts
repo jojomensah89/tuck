@@ -52,7 +52,7 @@ export function mountLiveSettings(): void {
     }
     const next = normalizePreferences({ hoverExpand: input('hoverExpand').checked, pinned: input('pinOpen').checked,
       lyricsOpen: input('lyricsOpen').checked, desktopPeeks: input('desktopPeeks').checked, compactContent: select('compactContent').value,
-      openDelayMs: Number(input('openDelay').value), closeDelayMs: Number(input('closeDelay').value), openWidth: Number(input('openWidth').value), prefsVersion: PREFS_VERSION });
+      openDelayMs: Number(input('openDelay').value), closeDelayMs: Number(input('closeDelay').value), openWidth: Number(input('openWidth').value), lastTab: readPreferences().lastTab, prefsVersion: PREFS_VERSION });
     try {
       localStorage.setItem(LIVE_SETTINGS_KEY, JSON.stringify(next));
       window.dispatchEvent(new StorageEvent('storage', { key: LIVE_SETTINGS_KEY, newValue: JSON.stringify(next) }));

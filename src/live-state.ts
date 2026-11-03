@@ -31,7 +31,8 @@ export function normalizePreferences(input: unknown): LivePreferences {
     pinned: p.pinned === true, lyricsOpen: p.lyricsOpen !== false,
     compactContent: p.compactContent === 'title' ? 'title' : 'lyrics',
     desktopPeeks: p.desktopPeeks !== false,
-    levelHud: p.levelHud !== false,
+    // Before this setting existed, System peeks also carried the level peeks
+    levelHud: typeof p.levelHud === 'boolean' ? p.levelHud : p.desktopPeeks !== false,
     fullscreenAutoHide: p.fullscreenAutoHide !== false,
     openDelayMs: bounded(p.openDelayMs, 180, 0, 2000),
     // Settings saved before version 2 that still hold the old 900ms default move to instant once

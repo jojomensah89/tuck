@@ -16,6 +16,15 @@ describe('live island state', () => {
     expect(normalizePreferences({}).fullscreenAutoHide).toBe(true);
     expect(normalizePreferences({ fullscreenAutoHide: false }).fullscreenAutoHide).toBe(false);
   });
+  test('keeps the level HUD off for anyone who had turned off system peeks before it existed', () => {
+    expect(normalizePreferences({}).levelHud).toBe(true);
+    expect(normalizePreferences({ desktopPeeks: true }).levelHud).toBe(true);
+    expect(normalizePreferences({ desktopPeeks: false }).levelHud).toBe(false);
+    expect(normalizePreferences({ desktopPeeks: false, levelHud: true }).levelHud).toBe(true);
+    expect(normalizePreferences({ desktopPeeks: true, levelHud: false }).levelHud).toBe(false);
+    // The migrated value is persisted, so turning peeks back on later does not change it
+    expect(normalizePreferences(normalizePreferences({ desktopPeeks: false })).levelHud).toBe(false);
+  });
   test('moves the old 900ms default to instant once, but keeps a chosen 900ms', () => {
     const migrated = normalizePreferences({ closeDelayMs: 900 });
     expect(migrated.closeDelayMs).toBe(0);

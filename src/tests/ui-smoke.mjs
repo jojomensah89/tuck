@@ -150,12 +150,45 @@ try {
       if(command==='clipboard_get_state')return {enabled:false,persistOnExit:false,items:[]};
       if(command==='clipboard_configure')throw 'Fixture atomic save failure';
       if(command==='get_autostart'||command==='installed_usage_enabled'||command==='fullscreen_now')return false;
+      if(command==='volume_step')return {kind:'volume',level:40+args.delta,muted:false};
+      if(command==='volume_toggle_mute')return {kind:'volume',level:40,muted:true};
+      if(command==='get_hide_system_flyout')return {enabled:false,state:'off',message:null};
+      if(command==='set_hide_system_flyout')return {enabled:false,state:'unavailable',message:"Couldn't find the Windows flyout on this version of Windows, so it stays visible"};
       return null;
     }};
   });
   const native=await context.newPage();const nativeErrors=[];native.on('pageerror',error=>nativeErrors.push(error.message));
   await native.goto('http://tuck.test/');await native.waitForTimeout(100);
   assert.equal(await native.locator('.page.todos').count(), 0, 'Todos feature must be completely removed');
+  // Volume/brightness HUD from a mocked native level event
+  const hudState = () => native.locator('#isl').evaluate(el => [el.dataset.state, el.dataset.hud ?? null]);
+  await native.evaluate(()=>window.__emitNative('system-level',{kind:'volume',level:37,muted:false}));
+  assert.deepEqual(await hudState(),['peek','volume'],'A volume change morphs the island into the HUD');
+  assert.equal((await native.locator('#cr .compact-slot.current').textContent()).trim(),'37%');
+  assert.equal(await native.locator('.compact').getAttribute('aria-label'),'Volume 37%');
+  assert.equal(await native.locator('#cc .compact-slot.current .hud-bar').evaluate(el => el.style.getPropertyValue('--level')),'0.37');
+  await native.locator('#statusMessage').filter({hasText:'Volume 37%'}).waitFor({timeout:2000});
+  await native.waitForFunction(()=>document.getElementById('isl').dataset.state==='idle',null,{timeout:3000});
+  assert.equal(await native.locator('#isl').getAttribute('data-hud'),null,'The HUD dismisses itself');
+  await native.evaluate(()=>window.__emitNative('system-level',{kind:'brightness',level:70,muted:false}));
+  assert.deepEqual(await hudState(),['peek','brightness']);
+  assert.equal(await native.locator('.compact').getAttribute('aria-label'),'Brightness 70%');
+  await native.waitForFunction(()=>document.getElementById('isl').dataset.state==='idle',null,{timeout:3000});
+  // Wheel over the idle pill steps the system volume (Shift for 10) and shows the HUD
+  const volumeCalls = () => native.evaluate(()=>window.__calls.filter(call=>call.command.startsWith('volume_')).map(call=>[call.command,call.args?.delta ?? null]));
+  const pill = await native.locator('#isl').boundingBox();
+  await native.mouse.move(pill.x + pill.width / 2, pill.y + pill.height / 2);
+  await native.mouse.wheel(0,-100);
+  await native.locator('#cr .compact-slot.current').filter({hasText:'42%'}).waitFor({timeout:2000});
+  assert.deepEqual(await hudState(),['peek','volume']);
+  await native.keyboard.down('Shift'); await native.mouse.wheel(0,100); await native.keyboard.up('Shift');
+  await native.locator('#cr .compact-slot.current').filter({hasText:'30%'}).waitFor({timeout:2000});
+  await native.mouse.click(pill.x + pill.width / 2, pill.y + pill.height / 2, {button:'middle'});
+  await native.locator('.compact[aria-label="Volume muted, 40%"]').waitFor({timeout:2000});
+  assert.deepEqual(await volumeCalls(),[['volume_step',2],['volume_step',-10],['volume_toggle_mute',null]]);
+  assert.equal(await native.locator('#isl').getAttribute('data-state'),'peek','Scrolling never opens the island');
+  await native.waitForFunction(()=>document.getElementById('isl').dataset.state==='idle',null,{timeout:3000});
+  await native.mouse.move(0, 220);
   await native.evaluate(()=>window.__emitNative('open-island',null));
   await native.getByRole('tab',{name:'Tools',exact:true}).click();
   assert.equal(await native.locator('.tab-panel.on').getAttribute('data-tab'),'tools');
@@ -314,6 +347,7 @@ try {
   assert.ok(await panelTop() > 0,'Moving back lands on the last section');
   await native.mouse.wheel(120,0); await native.waitForTimeout(400);
   assert.equal(await activeTab(),'today','Horizontal wheel switches tabs');
+  assert.equal((await volumeCalls()).length,3,'Wheel over the open island never changes the volume');
   // Pointer drag swipe: dragging left moves to the next tab
   const area = await native.locator('.pages-container').boundingBox();
   await native.mouse.move(area.x + area.width - 40, area.y + 60);
@@ -345,7 +379,15 @@ try {
   assert.equal(await native.locator('#ext-downloads').isChecked(),false);
   assert.equal(await native.evaluate(()=>window.__calls.findLast(call=>call.command==='extension_settings').args.settings.downloads),true);
   await native.screenshot({path:path.join(root,'artifacts','settings-activities.png')});
+  // Hiding the Windows flyout is opt-in and reports when it turned itself off
+  await native.locator('#nav a[data-view="island"]').click();
+  await native.locator('#row-hideSystemFlyout').waitFor({state:'visible'});
+  assert.equal(await native.locator('#hideSystemFlyout').isChecked(),false,'Off by default');
+  await native.locator('#hideSystemFlyout').click();
+  await native.locator('#flyoutStatus').filter({hasText:'stays visible'}).waitFor({timeout:2000});
+  assert.equal(await native.locator('#hideSystemFlyout').isChecked(),false,'An unavailable flyout turns the setting back off');
+  assert.equal(await native.locator('#flyoutStatus').getAttribute('data-kind'),'error');
   assert.deepEqual(nativeErrors,[]);
-  console.log('UI smoke passed: geometry, tab rail (keys, wheel edges, swipe, memory), accessibility, keyboard seeking, timers, usage rings, icon buttons, persistence errors, native-bridge call priority, shelf, focused radio updates, drag hold and previews.');
+  console.log('UI smoke passed: geometry, tab rail (keys, wheel edges, swipe, memory), accessibility, keyboard seeking, timers, usage rings, icon buttons, persistence errors, volume/brightness HUD, wheel and middle-click volume, flyout opt-in, native-bridge call priority, shelf, focused radio updates, drag hold and previews.');
 } finally { await browser.close(); }
 

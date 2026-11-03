@@ -1,6 +1,7 @@
 import {mountExtensions} from './extensions.js';
 import { mountLivePages } from './live-ui.js';
-import { LIVE_SETTINGS_KEY, readPreferences } from './live-state.js';
+import { LIVE_SETTINGS_KEY, readPreferences, writePreferences } from './live-state.js';
+import { mountTabRail } from './tab-rail.js';
 import './live.css';
 import {
   isTauri,
@@ -197,10 +198,8 @@ window.addEventListener('storage', (e) => {
 /* ================= State Machine ================= */
 
 let state: IslandState = 'idle';
-let pageIndex = 0;
 let closeTimer = 0;
 let openTimer = 0;
-let wheelLock = 0;
 let hoverInside = false;
 let nativeDragActive = false;
 let keyboardMode = false;
@@ -278,7 +277,17 @@ isl.addEventListener('click', (e) => {
 mountExtensions();
 const live = mountLivePages(() => setState(state));
 compactLyric = live.compactLyric;
-const pages = Array.from(document.querySelectorAll<HTMLElement>('.page'));
+const rail = mountTabRail({
+  initial: livePreferences.lastTab,
+  isOpen: () => state === 'open',
+  onChange: id => {
+    if (id !== 'media') return;
+    fitTitle();
+    renderMediaHeader();
+  },
+  onUserChange: id => { livePreferences = writePreferences({ lastTab: id }); },
+  openSettings: () => runAction(openSettingsCmd(), 'Open settings'),
+});
 
 window.addEventListener('storage', event => {
   if (event.key !== LIVE_SETTINGS_KEY) return;
@@ -302,128 +311,12 @@ isl.addEventListener('keydown', (e) => {
     e.preventDefault();
     keyboardMode = false;
     setState('idle');
-  } else if (state === 'open') {
-    if (e.key === 'ArrowRight') {
-      e.preventDefault();
-      showPage(pageIndex + 1, 1);
-    } else if (e.key === 'ArrowLeft') {
-      e.preventDefault();
-      showPage(pageIndex - 1, -1);
-    }
+  } else if (state === 'open' && (e.key === 'ArrowRight' || e.key === 'ArrowLeft')) {
+    // Anywhere in the open island; the rail itself handles its own roving keys
+    e.preventDefault();
+    rail.step(e.key === 'ArrowRight' ? 1 : -1, 'key');
   }
 });
-
-isl.addEventListener(
-  'wheel',
-  (e) => {
-    if ((e.target as HTMLElement).closest('.usage, .live-page, .lyrics-pane, input, select') || state !== 'open' || Date.now() < wheelLock) return;
-    wheelLock = Date.now() + 350;
-    const delta = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
-    if (delta !== 0) {
-      showPage(pageIndex + (delta > 0 ? 1 : -1), delta > 0 ? 1 : -1);
-    }
-  },
-  { passive: true }
-);
-
-/* ================= Pages Navigation ================= */
-
-const dotButtons: HTMLButtonElement[] = [];
-
-// Dots are built once and only their state changes, so the width transition plays.
-function buildDots(): void {
-  const dotsContainer = $('dots');
-  dotsContainer.replaceChildren();
-  dotButtons.length = 0;
-  pages.forEach((page, i) => {
-    const btn = document.createElement('button');
-    btn.setAttribute('aria-label', `Go to ${page.dataset.page} page`);
-    btn.title = page.getAttribute('aria-label') || page.dataset.page || 'Page';
-    btn.onclick = (e) => {
-      e.stopPropagation();
-      showPage(i, i > pageIndex ? 1 : -1);
-    };
-    dotButtons.push(btn);
-    dotsContainer.appendChild(btn);
-  });
-}
-
-const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
-const leavingHandlers = new WeakMap<HTMLElement, (e: AnimationEvent) => void>();
-
-function clearLeaving(page: HTMLElement): void {
-  const handler = leavingHandlers.get(page);
-  if (handler) {
-    page.removeEventListener('animationend', handler);
-    leavingHandlers.delete(page);
-  }
-  page.classList.remove('leaving');
-  if (!page.classList.contains('on')) page.classList.remove('fwd', 'back');
-}
-
-function showPage(n: number, dir = 1): void {
-  if (pages.length === 0) return;
-  if (dotButtons.length !== pages.length) buildDots();
-  const focused = document.activeElement;
-  const relocateFocus = state === 'open' && focused instanceof HTMLElement &&
-    (pages[pageIndex]?.contains(focused) || $('dots').contains(focused));
-  const previous = pageIndex;
-  pageIndex = (n + pages.length) % pages.length;
-  const changed = previous !== pageIndex;
-
-  pages.forEach((p, i) => {
-    const active = i === pageIndex;
-    p.inert = !active;
-    p.setAttribute('aria-hidden', String(!active));
-    if (active) {
-      clearLeaving(p);
-      if (changed || !p.classList.contains('on')) {
-        p.classList.remove('on', 'fwd', 'back');
-        void p.offsetWidth; // restart the enter animation, even when re-entering mid-exit
-        p.classList.add('on', dir > 0 ? 'fwd' : 'back');
-      }
-    } else if (i === previous && changed && p.classList.contains('on')) {
-      // The outgoing page stays painted while it fades out in the travel direction
-      p.classList.remove('on', 'fwd', 'back');
-      clearLeaving(p);
-      if (!reducedMotion.matches) {
-        p.classList.add('leaving', dir > 0 ? 'fwd' : 'back');
-        // Only the page's own exit animation ends the leave, not animations bubbling from children
-        const handler = (e: AnimationEvent) => { if (e.target === p) clearLeaving(p); };
-        leavingHandlers.set(p, handler);
-        p.addEventListener('animationend', handler);
-      }
-    } else {
-      p.classList.remove('on');
-      clearLeaving(p);
-    }
-  });
-
-  dotButtons.forEach((btn, i) => {
-    btn.classList.toggle('on', i === pageIndex);
-    btn.setAttribute('aria-current', String(i === pageIndex));
-  });
-
-  if (pageIndex === 0) {
-    fitTitle();
-    renderMediaHeader();
-  }
-  if (relocateFocus) {
-    const page = pages[pageIndex];
-    const control = page.querySelector<HTMLElement>('button:not(:disabled), input:not(:disabled), select:not(:disabled), [tabindex="0"]');
-    if (control) control.focus({ preventScroll: true });
-    else { page.tabIndex = -1; page.focus({ preventScroll: true }); }
-  }
-}
-
-$('nextPage').onclick = (e) => {
-  e.stopPropagation();
-  showPage(pageIndex + 1, 1);
-};
-$('prevPage').onclick = (e) => {
-  e.stopPropagation();
-  showPage(pageIndex - 1, -1);
-};
 
 /* ================= Media ================= */
 
@@ -563,7 +456,7 @@ function currentPosition(): number {
 function tick(): void {
   live.position(currentPosition());
   if (state !== 'open') renderCompact();
-  if (state !== 'open' || pageIndex !== 0) return;
+  if (state !== 'open' || rail.active() !== 'media') return;
   const pos = currentPosition();
   setText($('cur'), formatMs(pos));
   setText($('left'), mediaState.durationMs > 0 ? `-${formatMs(mediaState.durationMs - pos)}` : 'Live');
@@ -1094,8 +987,6 @@ function setupQuickActions(): void {
   $('icoBt').innerHTML = SVG_ICONS.bluetooth;
   $('icoFocus').innerHTML = SVG_ICONS.focus;
   $('icoCapture').innerHTML = SVG_ICONS.capture;
-  $('prevPage').innerHTML = SVG_ICONS.navLeft;
-  $('nextPage').innerHTML = SVG_ICONS.navRight;
   $('prev').innerHTML = SVG_ICONS.prev;
   $('next').innerHTML = SVG_ICONS.next;
 
@@ -1120,7 +1011,7 @@ function setupQuickActions(): void {
 function showAnnouncement(text:string):void {
   $('statusMessage').textContent=text;
   const returnOpen = state === 'open';
-  if(returnOpen && (pageIndex !== 0 || keyboardMode))return;
+  if(returnOpen && (rail.active() !== 'media' || keyboardMode))return;
   announcement={text:text.slice(0,180),until:Date.now()+3500};
   window.clearTimeout(closeTimer);setState('peek');
   closeTimer=window.setTimeout(()=>{announcement=null;setState(returnOpen && (hoverInside || livePreferences.pinned) ? 'open' : hoverInside?'peek':'idle');},3500);
@@ -1143,7 +1034,7 @@ window.addEventListener('tuck-preview',event=>{
 });
 function holdDrag(active:boolean):void {
   nativeDragActive=active;window.clearTimeout(closeTimer);
-  if(active){setState('open');const index=pages.findIndex(page=>page.dataset.page==='extensions');if(index>=0)showPage(index);}
+  if(active){setState('open');rail.reveal('extensions');}
   else onHover(hoverInside);
 }
 window.addEventListener('tuck-drop-active',event=>holdDrag((event as CustomEvent).detail===true));
@@ -1256,7 +1147,6 @@ void fetchUsageNow().then((initial) => {
 
 setupActivitiesUI();
 setupQuickActions();
-showPage(0);
 renderToday();
 renderPower();
 renderUsage();

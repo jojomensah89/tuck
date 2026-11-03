@@ -13,7 +13,7 @@ function button(label: string, action: () => void): HTMLButtonElement {
 }
 function makePage(id: string, title: string): HTMLElement {
   const page = node('section', `page live-page ${id}`); page.dataset.page = id; page.setAttribute('aria-label', title);
-  page.inert = true; page.setAttribute('aria-hidden', 'true'); document.querySelector('.pages-container')!.append(page); return page;
+  document.querySelector('.pages-container')!.append(page); return page;
 }
 const friendlyError = (error: unknown) => error instanceof Error ? error.message : 'Action failed. Please try again.';
 
@@ -50,7 +50,8 @@ export function mountLivePages(onLayout: () => void): {
   let currentRequestId = '';
   let latestMedia: MediaState | null = null;
   let currentLyric = '', lastPosition = 0, manualScrollUntil = 0;
-  lyricList.addEventListener('wheel', e => { e.stopPropagation(); manualScrollUntil = Date.now() + 4000; }, { passive: true });
+  // Manual scrolling pauses auto-follow; the tab rail decides whether the wheel scrolls or switches tabs
+  lyricList.addEventListener('wheel', () => { manualScrollUntil = Date.now() + 4000; }, { passive: true });
   async function sessions(): Promise<void> {
     try {
       await nativeService<MediaSession[]>('media_sessions');
@@ -258,7 +259,7 @@ export function mountLivePages(onLayout: () => void): {
   const interval = window.setInterval(() => {
     if (Date.now() - lastAudio > 1000) [...bars, ...wideBars].forEach(bar => bar.style.setProperty('--level', '0'));
     if (telemetryGate.sampledAt && Date.now() - telemetryGate.sampledAt > 10000) invalidateTelemetry('Stale / warming up');
-    if (document.querySelector('.page.on') === stats) void refreshTelemetry();
+    if (stats.closest('.tab-panel.on')) void refreshTelemetry();
   }, 1000);
   const sessionInterval = window.setInterval(() => { void sessions(); }, 5000);
   window.addEventListener('pagehide', () => { clearInterval(interval); clearInterval(sessionInterval); unlisteners.forEach(unlisten => unlisten()); }, { once: true });

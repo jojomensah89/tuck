@@ -5,6 +5,12 @@
   gap: var(--s-1);
 }
 
+.ext-heading {
+  margin: 0;
+  font-size: var(--t-base);
+  font-weight: var(--w-medium);
+}
+
 .ext-tabs {
   display: flex;
   gap: var(--s-1);

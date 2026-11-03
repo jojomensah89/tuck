@@ -1,3 +1,5 @@
+import { DEFAULT_TAB, isTabId, type TabId } from './tab-nav.js';
+
 export const LIVE_SETTINGS_KEY = 'tuck.live.v2';
 export function newRequestId(): string {
   return Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join('');
@@ -6,11 +8,13 @@ export interface LivePreferences {
   hoverExpand: boolean; openDelayMs: number; closeDelayMs: number; pinned: boolean;
   compactContent: 'lyrics' | 'title'; lyricsOpen: boolean; openWidth: number;
   desktopPeeks: boolean;
+  /** Last open-island tab, restored on the next launch */
+  lastTab: TabId;
 }
 export const DEFAULT_LIVE_PREFERENCES: LivePreferences = {
   hoverExpand: true, openDelayMs: 180, closeDelayMs: 900, pinned: false,
   compactContent: 'lyrics', lyricsOpen: true, openWidth: 500,
-  desktopPeeks: true,
+  desktopPeeks: true, lastTab: DEFAULT_TAB,
 };
 export function normalizePreferences(input: unknown): LivePreferences {
   const p = input && typeof input === 'object' ? input as Partial<LivePreferences> : {};
@@ -24,11 +28,18 @@ export function normalizePreferences(input: unknown): LivePreferences {
     openDelayMs: bounded(p.openDelayMs, 180, 0, 2000),
     closeDelayMs: bounded(p.closeDelayMs, 900, 100, 10000),
     openWidth: bounded(p.openWidth, 500, 440, 500),
+    lastTab: isTabId(p.lastTab) ? p.lastTab : DEFAULT_TAB,
   };
 }
 export function readPreferences(): LivePreferences {
   try { return normalizePreferences(JSON.parse(localStorage.getItem(LIVE_SETTINGS_KEY) || '{}')); }
   catch { return { ...DEFAULT_LIVE_PREFERENCES }; }
+}
+/** Merge a partial update into the stored preferences; storage failures are ignored */
+export function writePreferences(update: Partial<LivePreferences>): LivePreferences {
+  const next = normalizePreferences({ ...readPreferences(), ...update });
+  try { localStorage.setItem(LIVE_SETTINGS_KEY, JSON.stringify(next)); } catch { /* storage disabled */ }
+  return next;
 }
 export interface LyricLine { atMs: number; text: string }
 /** Parse line-timed LRC, preserving repeated timestamps and applying its offset. */

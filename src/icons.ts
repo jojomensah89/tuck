@@ -10,6 +10,10 @@ const ico = (body: string, cls = '') =>
   `<svg class="ico${cls ? ` ${cls}` : ''}" viewBox="0 0 20 20" aria-hidden="true">${body}</svg>`;
 
 const PLAY = '<path class="f" d="M6.5 4.6v10.8l8.8-5.4z"/>';
+// Speaker body shared by the volume glyphs; waves and the cross sit to its right
+const SPEAKER = '<path d="M2.75 7.75h2.5l4-3.25v11l-4-3.25h-2.5z"/>';
+const WAVE_NEAR = '<path d="M12 7.75a3.2 3.2 0 0 1 0 4.5"/>';
+const WAVE_FAR = '<path d="M14.5 5.25a6.75 6.75 0 0 1 0 9.5"/>';
 const PAUSE = '<rect class="f" x="5.25" y="4.5" width="3" height="11" rx="1"/><rect class="f" x="11.75" y="4.5" width="3" height="11" rx="1"/>';
 
 export const SVG_ICONS = {
@@ -26,6 +30,12 @@ export const SVG_ICONS = {
   next: ico('<path d="M15.25 4.75v10.5"/><path class="f" d="M4.75 4.9v10.2L12.25 10z"/>'),
   gear: ico('<path d="M8.52 4.49 8.81 2.49A7.6 7.6 0 0 1 11.19 2.49L11.48 4.49A5.7 5.7 0 0 1 12.85 5.06L14.47 3.85A7.6 7.6 0 0 1 16.15 5.53L14.94 7.15A5.7 5.7 0 0 1 15.51 8.52L17.51 8.81A7.6 7.6 0 0 1 17.51 11.19L15.51 11.48A5.7 5.7 0 0 1 14.94 12.85L16.15 14.47A7.6 7.6 0 0 1 14.47 16.15L12.85 14.94A5.7 5.7 0 0 1 11.48 15.51L11.19 17.51A7.6 7.6 0 0 1 8.81 17.51L8.52 15.51A5.7 5.7 0 0 1 7.15 14.94L5.53 16.15A7.6 7.6 0 0 1 3.85 14.47L5.06 12.85A5.7 5.7 0 0 1 4.49 11.48L2.49 11.19A7.6 7.6 0 0 1 2.49 8.81L4.49 8.52A5.7 5.7 0 0 1 5.06 7.15L3.85 5.53A7.6 7.6 0 0 1 5.53 3.85L7.15 5.06A5.7 5.7 0 0 1 8.52 4.49Z"/><circle cx="10" cy="10" r="2.25"/>'),
   grid: ico('<rect x="3.25" y="3.25" width="5.5" height="5.5" rx="1.5"/><rect x="11.25" y="3.25" width="5.5" height="5.5" rx="1.5"/><rect x="3.25" y="11.25" width="5.5" height="5.5" rx="1.5"/><rect x="11.25" y="11.25" width="5.5" height="5.5" rx="1.5"/>'),
+  // Volume HUD: level 0, below 50%, 50% and up, muted
+  volumeOff: ico(SPEAKER),
+  volumeLow: ico(SPEAKER + WAVE_NEAR),
+  volumeHigh: ico(SPEAKER + WAVE_NEAR + WAVE_FAR),
+  volumeMute: ico(`${SPEAKER}<path d="m12.75 7.75 4.5 4.5M17.25 7.75l-4.5 4.5"/>`),
+  brightness: ico('<circle cx="10" cy="10" r="3.25"/><path d="M10 2.75v1.5M10 15.75v1.5M2.75 10h1.5M15.75 10h1.5M4.87 4.87l1.06 1.06M14.07 14.07l1.06 1.06M15.13 4.87l-1.06 1.06M5.93 14.07l-1.06 1.06"/>'),
   wifi: ico('<path d="M2.75 7.75a10.25 10.25 0 0 1 14.5 0M5.25 10.75a6.75 6.75 0 0 1 9.5 0M7.75 13.75a3.2 3.2 0 0 1 4.5 0"/><circle class="f" cx="10" cy="16.5" r=".5"/>'),
   bluetooth: ico('<path d="m5.75 6.5 8.5 7L10 17.25V2.75l4.25 3.75-8.5 7"/>'),
   focus: ico('<path d="M16.5 12.25A6.75 6.75 0 0 1 7.75 3.5a6.75 6.75 0 1 0 8.75 8.75z"/>'),

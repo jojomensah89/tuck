@@ -26,6 +26,16 @@ import { activityProgress, batteryTone, createRing, formatSpan } from './rings.j
 import { selectCompactActivity, type CompactActivityCandidate } from './compact-slots.js';
 import { formatClockTime } from './time-format.js';
 import {
+  HUD_ANNOUNCE_QUIET_MS,
+  HudModel,
+  hudLabel,
+  readHudPayload,
+  stepVolume,
+  volumeGlyph,
+  wheelVolumeDelta,
+  type HudReading,
+} from './hud.js';
+import {
   STORAGE_KEYS,
   mergeMeters,
   checkResets,
@@ -205,6 +215,9 @@ let hoverInside = false;
 let nativeDragActive = false;
 let keyboardMode = false;
 let announcement: { text: string; until: number } | null = null;
+const hud = new HudModel();
+let hudTimer = 0;
+let hudAnnounceTimer = 0;
 interface ExternalActivityState {
   title: string;
   text: string;
@@ -225,6 +238,8 @@ function setState(next: IslandState): void {
   isl.style.width = `${w}px`;
   isl.style.height = `${h}px`;
   isl.dataset.state = next;
+  if (next === 'peek' && hud.visible(Date.now())) isl.dataset.hud = hud.reading!.kind;
+  else delete isl.dataset.hud;
 
   const full = document.querySelector<HTMLElement>('.full')!;
   const compact = document.querySelector<HTMLElement>('.compact')!;
@@ -249,6 +264,8 @@ function onHover(inside: boolean): void {
   hoverInside = inside;
   window.clearTimeout(closeTimer);
   window.clearTimeout(openTimer);
+  // The HUD owns the shell until it times out; hover is re-read when it leaves
+  if (state !== 'open' && hud.visible(Date.now())) return;
   if (nativeDragActive || (!inside && (keyboardMode || livePreferences.pinned) && state === 'open')) return;
 
   if (inside) {
@@ -582,6 +599,11 @@ function renderCompact(): void {
   const cc = $('cc');
   const cr = $('cr');
   const compact = document.querySelector<HTMLElement>('.compact')!;
+
+  if (state === 'peek' && hud.visible(Date.now())) {
+    renderHud(hud.reading!, compact);
+    return;
+  }
 
   if (announcement && announcement.until > Date.now() && state === 'peek') {
     setCompactSlot(cl, 'announcement:leading', 'note', () => compactMarkup(SVG_ICONS.note));
@@ -974,6 +996,98 @@ function showAnnouncement(text:string):void {
   window.clearTimeout(closeTimer);setState('peek');
   closeTimer=window.setTimeout(()=>{announcement=null;setState(returnOpen && (hoverInside || livePreferences.pinned) ? 'open' : hoverInside?'peek':'idle');},3500);
 }
+
+/* ================= Volume & Brightness HUD ================= */
+
+function buildHudBar(): HTMLElement {
+  const bar = document.createElement('span');
+  bar.className = 'hud-bar';
+  bar.setAttribute('aria-hidden', 'true');
+  const fill = document.createElement('span');
+  fill.className = 'hud-fill';
+  bar.append(fill);
+  return bar;
+}
+
+/** Glyph, level bar and tabular value; the bar is built once per kind so its fill eases between values */
+function renderHud(reading: HudReading, compact: HTMLElement): void {
+  const glyph = reading.kind === 'brightness' ? 'brightness' : volumeGlyph(reading.level, reading.muted);
+  setCompactSlot($('cl'), 'hud:leading', glyph, () => compactMarkup(SVG_ICONS[glyph], 'hud-glyph'));
+  setCompactSlot($('cc'), `hud:bar:${reading.kind}`, 'bar', buildHudBar);
+  const bar = $('cc').querySelector<HTMLElement>('.compact-slot.current .hud-bar');
+  if (bar) {
+    bar.classList.toggle('muted', reading.muted);
+    bar.style.setProperty('--level', String(reading.level / 100));
+  }
+  const value = `${reading.level}%`;
+  setCompactSlot($('cr'), 'hud:value', `${value}:${reading.muted}`, () =>
+    compactText(value, reading.muted ? 'compact-metric hud-value muted' : 'compact-metric hud-value'));
+  setLabel(compact, hudLabel(reading));
+}
+
+function settleHud(): void {
+  hud.dismiss();
+  window.clearTimeout(hudAnnounceTimer);
+  if (state === 'open') return;
+  // Back to whatever the pointer says; hovering stays at peek so scrolling never opens the island
+  setState(hoverInside || nativeDragActive ? 'peek' : 'idle');
+}
+
+function showHud(reading: HudReading): void {
+  // The open island is already in use; it keeps its content
+  if (state === 'open') return;
+  const now = Date.now();
+  hud.show(reading, now);
+  window.clearTimeout(openTimer);
+  window.clearTimeout(closeTimer);
+  window.clearTimeout(hudTimer);
+  hudTimer = window.setTimeout(settleHud, hud.remaining(now));
+  window.clearTimeout(hudAnnounceTimer);
+  hudAnnounceTimer = window.setTimeout(() => {
+    const text = hud.dueAnnouncement(Date.now());
+    if (text) $('statusMessage').textContent = text;
+  }, HUD_ANNOUNCE_QUIET_MS + 20);
+  if (state !== 'peek') setState('peek');
+  else {
+    isl.dataset.hud = reading.kind;
+    renderCompact();
+  }
+}
+
+// Browser demo only: a local level so the HUD can be tried without the desktop app
+let demoVolume = { level: 50, muted: false };
+function applyVolume(command: 'volume_step' | 'volume_toggle_mute', args?: Record<string, unknown>): void {
+  if (!isTauri()) {
+    demoVolume = command === 'volume_step'
+      ? { level: stepVolume(demoVolume.level, Number(args?.delta) || 0), muted: Number(args?.delta) > 0 ? false : demoVolume.muted }
+      : { ...demoVolume, muted: !demoVolume.muted };
+    showHud({ kind: 'volume', ...demoVolume });
+    return;
+  }
+  void invokeCommand<unknown>(command, args).then(result => {
+    const reading = readHudPayload(result);
+    if (reading) showHud(reading);
+  }).catch(() => { /* no output device; the HUD simply does not appear */ });
+}
+
+// Wheel over the collapsed island changes the system volume; the open island's rail owns the wheel
+let wheelRest = 0;
+isl.addEventListener('wheel', event => {
+  if (state === 'open') return;
+  event.preventDefault();
+  const result = wheelVolumeDelta(wheelRest, event);
+  wheelRest = result.rest;
+  if (result.delta !== 0) applyVolume('volume_step', { delta: result.delta });
+}, { passive: false });
+
+// Middle click on the collapsed island toggles mute
+isl.addEventListener('mousedown', event => { if (event.button === 1 && state !== 'open') event.preventDefault(); });
+isl.addEventListener('auxclick', event => {
+  if (event.button !== 1 || state === 'open') return;
+  event.preventDefault();
+  applyVolume('volume_toggle_mute');
+});
+
 window.addEventListener('tuck-activity',event=>{
   const detail=(event as CustomEvent).detail;
   if(!detail||typeof detail.id!=='string'||typeof detail.title!=='string'||typeof detail.text!=='string'||!Number.isFinite(detail.priority))return;
@@ -1015,6 +1129,14 @@ void listenToEvent<PowerState>('power', (payload) => {
 });
 void listenToEvent<{title: string; text: string}>('desktop-peek', payload => {
   if (livePreferences.desktopPeeks && typeof payload?.title === 'string' && typeof payload.text === 'string') showAnnouncement(`${payload.title}: ${payload.text}`);
+});
+// The HUD is always on, independent of the System peeks setting
+void listenToEvent<unknown>('system-level', payload => {
+  const reading = readHudPayload(payload);
+  if (reading) showHud(reading);
+});
+void listenToEvent<{ state?: string; message?: string | null }>('system-flyout', payload => {
+  if (payload?.state === 'unavailable' && typeof payload.message === 'string') showAnnouncement(payload.message);
 });
 void listenToEvent<Meter[]>('usage', (payload) => onUsageUpdate(payload));
 

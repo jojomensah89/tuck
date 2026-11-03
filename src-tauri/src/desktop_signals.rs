@@ -142,44 +142,71 @@ mod native {
         }
     }
 
-    struct AudioSubscriptions {
+    /// Device enumerator and default-device callback, registered once for the thread's
+    /// lifetime so device notifications survive having no output device at all.
+    struct DeviceWatcher {
         enumerator: IMMDeviceEnumerator,
-        endpoint: IAudioEndpointVolume,
-        volume_callback: IAudioEndpointVolumeCallback,
         device_callback: IMMNotificationClient,
-        device_id: String,
     }
 
-    impl AudioSubscriptions {
+    impl DeviceWatcher {
         fn new(sender: &mpsc::Sender<Signal>) -> windows::core::Result<Self> {
             unsafe {
                 let enumerator: IMMDeviceEnumerator =
                     CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)?;
-                let device = enumerator.GetDefaultAudioEndpoint(eRender, eConsole)?;
-                let endpoint: IAudioEndpointVolume = device.Activate(CLSCTX_ALL, None)?;
-                let id = device.GetId()?;
-                let device_id = id.to_string()?;
-                windows::Win32::System::Com::CoTaskMemFree(Some(id.0 as _));
-                let volume_callback: IAudioEndpointVolumeCallback = VolumeCallback {
-                    sender: sender.clone(),
-                }
-                .into();
                 let device_callback: IMMNotificationClient = DeviceCallback {
                     sender: sender.clone(),
                 }
                 .into();
-                endpoint.RegisterControlChangeNotify(&volume_callback)?;
-                if let Err(error) =
-                    enumerator.RegisterEndpointNotificationCallback(&device_callback)
-                {
-                    let _ = endpoint.UnregisterControlChangeNotify(&volume_callback);
-                    return Err(error);
-                }
+                enumerator.RegisterEndpointNotificationCallback(&device_callback)?;
                 Ok(Self {
                     enumerator,
+                    device_callback,
+                })
+            }
+        }
+    }
+
+    impl Drop for DeviceWatcher {
+        fn drop(&mut self) {
+            unsafe {
+                if let Err(error) = self
+                    .enumerator
+                    .UnregisterEndpointNotificationCallback(&self.device_callback)
+                {
+                    eprintln!("Audio device callback cleanup: {error}");
+                }
+            }
+        }
+    }
+
+    /// Volume subscription on the current default render endpoint; rebuilt on rebind.
+    struct EndpointSubscription {
+        endpoint: IAudioEndpointVolume,
+        volume_callback: IAudioEndpointVolumeCallback,
+        device_id: String,
+    }
+
+    impl EndpointSubscription {
+        fn new(
+            enumerator: &IMMDeviceEnumerator,
+            sender: &mpsc::Sender<Signal>,
+        ) -> windows::core::Result<Self> {
+            unsafe {
+                let device = enumerator.GetDefaultAudioEndpoint(eRender, eConsole)?;
+                let endpoint: IAudioEndpointVolume = device.Activate(CLSCTX_ALL, None)?;
+                let id = device.GetId()?;
+                let device_id = id.to_string();
+                windows::Win32::System::Com::CoTaskMemFree(Some(id.0 as _));
+                let device_id = device_id?;
+                let volume_callback: IAudioEndpointVolumeCallback = VolumeCallback {
+                    sender: sender.clone(),
+                }
+                .into();
+                endpoint.RegisterControlChangeNotify(&volume_callback)?;
+                Ok(Self {
                     endpoint,
                     volume_callback,
-                    device_callback,
                     device_id,
                 })
             }
@@ -195,7 +222,7 @@ mod native {
         }
     }
 
-    impl Drop for AudioSubscriptions {
+    impl Drop for EndpointSubscription {
         fn drop(&mut self) {
             unsafe {
                 if let Err(error) = self
@@ -204,15 +231,18 @@ mod native {
                 {
                     eprintln!("Volume callback cleanup: {error}");
                 }
-                if let Err(error) = self
-                    .enumerator
-                    .UnregisterEndpointNotificationCallback(&self.device_callback)
-                {
-                    eprintln!("Audio device callback cleanup: {error}");
-                }
             }
         }
     }
+
+    fn subscribe_endpoint(
+        watcher: Option<&DeviceWatcher>,
+        sender: &mpsc::Sender<Signal>,
+    ) -> Option<EndpointSubscription> {
+        // No default render device is a normal state, not an error worth logging.
+        watcher.and_then(|watcher| EndpointSubscription::new(&watcher.enumerator, sender).ok())
+    }
+
     fn brightness_service() -> Option<IWbemServices> {
         unsafe {
             let locator: IWbemLocator = CoCreateInstance(&WbemLocator, None, CLSCTX_ALL).ok()?;
@@ -296,10 +326,11 @@ mod native {
             }
         }
         let brightness_service = brightness_service();
-        let mut audio = AudioSubscriptions::new(&sender)
-            .map_err(|error| eprintln!("Audio subscription: {error}"))
+        let mut watcher = DeviceWatcher::new(&sender)
+            .map_err(|error| eprintln!("Audio device watcher: {error}"))
             .ok();
-        let mut previous_volume = audio.as_ref().and_then(AudioSubscriptions::volume);
+        let mut audio = subscribe_endpoint(watcher.as_ref(), &sender);
+        let mut previous_volume = audio.as_ref().and_then(EndpointSubscription::volume);
         let mut previous_device = audio.as_ref().map(|value| value.device_id.clone());
         let mut previous_brightness = brightness_service.as_ref().and_then(brightness);
         let mut previous_wifi = wifi_connected();
@@ -312,16 +343,19 @@ mod native {
                 Ok(Signal::Suspend) => audio = None,
                 Ok(Signal::Rebind) => {
                     drop(audio.take());
-                    let next = AudioSubscriptions::new(&sender)
-                        .map_err(|error| eprintln!("Audio rebind: {error}"))
-                        .ok();
+                    if watcher.is_none() {
+                        watcher = DeviceWatcher::new(&sender)
+                            .map_err(|error| eprintln!("Audio device watcher: {error}"))
+                            .ok();
+                    }
+                    let next = subscribe_endpoint(watcher.as_ref(), &sender);
                     let next_device = next.as_ref().map(|value| value.device_id.clone());
                     if previous_device.is_some() && next_device != previous_device {
                         crate::visualizer::notify_output_changed();
                         peek(&app, "Audio output", "Playback device changed");
                     }
                     previous_device = next_device;
-                    previous_volume = next.as_ref().and_then(AudioSubscriptions::volume);
+                    previous_volume = next.as_ref().and_then(EndpointSubscription::volume);
                     audio = next;
                 }
                 Ok(Signal::Volume(level, muted)) => {
@@ -376,6 +410,7 @@ mod native {
             }
         }
         drop(audio);
+        drop(watcher);
         unsafe {
             CoUninitialize();
         }

@@ -43,7 +43,7 @@ All serialized DTO fields use camelCase.
 | `dictation_review_insert` | none | inserts the review transcript only if the original target still matches |
 | `dictation_review_discard` | none | discards the in-memory review transcript |
 
-`DictationSettings` contains `toggleShortcut`, `holdToTalkShortcut`, `reviewBeforeInsert` and `partialPreview`. Defaults are `Ctrl+Shift+Space`, `Ctrl+Alt+Space`, immediate insertion and partial preview. Shortcuts are validated, capped at 64 bytes, must differ, and are saved as bounded JSON in the app config directory.
+`DictationSettings` contains `toggleShortcut`, `holdToTalkShortcut`, `reviewBeforeInsert` and `partialPreview`. Defaults are `Ctrl+Shift+Space`, `Shift+Shift` (holding Left + Right Shift simultaneously), immediate insertion and partial preview. Shortcuts are validated, capped at 64 bytes, must differ, and are saved as bounded JSON in the app config directory.
 
 `DictationSnapshot` contains `status`, `modelInstalled`, `modelDownloadedBytes`, `transcript`, `message`, `settings` and `canInsert`. Status values are `idle`, `starting`, `recording`, `transcribing`, `downloadingModel`, `removingModel`, `cancelling`, `review`, `modelMissing` and `error`.
 

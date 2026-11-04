@@ -376,11 +376,15 @@ try {
   }
   // An exact match stays quiet; only an approximate match offers timing, and the correction sticks to the track.
   const lyricEvent=extra=>native.evaluate(extra=>window.__emitNative('lyrics',{trackId:'fixture-track',requestId:window.__calls.findLast(call=>call.command==='lyrics_get').args.requestId,syncedLyrics:'[00:01]Previous fixture line\n[00:03]Current fixture line\n[00:05]Next fixture line',...extra}),extra);
+  const lyricTrackEvent=trackId=>native.evaluate(trackId=>window.__emitNative('lyrics',{trackId,requestId:window.__calls.findLast(call=>call.command==='lyrics_get').args.requestId,status:'synced',approximate:true,syncedLyrics:'[00:01]Fixture line'}),trackId);
+  await lyricEvent({status:'synced'});
   assert.equal(await native.locator('.lyrics-offset-controls').isVisible(),false,'An exact match shows no timing control');
   assert.equal(await native.locator('.lyrics-header').isVisible(),false,'An exact match leaves no empty header above the lyrics');
   await lyricEvent({status:'synced',approximate:true});
   assert.equal(await native.locator('.lyrics-status').textContent(),'Approximate');
   assert.equal(await native.locator('.lyrics-offset-value').textContent(),'0.0 s');
+  assert.match(await native.locator('.lyrics-note').textContent(),/another edit/i,'An approximate match says why');
+  assert.equal(await native.locator('.lyrics-offset-value').getAttribute('aria-live'),'polite');
   for(let step=0;step<3;step++) await native.getByRole('button',{name:'Show lyrics 0.1 s later, hold to repeat'}).click();
   assert.equal(await native.locator('.lyrics-offset-value').textContent(),'+0.3 s');
   await native.locator('.lyric-line').last().click();
@@ -391,6 +395,31 @@ try {
   await lyricEvent({status:'plain',approximate:true,syncedLyrics:'',plainLyrics:'Fixture words'});
   assert.equal(await native.locator('.lyrics-offset-controls').isVisible(),false,'Plain lyrics have no timing to correct');
   assert.equal(await native.locator('.lyrics-status').textContent(),'Approximate · not synchronized');
+  await native.evaluate(()=>{const key='tuck.live.v2';localStorage.setItem(key,JSON.stringify({...JSON.parse(localStorage.getItem(key)),lyricsOffsets:[]}));});
+  // Holding repeats; other buttons and a track change during the hold must not move anything.
+  const fixtureMedia=trackId=>native.evaluate(trackId=>window.__emitNative('media',{active:true,trackId,title:'Artwork color fixture',artist:'Synthetic test data',playing:false,positionMs:3000,durationMs:120000}),trackId);
+  const later=native.getByRole('button',{name:'Show lyrics 0.1 s later, hold to repeat'});
+  const offsetValue=()=>native.locator('.lyrics-offset-value').textContent();
+  await lyricEvent({status:'synced',approximate:true});
+  await later.hover();
+  await native.mouse.down(); await native.waitForTimeout(600); await native.mouse.up();
+  const held=await offsetValue();
+  assert.notEqual(held,'0.0 s','Holding a stepper repeats');
+  await native.waitForTimeout(200);
+  assert.equal(await offsetValue(),held,'Releasing stops the repeat, and its click adds nothing');
+  await native.mouse.down({button:'right'}); await native.waitForTimeout(600); await native.mouse.up({button:'right'});
+  assert.equal(await offsetValue(),held,'Only the main button repeats');
+  await later.focus(); await native.keyboard.press('Enter');
+  assert.notEqual(await offsetValue(),held,'A right-button hold does not swallow the next key press');
+  await native.locator('.lyrics-toggle-btn').hover();
+  await fixtureMedia('hold-track'); await lyricTrackEvent('hold-track');
+  await later.hover(); await native.mouse.down();
+  await fixtureMedia('hold-track-2'); await lyricTrackEvent('hold-track-2');
+  await native.waitForTimeout(600); await native.mouse.up();
+  assert.equal(await offsetValue(),'0.0 s','A hold that spans a track change saves nothing on the new track');
+  await later.focus();
+  await fixtureMedia('fixture-track');
+  assert.equal(await native.evaluate(()=>document.activeElement?.className),'lyrics-toggle-btn','Focus stays near when the timing controls hide');
   await native.evaluate(()=>{const key='tuck.live.v2';localStorage.setItem(key,JSON.stringify({...JSON.parse(localStorage.getItem(key)),lyricsOffsets:[]}));});
   await native.evaluate(()=>{
     const oldId=window.__calls.findLast(call=>call.command==='lyrics_get').args.requestId;

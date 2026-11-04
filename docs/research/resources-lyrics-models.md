@@ -174,13 +174,13 @@ I ran this script against `explorer` to confirm it parses and runs; I did not ru
 
 Inputs: `title`, `artist` string, optional `album`, `duration_s` (0 or missing means unknown).
 
-**Step 0 - cache.** Key on `(norm(title_core), norm(primary_artist))`, not on exact seconds. Store the accepted LRCLIB `id`, the confidence and any user offset. Negative results expire after 6-24 h, because LRCLIB can gain the track later [web].
+**Step 0 - cache.** Key on `(norm(title_core), qualifiers, norm(primary_artist), round(duration_s) or "unknown")`. Duration must be in the key: an artist can have several songs with one title (LRCLIB has `Intro` by `Drake` at 52, 37, 35, 34, 30 and 25 s), and a player can report the duration late. Negative results expire after 6-24 h, because LRCLIB can gain the track later [web]. Never store a negative result when the duration is unknown, or the correct request that follows it would be answered by that miss. User offsets are stored per track, separately from this cache.
 
 **Step 1 - normalise.**
 
 - `norm(s)`: Unicode NFKC, lowercase, strip combining accents, `&` to `and`, curly to straight quotes, drop punctuation except digits and letters, collapse spaces.
-- Split the title into `core` and `qualifiers`. Treat as **ignorable noise** (remove from `core`): `feat.`/`ft.`/`featuring`/`with X` (move X into the artist set), `remaster(ed) [year]`, `mono`/`stereo`, `explicit`/`clean`, `single version`, `radio edit`, `deluxe`, `bonus track`, `from "..."`, in either `( )`, `[ ]` or a trailing ` - Remastered 2011` style suffix.
-- Treat as **identity qualifiers** (keep as a set `Q`; the candidate must have the same `Q`): `live`, `acoustic`, `remix` (and `X remix`), `instrumental`, `karaoke`, `cover`, `sped up`, `slowed`, `reverb`, `demo`, `part N`/`pt. N`. A live track must never get the studio lyrics, and vice versa.
+- Split the title into `core` and `qualifiers`. Treat as **ignorable noise** (remove from `core`): `feat.`/`featuring`, and `ft.` inside brackets (move X into the artist set), `remaster(ed) [year]`, `mono`/`stereo`, `explicit`/`clean`, `single`/`album`/`radio`/`original version`, `radio edit`, `deluxe`, `bonus track`, `from "..."`, in either `( )`, `[ ]` or a trailing ` - Remastered 2011` style suffix. `(with X)` and a bare `ft X` are only credits if X is in the artist credits of either record, because `Run (With Me)` and `Six Ft Under` are titles.
+- Treat as **identity qualifiers** (keep as a set `Q`; the candidate must have the same `Q`): `live`, `acoustic`, `remix` (and `X remix`), `instrumental`, `karaoke`, `cover`, `sped up`, `slowed`, `reverb`, `demo`, `part N`/`pt. N`, and any other `<word> version` (`Spanish`, `Dub`, `Piano`). A live track must never get the studio lyrics, and vice versa.
 - Artists: keep the full string and also split on `,` ` & ` ` and ` ` x ` ` feat. ` ` ft. ` ` with ` `;` `/`. `primary` is the first token. Keep the unsplit form too, because `Simon & Garfunkel`, `Earth, Wind & Fire` and `Tyler, The Creator` contain separators.
 
 **Step 2 - lookup order** (sequential, stop at the first accepted candidate, at most 3 network calls per track, 200-500 ms apart, one shared 429 back-off):
@@ -197,11 +197,11 @@ Optional later: use `/api/v2/search` for step 2/3 to avoid downloading 20 lyric 
 | Signal | Points |
 |---|---|
 | Title: candidate's own `core` equals ours | 40 |
-| Title: token-set similarity ≥ 0.9 | 30 |
-| Title: below 0.8 | reject |
-| Artist: our `primary` equals any candidate artist token | 30 |
-| Artist: candidate string contains `primary` (e.g. `Babyboy AV feat. Jireel`) | 28 |
-| Artist: only partial overlap | 10 |
+| Title: anything else | reject (word sets ignore order and repeats: `Money Money Money` is not `Money`) |
+| Artist: same credit, ignoring order and guests (e.g. `Babyboy AV feat. Jireel`) | 30 |
+| Artist: our `primary` equals any other candidate artist token, including a guest | 30, flagged approximate |
+| Artist: candidate string contains a multi-word `primary` | 28, flagged approximate |
+| Artist: only partial overlap | 10, flagged approximate |
 | Artist: no overlap | reject |
 | Duration: \|Δ\| ≤ 2 s | 20 |
 | Duration: ≤ 5 s | 14 |
@@ -215,14 +215,14 @@ Optional later: use `/api/v2/search` for step 2/3 to avoid downloading 20 lyric 
 | Last synced timestamp > playing duration + 3 s | -25 |
 | Candidate is `instrumental` while others have lyrics | -20 (unless our title says instrumental) |
 
-Decision: **≥ 75 accept**, **55-74 low confidence** (show only if a "loose matching" setting is on, with a subtle marker), **< 55 not found**. Ties: smaller \|Δduration\|, then synced over plain, then album match, then `hasWordSync`.
+Decision: **≥ 75 accept**, **55-74 low confidence** (show only if a "loose matching" setting is on, with a subtle marker), **< 55 not found**. Ties: an unflagged match, then smaller \|Δduration\|, then synced over plain.
 
 Worked example (our title `Big Thug Boys`, artist `Babyboy AV`, 171 s) against `Big Thug Boys (feat. Jireel)` / `Babyboy AV` / 163 s: title 40 + artist 30 + duration Δ8 = 8 + synced 5 = **83, accepted**, flagged "approximate" because Δ > 2 s. The 164 s record scores the same at Δ7; the album-`Big Thug Boys` record wins the album point if Spotify reports that album.
 
 **Wrong-song guards** (never accept on duration alone):
 
-- Both a title score ≥ 30 and an artist match are required.
-- Reject candidates with `karaoke`, `tribute`, `made famous by`, `originally performed by` unless our title has them.
+- Both the same title and an artist match are required.
+- Reject candidates with `karaoke`, `tribute`, `made famous by`, `originally performed by` in the title or artist unless ours has them.
 - Titles of one or two short words (`22`, `Home`) require an exact artist match and \|Δ\| ≤ 3 s.
 - Reject a synced result whose final timestamp is far beyond the real track length.
 

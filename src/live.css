@@ -108,6 +108,19 @@
   white-space: nowrap;
 }
 
+.lyrics-note {
+  color: var(--ink-2);
+  font-size: var(--t-2xs);
+  margin: calc(-1 * var(--s-2)) 0 var(--s-1);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.lyrics-note[hidden] {
+  display: none;
+}
+
 .lyrics-offset-controls {
   display: flex;
   align-items: center;

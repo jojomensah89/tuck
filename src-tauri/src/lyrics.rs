@@ -50,8 +50,6 @@ pub struct LyricsResponse {
     pub request_seq: u64,
     /// The song matched, but its timing or credits differ from what is playing.
     pub approximate: bool,
-    pub confidence: Option<i32>,
-    pub lrclib_id: Option<i64>,
 }
 
 #[derive(Clone)]
@@ -397,8 +395,6 @@ fn response_without_lyrics(
         error_message,
         request_seq: seq,
         approximate: false,
-        confidence: None,
-        lrclib_id: None,
     }
 }
 
@@ -432,8 +428,6 @@ fn response_from_candidate(
         error_message: None,
         request_seq: seq,
         approximate: candidate.approximate,
-        confidence: Some(candidate.score),
-        lrclib_id: Some(record.id),
     }
 }
 
@@ -449,7 +443,12 @@ fn cached_response(key: &str) -> Option<LyricsResponse> {
         .map(|entry| entry.response.clone())
 }
 
-fn store_response(key: String, response: &LyricsResponse) {
+/// Remembers a real answer. A miss without a duration is not one: search cannot accept anything
+/// without a length to check, and the player may simply not have reported it yet.
+fn store_response(key: String, response: &LyricsResponse, duration_s: Option<f64>) {
+    if response.status == "not_found" && duration_s.is_none() {
+        return;
+    }
     if let Ok(mut guard) = CACHE.lock() {
         let entries = guard.get_or_insert_with(VecDeque::new);
         if entries.len() >= MAX_CACHE_ENTRIES {
@@ -463,6 +462,14 @@ fn store_response(key: String, response: &LyricsResponse) {
     }
 }
 
+fn can_look_up(title: &str, artist: &str, duration_ms: i64) -> bool {
+    !title.trim().is_empty()
+        && !artist.trim().is_empty()
+        && title.len() <= 2048
+        && artist.len() <= 2048
+        && duration_ms <= 3_600_000
+}
+
 /// Fetches lyrics from LRCLIB for the given track.
 /// Respects opt-in configuration, caching, rate-limit backoff, and stale request detection.
 #[tauri::command]
@@ -472,14 +479,6 @@ pub async fn lyrics_get(
     duration_ms: i64,
     track_id: Option<String>,
 ) -> Result<LyricsResponse, String> {
-    if title.trim().is_empty()
-        || artist.trim().is_empty()
-        || title.len() > 2048
-        || artist.len() > 2048
-        || duration_ms > 3_600_000
-    {
-        return Err("Track metadata is unavailable or outside lyrics lookup limits".into());
-    }
     let seq = REQUEST_SEQ.fetch_add(1, Ordering::SeqCst);
 
     if let Some(ref tid) = track_id {
@@ -502,8 +501,20 @@ pub async fn lyrics_get(
             Some("Lyrics lookup is disabled in settings".into()),
         ));
     }
+    if !can_look_up(&title, &artist, duration_ms) {
+        // Nothing to search for, which is not a failure and not worth remembering.
+        return Ok(response_without_lyrics(
+            "not_found",
+            track_id,
+            title,
+            artist,
+            seq,
+            None,
+        ));
+    }
 
-    let key = Track::parse(&title, &artist).cache_key();
+    let duration_s = (duration_ms >= 1000).then_some(duration_ms as f64 / 1000.0);
+    let key = Track::parse(&title, &artist).cache_key(duration_s);
     if let Some(mut cached) = cached_response(&key) {
         cached.track_id = track_id;
         cached.request_seq = seq;
@@ -512,7 +523,6 @@ pub async fn lyrics_get(
 
     let (lookup_title, lookup_artist, lookup_track) =
         (title.clone(), artist.clone(), track_id.clone());
-    let duration_s = (duration_ms >= 1000).then_some(duration_ms as f64 / 1000.0);
     let outcome = tauri::async_runtime::spawn_blocking(move || {
         lookup(
             &lookup_title,
@@ -531,7 +541,7 @@ pub async fn lyrics_get(
                 Some(candidate) => response_from_candidate(candidate, track_id, title, artist, seq),
                 None => response_without_lyrics("not_found", track_id, title, artist, seq, None),
             };
-            store_response(key, &response);
+            store_response(key, &response, duration_s);
             response
         }
         Err(error) => response_without_lyrics("error", track_id, title, artist, seq, Some(error)),
@@ -542,6 +552,14 @@ pub async fn lyrics_get(
 mod tests {
     use super::*;
     use crate::lyrics_match::best_search_match;
+
+    /// The cache is shared and bounded, so tests that fill it must not run alongside those that
+    /// read it back.
+    static CACHE_TESTS: Mutex<()> = Mutex::new(());
+
+    fn answer(status: &str) -> LyricsResponse {
+        response_without_lyrics(status, None, String::new(), String::new(), 1, None)
+    }
 
     #[test]
     fn test_parse_lrc_timestamp() {
@@ -608,39 +626,75 @@ mod tests {
     #[test]
     fn an_answer_always_has_a_lyrics_status() {
         let record = |synced: Option<&str>, plain: Option<&str>, instrumental| LrclibRecord {
-            id: 9,
             track_name: "Long Song Title".into(),
             artist_name: "Aster".into(),
-            duration: 200.0,
+            duration: Some(200.0),
             instrumental,
             plain_lyrics: plain.map(String::from),
             synced_lyrics: synced.map(String::from),
-            has_word_sync: false,
         };
         let status = |record| {
             let wanted = Track::parse("Long Song Title", "Aster");
             let candidate = crate::lyrics_match::score_candidate(&wanted, record, Some(200.0))
                 .expect("eligible record");
-            let response =
-                response_from_candidate(candidate, None, String::new(), String::new(), 1);
-            (response.status, response.lrclib_id)
+            response_from_candidate(candidate, None, String::new(), String::new(), 1).status
         };
         let lrc = Some("[00:01.00]Line");
-        assert_eq!(status(record(lrc, Some("Line"), false)).0, "synced");
-        assert_eq!(status(record(None, Some("Line"), false)).0, "plain");
-        assert_eq!(
-            status(record(None, None, true)),
-            ("instrumental".into(), Some(9))
+        assert_eq!(status(record(lrc, Some("Line"), false)), "synced");
+        assert_eq!(status(record(None, Some("Line"), false)), "plain");
+        assert_eq!(status(record(None, None, true)), "instrumental");
+    }
+
+    #[test]
+    fn tracks_without_metadata_are_a_miss_and_not_a_failure() {
+        assert!(can_look_up("Song", "Aster", 180_000));
+        assert!(
+            can_look_up("Song", "Aster", 0),
+            "the duration can be unknown"
         );
+        assert!(!can_look_up("Song", "  ", 180_000));
+        assert!(!can_look_up("  ", "Aster", 180_000));
+        assert!(!can_look_up("Song", "Aster", 3_600_001));
+    }
+
+    #[test]
+    fn a_miss_without_a_duration_does_not_hide_the_track_once_it_is_known() {
+        let _guard = CACHE_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let track = Track::parse("Late Duration Song", "Babyboy AV");
+        store_response(track.cache_key(None), &answer("not_found"), None);
+        assert!(
+            cached_response(&track.cache_key(None)).is_none(),
+            "the player may just not have reported the duration yet"
+        );
+        assert!(cached_response(&track.cache_key(Some(171.0))).is_none());
+
+        // A miss that had a duration to check is real, but only for that length.
+        store_response(
+            track.cache_key(Some(171.0)),
+            &answer("not_found"),
+            Some(171.0),
+        );
+        assert!(cached_response(&track.cache_key(Some(171.0))).is_some());
+        assert!(cached_response(&track.cache_key(Some(200.0))).is_none());
+    }
+
+    #[test]
+    fn same_titled_tracks_by_one_artist_do_not_share_an_answer() {
+        let _guard = CACHE_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let track = Track::parse("Cached Intro", "Drake");
+        store_response(track.cache_key(Some(52.0)), &answer("synced"), Some(52.0));
+        assert_eq!(
+            cached_response(&track.cache_key(Some(52.0))).map(|found| found.status),
+            Some("synced".to_string())
+        );
+        assert!(cached_response(&track.cache_key(Some(25.0))).is_none());
+        assert!(cached_response(&track.cache_key(None)).is_none());
     }
 
     #[test]
     fn misses_are_cached_until_their_ttl_and_the_cache_stays_bounded() {
-        let miss = |key: &str| {
-            let response =
-                response_without_lyrics("not_found", None, key.into(), String::new(), 1, None);
-            store_response(key.into(), &response);
-        };
+        let _guard = CACHE_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let miss = |key: &str| store_response(key.into(), &answer("not_found"), Some(180.0));
         miss("cached miss");
         assert_eq!(
             cached_response("cached miss").map(|response| response.status),
@@ -693,13 +747,15 @@ mod tests {
             "{:?}",
             records
                 .iter()
-                .map(|r| (r.id, &r.track_name, &r.artist_name, r.duration))
+                .map(|r| (&r.track_name, &r.artist_name, r.duration))
                 .collect::<Vec<_>>()
         );
         let best = best_search_match(&wanted, records, duration).expect("accepted match");
         println!(
-            "chose {} score {} approximate {} lines {}",
-            best.record.id,
+            "chose {:?} by {} at {:?} s, score {} approximate {} lines {}",
+            best.record.track_name,
+            best.record.artist_name,
+            best.record.duration,
             best.score,
             best.approximate,
             best.lines.len()
@@ -708,6 +764,42 @@ mod tests {
         assert_eq!(best.score, 83);
         assert!(best.approximate);
         assert!(!best.lines.is_empty());
+    }
+
+    /// One artist, one title, several songs: each length must get its own record.
+    #[test]
+    #[ignore = "calls the real LRCLIB service"]
+    fn live_lrclib_same_title_at_different_durations() {
+        let mut found_lengths = Vec::new();
+        for duration_s in [Some(52.0), Some(25.0)] {
+            let wanted = Track::parse("Intro", "Drake");
+            let best = resolve_match(
+                &wanted,
+                duration_s,
+                || fetch_exact("Intro", "Drake", duration_s),
+                || {
+                    std::thread::sleep(REQUEST_GAP);
+                    fetch_search(&wanted)
+                },
+            )
+            .expect("LRCLIB reachable")
+            .expect("a record at this length");
+            println!(
+                "Intro / Drake at {duration_s:?}: {:?} by {} at {:?} s, score {} approximate {} lines {}, key {:?}",
+                best.record.track_name,
+                best.record.artist_name,
+                best.record.duration,
+                best.score,
+                best.approximate,
+                best.lines.len(),
+                wanted.cache_key(duration_s),
+            );
+            let length = best.record.duration.expect("a duration");
+            assert!((length - duration_s.unwrap()).abs() <= 3.0);
+            found_lengths.push(length);
+            std::thread::sleep(REQUEST_GAP);
+        }
+        assert_ne!(found_lengths[0], found_lengths[1]);
     }
 
     /// Sanity-checks the query forms against real data, with at most two requests per track.

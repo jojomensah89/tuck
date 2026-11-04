@@ -62,7 +62,8 @@ export function mountLivePages(onLayout: () => void): {
   ctl.prepend(toolbar);
   mediaPage.append(lyricsPane, message);
   lyricsHeader.append(lyricsStatus, offsetControls);
-  lyricsPane.append(lyricsHeader, lyricList);
+  const lyricsNote = node('p', 'lyrics-note', 'Another edit? Timing may be off'); lyricsNote.hidden = true;
+  lyricsPane.append(lyricsHeader, lyricsNote, lyricList);
   mediaPage.classList.toggle('with-lyrics', readPreferences().lyricsOpen);
   lyricToggle.setAttribute('aria-pressed', String(readPreferences().lyricsOpen));
   let currentTrack = '', generation = 0, baseLines: LyricLine[] = [], lines: LyricLine[] = [], activeLine = -2;
@@ -89,10 +90,18 @@ export function mountLivePages(onLayout: () => void): {
     });
     if (index >= 0 && Date.now() > manualScrollUntil) {
       const target = lyricList.children[index] as HTMLElement;
-      lyricList.scrollTop = Math.max(0, target.offsetTop - lyricList.offsetTop - lyricList.clientHeight / 2 + target.offsetHeight / 2);
+      // The list is positioned, so offsetTop is already measured from it
+      lyricList.scrollTop = Math.max(0, target.offsetTop - lyricList.clientHeight / 2 + target.offsetHeight / 2);
     }
   };
   const offsetValue = node('span', 'lyrics-offset-value');
+  offsetValue.setAttribute('aria-live', 'polite');
+  offsetValue.title = 'How far the lyrics are shifted. Plus shows them later';
+  /** Hides the timing row without dropping keyboard focus onto the page. */
+  function hideTiming(): void {
+    if (offsetControls.contains(document.activeElement)) lyricToggle.focus();
+    offsetControls.hidden = true; lyricsNote.hidden = true;
+  }
   /** Shifts the existing lines by a constant; a different edit moves lyrics by that, not by a ratio. */
   function retimeLyrics(): void {
     lines = baseLines.map(line => ({ ...line, atMs: Math.max(0, line.atMs + userOffsetMs) }));
@@ -111,9 +120,10 @@ export function mountLivePages(onLayout: () => void): {
     };
     const approximate = !!snapshot.approximate && (snapshot.status === 'synced' || snapshot.status === 'plain');
     lyricsStatus.textContent = approximate ? (snapshot.status === 'plain' ? 'Approximate · not synchronized' : 'Approximate') : statuses[snapshot.status] ?? 'Lyrics unavailable';
-    lyricsStatus.title = approximate ? 'Closest lyrics found, the timing may be off' : '';
+    lyricsStatus.title = approximate ? 'The closest lyrics found. They may be from another edit of this song, so the timing can be off' : '';
     // Timing only needs correcting on a looser match, or where the user already corrected it
-    offsetControls.hidden = !(baseLines.length && (approximate || userOffsetMs !== 0));
+    if (baseLines.length && (approximate || userOffsetMs !== 0)) offsetControls.hidden = false; else hideTiming();
+    lyricsNote.hidden = !(approximate && baseLines.length);
     if (baseLines.length) {
       baseLines.forEach((line, index) => {
         const b = button(line.text || '♪', () => { void act(mediaSeek(lines[index].atMs), message); });
@@ -132,14 +142,30 @@ export function mountLivePages(onLayout: () => void): {
   }
   /** One press is 100 ms; holding repeats, because a different edit is often seconds out. */
   function offsetStepper(label: string, icon: string, deltaMs: number): HTMLButtonElement {
-    let timer = 0, repeated = false;
+    // The track a press began on: a correction made for one song must never land on the next
+    let timer = 0, repeated = false, pressedTrack: string | null = null;
     const stop = () => window.clearTimeout(timer);
-    const b = iconButton(label, icon, () => { if (!repeated) adjustLyrics(deltaMs); repeated = false; }, 'lyrics-offset-btn');
-    const tick = () => { repeated = true; adjustLyrics(deltaMs); timer = window.setTimeout(tick, 60); };
-    b.onpointerdown = () => { stop(); repeated = false; timer = window.setTimeout(tick, 400); };
+    const reset = () => { stop(); repeated = false; pressedTrack = null; };
+    const b = iconButton(label, icon, () => {}, 'lyrics-offset-btn');
+    b.onclick = e => {
+      e.stopPropagation();
+      // A keyboard press has no pointer history. A pointer's click only counts if its press
+      // began on this track, was not cancelled and has not already repeated.
+      if (e.detail === 0 || (pressedTrack === currentTrack && !repeated)) adjustLyrics(deltaMs);
+      reset();
+    };
+    const tick = () => {
+      if (pressedTrack !== currentTrack) return;
+      repeated = true; adjustLyrics(deltaMs); timer = window.setTimeout(tick, 60);
+    };
+    b.onpointerdown = e => {
+      reset();
+      if (e.button !== 0) return;
+      pressedTrack = currentTrack; timer = window.setTimeout(tick, 400);
+    };
     b.onpointerup = stop;
     // No click follows these, so the next keyboard press must still count
-    b.onpointercancel = b.onpointerleave = () => { stop(); repeated = false; };
+    b.onpointercancel = b.onpointerleave = reset;
     return b;
   }
   offsetControls.append(
@@ -150,7 +176,7 @@ export function mountLivePages(onLayout: () => void): {
   async function requestLyrics(state: MediaState): Promise<void> {
     const request = ++generation;
     const requestId = newRequestId(); currentRequestId = state.active ? requestId : '';
-    baseLines = []; lines = []; currentLyric = ''; activeLine = -2; lyricList.replaceChildren(); offsetControls.hidden = true;
+    baseLines = []; lines = []; currentLyric = ''; activeLine = -2; lyricList.replaceChildren(); hideTiming();
     lyricsStatus.textContent = state.active ? 'Finding lyrics\u2026' : 'Play music to see lyrics';
     if (!state.active) return;
     try {
@@ -158,7 +184,7 @@ export function mountLivePages(onLayout: () => void): {
         trackId: state.trackId, requestId, title: state.title, artist: state.artist, durationMs: state.durationMs,
       });
       if (request === generation) applyLyrics(data);
-    } catch { if (request === generation) lyricsStatus.textContent = isTauri() ? 'Lyrics unavailable, enable them in Settings' : 'Online lyrics need the Windows app'; }
+    } catch { if (request === generation) lyricsStatus.textContent = isTauri() ? 'Lyrics unavailable' : 'Online lyrics need the Windows app'; }
   }
 
   // System stats: one ring per meter with the value inside, its name and a sparkline under it
@@ -363,7 +389,7 @@ export function mountLivePages(onLayout: () => void): {
     window.dispatchEvent(new CustomEvent('tuck-activity', { detail: { id: 'dictation', type: 'dictation', phase: 'recording', active: true, title: 'Dictation', text: data.text.slice(-65), priority: 99 } }));
   }).then(unlisten => unlisteners.push(unlisten));
   void listenToEvent<{ enabled: boolean }>('lyrics-settings', data => {
-    if (!data.enabled) { generation++; currentRequestId = ''; baseLines = []; lines = []; currentLyric = ''; lyricList.replaceChildren(); offsetControls.hidden = true; lyricsStatus.textContent = 'Enable online lyrics in Settings'; }
+    if (!data.enabled) { generation++; currentRequestId = ''; baseLines = []; lines = []; currentLyric = ''; lyricList.replaceChildren(); hideTiming(); lyricsStatus.textContent = 'Enable online lyrics in Settings'; }
     else if (latestMedia?.active) void requestLyrics(latestMedia);
   }).then(unlisten => unlisteners.push(unlisten));
   void listenToEvent<string>('visualizer-error', () => { audioStatus.textContent = 'Playback analysis unavailable, check the output device'; }).then(unlisten => unlisteners.push(unlisten));

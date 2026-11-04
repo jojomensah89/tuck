@@ -43,7 +43,8 @@ const VIDEO_TAG_WORDS: [&str; 10] = [
     "hq",
 ];
 /// A bracketed subtitle with one of these is another arrangement, not a longer name for the song.
-const VARIANT_SUBTITLE_WORDS: [&str; 12] = [
+const VARIANT_SUBTITLE_WORDS: [&str; 13] = [
+    "part",
     "dub",
     "piano",
     "reprise",
@@ -228,7 +229,11 @@ fn classify(text: &str, is_suffix: bool) -> Option<Tag> {
     }
 
     let normalized = normalize_text(text);
-    let words: Vec<&str> = normalized.split_whitespace().collect();
+    let mut words: Vec<&str> = normalized.split_whitespace().collect();
+    // "(Japanese Ver.)" is "(Japanese Version)".
+    if let Some(last) = words.last_mut().filter(|word| **word == "ver") {
+        *last = "version";
+    }
     // In brackets "from" needs its quotes, because "(From Me To You)" can be part of a title.
     if words.first() == Some(&"from")
         && words.len() > 1
@@ -290,7 +295,7 @@ fn classify(text: &str, is_suffix: bool) -> Option<Tag> {
 }
 
 /// Splits a title into its core text, identity qualifiers and credited names.
-fn split_title(title: &str) -> TitleParts {
+fn split_title(title: &str, artist: &str) -> TitleParts {
     let mut qualifiers = BTreeSet::new();
     let mut featured = Vec::new();
     let mut possible_credits = Vec::new();
@@ -354,6 +359,10 @@ fn split_title(title: &str) -> TitleParts {
         let Some(tag) = classify(suffix, true) else {
             break;
         };
+        // In "Prince - 1999" the year is the song: removing it would leave only the artist.
+        if matches!(tag, Tag::Noise | Tag::VideoNoise) && names_artist(head, artist) {
+            break;
+        }
         apply(tag);
         core = head.to_string();
     }
@@ -409,6 +418,18 @@ fn clean_channel_name(artist: &str) -> &str {
     }
 }
 
+/// Whether the text before a dash is the credited artist or one of them.
+fn names_artist(head: &str, artist: &str) -> bool {
+    let credited: Vec<String> = split_artists(artist)
+        .iter()
+        .map(|part| normalize_text(part))
+        .collect();
+    normalize_text(head) == normalize_text(artist)
+        || split_artists(head)
+            .iter()
+            .any(|part| credited.contains(&normalize_text(part)))
+}
+
 /// Finds the artist in `Artist - Title`. The head must name the credited artist, unless a tag such
 /// as "(Official Video)" shows this is an upload whose channel may be anyone.
 fn leading_artist(core: &str, artist: &str, from_video: bool) -> Option<(String, String)> {
@@ -419,15 +440,7 @@ fn leading_artist(core: &str, artist: &str, from_video: bool) -> Option<(String,
     if normalize_text(head).is_empty() || normalize_text(rest).is_empty() {
         return None;
     }
-    let credited: Vec<String> = split_artists(artist)
-        .iter()
-        .map(|part| normalize_text(part))
-        .collect();
-    let named = normalize_text(head) == normalize_text(artist)
-        || split_artists(head)
-            .iter()
-            .any(|part| credited.contains(&normalize_text(part)));
-    if named {
+    if names_artist(head, artist) {
         Some((artist.to_string(), rest.to_string()))
     } else {
         from_video.then(|| (head.trim().to_string(), rest.to_string()))
@@ -480,7 +493,7 @@ fn comparable(value: &str) -> String {
 
 impl Track {
     pub fn parse(title: &str, artist: &str) -> Self {
-        let parts = split_title(title);
+        let parts = split_title(title, clean_channel_name(artist));
         let (mut raw_core, mut qualifiers, possible_credits) =
             if normalize_text(&parts.core).is_empty() {
                 // Nothing but tags, or nothing but punctuation: the whole title is the name.
@@ -734,11 +747,11 @@ fn rank(candidate: &Candidate) -> i32 {
 fn compare(left: &Candidate, right: &Candidate) -> Ordering {
     rank(left)
         .cmp(&rank(right))
+        .then_with(|| right.credit_differs.cmp(&left.credit_differs))
         .then_with(|| {
             let delta = |candidate: &Candidate| candidate.duration_delta.unwrap_or(f64::INFINITY);
             delta(right).total_cmp(&delta(left))
         })
-        .then_with(|| right.credit_differs.cmp(&left.credit_differs))
         .then_with(|| right.lines.is_empty().cmp(&left.lines.is_empty()))
 }
 
@@ -1236,6 +1249,82 @@ mod tests {
             !best.approximate,
             "the timing agrees, only the credit differs"
         );
+    }
+
+    #[test]
+    fn a_ver_tag_reads_as_a_version() {
+        for variant in [
+            "Japanese",
+            "Korean",
+            "Inst.",
+            "Band",
+            "Movie",
+            "Nightcore",
+            "English",
+        ] {
+            let title = format!("Boy With Luv ({variant} Ver.)");
+            assert_eq!(
+                same_length(&title, "BTS", "Boy With Luv", "BTS"),
+                None,
+                "{variant}"
+            );
+            assert_eq!(
+                same_length("Boy With Luv", "BTS", &title, "BTS"),
+                None,
+                "{variant}"
+            );
+        }
+        assert!(same_length("Boy With Luv (Album Ver.)", "BTS", "Boy With Luv", "BTS").is_some());
+    }
+
+    #[test]
+    fn a_spelled_out_part_is_not_a_subtitle() {
+        let (one, two) = (
+            "Long Enough Title (Part One)",
+            "Long Enough Title (Part II)",
+        );
+        assert_eq!(same_length(one, "Sam", "Long Enough Title", "Sam"), None);
+        assert_eq!(same_length(two, "Sam", "Long Enough Title", "Sam"), None);
+    }
+
+    #[test]
+    fn an_exact_title_beats_a_closer_subtitled_record() {
+        let wanted = Track::parse("Love Nwantiti", "CKay");
+        let best = best_search_match(
+            &wanted,
+            vec![
+                record("love nwantiti (ah ah ah)", "CKay", 145.0),
+                record("love nwantiti", "CKay", 146.0),
+            ],
+            Some(145.0),
+        )
+        .unwrap();
+        assert!(!best.credit_differs);
+    }
+
+    #[test]
+    fn a_year_or_noise_word_after_the_artist_is_the_song() {
+        for (upload, song, artist) in [
+            ("Prince - 1999 (Official Video)", "1999", "Prince"),
+            ("Smashing Pumpkins - 1979", "1979", "Smashing Pumpkins"),
+            (
+                "Taylor Swift - Clean (Official Audio)",
+                "Clean",
+                "Taylor Swift",
+            ),
+        ] {
+            assert!(
+                same_length(upload, artist, song, artist).is_some(),
+                "{upload}"
+            );
+            assert_eq!(
+                same_length(upload, artist, artist, artist),
+                None,
+                "{upload}"
+            );
+        }
+        // A suffix after a real title is still noise.
+        assert!(same_length("Song - 2012", "Sam", "Song", "Sam").is_some());
     }
 
     #[test]

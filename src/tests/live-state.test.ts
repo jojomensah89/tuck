@@ -73,4 +73,12 @@ describe('live island state', () => {
     expect(gate.accept(200)).toBe(false); expect(gate.accept(NaN)).toBe(false);
     gate.finish(); expect(gate.begin()).toBe(true); expect(gate.sampledAt).toBe(200);
   });
+  test('a failed telemetry poll only clears metrics once it persists', () => {
+    const gate = new TelemetryGate();
+    expect(gate.failed()).toBe(true);
+    gate.accept(100);
+    expect(gate.failed()).toBe(false); expect(gate.failed()).toBe(false); expect(gate.failed()).toBe(true);
+    gate.accept(200);
+    expect(gate.failed()).toBe(false);
+  });
 });

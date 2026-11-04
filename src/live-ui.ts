@@ -121,7 +121,8 @@ export function mountLivePages(onLayout: () => void): {
     const approximate = !!snapshot.approximate && (snapshot.status === 'synced' || snapshot.status === 'plain');
     lyricsStatus.textContent = approximate ? (snapshot.status === 'plain' ? 'Approximate · not synchronized' : 'Approximate') : statuses[snapshot.status] ?? 'Lyrics unavailable';
     lyricsStatus.title = approximate ? 'The closest lyrics found. They may be from another edit of this song, so the timing can be off' : '';
-    // Timing only needs correcting on a looser match, or where the user already corrected it
+    lyricsPane.title = snapshot.creditDiffers ? 'The lyrics found credit this song a little differently' : '';
+    // Only a timing mismatch warrants a warning or the stepper; a saved correction stays reachable
     if (baseLines.length && (approximate || userOffsetMs !== 0)) offsetControls.hidden = false; else hideTiming();
     lyricsNote.hidden = !(approximate && baseLines.length);
     if (baseLines.length) {
@@ -176,7 +177,7 @@ export function mountLivePages(onLayout: () => void): {
   async function requestLyrics(state: MediaState): Promise<void> {
     const request = ++generation;
     const requestId = newRequestId(); currentRequestId = state.active ? requestId : '';
-    baseLines = []; lines = []; currentLyric = ''; activeLine = -2; lyricList.replaceChildren(); hideTiming();
+    baseLines = []; lines = []; currentLyric = ''; activeLine = -2; lyricList.replaceChildren(); hideTiming(); lyricsPane.title = '';
     lyricsStatus.textContent = state.active ? 'Finding lyrics\u2026' : 'Play music to see lyrics';
     if (!state.active) return;
     try {
@@ -254,7 +255,7 @@ export function mountLivePages(onLayout: () => void): {
     try { telemetry(await nativeService<TelemetrySnapshot>('telemetry_snapshot')); }
     catch {
       // An older failed request must not invalidate a newer event received in flight.
-      if (telemetryGate.sampledAt === startedAtSample) invalidateTelemetry('Native telemetry unavailable');
+      if (telemetryGate.sampledAt === startedAtSample && telemetryGate.failed()) invalidateTelemetry('Native telemetry unavailable');
     } finally { telemetryGate.finish(); }
   }
 

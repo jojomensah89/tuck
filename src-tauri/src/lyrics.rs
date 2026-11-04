@@ -1,5 +1,6 @@
 use crate::lyrics_match::{resolve_match, Candidate, LrclibRecord, Track};
 use serde::{Deserialize, Serialize};
+use std::cell::Cell;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
@@ -13,6 +14,8 @@ const LRCLIB_GET_ENDPOINT: &str = "https://lrclib.net/api/get";
 const LRCLIB_SEARCH_ENDPOINT: &str = "https://lrclib.net/api/search";
 /// LRCLIB asks for 200-500 ms between sequential requests.
 const REQUEST_GAP: Duration = Duration::from_millis(250);
+/// LRCLIB sheds load with brief 503s, so one failed request gets a second try after this long.
+const RETRY_DELAY: Duration = Duration::from_secs(3);
 const MAX_RECORD_BYTES: u64 = 512 * 1024;
 const MAX_SEARCH_BYTES: u64 = 2 * 1024 * 1024;
 
@@ -48,8 +51,10 @@ pub struct LyricsResponse {
     pub synced_lyrics: Option<Vec<LyricLine>>,
     pub error_message: Option<String>,
     pub request_seq: u64,
-    /// The song matched, but its timing or credits differ from what is playing.
+    /// The timing could not be confirmed: the record's length differs or is unknown.
     pub approximate: bool,
+    /// Same song and timing, but the credit or a subtitle differs. Needs no timing warning.
+    pub credit_differs: bool,
 }
 
 #[derive(Clone)]
@@ -264,6 +269,12 @@ fn rate_limit_backoff(retry_after_secs: u64, entropy: u32) -> Duration {
     Duration::from_millis(base_ms + base_ms * u64::from(entropy % 301) / 1000)
 }
 
+fn clock_entropy() -> u32 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.subsec_nanos())
+}
+
 fn remember_rate_limit(response: &reqwest::blocking::Response) {
     let retry_after_secs = response
         .headers()
@@ -271,11 +282,31 @@ fn remember_rate_limit(response: &reqwest::blocking::Response) {
         .and_then(|header| header.to_str().ok())
         .and_then(|value| value.parse::<u64>().ok())
         .unwrap_or(5);
-    let entropy = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.subsec_nanos());
     if let Ok(mut until) = RATE_LIMIT_UNTIL.lock() {
-        *until = Some(Instant::now() + rate_limit_backoff(retry_after_secs, entropy));
+        *until = Some(Instant::now() + rate_limit_backoff(retry_after_secs, clock_entropy()));
+    }
+}
+
+/// A failed request, and whether it could clear by itself in a moment.
+#[derive(Debug)]
+struct FetchError {
+    message: String,
+    transient: bool,
+}
+
+impl FetchError {
+    fn lasting(message: impl Into<String>) -> Self {
+        FetchError {
+            message: message.into(),
+            transient: false,
+        }
+    }
+
+    fn transient(message: impl Into<String>) -> Self {
+        FetchError {
+            message: message.into(),
+            transient: true,
+        }
     }
 }
 
@@ -284,35 +315,64 @@ fn send_json<T: serde::de::DeserializeOwned>(
     url: &str,
     query: &[(&str, String)],
     max_bytes: u64,
-) -> Result<Option<T>, String> {
+) -> Result<Option<T>, FetchError> {
     use std::io::Read;
-    let response = http_client()?
+    let response = http_client()
+        .map_err(FetchError::lasting)?
         .get(url)
         .query(query)
         .send()
-        .map_err(|error| format!("Request failed: {error}"))?;
+        .map_err(|error| FetchError::transient(format!("Request failed: {error}")))?;
     let status = response.status();
     if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
         remember_rate_limit(&response);
-        return Err("LRCLIB rate limit reached (HTTP 429)".into());
+        return Err(FetchError::lasting("LRCLIB rate limit reached (HTTP 429)"));
     }
     if status == reqwest::StatusCode::NOT_FOUND {
         return Ok(None);
     }
+    if status == reqwest::StatusCode::SERVICE_UNAVAILABLE {
+        return Err(FetchError::transient("LRCLIB is overloaded (HTTP 503)"));
+    }
     if !status.is_success() {
-        return Err(format!("HTTP error {}", status.as_u16()));
+        return Err(FetchError::lasting(format!(
+            "HTTP error {}",
+            status.as_u16()
+        )));
     }
     let mut bytes = Vec::new();
     response
         .take(max_bytes + 1)
         .read_to_end(&mut bytes)
-        .map_err(|_| "Could not read lyrics response")?;
+        .map_err(|_| FetchError::transient("Could not read lyrics response"))?;
     if bytes.len() as u64 > max_bytes {
-        return Err("Lyrics response exceeded its size limit".into());
+        return Err(FetchError::lasting(
+            "Lyrics response exceeded its size limit",
+        ));
     }
     serde_json::from_slice(&bytes)
         .map(Some)
-        .map_err(|error| format!("Failed to parse response JSON: {error}"))
+        .map_err(|error| FetchError::lasting(format!("Failed to parse response JSON: {error}")))
+}
+
+/// Runs a request, with one more try after a transient failure if the track's single retry is
+/// unused. `preflight` runs before every attempt, so a track change or opt-out during the delay
+/// sends nothing. A failure that remains is returned, and the caller does not cache it.
+fn with_retry<T>(
+    retry_available: &Cell<bool>,
+    preflight: &impl Fn() -> Result<(), String>,
+    wait: &impl Fn(),
+    request: impl Fn() -> Result<T, FetchError>,
+) -> Result<T, String> {
+    preflight()?;
+    match request() {
+        Err(error) if error.transient && retry_available.replace(false) => {
+            wait();
+            preflight()?;
+            request().map_err(|error| error.message)
+        }
+        outcome => outcome.map_err(|error| error.message),
+    }
 }
 
 /// Parameters for `/api/get`, whose `duration` must be at least 1 s when sent.
@@ -331,7 +391,7 @@ fn fetch_exact(
     title: &str,
     artist: &str,
     duration_s: Option<f64>,
-) -> Result<Option<LrclibRecord>, String> {
+) -> Result<Option<LrclibRecord>, FetchError> {
     send_json(
         LRCLIB_GET_ENDPOINT,
         &exact_query(title, artist, duration_s),
@@ -340,7 +400,7 @@ fn fetch_exact(
 }
 
 /// `/api/search` results, skipping any record that does not parse rather than losing them all.
-fn fetch_search(wanted: &Track) -> Result<Option<Vec<LrclibRecord>>, String> {
+fn fetch_search(wanted: &Track) -> Result<Option<Vec<LrclibRecord>>, FetchError> {
     let records: Option<Vec<serde_json::Value>> = send_json(
         LRCLIB_SEARCH_ENDPOINT,
         &wanted.search_query(),
@@ -354,24 +414,32 @@ fn fetch_search(wanted: &Track) -> Result<Option<Vec<LrclibRecord>>, String> {
     }))
 }
 
+/// At most `/api/get`, `/api/search` and one retry of either after a transient failure.
 fn lookup(
     title: &str,
     artist: &str,
     duration_s: Option<f64>,
-    track_id: Option<&str>,
+    preflight: impl Fn() -> Result<(), String>,
 ) -> Result<Option<Candidate>, String> {
     let wanted = Track::parse(title, artist);
+    let retry_available = Cell::new(true);
+    let wait = || {
+        let jitter_ms = u64::from(clock_entropy() % 600);
+        std::thread::sleep(RETRY_DELAY + Duration::from_millis(jitter_ms));
+    };
     resolve_match(
         &wanted,
         duration_s,
         || {
-            preflight_request(track_id)?;
-            fetch_exact(title, artist, duration_s)
+            with_retry(&retry_available, &preflight, &wait, || {
+                fetch_exact(title, artist, duration_s)
+            })
         },
         || {
             std::thread::sleep(REQUEST_GAP);
-            preflight_request(track_id)?;
-            fetch_search(&wanted)
+            with_retry(&retry_available, &preflight, &wait, || {
+                fetch_search(&wanted)
+            })
         },
     )
 }
@@ -395,6 +463,7 @@ fn response_without_lyrics(
         error_message,
         request_seq: seq,
         approximate: false,
+        credit_differs: false,
     }
 }
 
@@ -428,6 +497,7 @@ fn response_from_candidate(
         error_message: None,
         request_seq: seq,
         approximate: candidate.approximate,
+        credit_differs: candidate.credit_differs,
     }
 }
 
@@ -524,12 +594,9 @@ pub async fn lyrics_get(
     let (lookup_title, lookup_artist, lookup_track) =
         (title.clone(), artist.clone(), track_id.clone());
     let outcome = tauri::async_runtime::spawn_blocking(move || {
-        lookup(
-            &lookup_title,
-            &lookup_artist,
-            duration_s,
-            lookup_track.as_deref(),
-        )
+        lookup(&lookup_title, &lookup_artist, duration_s, || {
+            preflight_request(lookup_track.as_deref())
+        })
     })
     .await
     .map_err(|e| format!("Lyrics worker thread error: {e}"))?;
@@ -551,7 +618,6 @@ pub async fn lyrics_get(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lyrics_match::best_search_match;
 
     /// The cache is shared and bounded, so tests that fill it must not run alongside those that
     /// read it back.
@@ -621,6 +687,69 @@ mod tests {
         assert_eq!(rate_limit_backoff(10, 300), Duration::from_secs(13));
         assert_eq!(rate_limit_backoff(0, 0), Duration::from_secs(2));
         assert!(rate_limit_backoff(u64::MAX, u32::MAX) <= Duration::from_secs(3600 * 13 / 10));
+    }
+
+    #[test]
+    fn a_transient_failure_gets_one_delayed_retry_per_track() {
+        use std::cell::RefCell;
+        let open = || -> Result<(), String> { Ok(()) };
+        let waits = Cell::new(0);
+        let wait = || waits.set(waits.get() + 1);
+        let attempt = |outcomes: Vec<Result<u8, FetchError>>, budget: &Cell<bool>| {
+            let outcomes = RefCell::new(outcomes);
+            let calls = Cell::new(0);
+            let result = with_retry(budget, &open, &wait, || {
+                calls.set(calls.get() + 1);
+                outcomes.borrow_mut().remove(0)
+            });
+            (result, calls.get())
+        };
+
+        let budget = Cell::new(true);
+        let recovered = attempt(vec![Err(FetchError::transient("503")), Ok(1)], &budget);
+        assert_eq!(recovered, (Ok(1), 2));
+        assert_eq!(waits.get(), 1, "the retry waits first");
+        let spent = attempt(vec![Err(FetchError::transient("503"))], &budget);
+        assert_eq!(
+            spent,
+            (Err("503".to_string()), 1),
+            "only one extra per track"
+        );
+
+        let lasting = attempt(vec![Err(FetchError::lasting("429"))], &Cell::new(true));
+        assert_eq!(
+            lasting,
+            (Err("429".to_string()), 1),
+            "a rate limit is not retried"
+        );
+        let twice = attempt(
+            vec![
+                Err(FetchError::transient("503")),
+                Err(FetchError::transient("again")),
+            ],
+            &Cell::new(true),
+        );
+        assert_eq!(twice, (Err("again".to_string()), 2));
+    }
+
+    #[test]
+    fn a_retry_rechecks_opt_in_and_the_track_after_its_delay() {
+        let checks = Cell::new(0);
+        let calls = Cell::new(0);
+        let preflight = || {
+            checks.set(checks.get() + 1);
+            if checks.get() > 1 {
+                Err("superseded".to_string())
+            } else {
+                Ok(())
+            }
+        };
+        let result: Result<u8, String> = with_retry(&Cell::new(true), &preflight, &|| {}, || {
+            calls.set(calls.get() + 1);
+            Err(FetchError::transient("503"))
+        });
+        assert_eq!(result, Err("superseded".to_string()));
+        assert_eq!(calls.get(), 1, "nothing is sent after the track changed");
     }
 
     #[test]
@@ -727,40 +856,43 @@ mod tests {
         );
     }
 
-    /// Run with `cargo test live_lrclib -- --ignored --nocapture`.
+    /// Run with `cargo test live_lrclib -- --ignored --nocapture --test-threads=1`. These go
+    /// through the same lookup as the app, at most 23 requests, spaced out for an overloaded server.
+    fn live_lookup(title: &str, artist: &str, seconds: f64) -> Option<Candidate> {
+        let found = lookup(title, artist, Some(seconds), || Ok(())).expect("LRCLIB reachable");
+        println!(
+            "{title} / {artist} at {seconds} s: {:?}",
+            found.as_ref().map(|found| (
+                &found.record.track_name,
+                &found.record.artist_name,
+                found.record.duration,
+                found.lines.len(),
+                format!(
+                    "score {} approximate {} credit_differs {}",
+                    found.score, found.approximate, found.credit_differs
+                ),
+            ))
+        );
+        std::thread::sleep(Duration::from_secs(5));
+        found
+    }
+
     #[test]
     #[ignore = "calls the real LRCLIB service"]
     fn live_lrclib_reported_track_uses_search_fallback() {
-        let (title, artist, duration) = ("Big Thug Boys", "Babyboy AV", Some(171.0));
-        let wanted = Track::parse(title, artist);
+        let (title, artist) = ("Big Thug Boys", "Babyboy AV");
+        let exact = with_retry(
+            &Cell::new(true),
+            &|| Ok(()),
+            &|| std::thread::sleep(RETRY_DELAY),
+            || fetch_exact(title, artist, Some(171.0)),
+        );
         assert!(
-            fetch_exact(title, artist, duration)
-                .expect("exact request")
-                .is_none(),
-            "this track is only reachable through search"
+            matches!(exact, Ok(None)),
+            "this track is only reachable through search: {exact:?}"
         );
-        std::thread::sleep(REQUEST_GAP);
-        let records = fetch_search(&wanted)
-            .expect("search request")
-            .expect("search results");
-        println!(
-            "{:?}",
-            records
-                .iter()
-                .map(|r| (&r.track_name, &r.artist_name, r.duration))
-                .collect::<Vec<_>>()
-        );
-        let best = best_search_match(&wanted, records, duration).expect("accepted match");
-        println!(
-            "chose {:?} by {} at {:?} s, score {} approximate {} lines {}",
-            best.record.track_name,
-            best.record.artist_name,
-            best.record.duration,
-            best.score,
-            best.approximate,
-            best.lines.len()
-        );
-        assert!(best.record.track_name.contains("Big Thug Boys"));
+        std::thread::sleep(Duration::from_secs(5));
+        let best = live_lookup(title, artist, 171.0).expect("accepted match");
         assert_eq!(best.score, 83);
         assert!(best.approximate);
         assert!(!best.lines.is_empty());
@@ -770,72 +902,39 @@ mod tests {
     #[test]
     #[ignore = "calls the real LRCLIB service"]
     fn live_lrclib_same_title_at_different_durations() {
-        let mut found_lengths = Vec::new();
-        for duration_s in [Some(52.0), Some(25.0)] {
-            let wanted = Track::parse("Intro", "Drake");
-            let best = resolve_match(
-                &wanted,
-                duration_s,
-                || fetch_exact("Intro", "Drake", duration_s),
-                || {
-                    std::thread::sleep(REQUEST_GAP);
-                    fetch_search(&wanted)
-                },
-            )
-            .expect("LRCLIB reachable")
-            .expect("a record at this length");
-            println!(
-                "Intro / Drake at {duration_s:?}: {:?} by {} at {:?} s, score {} approximate {} lines {}, key {:?}",
-                best.record.track_name,
-                best.record.artist_name,
-                best.record.duration,
-                best.score,
-                best.approximate,
-                best.lines.len(),
-                wanted.cache_key(duration_s),
-            );
+        let mut lengths = Vec::new();
+        for seconds in [52.0, 25.0] {
+            let best = live_lookup("Intro", "Drake", seconds).expect("a record at this length");
             let length = best.record.duration.expect("a duration");
-            assert!((length - duration_s.unwrap()).abs() <= 3.0);
-            found_lengths.push(length);
-            std::thread::sleep(REQUEST_GAP);
+            assert!((length - seconds).abs() <= 3.0);
+            lengths.push(length);
         }
-        assert_ne!(found_lengths[0], found_lengths[1]);
+        assert_ne!(lengths[0], lengths[1]);
     }
 
-    /// Sanity-checks the query forms against real data, with at most two requests per track.
     #[test]
     #[ignore = "calls the real LRCLIB service"]
     fn live_lrclib_other_tracks() {
-        for (title, artist, duration_s, expect_match) in [
-            ("With or Without You", "U2", Some(296.0), true),
-            ("Back In Black", "AC/DC", Some(255.0), true),
-            ("Spring Day", "BTS", Some(274.0), true),
-            ("봄날", "방탄소년단", Some(274.0), true),
-            ("Big Thug Boys", "Someone Else Entirely", Some(171.0), false),
+        for (title, artist, seconds) in [
+            (
+                "Let It Go - From \"Frozen\"/Soundtrack Version",
+                "Idina Menzel",
+                225.0,
+            ),
+            ("STAY (with Justin Bieber)", "The Kid LAROI", 142.0),
+            ("Calm Down (with Selena Gomez)", "Rema", 239.0),
+            ("Essence", "Wizkid", 248.0),
+            ("Love Nwantiti", "CKay", 145.0),
+            ("love nwantiti (ah ah ah)", "CKay", 145.0),
+            ("봄날", "방탄소년단", 274.0),
         ] {
-            let wanted = Track::parse(title, artist);
-            let found = resolve_match(
-                &wanted,
-                duration_s,
-                || fetch_exact(title, artist, duration_s),
-                || {
-                    std::thread::sleep(REQUEST_GAP);
-                    fetch_search(&wanted)
-                },
-            )
-            .expect("LRCLIB reachable");
-            println!(
-                "{title} / {artist}: {:?}",
-                found.as_ref().map(|found| (
-                    &found.record.track_name,
-                    &found.record.artist_name,
-                    found.record.duration,
-                    found.score,
-                    found.approximate
-                ))
+            let best = live_lookup(title, artist, seconds);
+            assert!(best.is_some(), "{title} / {artist}");
+            assert!(
+                !best.unwrap().approximate,
+                "{title} / {artist}: timing agrees"
             );
-            assert_eq!(found.is_some(), expect_match, "{title} / {artist}");
-            std::thread::sleep(REQUEST_GAP);
         }
+        assert!(live_lookup("Big Thug Boys", "Someone Else Entirely", 171.0).is_none());
     }
 }

@@ -122,11 +122,14 @@ export function matchesLyricRequest(current: { trackId: string; requestId: strin
 export class TelemetryGate {
   private pending = false;
   private latest = 0;
+  private failures = 0;
   get sampledAt(): number { return this.latest; }
   begin(): boolean { if (this.pending) return false; this.pending = true; return true; }
   finish(): void { this.pending = false; }
   accept(sampledAt: number): boolean {
     if (!Number.isFinite(sampledAt) || sampledAt <= this.latest) return false;
-    this.latest = sampledAt; return true;
+    this.latest = sampledAt; this.failures = 0; return true;
   }
+  /** Whether failed polls should clear the metrics: one blip must not blank a valid value. */
+  failed(): boolean { this.failures++; return this.latest === 0 || this.failures >= 3; }
 }

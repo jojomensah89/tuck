@@ -28,8 +28,37 @@ const NOISE_WORDS: [&str; 7] = [
     "clean",
     "deluxe",
 ];
-/// These leave the recording the same; any other "<word> version" is a different one.
-const NEUTRAL_VERSIONS: [&str; 4] = ["single", "album", "radio", "original"];
+/// These leave the recording the same; any other "<word> version", edit or mix is a different one.
+const NEUTRAL_VERSIONS: [&str; 6] = ["single", "album", "radio", "original", "soundtrack", "lp"];
+const VIDEO_TAG_WORDS: [&str; 10] = [
+    "official",
+    "music",
+    "video",
+    "audio",
+    "lyric",
+    "lyrics",
+    "visualizer",
+    "visualiser",
+    "hd",
+    "hq",
+];
+/// A bracketed subtitle with one of these is another arrangement, not a longer name for the song.
+const VARIANT_SUBTITLE_WORDS: [&str; 12] = [
+    "dub",
+    "piano",
+    "reprise",
+    "interlude",
+    "intro",
+    "outro",
+    "skit",
+    "acapella",
+    "cappella",
+    "orchestral",
+    "unplugged",
+    "extended",
+];
+/// Titles use these separators interchangeably.
+const DASHES: [&str; 3] = [" - ", " \u{2013} ", " \u{2014} "];
 
 #[derive(Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -54,8 +83,10 @@ pub struct Track {
     core: String,
     qualifiers: BTreeSet<String>,
     /// Names after "(with ...)" or a bare "ft" that the credits do not confirm. They may be title
-    /// words, so they keep "Run (With Me)" apart from "Run".
+    /// words, so a match without them has to agree on the artist and the duration too.
     unverified: Vec<String>,
+    /// The title without a trailing unclassified subtitle: `love nwantiti (ah ah ah)`.
+    subtitle_base: Option<String>,
     full_artist: String,
     primary: String,
     /// Who the credit names, without guests: "A & B feat. C" is {a, b}.
@@ -71,7 +102,10 @@ pub struct Candidate {
     pub record: LrclibRecord,
     pub lines: Vec<LyricLine>,
     pub score: i32,
+    /// The timing could not be confirmed: the lengths differ, or one is unknown.
     pub approximate: bool,
+    /// Same song, but the credit or a subtitle differs. Says nothing about the timing.
+    pub credit_differs: bool,
     duration_delta: Option<f64>,
 }
 
@@ -79,6 +113,8 @@ enum Tag {
     /// Changes what is being sung; the candidate must carry the same set.
     Identity(Vec<String>),
     Noise,
+    /// Noise that also says this is a video upload, where the title usually names the artist.
+    VideoNoise,
     Featuring(String),
     PossibleCredit(String),
 }
@@ -88,27 +124,35 @@ struct TitleParts {
     qualifiers: BTreeSet<String>,
     featured: Vec<String>,
     possible_credits: Vec<String>,
+    from_video: bool,
 }
 
 fn is_latin(ch: char) -> bool {
     matches!(ch, 'a'..='z' | 'A'..='Z' | '\u{c0}'..='\u{24f}' | '\u{1e00}'..='\u{1eff}')
 }
 
-/// Comparison form: letters and digits of every script, with case and punctuation folded. Accents
-/// are only stripped from Latin letters; elsewhere a mark changes the word, as in `мой` and `мои`
-/// or `はな` and `ばな`.
+/// Accents that don't change the word: on Latin and Greek letters, and `ё`, usually written `е`.
+/// Elsewhere a mark does, as in `мой` and `мои` or `はな` and `ばな`.
+fn is_benign_mark(base: char, mark: char) -> bool {
+    is_latin(base)
+        || ('\u{370}'..='\u{3ff}').contains(&base)
+        || (matches!(base, 'е' | 'Е') && mark == '\u{308}')
+}
+
+/// Comparison form: letters and digits of every script, with case, punctuation and benign accents
+/// folded.
 pub fn normalize_text(value: &str) -> String {
     let value = value.replace('&', " and ");
     let mut normalized = String::with_capacity(value.len());
     let mut pending_space = false;
-    let mut after_latin = false;
+    let mut base = '\0';
     for ch in value.nfkd() {
         if is_combining_mark(ch) {
-            if after_latin {
+            if is_benign_mark(base, ch) {
                 continue;
             }
         } else {
-            after_latin = is_latin(ch);
+            base = ch;
         }
         // Inside a word, so "Don't" equals "Dont" and "R.E.M." equals "REM".
         if matches!(ch, '\'' | '\u{2018}' | '\u{2019}' | '\u{2bc}' | '`' | '.') {
@@ -143,20 +187,36 @@ fn is_artist_joiner(word: &str) -> bool {
     is_guest_joiner(word) || is_marker(word, &["&", "and", "x"])
 }
 
-/// The tag a "... version" bracket adds, or `None` when it leaves the recording the same.
-fn version_identity(words: &[&str]) -> Option<String> {
+/// The tag a "... version", "... edit" or "... mix" adds, or `None` when the recording is the same.
+fn cut_identity(words: &[&str], tail: &str) -> Option<String> {
     let kind: Vec<&str> = words
         .iter()
         .copied()
         .filter(|word| {
-            *word != "version" && !NOISE_WORDS.contains(word) && !NEUTRAL_VERSIONS.contains(word)
+            *word != tail
+                && !NOISE_WORDS.contains(word)
+                && !NEUTRAL_VERSIONS.contains(word)
+                && !word.chars().all(|ch| ch.is_ascii_digit())
         })
         .collect();
-    (!kind.is_empty()).then(|| format!("{} version", kind.join(" ")))
+    (!kind.is_empty()).then(|| format!("{} {tail}", kind.join(" ")))
+}
+
+fn is_video_tag(words: &[&str]) -> bool {
+    words.iter().all(|word| VIDEO_TAG_WORDS.contains(word))
+        && words
+            .iter()
+            .any(|word| !matches!(*word, "official" | "music" | "hd" | "hq"))
+}
+
+fn is_year(words: &[&str]) -> bool {
+    matches!(words, [word] if word.len() == 4
+        && word.chars().all(|ch| ch.is_ascii_digit())
+        && matches!(&word[..2], "19" | "20"))
 }
 
 /// Classifies the text of a bracket group or a ` - ` suffix. `None` means it belongs to the title.
-fn classify(text: &str) -> Option<Tag> {
+fn classify(text: &str, is_suffix: bool) -> Option<Tag> {
     let text = text.trim();
     if let Some((first, rest)) = text.split_once(char::is_whitespace) {
         if is_marker(first, &FEATURE_MARKERS) {
@@ -169,6 +229,13 @@ fn classify(text: &str) -> Option<Tag> {
 
     let normalized = normalize_text(text);
     let words: Vec<&str> = normalized.split_whitespace().collect();
+    // In brackets "from" needs its quotes, because "(From Me To You)" can be part of a title.
+    if words.first() == Some(&"from")
+        && words.len() > 1
+        && (is_suffix || text.contains(['"', '\u{201c}', '\u{2018}', '\'']))
+    {
+        return Some(Tag::Noise);
+    }
     let has = |word: &str| words.contains(&word);
     let mut identity: Vec<String> = [
         "live",
@@ -203,15 +270,23 @@ fn classify(text: &str) -> Option<Tag> {
     if !identity.is_empty() {
         return Some(Tag::Identity(identity));
     }
-
-    if has("version") {
-        return Some(version_identity(&words).map_or(Tag::Noise, |kind| Tag::Identity(vec![kind])));
+    if normalized.contains("bonus track") || normalized.contains("radio edit") || has("edition") {
+        return Some(Tag::Noise);
     }
-    let noise = NOISE_WORDS.into_iter().any(has)
-        || normalized.contains("radio edit")
-        || normalized.contains("bonus track")
-        || (words.first() == Some(&"from") && text.contains(['"', '\u{201c}', '\u{2018}', '\'']));
-    noise.then_some(Tag::Noise)
+
+    let tail = ["edit", "mix"]
+        .into_iter()
+        .find(|tail| words.last() == Some(tail))
+        .or(has("version").then_some("version"));
+    if let Some(tail) = tail {
+        return Some(
+            cut_identity(&words, tail).map_or(Tag::Noise, |kind| Tag::Identity(vec![kind])),
+        );
+    }
+    if !words.is_empty() && is_video_tag(&words) {
+        return Some(Tag::VideoNoise);
+    }
+    (NOISE_WORDS.into_iter().any(has) || is_year(&words)).then_some(Tag::Noise)
 }
 
 /// Splits a title into its core text, identity qualifiers and credited names.
@@ -219,9 +294,11 @@ fn split_title(title: &str) -> TitleParts {
     let mut qualifiers = BTreeSet::new();
     let mut featured = Vec::new();
     let mut possible_credits = Vec::new();
+    let mut from_video = false;
     let mut apply = |tag: Tag| match tag {
         Tag::Identity(tags) => qualifiers.extend(tags),
         Tag::Noise => {}
+        Tag::VideoNoise => from_video = true,
         Tag::Featuring(names) => featured.push(names),
         Tag::PossibleCredit(names) => possible_credits.push(names),
     };
@@ -238,7 +315,7 @@ fn split_title(title: &str) -> TitleParts {
             break;
         };
         let close = open + 1 + length;
-        match classify(&rest[open + 1..close]) {
+        match classify(&rest[open + 1..close], false) {
             Some(tag) => {
                 apply(tag);
                 core.push_str(&rest[..open]);
@@ -269,14 +346,12 @@ fn split_title(title: &str) -> TitleParts {
         core.truncate(at);
     }
 
-    loop {
-        let split = core
-            .rsplit_once(" - ")
-            .or_else(|| core.rsplit_once(" \u{2013} "));
-        let Some((head, suffix)) = split else {
-            break;
-        };
-        let Some(tag) = classify(suffix) else {
+    while let Some((head, suffix)) = DASHES
+        .iter()
+        .filter_map(|dash| core.rsplit_once(dash))
+        .max_by_key(|(head, _)| head.len())
+    {
+        let Some(tag) = classify(suffix, true) else {
             break;
         };
         apply(tag);
@@ -287,6 +362,7 @@ fn split_title(title: &str) -> TitleParts {
         qualifiers,
         featured,
         possible_credits,
+        from_video,
     }
 }
 
@@ -322,6 +398,76 @@ fn lead_artists(artist: &str) -> BTreeSet<String> {
         .collect()
 }
 
+/// Browser sessions report the channel: "RemaVEVO" or "Rema - Topic".
+fn clean_channel_name(artist: &str) -> &str {
+    let artist = artist.trim();
+    let artist = artist.strip_suffix(" - Topic").unwrap_or(artist);
+    let cut = artist.len().saturating_sub(4);
+    match artist.get(cut..) {
+        Some(tail) if cut > 0 && tail.eq_ignore_ascii_case("vevo") => artist[..cut].trim_end(),
+        _ => artist,
+    }
+}
+
+/// Finds the artist in `Artist - Title`. The head must name the credited artist, unless a tag such
+/// as "(Official Video)" shows this is an upload whose channel may be anyone.
+fn leading_artist(core: &str, artist: &str, from_video: bool) -> Option<(String, String)> {
+    let (head, rest) = DASHES
+        .iter()
+        .filter_map(|dash| core.split_once(dash))
+        .min_by_key(|(head, _)| head.len())?;
+    if normalize_text(head).is_empty() || normalize_text(rest).is_empty() {
+        return None;
+    }
+    let credited: Vec<String> = split_artists(artist)
+        .iter()
+        .map(|part| normalize_text(part))
+        .collect();
+    let named = normalize_text(head) == normalize_text(artist)
+        || split_artists(head)
+            .iter()
+            .any(|part| credited.contains(&normalize_text(part)));
+    if named {
+        Some((artist.to_string(), rest.to_string()))
+    } else {
+        from_video.then(|| (head.trim().to_string(), rest.to_string()))
+    }
+}
+
+/// `Song Pt. 2` is `Song (Part 2)`: returns the title without its part and the part as a tag.
+fn split_part(core: &str) -> (String, Option<String>) {
+    let mut words: Vec<&str> = core.split_whitespace().collect();
+    if let [.., "part" | "pt", number] = words.as_slice() {
+        if words.len() > 2 && number.chars().all(|ch| ch.is_ascii_digit()) {
+            let part = format!("part {number}");
+            words.truncate(words.len() - 2);
+            return (words.join(" "), Some(part));
+        }
+    }
+    (core.to_string(), None)
+}
+
+/// The title before a trailing bracket of two or more ordinary words. One word is too likely to
+/// be an arrangement (`Song (Dub)`), so it stays part of the name.
+fn subtitle_base(core: &str) -> Option<String> {
+    let trimmed = core.trim_end();
+    let open = match trimmed.chars().last()? {
+        ')' => trimmed.rfind('(')?,
+        ']' => trimmed.rfind('[')?,
+        _ => return None,
+    };
+    let subtitle = normalize_text(&trimmed[open + 1..trimmed.len() - 1]);
+    let words: Vec<&str> = subtitle.split_whitespace().collect();
+    let variant = words
+        .iter()
+        .any(|word| VARIANT_SUBTITLE_WORDS.contains(word))
+        || WRONG_ARTIST_MARKERS
+            .iter()
+            .any(|marker| format!(" {subtitle} ").contains(&format!(" {marker} ")));
+    let base = normalize_text(&trimmed[..open]);
+    (words.len() >= 2 && !variant && !base.is_empty()).then_some(base)
+}
+
 /// The folded form, or the literal text when nothing survives folding, as for the band `!!!`.
 fn comparable(value: &str) -> String {
     let normalized = normalize_text(value);
@@ -335,12 +481,19 @@ fn comparable(value: &str) -> String {
 impl Track {
     pub fn parse(title: &str, artist: &str) -> Self {
         let parts = split_title(title);
-        let (raw_core, qualifiers, possible_credits) = if normalize_text(&parts.core).is_empty() {
-            // Nothing but tags, or nothing but punctuation: the whole title is the name.
-            (title.to_string(), BTreeSet::new(), Vec::new())
-        } else {
-            (parts.core, parts.qualifiers, parts.possible_credits)
-        };
+        let (mut raw_core, mut qualifiers, possible_credits) =
+            if normalize_text(&parts.core).is_empty() {
+                // Nothing but tags, or nothing but punctuation: the whole title is the name.
+                (title.to_string(), BTreeSet::new(), Vec::new())
+            } else {
+                (parts.core, parts.qualifiers, parts.possible_credits)
+            };
+        let mut artist = clean_channel_name(artist).to_string();
+        if let Some((head, rest)) = leading_artist(&raw_core, &artist, parts.from_video) {
+            artist = head;
+            raw_core = rest;
+        }
+        let artist = artist.as_str();
 
         let credits = split_artists(artist);
         let full_artist = comparable(artist);
@@ -367,10 +520,14 @@ impl Track {
         let mut unverified = names(&possible_credits);
         unverified.retain(|name| !artists.contains(name));
 
+        let (core, part) = split_part(&comparable(&raw_core));
+        qualifiers.extend(part);
+
         Track {
-            core: comparable(&raw_core),
+            core,
             qualifiers,
             unverified,
+            subtitle_base: subtitle_base(&raw_core),
             full_artist,
             primary,
             leads: lead_artists(artist),
@@ -421,13 +578,35 @@ impl Track {
     }
 }
 
+/// How a candidate's title relates to ours, given what else agrees.
+enum TitleMatch {
+    Same,
+    /// Probably the same song under another credit or subtitle; only trusted with exact agreement.
+    Corroborated,
+}
+
 /// Word order and repeats matter, so only the same title counts: "Money Money Money" is not
-/// "Money", nor "Me and You" "You and Me". A name removed as a possible credit must be confirmed
-/// by the other record's credits, which keeps "Run (With Me)" apart from "Run".
-fn same_title(wanted: &Track, candidate: &Track) -> bool {
-    wanted.core == candidate.core
-        && wanted.explains(&candidate.unverified)
-        && candidate.explains(&wanted.unverified)
+/// "Money", nor "Me and You" "You and Me". Two looser cases need the rest to agree. A name removed
+/// as a possible credit needs the same primary artist and a length within 2 s, so "STAY (with
+/// Justin Bieber)" finds "STAY", while another song called "Run" will rarely match "Run (With Me)"
+/// on both. A trailing subtitle needs the exact credit and a length within 2 s.
+fn title_match(
+    wanted: &Track,
+    candidate: &Track,
+    exact_artist: bool,
+    duration_delta: Option<f64>,
+) -> Option<TitleMatch> {
+    let close = duration_delta.is_some_and(|delta| delta <= 2.0);
+    if wanted.core == candidate.core {
+        if wanted.explains(&candidate.unverified) && candidate.explains(&wanted.unverified) {
+            return Some(TitleMatch::Same);
+        }
+        return (close && wanted.primary == candidate.primary).then_some(TitleMatch::Corroborated);
+    }
+    let subtitled = wanted.subtitle_base.as_deref() == Some(candidate.core.as_str())
+        || candidate.subtitle_base.as_deref() == Some(wanted.core.as_str());
+    (subtitled && close && exact_artist && !wanted.is_short_title() && !candidate.is_short_title())
+        .then_some(TitleMatch::Corroborated)
 }
 
 /// Points and whether the credit is really the same. A guest spot or a fragment of a name scores
@@ -472,10 +651,7 @@ pub fn score_candidate(
     duration_s: Option<f64>,
 ) -> Option<Candidate> {
     let candidate = Track::parse(&record.track_name, &record.artist_name);
-    if wanted.qualifiers != candidate.qualifiers
-        || !same_title(wanted, &candidate)
-        || has_wrong_artist_marker(wanted, &candidate)
-    {
+    if wanted.qualifiers != candidate.qualifiers || has_wrong_artist_marker(wanted, &candidate) {
         return None;
     }
 
@@ -483,6 +659,7 @@ pub fn score_candidate(
     let duration_delta = duration_s
         .zip(record.duration)
         .map(|(duration, theirs)| (duration - theirs).abs());
+    let title = title_match(wanted, &candidate, exact_artist, duration_delta)?;
     let duration = match duration_delta {
         None => 0,
         Some(delta) if delta <= 2.0 => 20,
@@ -492,8 +669,11 @@ pub fn score_candidate(
         // The spec's -20 band can only ever total 55, so nothing above 15 s is shown either way.
         Some(_) => return None,
     };
-    if wanted.is_short_title()
-        && (wanted.primary != candidate.primary || duration_delta.is_some_and(|delta| delta > 3.0))
+    // Order doesn't matter: "Calm Down" by "Selena Gomez, Rema" is by Rema as well.
+    let shares_lead = wanted.primary == candidate.primary
+        || candidate.leads.contains(&wanted.primary)
+        || wanted.leads.contains(&candidate.primary);
+    if wanted.is_short_title() && (!shares_lead || duration_delta.is_some_and(|delta| delta > 3.0))
     {
         return None;
     }
@@ -526,7 +706,8 @@ pub fn score_candidate(
     }
 
     Some(Candidate {
-        approximate: !exact_artist || duration_delta.is_none_or(|delta| delta > 2.0),
+        approximate: duration_delta.is_none_or(|delta| delta > 2.0),
+        credit_differs: !exact_artist || matches!(title, TitleMatch::Corroborated),
         record,
         lines,
         score,
@@ -553,11 +734,11 @@ fn rank(candidate: &Candidate) -> i32 {
 fn compare(left: &Candidate, right: &Candidate) -> Ordering {
     rank(left)
         .cmp(&rank(right))
-        .then_with(|| right.approximate.cmp(&left.approximate))
         .then_with(|| {
             let delta = |candidate: &Candidate| candidate.duration_delta.unwrap_or(f64::INFINITY);
             delta(right).total_cmp(&delta(left))
         })
+        .then_with(|| right.credit_differs.cmp(&left.credit_differs))
         .then_with(|| right.lines.is_empty().cmp(&left.lines.is_empty()))
 }
 
@@ -646,7 +827,7 @@ mod tests {
         score(title, artist, Some(duration), record).is_some_and(|value| value >= ACCEPT_SCORE)
     }
 
-    /// (score, approximate) for a record with the same 200 s duration.
+    /// (score, credit differs) for a record with the same 200 s duration.
     fn same_length(
         title: &str,
         artist: &str,
@@ -659,7 +840,7 @@ mod tests {
             Some(200.0),
             record(their_title, their_artist, 200.0),
         )
-        .map(|found| (found.score, found.approximate))
+        .map(|found| (found.score, found.credit_differs))
     }
 
     #[test]
@@ -762,11 +943,22 @@ mod tests {
             "Original Version",
             "Remastered Version",
             "Mono Version",
+            "Stereo Version",
+            "Soundtrack Version",
+            "LP Version",
+            "2011 Remastered Version",
+            "Bonus Track Version",
+            "2011 Version",
         ] {
             assert_eq!(
                 same_length(title, "Aster", &format!("{title} ({neutral})"), "Aster"),
                 Some((95, false)),
-                "{neutral}"
+                "({neutral})"
+            );
+            assert_eq!(
+                same_length(&format!("{title} - {neutral}"), "Aster", title, "Aster"),
+                Some((95, false)),
+                "- {neutral}"
             );
         }
         for different in [
@@ -803,6 +995,136 @@ mod tests {
     }
 
     #[test]
+    fn release_tags_do_not_hide_the_song() {
+        for (ours, theirs) in [
+            (
+                "Let It Go - From \"Frozen\"/Soundtrack Version",
+                "Let It Go",
+            ),
+            ("Let It Go - Soundtrack Version", "Let It Go"),
+            ("Let It Go - From Frozen", "Let It Go"),
+            (
+                "Bohemian Rhapsody - 2011 Remastered Version",
+                "Bohemian Rhapsody",
+            ),
+            ("Bohemian Rhapsody (Official Audio)", "Bohemian Rhapsody"),
+            ("Bohemian Rhapsody (Official Video)", "Bohemian Rhapsody"),
+            (
+                "Bohemian Rhapsody (Official Music Video)",
+                "Bohemian Rhapsody",
+            ),
+            ("Bohemian Rhapsody (Lyric Video)", "Bohemian Rhapsody"),
+            ("Bohemian Rhapsody (Audio)", "Bohemian Rhapsody"),
+            ("Bohemian Rhapsody - Edit", "Bohemian Rhapsody"),
+            ("Bohemian Rhapsody - Single Edit", "Bohemian Rhapsody"),
+            ("Bohemian Rhapsody - Album Edit", "Bohemian Rhapsody"),
+            ("Bohemian Rhapsody - 2011 Mix", "Bohemian Rhapsody"),
+            ("Bohemian Rhapsody (2011)", "Bohemian Rhapsody"),
+            (
+                "Bohemian Rhapsody - Anniversary Edition",
+                "Bohemian Rhapsody",
+            ),
+            (
+                "Bohemian Rhapsody \u{2014} Remastered 2011",
+                "Bohemian Rhapsody",
+            ),
+            (
+                "Bohemian Rhapsody \u{2013} Remastered 2011",
+                "Bohemian Rhapsody",
+            ),
+        ] {
+            assert_eq!(
+                same_length(ours, "Aster", theirs, "Aster"),
+                Some((95, false)),
+                "{ours}"
+            );
+        }
+        for (ours, theirs) in [
+            ("Bohemian Rhapsody - Club Edit", "Bohemian Rhapsody"),
+            ("Bohemian Rhapsody - Tiesto Mix", "Bohemian Rhapsody"),
+            ("Bohemian Rhapsody (Live Video)", "Bohemian Rhapsody"),
+            ("Love (From Me To You)", "Love"),
+        ] {
+            assert_eq!(same_length(ours, "Aster", theirs, "Aster"), None, "{ours}");
+        }
+    }
+
+    #[test]
+    fn video_uploads_name_the_artist_in_the_title() {
+        let theirs = ("Calm Down Again", "Rema");
+        for (title, channel) in [
+            ("Rema - Calm Down Again (Official Video)", "Rema"),
+            ("Rema - Calm Down Again (Official Video)", "RemaVEVO"),
+            ("Rema - Calm Down Again (Official Video)", "Some Label"),
+            ("Rema \u{2014} Calm Down Again (Lyric Video)", "Some Label"),
+            ("Rema - Calm Down Again", "Rema - Topic"),
+        ] {
+            assert_eq!(
+                same_length(title, channel, theirs.0, theirs.1),
+                Some((95, false)),
+                "{title} / {channel}"
+            );
+        }
+        assert_eq!(
+            same_length("Rema - Calm Down Again", "Some Label", theirs.0, theirs.1),
+            None,
+            "without a video tag the head may be part of the title"
+        );
+        let [title, artist] =
+            Track::parse("Rema - Calm Down Again (Official Video)", "Some Label").search_query();
+        assert_eq!(
+            (title.1.as_str(), artist.1.as_str()),
+            ("Calm Down Again", "Rema")
+        );
+    }
+
+    #[test]
+    fn parts_compare_however_they_are_written() {
+        for ours in [
+            "Northern Lights Pt. 2",
+            "Northern Lights, Pt. 2",
+            "Northern Lights Part 2",
+            "Northern Lights (Part 2)",
+            "Northern Lights - Pt. 2",
+        ] {
+            assert_eq!(
+                same_length(ours, "Aster", "Northern Lights (Pt. 2)", "Aster"),
+                Some((95, false)),
+                "{ours}"
+            );
+        }
+        assert_eq!(
+            same_length(
+                "Northern Lights Pt. 1",
+                "Aster",
+                "Northern Lights Part 2",
+                "Aster"
+            ),
+            None
+        );
+        assert_eq!(Track::parse("Part 2", "Aster").core, "part 2");
+    }
+
+    #[test]
+    fn benign_accents_fold_but_letters_do_not() {
+        assert_eq!(
+            normalize_text("Ёлка"),
+            normalize_text("елка"),
+            "ё is commonly written е"
+        );
+        assert_eq!(
+            normalize_text("Άλφα"),
+            normalize_text("αλφα"),
+            "tonos is an accent"
+        );
+        assert_ne!(
+            normalize_text("мой"),
+            normalize_text("мои"),
+            "й is its own letter"
+        );
+    }
+
+    #[test]
     fn title_words_cannot_repeat_or_reorder() {
         assert_eq!(
             same_length("Money Money Money", "Aster", "Money", "Aster"),
@@ -824,11 +1146,54 @@ mod tests {
     }
 
     #[test]
-    fn unconfirmed_credits_stay_part_of_the_title() {
-        assert_eq!(same_length("Run (With Me)", "Aster", "Run", "Aster"), None);
-        assert_eq!(same_length("Run", "Aster", "Run (With Me)", "Aster"), None);
-        assert_eq!(same_length("Six Ft Under", "Aster", "Six", "Aster"), None);
-        assert_eq!(same_length("Six Ft. Under", "Aster", "Six", "Aster"), None);
+    fn unconfirmed_credits_need_the_artist_and_duration_to_agree() {
+        let at = |ours: &str, artist: &str, theirs: &str, their_artist: &str, seconds: f64| {
+            found(
+                ours,
+                artist,
+                Some(200.0),
+                record(theirs, their_artist, seconds),
+            )
+            .map(|found| (found.score, found.approximate, found.credit_differs))
+        };
+        assert_eq!(
+            at(
+                "STAY (with Justin Bieber)",
+                "The Kid LAROI",
+                "STAY",
+                "The Kid LAROI",
+                199.0
+            ),
+            Some((95, false, true))
+        );
+        assert_eq!(
+            at(
+                "Calm Down (with Selena Gomez)",
+                "Rema",
+                "Calm Down",
+                "Rema",
+                200.0
+            ),
+            Some((95, false, true))
+        );
+        assert_eq!(
+            at(
+                "Calm Down",
+                "Rema",
+                "Calm Down (with Selena Gomez)",
+                "Rema",
+                200.0
+            ),
+            Some((95, false, true))
+        );
+        assert_eq!(
+            at("Six Ft Under", "Aster", "Six", "Aster", 200.0),
+            Some((95, false, true))
+        );
+        // Another song that happens to share the short title rarely agrees on both.
+        assert_eq!(at("Run (With Me)", "Aster", "Run", "Aster", 205.0), None);
+        assert_eq!(at("Run (With Me)", "Aster", "Run", "Comet", 200.0), None);
+        assert_eq!(at("Run", "Aster", "Run (With Me)", "Comet", 200.0), None);
         assert_eq!(
             same_length("Run (With Me)", "Aster", "Run (With Me)", "Aster"),
             Some((95, false))
@@ -837,9 +1202,91 @@ mod tests {
             same_length("Six Ft Under", "Aster", "Six Ft Under", "Aster"),
             Some((95, false))
         );
+        assert_eq!(
+            found(
+                "Run (With Me)",
+                "Aster",
+                None,
+                record("Run", "Aster", 200.0)
+            )
+            .map(|f| f.score),
+            None,
+            "no duration to agree on"
+        );
         assert_ne!(
             Track::parse("Run (With Me)", "Aster").cache_key(Some(200.0)),
             Track::parse("Run", "Aster").cache_key(Some(200.0))
+        );
+    }
+
+    #[test]
+    fn the_closest_duration_wins_among_equal_credits() {
+        let wanted = Track::parse("Essence (with Tems)", "Wizkid");
+        let best = best_search_match(
+            &wanted,
+            vec![
+                record("Essence", "Wizkid; Tems", 245.0),
+                record("Essence", "Wizkid", 248.0),
+            ],
+            Some(248.0),
+        )
+        .expect("both are the song");
+        assert_eq!(best.record.duration, Some(248.0));
+        assert!(
+            !best.approximate,
+            "the timing agrees, only the credit differs"
+        );
+    }
+
+    #[test]
+    fn a_trailing_subtitle_needs_the_exact_credit_and_length() {
+        let (short, long) = ("Love Nwantiti", "love nwantiti (ah ah ah)");
+        assert_eq!(same_length(short, "CKay", long, "CKay"), Some((95, true)));
+        assert_eq!(same_length(long, "CKay", short, "CKay"), Some((95, true)));
+        assert_eq!(
+            same_length(short, "Comet", long, "CKay"),
+            None,
+            "another artist"
+        );
+        assert_eq!(
+            found(short, "CKay", Some(200.0), record(long, "CKay", 203.0)).map(|f| f.score),
+            None,
+            "another length"
+        );
+        assert_eq!(
+            same_length("Love Nwantiti (Piano Ballad)", "CKay", short, "CKay"),
+            None,
+            "an arrangement"
+        );
+        assert_eq!(
+            same_length("Love Nwantiti (Interlude Take)", "CKay", short, "CKay"),
+            None,
+            "an arrangement"
+        );
+        assert_eq!(
+            same_length("Love Nwantiti (Dance)", "CKay", short, "CKay"),
+            None,
+            "one word"
+        );
+        assert_eq!(
+            same_length("Run (Far Away)", "CKay", "Run", "CKay"),
+            None,
+            "a short base title"
+        );
+        assert_eq!(
+            same_length("Love Nwantiti (ah ah ah) (Live)", "CKay", short, "CKay"),
+            None,
+            "live stays apart"
+        );
+        assert_eq!(
+            same_length(
+                "Love Nwantiti (ah ah ah) (Tiesto Remix)",
+                "CKay",
+                long,
+                "CKay"
+            ),
+            None,
+            "remix stays apart"
         );
     }
 
@@ -1135,7 +1582,7 @@ mod tests {
     }
 
     #[test]
-    fn short_titles_need_the_same_artist_and_a_close_duration() {
+    fn short_titles_need_a_shared_artist_and_a_close_duration() {
         assert!(accepted(
             "Home",
             "Aster",
@@ -1147,13 +1594,28 @@ mod tests {
             None
         );
         assert_eq!(
-            score(
-                "22",
-                "Aster",
-                Some(200.0),
-                record("22", "Comet, Aster", 200.0)
-            ),
+            score("22", "Aster", Some(200.0), record("22", "Comet", 200.0)),
             None
+        );
+        assert_eq!(
+            same_length(
+                "Calm Down",
+                "Selena Gomez, Rema",
+                "Calm Down",
+                "Rema, Selena Gomez"
+            ),
+            Some((95, false)),
+            "order"
+        );
+        assert_eq!(
+            same_length("Calm Down", "Rema", "Calm Down", "Selena Gomez, Rema"),
+            Some((95, true)),
+            "second lead"
+        );
+        assert_eq!(
+            same_length("Calm Down", "Selena Gomez, Rema", "Calm Down", "Rema"),
+            Some((75, true)),
+            "their lead is one of ours"
         );
         assert!(
             accepted(

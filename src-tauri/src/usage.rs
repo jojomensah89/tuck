@@ -34,6 +34,8 @@ pub const ALLOWED_SECRET_NAMES: &[&str] = &["anthropic-admin", "openai-admin"];
 
 /// Claude statusline data is considered stale if unmodified for over 600 seconds (10 minutes).
 pub const STALE_THRESHOLD_SECS: u64 = 600;
+/// A status file older than the weekly window says Claude Code is signed out or gone.
+pub const CONNECTED_THRESHOLD_SECS: u64 = 7 * 24 * 60 * 60;
 
 /// Bounded file read size limit (2 MB) to prevent denial of service or unbounded parsing.
 pub const MAX_STATUS_FILE_BYTES: u64 = 2 * 1024 * 1024;
@@ -353,23 +355,32 @@ pub fn resolve_claude_status_path() -> (Option<PathBuf>, bool) {
     (None, false)
 }
 
+/// Fresher files show, stale if need be; a file with an unknown or future time gets the
+/// benefit of the doubt.
+fn status_file_connected(modified: Option<SystemTime>, now: SystemTime) -> bool {
+    modified
+        .and_then(|time| now.duration_since(time).ok())
+        .is_none_or(|age| age.as_secs() <= CONNECTED_THRESHOLD_SECS)
+}
+
 /// Reads and parses Claude Code statusline meters from disk.
 pub fn claude_meters() -> Vec<Meter> {
     let (target_path, exists) = resolve_claude_status_path();
     let Some(path) = target_path else {
-        return unavailable_claude_meters("APPDATA environment variable not set");
+        return Vec::new();
     };
 
     if !exists {
-        return unavailable_claude_meters(
-            "Status file not found in %APPDATA%\\Tuck or %APPDATA%\\Notch",
-        );
+        return Vec::new();
     }
 
     let meta = match std::fs::metadata(&path) {
         Ok(m) => m,
         Err(e) => return unavailable_claude_meters(&format!("Unable to read metadata: {}", e)),
     };
+    if !status_file_connected(meta.modified().ok(), SystemTime::now()) {
+        return Vec::new();
+    }
 
     if meta.len() > MAX_STATUS_FILE_BYTES {
         return unavailable_claude_meters("Status file exceeds size limit (2MB)");
@@ -689,25 +700,25 @@ pub fn current_snapshot() -> Vec<Meter> {
     let month = current_month_start_utc().timestamp();
     let reset = next_month_start_utc().timestamp();
     let state = get_cache().lock().unwrap_or_else(|p| p.into_inner());
-    let mut meters = if state.claude.is_empty() {
-        parse_claude_status_content(b"{}", None)
-    } else {
-        state.claude.clone()
-    };
-    meters.push(build_api_meter(
-        "anthropic-api",
-        "Claude API",
-        &state.anthropic,
-        month,
-        reset,
-    ));
-    meters.push(build_api_meter(
-        "openai-api",
-        "OpenAI API",
-        &state.openai,
-        month,
-        reset,
-    ));
+    let mut meters = state.claude.clone();
+    if state.anthropic.configured {
+        meters.push(build_api_meter(
+            "anthropic-api",
+            "Claude API",
+            &state.anthropic,
+            month,
+            reset,
+        ));
+    }
+    if state.openai.configured {
+        meters.push(build_api_meter(
+            "openai-api",
+            "OpenAI API",
+            &state.openai,
+            month,
+            reset,
+        ));
+    }
     let installed = crate::installed_usage::snapshot();
     if installed
         .iter()
@@ -721,6 +732,14 @@ pub fn current_snapshot() -> Vec<Meter> {
 #[tauri::command]
 pub fn usage_now() -> Vec<Meter> {
     current_snapshot()
+}
+/// A key that cannot be read may still exist, so the provider stays on the island with an error.
+fn record_key_read_failure(slot: &mut ApiSlot, generation: u64) {
+    if slot.generation == generation {
+        slot.configured = true;
+        slot.last_error = Some("Credential Manager read failed".into());
+        slot.stale = true;
+    }
 }
 fn commit_result(
     slot: &mut ApiSlot,
@@ -793,12 +812,7 @@ pub fn start<R: Runtime>(app: AppHandle<R>) {
                     };
                     match key {
                         Ok(key) => commit_result(slot, generation, month, key.is_some(), result),
-                        Err(_) => {
-                            if slot.generation == generation {
-                                slot.last_error = Some("Credential Manager read failed".into());
-                                slot.stale = true;
-                            }
-                        }
+                        Err(_) => record_key_read_failure(slot, generation),
                     }
                 }
                 last_api = Instant::now();
@@ -1068,6 +1082,83 @@ mod tests {
             Some(SystemTime::now()),
         );
         assert_eq!(meters[0].status.as_deref(), Some("unavailable"));
+    }
+    #[test]
+    fn unconfigured_api_slot_is_marked_and_a_configured_failure_is_not() {
+        let unconfigured = build_api_meter("openai-api", "API", &ApiSlot::default(), 10, 20);
+        assert_eq!(unconfigured.status.as_deref(), Some("unconfigured"));
+        let failed = ApiSlot {
+            configured: true,
+            last_error: Some("Could not reach the provider".into()),
+            ..Default::default()
+        };
+        let meter = build_api_meter("openai-api", "API", &failed, 10, 20);
+        assert_eq!(meter.status.as_deref(), Some("error"));
+    }
+    /// `current_snapshot` reads the shared cache, so these tests take turns on it.
+    static SNAPSHOT_TESTS: Mutex<()> = Mutex::new(());
+    fn with_cache<T>(set: impl FnOnce(&mut SharedState), read: impl FnOnce() -> T) -> T {
+        let _turn = SNAPSHOT_TESTS.lock().unwrap_or_else(|p| p.into_inner());
+        let reset = || {
+            *get_cache().lock().unwrap_or_else(|p| p.into_inner()) = SharedState::default();
+        };
+        reset();
+        set(&mut get_cache().lock().unwrap_or_else(|p| p.into_inner()));
+        let value = read();
+        reset();
+        value
+    }
+    fn snapshot_ids() -> Vec<String> {
+        current_snapshot().into_iter().map(|m| m.id).collect()
+    }
+    #[test]
+    fn snapshot_omits_sources_that_are_not_connected() {
+        let ids = with_cache(|_| {}, snapshot_ids);
+        assert!(ids.is_empty());
+        let ids = with_cache(
+            |state| {
+                state.anthropic.configured = true;
+                state.claude = unavailable_claude_meters("Status file exceeds size limit (2MB)");
+            },
+            snapshot_ids,
+        );
+        assert_eq!(ids, ["claude-5h", "claude-week", "anthropic-api"]);
+    }
+    #[test]
+    fn first_credential_read_failure_keeps_the_provider_in_the_snapshot() {
+        let meters = with_cache(
+            |state| record_key_read_failure(&mut state.openai, 0),
+            current_snapshot,
+        );
+        assert_eq!(meters.len(), 1);
+        assert_eq!(meters[0].id, "openai-api");
+        assert_eq!(meters[0].status.as_deref(), Some("error"));
+    }
+    #[test]
+    fn credential_read_failure_from_an_old_generation_is_ignored() {
+        let mut slot = ApiSlot {
+            generation: 2,
+            ..Default::default()
+        };
+        record_key_read_failure(&mut slot, 1);
+        assert!(!slot.configured);
+        assert_eq!(slot.last_error, None);
+    }
+    #[test]
+    fn status_file_older_than_the_weekly_window_is_not_connected() {
+        let now = SystemTime::now();
+        let aged = |secs: u64| Some(now - Duration::from_secs(secs));
+        assert!(status_file_connected(aged(STALE_THRESHOLD_SECS + 1), now));
+        assert!(status_file_connected(aged(CONNECTED_THRESHOLD_SECS), now));
+        assert!(!status_file_connected(
+            aged(CONNECTED_THRESHOLD_SECS + 1),
+            now
+        ));
+        assert!(status_file_connected(None, now));
+        assert!(status_file_connected(
+            Some(now + Duration::from_secs(60)),
+            now
+        ));
     }
     #[test]
     fn credential_read_error_preserves_cached_total() {

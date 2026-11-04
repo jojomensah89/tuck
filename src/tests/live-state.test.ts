@@ -16,6 +16,12 @@ describe('live island state', () => {
     expect(normalizePreferences({}).fullscreenAutoHide).toBe(true);
     expect(normalizePreferences({ fullscreenAutoHide: false }).fullscreenAutoHide).toBe(false);
   });
+  test('migrates collapsed content without losing an existing title choice', () => {
+    expect(normalizePreferences({}).compactContent).toBe('lyrics');
+    expect(normalizePreferences({ compactContent: 'title' }).compactContent).toBe('title');
+    expect(normalizePreferences({ compactContent: 'artwork' }).compactContent).toBe('artwork');
+    expect(normalizePreferences({ compactContent: 'old-value' as never }).compactContent).toBe('lyrics');
+  });
   test('keeps the level HUD off for anyone who had turned off system peeks before it existed', () => {
     expect(normalizePreferences({}).levelHud).toBe(true);
     expect(normalizePreferences({ desktopPeeks: true }).levelHud).toBe(true);

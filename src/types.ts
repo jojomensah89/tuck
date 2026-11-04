@@ -28,7 +28,7 @@ export interface PowerState {
 
 export interface Meter {
   id: string;
-  provider: string; // 'claude' | 'anthropic-api' | 'openai-api' | 'chatgpt'
+  provider: string; // 'claude' | 'codex' | 'anthropic-api' | 'openai-api' | 'chatgpt'
   label: string;
   usedPct: number | null; // 0..100
   spentUsd: number | null; // month-to-date USD

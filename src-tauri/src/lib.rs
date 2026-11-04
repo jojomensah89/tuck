@@ -5,6 +5,7 @@ pub mod extensions;
 pub mod installed_usage;
 pub mod lifecycle;
 pub mod lyrics;
+mod lyrics_match;
 pub mod media;
 pub mod osd_flyout;
 mod service_preferences;

@@ -40,7 +40,8 @@ export function mountLiveSettings(): void {
       fullscreenAutoHide: input('fullscreenAutoHide').checked,
       lyricsOpen: input('lyricsOpen').checked, desktopPeeks: input('desktopPeeks').checked, levelHud: input('levelHud').checked,
       compactContent: compact().find(radio => radio.checked)?.value ?? 'lyrics',
-      openDelayMs: Number(input('openDelay').value), closeDelayMs: Number(input('closeDelay').value), openWidth: Number(input('openWidth').value), lastTab: readPreferences().lastTab, prefsVersion: PREFS_VERSION });
+      openDelayMs: Number(input('openDelay').value), closeDelayMs: Number(input('closeDelay').value), openWidth: Number(input('openWidth').value),
+      lastTab: readPreferences().lastTab, lyricsOffsets: readPreferences().lyricsOffsets, prefsVersion: PREFS_VERSION });
     try {
       localStorage.setItem(LIVE_SETTINGS_KEY, JSON.stringify(next));
       window.dispatchEvent(new StorageEvent('storage', { key: LIVE_SETTINGS_KEY, newValue: JSON.stringify(next) }));

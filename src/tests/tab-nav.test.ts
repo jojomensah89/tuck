@@ -7,6 +7,8 @@ import {
   INITIAL_WHEEL_STATE,
   isTabId,
   rovingTarget,
+  sectionIndexAt,
+  sectionLabel,
   swipeIntent,
   SWITCH_LOCK_MS,
   tabForSection,
@@ -71,6 +73,20 @@ describe('scroll edges', () => {
     expect(canScroll(bottom, -1)).toBe(true);
     expect(canScroll(flat, 1)).toBe(false);
     expect(canScroll({ scrollTop: 177.5, scrollHeight: 356, clientHeight: 178 }, 1)).toBe(false); // fractional end
+  });
+  test('section position clamps when a dynamic section disappears', () => {
+    expect(sectionIndexAt(178, 178, 2)).toBe(1);
+    expect(sectionIndexAt(178, 178, 1)).toBe(0);
+    expect(sectionIndexAt(0, 0, 2)).toBe(0);
+  });
+});
+
+describe('section marks', () => {
+  test('every section has a name of its own for its mark', () => {
+    const sections = TABS.flatMap(tab => [...tab.sections]);
+    const labels = sections.map(sectionLabel);
+    expect(sectionLabel('usage')).toBe('AI usage');
+    expect(new Set(labels).size).toBe(sections.length);
   });
 });
 

@@ -1,25 +1,34 @@
 /**
- * AI usage as a row of rings: the provider's mark in the centre, the fill in a
- * threshold tone (green, amber from 70%, red from 90%), and the value and reset
- * time in small tabular text underneath. Full details live in the title and the
- * accessible name. Cells are keyed by meter id, so a changed value animates
- * instead of being rebuilt.
+ * One provider card per connected source. Subscription providers combine their
+ * 5-hour and weekly quotas into concentric rings; other providers keep one ring.
  */
 import { SVG_ICONS } from './icons.js';
 import { createRing, meterWindow, providerInitial, providerMark, usageTone, type Ring } from './rings.js';
 import { resetSpan } from './usage.js';
 import type { Meter } from './types.js';
 
-const RING_SIZE = 56;
+const OUTER_SIZE = 72;
+const INNER_SIZE = 54;
 const RING_STROKE = 6;
+
+export interface UsageProviderGroup {
+  key: string;
+  label: string;
+  meters: Meter[];
+}
+
+interface ValueLine {
+  window: HTMLElement;
+  value: HTMLElement;
+}
 
 interface Cell {
   root: HTMLElement;
   face: HTMLElement;
   glyph: HTMLElement;
-  ring: Ring;
-  value: HTMLElement;
-  sub: HTMLElement;
+  lines: ValueLine[];
+  state: HTMLElement;
+  rings: Ring[];
   glyphKey: string;
 }
 
@@ -32,113 +41,202 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, className: string, te
   return node;
 }
 
-function valueText(m: Meter): string {
-  if (m.id === 'chatgpt' && m.count != null && m.cap != null) return `${m.count}/${m.cap}`;
-  if (m.usedPct != null && Number.isFinite(m.usedPct)) return `${Math.round(m.usedPct)}%`;
-  if (m.spentUsd != null && Number.isFinite(m.spentUsd)) return `$${m.spentUsd.toFixed(2)}`;
-  return '–';
+function providerKey(meter: Meter): string {
+  const provider = meter.provider.toLowerCase();
+  if (provider === 'claude') return 'anthropic-subscription';
+  if (provider === 'codex' || provider === 'openai') return 'openai-subscription';
+  return provider;
 }
 
-function sourceWord(m: Meter): string {
-  return m.source === 'manual' ? 'estimate' : m.source === 'api' ? 'API' : 'official';
+function providerLabel(meter: Meter): string {
+  const key = providerKey(meter);
+  if (key === 'anthropic-subscription') return 'Claude';
+  if (key === 'openai-subscription') return 'OpenAI';
+  if (meter.provider === 'anthropic-api') return 'Anthropic API';
+  if (meter.provider === 'openai-api') return 'OpenAI API';
+  if (meter.provider === 'chatgpt') return 'ChatGPT';
+  return meter.label || meter.provider;
 }
 
-/** The full sentence for the tooltip and the accessible name */
-export function meterDetails(m: Meter, nowSeconds = Date.now() / 1000): string {
-  const parts: string[] = [m.label];
-  if (m.usedPct != null && Number.isFinite(m.usedPct)) parts.push(`${Math.round(m.usedPct)}% used`);
-  if (m.id === 'chatgpt' && m.count != null && m.cap != null) parts.push(`${m.count} of ${m.cap} messages`);
-  if (m.spentUsd != null && Number.isFinite(m.spentUsd)) parts.push(`$${m.spentUsd.toFixed(2)} spent this month`);
-  const reset = resetSpan(m.resetsAt, nowSeconds);
-  if (reset) parts.push(reset === 'now' ? 'resetting now' : m.id === 'chatgpt' ? `next slot frees in ${reset}` : `resets in ${reset}`);
-  parts.push(sourceWord(m));
-  if (m.status && m.status !== 'ok') parts.push(m.status);
-  if (m.error) parts.push(m.error);
-  if (m.stale) parts.push(m.provider === 'claude' ? 'stale, open Claude Code to refresh' : 'stale, waiting for the provider');
+function windowRank(meter: Meter): number {
+  const window = meterWindow(meter);
+  if (window === '5h') return 0;
+  if (window === '7d') return 1;
+  return 2;
+}
+
+/** Groups quota windows without merging API spend or manual estimates into subscriptions. */
+export function groupUsageProviders(meters: Meter[]): UsageProviderGroup[] {
+  const groups = new Map<string, UsageProviderGroup>();
+  for (const meter of meters) {
+    const key = providerKey(meter);
+    let group = groups.get(key);
+    if (!group) {
+      group = { key, label: providerLabel(meter), meters: [] };
+      groups.set(key, group);
+    }
+    group.meters.push(meter);
+  }
+  for (const group of groups.values()) group.meters.sort((a, b) => windowRank(a) - windowRank(b));
+  return [...groups.values()];
+}
+
+function sourceWord(meter: Meter): string {
+  return meter.source === 'manual' ? 'estimate' : meter.source === 'api' ? 'API' : 'official';
+}
+
+/** Codex reports each quota bucket as `<bucket>-primary` and `<bucket>-secondary` */
+function quotaBucket(meter: Meter): string {
+  const bucket = meter.id.replace(/-(primary|secondary)$/, '');
+  return bucket === meter.id ? '' : bucket;
+}
+
+/**
+ * The windows a card draws: 5h outside and weekly inside, both from one quota
+ * bucket, preferring a bucket that has both. Model-scoped and other windows stay
+ * in the tooltip. A provider with neither window draws its first meter as one ring.
+ */
+export function ringMeters(meters: Meter[]): Meter[] {
+  const candidates = [...new Set(meters.map(quotaBucket))].map(bucket => (['5h', '7d'] as const)
+    .map(name => meters.find(meter => quotaBucket(meter) === bucket && meterWindow(meter) === name))
+    .filter((meter): meter is Meter => !!meter));
+  return candidates.find(windows => windows.length === 2)
+    ?? candidates.find(windows => windows.length === 1)
+    ?? meters.slice(0, 1);
+}
+
+/** Full tooltip fragment for one window, including its reset. */
+export function meterDetails(meter: Meter, nowSeconds = Date.now() / 1000, name = meterWindow(meter)): string {
+  const parts: string[] = [];
+  if (name) parts.push(name);
+  if (meter.usedPct != null && Number.isFinite(meter.usedPct)) parts.push(`${Math.round(meter.usedPct)}% used`);
+  if (meter.id === 'chatgpt' && meter.count != null && meter.cap != null) parts.push(`${meter.count} of ${meter.cap} messages`);
+  if (meter.spentUsd != null && Number.isFinite(meter.spentUsd)) parts.push(`$${meter.spentUsd.toFixed(2)} spent this month`);
+  const reset = resetSpan(meter.resetsAt, nowSeconds);
+  if (reset) parts.push(reset === 'now' ? 'resetting now' : meter.id === 'chatgpt' ? `next slot frees in ${reset}` : `resets in ${reset}`);
+  if (meter.status && meter.status !== 'ok' && meter.status !== 'stale') parts.push(meter.status);
+  if (meter.error) parts.push(meter.error);
+  if (meter.stale) parts.push(meter.provider === 'claude' ? 'stale, open Claude Code to refresh' : 'stale, waiting for the provider');
+  parts.push(sourceWord(meter));
   return parts.join(', ');
 }
 
-function subText(m: Meter, nowSeconds: number): string {
-  const window = meterWindow(m);
-  if (m.error || m.status === 'unavailable') return window ? `${window} · off` : 'off';
-  const reset = resetSpan(m.resetsAt, nowSeconds);
-  return [window, reset].filter(Boolean).join(' · ');
+function valueText(meter: Meter): string {
+  if (meter.id === 'chatgpt' && meter.count != null && meter.cap != null) return `${meter.count}/${meter.cap}`;
+  if (meter.usedPct != null && Number.isFinite(meter.usedPct)) return `${Math.round(meter.usedPct)}%`;
+  if (meter.spentUsd != null && Number.isFinite(meter.spentUsd)) return `$${meter.spentUsd.toFixed(2)}`;
+  return '\u2013';
 }
 
-function glyphFor(m: Meter): { key: string; markup: string } {
-  const mark = providerMark(m.provider);
+function glyphFor(meter: Meter): { key: string; markup: string } {
+  const mark = providerMark(meter.provider);
   if (mark) return { key: mark, markup: SVG_ICONS[mark] };
-  const initial = providerInitial(m);
+  const initial = providerInitial(meter);
   return { key: `initial-${initial}`, markup: `<span class="ring-initial">${initial}</span>` };
 }
 
-function buildCell(m: Meter, onLog: () => void): Cell {
-  const root = el('div', 'u-cell');
-  const isLog = m.id === 'chatgpt';
+/** One word for a card that cannot be trusted right now; '' when its reading is fresh */
+export function usageStateWord(meters: Meter[]): string {
+  if (meters.some(meter => meter.status === 'error' || meter.error)) return 'Error';
+  if (meters.some(meter => meter.status === 'unavailable')) return 'Unavailable';
+  return meters.some(meter => meter.stale || meter.status === 'stale') ? 'Stale' : '';
+}
+
+function setIfChanged(node: HTMLElement, text: string): void {
+  if (node.textContent !== text) node.textContent = text;
+}
+
+function buildCell(group: UsageProviderGroup, drawn: Meter[], onLog: () => void): Cell {
+  const root = el('div', 'u-provider');
+  const isLog = group.meters.some(meter => meter.id === 'chatgpt');
   const face = isLog ? el('button', 'u-face u-log') : el('div', 'u-face');
   if (face instanceof HTMLButtonElement) {
     face.type = 'button';
-    face.addEventListener('click', e => { e.stopPropagation(); onLog(); });
+    face.addEventListener('click', event => { event.stopPropagation(); onLog(); });
   } else {
     face.tabIndex = 0;
     face.setAttribute('role', 'img');
   }
-  const ring = createRing(RING_SIZE, RING_STROKE);
+  const rings = drawn.map((_, index) => createRing(index === 0 ? OUTER_SIZE : INNER_SIZE, RING_STROKE, index === 0 ? 'u-ring-outer' : 'u-ring-inner'));
   const glyph = el('span', 'ring-glyph');
-  face.append(ring.root, glyph);
+  face.append(...rings.map(ring => ring.root), glyph);
   if (isLog) {
     const badge = el('span', 'u-log-badge');
     badge.innerHTML = SVG_ICONS.plus;
     face.append(badge);
   }
-  const value = el('span', 'u-val');
-  const sub = el('span', 'u-sub');
-  root.append(face, value, sub);
-  return { root, face, glyph, ring, value, sub, glyphKey: '' };
+  const values = el('div', 'u-values');
+  const lines = drawn.map(() => {
+    const line = el('span', 'u-value-line');
+    const window = el('span', 'u-window');
+    const value = el('span', 'u-val');
+    line.append(window, value);
+    values.append(line);
+    return { window, value };
+  });
+  const state = el('span', 'u-state');
+  values.append(state);
+  root.append(face, values);
+  return { root, face, glyph, lines, state, rings, glyphKey: '' };
 }
 
-/** Renders the meters into `list`, reusing cells so values animate */
-export function renderUsageRings(list: HTMLElement, meters: Meter[], onLog: () => void, nowSeconds = Date.now() / 1000): void {
-  if (meters.length === 0) {
+/** Renders connected meters and returns the number of provider cards. */
+export function renderUsageRings(list: HTMLElement, meters: Meter[], onLog: () => void, nowSeconds = Date.now() / 1000): number {
+  const groups = groupUsageProviders(meters);
+  const hadFocus = list.contains(document.activeElement);
+  const focusedKey = [...cells].find(([, cell]) => cell.root.contains(document.activeElement))?.[0];
+  if (groups.length === 0) {
     cells.clear();
-    const empty = el('p', 'u-empty', 'No usage sources yet, connect them in Settings');
-    list.replaceChildren(empty);
+    list.replaceChildren();
     list.classList.remove('dense');
-    return;
+    if (hadFocus) list.closest<HTMLElement>('[role="tabpanel"]')?.focus({ preventScroll: true });
+    return 0;
   }
-  list.querySelector('.u-empty')?.remove();
-  list.classList.toggle('dense', meters.length > 5);
+  // Two rows of two fit the section at full size; a fifth card needs a third column
+  list.classList.toggle('dense', groups.length > 4);
 
   const seen = new Set<string>();
-  meters.forEach((m, index) => {
-    seen.add(m.id);
-    let cell = cells.get(m.id);
-    if (!cell) {
-      cell = buildCell(m, onLog);
-      cells.set(m.id, cell);
+  groups.forEach((group, index) => {
+    seen.add(group.key);
+    const drawn = ringMeters(group.meters);
+    let cell = cells.get(group.key);
+    if (!cell || cell.rings.length !== drawn.length) {
+      cell?.root.remove();
+      cell = buildCell(group, drawn, onLog);
+      cells.set(group.key, cell);
     }
-    // Keep DOM order equal to meter order without detaching unchanged cells
-    if (list.children[index] !== cell.root) list.insertBefore(cell.root, list.children[index] ?? null);
+    const { root, rings, lines } = cell;
+    if (list.children[index] !== root) list.insertBefore(root, list.children[index] ?? null);
 
-    const { key, markup } = glyphFor(m);
+    const { key, markup } = glyphFor(drawn[0]);
     if (cell.glyphKey !== key) { cell.glyph.innerHTML = markup; cell.glyphKey = key; }
+    drawn.forEach((meter, meterIndex) => {
+      rings[meterIndex].set(meter.usedPct, usageTone(meter.usedPct));
+      setIfChanged(lines[meterIndex].window, meterWindow(meter));
+      setIfChanged(lines[meterIndex].value, valueText(meter));
+    });
 
-    const unavailable = !!m.error || m.status === 'unavailable';
-    const pct = unavailable ? null : m.usedPct;
-    cell.ring.set(pct, usageTone(pct));
-    cell.root.dataset.stale = String(m.stale || unavailable);
-
-    const value = unavailable ? '–' : valueText(m);
-    if (cell.value.textContent !== value) cell.value.textContent = value;
-    const sub = subText(m, nowSeconds);
-    if (cell.sub.textContent !== sub) cell.sub.textContent = sub;
-
-    const details = meterDetails(m, nowSeconds);
-    const label = m.id === 'chatgpt' ? `Log a ChatGPT message. ${details}` : details;
-    cell.face.title = label;
-    cell.face.setAttribute('aria-label', label);
+    const word = usageStateWord(drawn);
+    setIfChanged(cell.state, word);
+    root.dataset.stale = String(word !== '');
+    const others = group.meters.filter(meter => !drawn.includes(meter));
+    const details = [
+      group.label,
+      ...drawn.map(meter => meterDetails(meter, nowSeconds)),
+      ...others.map(meter => meterDetails(meter, nowSeconds, meter.label)),
+    ].join('. ');
+    if (root.title !== details) {
+      root.title = details;
+      cell.face.setAttribute('aria-label', group.meters.some(meter => meter.id === 'chatgpt') ? `Log a ChatGPT message. ${details}` : details);
+    }
   });
-  for (const [id, cell] of cells) {
-    if (!seen.has(id)) { cell.root.remove(); cells.delete(id); }
+
+  for (const [key, cell] of cells) {
+    if (!seen.has(key)) { cell.root.remove(); cells.delete(key); }
   }
+  // A rebuilt or removed card must not drop keyboard focus out of the island
+  if (hadFocus && !list.contains(document.activeElement)) {
+    (cells.get(focusedKey ?? '') ?? cells.values().next().value)?.face.focus({ preventScroll: true });
+  }
+  return groups.length;
 }

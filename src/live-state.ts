@@ -7,12 +7,14 @@ export function newRequestId(): string {
 export interface LivePreferences {
   hoverExpand: boolean; openDelayMs: number; closeDelayMs: number; pinned: boolean;
   fullscreenAutoHide: boolean;
-  compactContent: 'lyrics' | 'title'; lyricsOpen: boolean; openWidth: number;
+  compactContent: 'artwork' | 'title' | 'lyrics'; lyricsOpen: boolean; openWidth: number;
   desktopPeeks: boolean;
   /** Volume and brightness changes from outside the island show the HUD */
   levelHud: boolean;
   /** Last open-island tab, restored on the next launch */
   lastTab: TabId;
+  /** Bounded, per-track lyric timing corrections in 100 ms steps. */
+  lyricsOffsets: LyricsOffsetPreference[];
   /** Bumped when a saved default changes meaning; 2 = collapse delay defaults to instant. */
   prefsVersion: number;
 }
@@ -20,7 +22,20 @@ export const PREFS_VERSION = 2;
 export const DEFAULT_LIVE_PREFERENCES: LivePreferences = {
   hoverExpand: true, openDelayMs: 180, closeDelayMs: 0, pinned: false,
   compactContent: 'lyrics', lyricsOpen: true, openWidth: 500,
-  desktopPeeks: true, levelHud: true, fullscreenAutoHide: true, lastTab: DEFAULT_TAB, prefsVersion: PREFS_VERSION,
+  desktopPeeks: true, levelHud: true, fullscreenAutoHide: true, lastTab: DEFAULT_TAB, lyricsOffsets: [], prefsVersion: PREFS_VERSION,
+};
+export interface LyricsOffsetPreference { key: string; offsetMs: number }
+export const MAX_LYRIC_OFFSETS = 128;
+export const MAX_LYRIC_OFFSET_MS = 15000;
+const normalizeLyricOffsets = (value: unknown): LyricsOffsetPreference[] => {
+  if (!Array.isArray(value)) return [];
+  const result: LyricsOffsetPreference[] = [];
+  for (const { key, offsetMs } of value.filter(Boolean) as Partial<LyricsOffsetPreference>[]) {
+    if (typeof key !== 'string' || !key || key.length > 512 || typeof offsetMs !== 'number' || !Number.isFinite(offsetMs)) continue;
+    const stepped = Math.round(Math.max(-MAX_LYRIC_OFFSET_MS, Math.min(MAX_LYRIC_OFFSET_MS, offsetMs)) / 100) * 100;
+    if (stepped !== 0) result.push({ key, offsetMs: stepped });
+  }
+  return result.slice(-MAX_LYRIC_OFFSETS);
 };
 export function normalizePreferences(input: unknown): LivePreferences {
   const p = input && typeof input === 'object' ? input as Partial<LivePreferences> : {};
@@ -29,7 +44,7 @@ export function normalizePreferences(input: unknown): LivePreferences {
   return {
     hoverExpand: typeof p.hoverExpand === 'boolean' ? p.hoverExpand : true,
     pinned: p.pinned === true, lyricsOpen: p.lyricsOpen !== false,
-    compactContent: p.compactContent === 'title' ? 'title' : 'lyrics',
+    compactContent: p.compactContent === 'artwork' || p.compactContent === 'title' ? p.compactContent : 'lyrics',
     desktopPeeks: p.desktopPeeks !== false,
     // Before this setting existed, System peeks also carried the level peeks
     levelHud: typeof p.levelHud === 'boolean' ? p.levelHud : p.desktopPeeks !== false,
@@ -42,6 +57,7 @@ export function normalizePreferences(input: unknown): LivePreferences {
     prefsVersion: PREFS_VERSION,
     openWidth: bounded(p.openWidth, 500, 440, 500),
     lastTab: isTabId(p.lastTab) ? p.lastTab : DEFAULT_TAB,
+    lyricsOffsets: normalizeLyricOffsets(p.lyricsOffsets),
   };
 }
 export function readPreferences(): LivePreferences {
@@ -54,8 +70,17 @@ export function writePreferences(update: Partial<LivePreferences>): LivePreferen
   try { localStorage.setItem(LIVE_SETTINGS_KEY, JSON.stringify(next)); } catch { /* storage disabled */ }
   return next;
 }
+export function lyricOffsetFor(preferences: LivePreferences, key: string): number {
+  return preferences.lyricsOffsets.find(entry => entry.key === key)?.offsetMs ?? 0;
+}
+export function withLyricOffset(preferences: LivePreferences, key: string, offsetMs: number): LyricsOffsetPreference[] {
+  return normalizeLyricOffsets([
+    ...preferences.lyricsOffsets.filter(entry => entry.key !== key),
+    { key, offsetMs },
+  ]);
+}
 export interface LyricLine { atMs: number; text: string }
-/** Parse line-timed LRC, preserving repeated timestamps and applying its offset. */
+/** Parse line-timed LRC, preserving repeated timestamps. A positive offset makes lyrics appear sooner. */
 export function parseLrc(text: string): LyricLine[] {
   const offset = Number(text.match(/\[offset:([+-]?\d+)\]/i)?.[1] || 0);
   const result: LyricLine[] = [];
@@ -66,7 +91,7 @@ export function parseLrc(text: string): LyricLine[] {
     for (const match of times) {
       if (Number(match[2]) >= 60) continue;
       const fraction = Number((match[3] || '').padEnd(3, '0'));
-      result.push({ atMs: Math.max(0, Number(match[1]) * 60000 + Number(match[2]) * 1000 + fraction + offset), text: label });
+      result.push({ atMs: Math.max(0, Number(match[1]) * 60000 + Number(match[2]) * 1000 + fraction - offset), text: label });
     }
   }
   return result.sort((a, b) => a.atMs - b.atMs).slice(0, 5000);
@@ -97,11 +122,14 @@ export function matchesLyricRequest(current: { trackId: string; requestId: strin
 export class TelemetryGate {
   private pending = false;
   private latest = 0;
+  private failures = 0;
   get sampledAt(): number { return this.latest; }
   begin(): boolean { if (this.pending) return false; this.pending = true; return true; }
   finish(): void { this.pending = false; }
   accept(sampledAt: number): boolean {
     if (!Number.isFinite(sampledAt) || sampledAt <= this.latest) return false;
-    this.latest = sampledAt; return true;
+    this.latest = sampledAt; this.failures = 0; return true;
   }
+  /** Whether failed polls should clear the metrics: one blip must not blank a valid value. */
+  failed(): boolean { this.failures++; return this.latest === 0 || this.failures >= 3; }
 }

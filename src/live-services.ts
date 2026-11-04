@@ -33,6 +33,7 @@ export interface LyricsSnapshot {
   trackId: string; requestId: string; status: 'disabled' | 'loading' | 'synced' | 'plain' | 'instrumental' | 'unavailable' | 'error';
   syncedLyrics?: string | null; plainLyrics?: string | null; error?: string | null;
   lines?: { atMs: number; text: string }[];
+  approximate?: boolean; creditDiffers?: boolean;
 }
 export interface TelemetrySnapshot {
   sampledAt: number; cpuPct: number | null; ramUsedBytes: number | null; ramTotalBytes: number | null;

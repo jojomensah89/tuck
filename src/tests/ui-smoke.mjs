@@ -371,6 +371,7 @@ try {
   assert.equal(await native.locator('#isl').getAttribute('data-state'),'idle');
   assert.equal((await native.locator('#isl').boundingBox()).width,300,'Lyric mode reserves a stable wider closed pill');
   assert.equal((await native.locator('#cc .compact-title-track').textContent()).trim(),'Current fixture line');
+  assert.ok(await native.evaluate(()=>{const m=r=>r.left+r.width/2;return Math.abs(m(document.querySelector('#cc .compact-slot.current .compact-title-track').getBoundingClientRect())-m(document.querySelector('.island').getBoundingClientRect()))<=2;}),'Collapsed text is centred on the pill');
   await setLive({compactContent:'title'}); await native.waitForTimeout(50);
   assert.equal((await native.locator('#cc .compact-title-track').textContent()).trim(),'Artwork color fixture');
   assert.equal((await native.locator('#isl').boundingBox()).width,300,'Title mode keeps the same stable width');

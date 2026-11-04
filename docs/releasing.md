@@ -39,7 +39,7 @@ When a release is triggered:
 5. `tauri-apps/tauri-action` builds the application on Windows (`windows-latest`).
 6. A GitHub Release is published containing:
    - The NSIS executable installer (`tuck_<version>_x64-setup.exe`).
-   - The updater archive (`tuck_<version>_x64-setup.nsis.zip`) and its cryptographic signature (`.sig`).
+   - The updater signature (`tuck_<version>_x64-setup.exe.sig`).
    - `latest.json` updater manifest pointing to the release assets.
 
 > [!NOTE]

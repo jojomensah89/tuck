@@ -1,5 +1,7 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
+use std::sync::{Arc, Mutex};
+use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 static FULLSCREEN: AtomicBool = AtomicBool::new(false);
 static FULLSCREEN_AUTO_HIDE: AtomicBool = AtomicBool::new(true);
 static CURSOR_PAUSE_REASONS: AtomicU8 = AtomicU8::new(0);
@@ -8,8 +10,6 @@ static CURSOR_GATE: std::sync::LazyLock<(std::sync::Mutex<()>, std::sync::Condva
 pub(crate) const CURSOR_PAUSE_FULLSCREEN: u8 = 1;
 pub(crate) const CURSOR_PAUSE_SESSION: u8 = 2;
 pub(crate) const CURSOR_PAUSE_SUSPEND: u8 = 4;
-use std::sync::Arc;
-use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 
 #[cfg(windows)]
 use windows::{
@@ -672,18 +672,53 @@ pub fn open_settings(app: &AppHandle) -> Result<(), String> {
 }
 
 /// Opens or focuses settings.html and navigates to the specified view.
-pub fn open_settings_view(app: &AppHandle, view: &str) -> Result<(), String> {
-    open_settings(app)?;
+/// If `check` is true, sets a query parameter `?check=1` and triggers an update check.
+pub fn open_settings_view(app: &AppHandle, view: &str, check: bool) -> Result<(), String> {
+    let url_str = if check {
+        format!("settings.html?check=1#{view}")
+    } else {
+        format!("settings.html#{view}")
+    };
     if let Some(win) = app.get_webview_window("settings") {
+        let _ = win.unminimize();
+        let _ = win.show();
+        let _ = win.set_focus();
         let _ = win.emit("navigate-settings-view", view);
+        if check {
+            let _ = win.emit("check-for-updates-requested", ());
+        }
+        Ok(())
+    } else {
+        WebviewWindowBuilder::new(app, "settings", WebviewUrl::App(url_str.into()))
+            .title("Tuck Settings")
+            .inner_size(760.0, 600.0)
+            .min_inner_size(640.0, 440.0)
+            .resizable(true)
+            .focused(true)
+            .build()
+            .map_err(|e| e.to_string())
+            .map(|_| ())
     }
-    Ok(())
 }
 
 /// Frontend command to open settings window without phantom successes.
 #[tauri::command]
 pub(crate) async fn open_settings_cmd(app: AppHandle) -> Result<(), String> {
     open_settings(&app)
+}
+
+/// Restores WS_EX_NOACTIVATE style on the island window upon collapse/close.
+#[tauri::command]
+pub(crate) async fn close_island_cmd(app: AppHandle) -> Result<(), String> {
+    if let Some(win) = app.get_webview_window("main") {
+        #[cfg(windows)]
+        if let Ok(hwnd) = win.hwnd() {
+            set_island_focusable(HWND(hwnd.0 as _), false);
+        }
+        Ok(())
+    } else {
+        Err("main window not found".into())
+    }
 }
 
 /// Autostart status check.
@@ -721,6 +756,42 @@ pub(crate) async fn set_autostart(app: AppHandle, enable: bool) -> Result<(), St
     res
 }
 
+/// Pending update metadata stored centrally in Rust.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingUpdateInfo {
+    pub version: String,
+    pub current_version: String,
+    pub body: Option<String>,
+    pub date: Option<String>,
+}
+
+#[derive(Default)]
+pub struct PendingUpdateState(pub Mutex<Option<PendingUpdateInfo>>);
+
+/// Retrieves currently pending update info if available.
+#[tauri::command]
+pub(crate) fn get_pending_update(
+    state: State<'_, PendingUpdateState>,
+) -> Option<PendingUpdateInfo> {
+    state.0.lock().ok()?.clone()
+}
+
+/// Updates the pending update state in Rust and synchronizes the tray item title.
+#[tauri::command]
+pub(crate) fn set_pending_update(
+    app: AppHandle,
+    state: State<'_, PendingUpdateState>,
+    update: Option<PendingUpdateInfo>,
+) -> Result<(), String> {
+    if let Ok(mut lock) = state.0.lock() {
+        *lock = update.clone();
+    }
+    let version_opt = update.as_ref().map(|u| u.version.clone());
+    set_tray_update_title(app, version_opt);
+    Ok(())
+}
+
 /// Updates the tray menu item title for updates (e.g. "Update to v0.2.0" or "Check for updates").
 #[tauri::command]
 pub(crate) fn set_tray_update_title(app: AppHandle, version: Option<String>) {
@@ -731,4 +802,20 @@ pub(crate) fn set_tray_update_title(app: AppHandle, version: Option<String>) {
         };
         let _ = tray.check_updates.set_text(text);
     }
+}
+
+/// Prepares for update installation: refuses if dictation is in progress, otherwise runs shutdown cleanup.
+#[tauri::command]
+pub(crate) fn prepare_update_install(app: AppHandle) -> Result<(), String> {
+    if let Some(dictation) = app.try_state::<Arc<crate::dictation::DictationService>>() {
+        let status = dictation.snapshot().status;
+        if matches!(
+            status.as_str(),
+            "recording" | "starting" | "transcribing" | "review"
+        ) {
+            return Err("Cannot install update while dictation is in progress. Please finish or cancel dictation first.".into());
+        }
+    }
+    crate::run_shutdown_cleanup(&app);
+    Ok(())
 }

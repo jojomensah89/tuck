@@ -87,7 +87,12 @@ try {
   assert.equal(await page.locator('#row-kAnthropic').isVisible(),true);
   assert.equal(await page.locator('#row-kOpenai').isVisible(),false);
   assert.equal(await page.locator('#row-openDelay').isVisible(),false);
+  // Verify row-update-available stays hidden when no update is available
+  await page.locator('#settingsSearch').fill('update');
+  assert.equal(await page.locator('#row-update-check').isVisible(),true);
+  assert.equal(await page.locator('#row-update-available').isVisible(),false,'Update row must stay hidden when no update is available');
   await page.keyboard.press('Escape');
+
   await page.locator('#view-island').waitFor({state:'visible'});
   // A default profile (180ms expand delay) must save a switch change straight away
   await page.evaluate(() => localStorage.removeItem('tuck.live.v2'));

@@ -64,9 +64,14 @@ pub fn run() {
         ))
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(hit_state)
+        .manage(system::PendingUpdateState::default())
         .invoke_handler(tauri::generate_handler![
             set_hit,
             system::set_tray_update_title,
+            system::get_pending_update,
+            system::set_pending_update,
+            system::close_island_cmd,
+            system::prepare_update_install,
             dictation::dictation_get_state,
             dictation::dictation_set_settings,
             dictation::dictation_model_download,
@@ -178,14 +183,7 @@ pub fn run() {
                 None::<&str>,
             )?;
             let sep2 = PredefinedMenuItem::separator(app)?;
-            let version = app.package_info().version.to_string();
-            let about_item = MenuItem::with_id(
-                app,
-                "about",
-                format!("About Tuck v{version}"),
-                true,
-                None::<&str>,
-            )?;
+            let about_item = MenuItem::with_id(app, "about", "About Tuck", true, None::<&str>)?;
             let quit_item = MenuItem::with_id(app, "quit", "Quit Tuck", true, None::<&str>)?;
 
             let tray_menu = Menu::with_items(
@@ -226,7 +224,7 @@ pub fn run() {
                     {
                         let app = tray.app_handle();
                         if let Some(win) = app.get_webview_window("main") {
-                            let _ = system::toggle_island(&win);
+                            let _ = win.emit("tray-toggle-island", ());
                         }
                     }
                 })
@@ -257,22 +255,24 @@ pub fn run() {
                             if res.is_ok() {
                                 system::update_tray_autostart(&a, next);
                                 let _ = a.emit("autostart-changed", next);
+                            } else {
+                                system::update_tray_autostart(&a, current);
                             }
                         });
                     }
                     "check_updates" => {
                         let a = app.clone();
                         tauri::async_runtime::spawn(async move {
-                            let _ = system::open_settings_view(&a, "about");
-                            let _ = a.emit("check-for-updates-requested", ());
+                            let _ = system::open_settings_view(&a, "about", true);
                         });
                     }
                     "about" => {
                         let a = app.clone();
                         tauri::async_runtime::spawn(async move {
-                            let _ = system::open_settings_view(&a, "about");
+                            let _ = system::open_settings_view(&a, "about", false);
                         });
                     }
+
                     "quit" => {
                         app.exit(0);
                     }
@@ -329,14 +329,21 @@ pub fn run() {
         .expect("error while building tauri application")
         .run(|app, event| {
             if matches!(event, tauri::RunEvent::Exit) {
-                lifecycle::stop();
-                media::stop();
-                desktop_signals::stop();
-                osd_flyout::shutdown();
-                app.state::<Arc<dictation::DictationService>>().shutdown();
-                clipboard_history::stop(
-                    &app.state::<Arc<clipboard_history::ClipboardHistoryService>>(),
-                );
+                run_shutdown_cleanup(app);
             }
         });
+}
+
+/// Central shutdown cleanup: cancels signals, un-hides native OS flyout, and shuts down dictation & clipboard.
+pub fn run_shutdown_cleanup(app: &AppHandle) {
+    lifecycle::stop();
+    media::stop();
+    desktop_signals::stop();
+    osd_flyout::shutdown();
+    if let Some(dictation) = app.try_state::<Arc<dictation::DictationService>>() {
+        dictation.shutdown();
+    }
+    if let Some(cb) = app.try_state::<Arc<clipboard_history::ClipboardHistoryService>>() {
+        clipboard_history::stop(&cb);
+    }
 }

@@ -1,0 +1,11 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "settings-updater",
+  "description": "Updater download and install capability for settings window only",
+  "windows": ["settings"],
+  "permissions": [
+    "updater:allow-download",
+    "updater:allow-install",
+    "updater:allow-download-and-install"
+  ]
+}

@@ -3,6 +3,7 @@ import {
   calculateNextVersion,
   cleanCommitSubject,
   determineBumpType,
+  formatUserFacingSubject,
   generateChangelogSection,
   parseCommit,
   updateChangelogContent,
@@ -10,38 +11,113 @@ import {
 } from '../scripts/release-metadata';
 
 describe('release metadata & conventional commit parser', () => {
-  it('cleans and parses conventional commit subjects', () => {
-    const feat = cleanCommitSubject('feat(tray): add left-click toggle (#21)');
+  it('cleans and parses conventional commit subjects to plain user-facing text', () => {
+    const feat = cleanCommitSubject('feat(tray): add left-click toggle (#21).');
     expect(feat.type).toBe('feat');
     expect(feat.scope).toBe('tray');
     expect(feat.isBreaking).toBe(false);
-    expect(feat.subject).toBe('Add left-click toggle');
+    expect(feat.subject).toBe('Add left-click toggle'); // stripped scope/type, sentence case, no trailing period
 
-    const fix = cleanCommitSubject('fix: address clippy warnings');
+    const fix = cleanCommitSubject('fix: address clippy warnings.');
     expect(fix.type).toBe('fix');
     expect(fix.scope).toBeUndefined();
     expect(fix.isBreaking).toBe(false);
     expect(fix.subject).toBe('Address clippy warnings');
 
-    const breaking = cleanCommitSubject('feat(api)!: redesign state store');
+    const breaking = cleanCommitSubject('feat(api)!: redesign state store.');
     expect(breaking.type).toBe('feat');
     expect(breaking.scope).toBe('api');
     expect(breaking.isBreaking).toBe(true);
     expect(breaking.subject).toBe('Redesign state store');
 
-    const nonConventional = cleanCommitSubject('merge remote branch');
+    const nonConventional = cleanCommitSubject('merge remote branch.');
     expect(nonConventional.type).toBe('chore');
     expect(nonConventional.subject).toBe('Merge remote branch');
   });
 
-  it('detects breaking changes in commit body', () => {
-    const commit = parseCommit(
+  it('handles revert commits and does not trigger release', () => {
+    const revertCommit = cleanCommitSubject('Revert "feat: add experimental feature"');
+    expect(revertCommit.type).toBe('revert');
+    expect(revertCommit.subject).toBe('Revert "feat: add experimental feature"');
+
+    const parsedRevert = parseCommit('123', 'Revert "feat: add experimental feature"');
+    expect(determineBumpType([parsedRevert], '0.1.0')).toBe('none');
+  });
+
+  it('handles docs!: breaking changes sensibly with a non-empty section', () => {
+    const docsBreaking = parseCommit('1', 'docs!: rewrite entire user manual and architecture specs');
+    expect(docsBreaking.isBreaking).toBe(true);
+    expect(determineBumpType([docsBreaking], '0.1.0')).toBe('minor');
+
+    const section = generateChangelogSection('0.2.0', [docsBreaking], '2026-11-04');
+    expect(section).toContain('### Changed');
+    expect(section).toContain('- Rewrite entire user manual and architecture specs');
+    expect(section.trim()).not.toBe('## [0.2.0] - 2026-11-04');
+  });
+
+  it('strictly adheres to BREAKING CHANGE footer rule (uppercase line start only)', () => {
+    // Valid breaking change in footer
+    const validBreaking = parseCommit(
       'abc1234',
       'fix: change config format',
       'BREAKING CHANGE: the config file syntax has changed'
     );
-    expect(commit.isBreaking).toBe(true);
-    expect(commit.type).toBe('fix');
+    expect(validBreaking.isBreaking).toBe(true);
+
+    const validHyphen = parseCommit(
+      'abc1234',
+      'fix: change config format',
+      'BREAKING-CHANGE: the config file syntax has changed'
+    );
+    expect(validHyphen.isBreaking).toBe(true);
+
+    // Mid-sentence or lowercase does NOT trigger breaking change
+    const lowercaseInline = parseCommit(
+      'def5678',
+      'docs: update guide',
+      'This documentation commit mentions a breaking change in passing'
+    );
+    expect(lowercaseInline.isBreaking).toBe(false);
+    expect(determineBumpType([lowercaseInline], '0.1.0')).toBe('none');
+  });
+
+  it('skips chore(release) commits from triggering bumps and changelogs', () => {
+    const releaseChore = parseCommit('abc', 'chore(release): v0.1.0 [skip ci]');
+    expect(determineBumpType([releaseChore], '0.1.0')).toBe('none');
+
+    const section = generateChangelogSection('0.2.0', [releaseChore], '2026-11-04');
+    expect(section).not.toContain('v0.1.0');
+    expect(section).not.toContain('Chore');
+  });
+
+  it('handles this repo real commit and PR shapes', () => {
+    // Real PR title from repo: "Harden offline dictation and clipboard history"
+    const prCommit1 = parseCommit('25eeddd', 'feat: harden offline dictation and clipboard history (#14)');
+    expect(prCommit1.type).toBe('feat');
+    expect(prCommit1.subject).toBe('Harden offline dictation and clipboard history');
+
+    // Real PR title from repo: "Collapse instantly when the pointer leaves"
+    const prCommit2 = parseCommit('a855430', 'fix: collapse instantly when the pointer leaves (#15)');
+    expect(prCommit2.type).toBe('fix');
+    expect(prCommit2.subject).toBe('Collapse instantly when the pointer leaves');
+
+    // Real direct commit: "docs(research): resource use, lyrics matching and dictation model catalog (#21)"
+    const docCommit = parseCommit('31248d0', 'docs(research): resource use, lyrics matching and dictation model catalog (#21)');
+    expect(docCommit.type).toBe('docs');
+    expect(docCommit.subject).toBe('Resource use, lyrics matching and dictation model catalog');
+
+    // Real PR 22: "feat: release pipeline, in-app updater and full tray menu"
+    const pr22 = parseCommit('cc72787', 'feat: release pipeline, in-app updater and full tray menu');
+    expect(pr22.type).toBe('feat');
+    expect(pr22.subject).toBe('Release pipeline, in-app updater and full tray menu');
+
+    const bump = determineBumpType([docCommit, pr22], '0.1.0');
+    expect(bump).toBe('minor');
+
+    const section = generateChangelogSection('0.2.0', [docCommit, pr22], '2026-11-04');
+    expect(section).toContain('### Added');
+    expect(section).toContain('- Release pipeline, in-app updater and full tray menu');
+    expect(section).not.toContain('Resource use'); // docs skipped from user-facing changelog
   });
 
   it('determines bump type according to release rules', () => {

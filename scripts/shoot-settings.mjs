@@ -60,7 +60,8 @@ await page.evaluate(() => {
 });
 
 await page.waitForTimeout(300);
-const aboutView = page.locator('#view-about');
-await aboutView.screenshot({ path: path.join(out, 'settings-updates.png') });
-console.log('Saved screenshot to docs/screens/settings-updates.png');
+await page.screenshot({ path: path.join(out, 'settings-updates.png') });
+await page.screenshot({ path: path.join(root, 'artifacts', 'settings-update-available.png') });
+console.log('Saved screenshots to docs/screens/settings-updates.png and artifacts/settings-update-available.png');
 await browser.close();
+

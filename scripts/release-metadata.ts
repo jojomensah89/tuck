@@ -1,4 +1,4 @@
-import { execSync } from 'node:child_process';
+import { execFileSync, execSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
@@ -28,31 +28,54 @@ export interface ReleaseDecision {
 const CONVENTIONAL_REGEX =
   /^(?<type>[a-z]+)(?:\((?<scope>[^)]+)\))?(?<breaking>!)?:\s*(?<subject>.+)$/i;
 const PR_SUFFIX_REGEX = /\s*\([#\d\s,]+\)$/;
+const MERGE_PR_REGEX = /^Merge pull request #(?<prNumber>\d+)/i;
+const REVERT_REGEX = /^revert(?:\s+|:\s*)"?|Revert\s+"[^"]+"/i;
+const BREAKING_FOOTER_REGEX = /^BREAKING[- ]CHANGE:\s*(?<desc>.+)$/m;
+
+/**
+ * Format a string to sentence case and strip any trailing periods.
+ */
+export function formatUserFacingSubject(raw: string): string {
+  let cleaned = raw.trim().replace(/\.+$/, '').trim();
+  cleaned = cleaned.replace(PR_SUFFIX_REGEX, '').trim();
+  cleaned = cleaned.replace(/\.+$/, '').trim();
+  if (cleaned.length > 0) {
+    cleaned = cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
+  }
+  return cleaned;
+}
+
 
 /**
  * Clean up a conventional commit subject into human-readable user-facing text.
  */
 export function cleanCommitSubject(rawSubject: string): { type: string; scope?: string; isBreaking: boolean; subject: string } {
-  const match = CONVENTIONAL_REGEX.exec(rawSubject.trim());
+  const trimmed = rawSubject.trim();
+
+  // Check for Revert commits
+  if (REVERT_REGEX.test(trimmed)) {
+    return {
+      type: 'revert',
+      isBreaking: false,
+      subject: formatUserFacingSubject(trimmed),
+    };
+  }
+
+  const match = CONVENTIONAL_REGEX.exec(trimmed);
   if (!match || !match.groups) {
-    let cleaned = rawSubject.trim().replace(PR_SUFFIX_REGEX, '').trim();
-    if (cleaned.length > 0) {
-      cleaned = cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
-    }
-    return { type: 'chore', isBreaking: false, subject: cleaned };
+    return {
+      type: 'chore',
+      isBreaking: false,
+      subject: formatUserFacingSubject(trimmed),
+    };
   }
 
   const { type, scope, breaking, subject } = match.groups;
-  let cleaned = subject.replace(PR_SUFFIX_REGEX, '').trim();
-  if (cleaned.length > 0) {
-    cleaned = cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
-  }
-
   return {
     type: type.toLowerCase(),
     scope: scope?.trim(),
     isBreaking: Boolean(breaking),
-    subject: cleaned,
+    subject: formatUserFacingSubject(subject),
   };
 }
 
@@ -61,8 +84,8 @@ export function cleanCommitSubject(rawSubject: string): { type: string; scope?: 
  */
 export function parseCommit(hash: string, rawSubject: string, body = ''): ParsedCommit {
   const { type, scope, isBreaking, subject } = cleanCommitSubject(rawSubject);
-  const bodyHasBreaking =
-    /BREAKING CHANGE:/i.test(body) || /BREAKING-CHANGE:/i.test(body);
+  // Conventional Commits specification: BREAKING CHANGE: in uppercase at start of line in footer/body
+  const bodyHasBreaking = BREAKING_FOOTER_REGEX.test(body);
 
   return {
     hash,
@@ -80,7 +103,7 @@ export function parseCommit(hash: string, rawSubject: string, body = ''): Parsed
  * - feat -> minor
  * - fix/perf -> patch
  * - breaking -> minor while below 1.0 (major if >= 1.0)
- * - if only docs/test/chore/ci/style/refactor/build landed, do not release (none)
+ * - if only docs/test/chore/ci/style/refactor/build/revert landed, do not release (none)
  */
 export function determineBumpType(commits: readonly ParsedCommit[], currentVersion: string): BumpType {
   const isBelowOne = currentVersion.startsWith('0.');
@@ -89,6 +112,10 @@ export function determineBumpType(commits: readonly ParsedCommit[], currentVersi
   let hasBreaking = false;
 
   for (const c of commits) {
+    // Skip release chores
+    if (c.type === 'chore' && c.scope === 'release') continue;
+    if (c.type === 'revert') continue;
+
     if (c.isBreaking) {
       hasBreaking = true;
     } else if (c.type === 'feat') {
@@ -147,11 +174,15 @@ export function generateChangelogSection(version: string, commits: readonly Pars
 
   for (const c of commits) {
     if (!c.subject) continue;
+    // Skip release chore commits
+    if (c.type === 'chore' && c.scope === 'release') continue;
+    if (c.type === 'revert') continue;
+
     if (c.type === 'feat') {
       added.push(c.subject);
     } else if (c.type === 'fix') {
       fixed.push(c.subject);
-    } else if (c.type === 'perf' || c.type === 'refactor') {
+    } else if (c.type === 'perf' || c.type === 'refactor' || c.isBreaking) {
       changed.push(c.subject);
     }
   }
@@ -241,15 +272,44 @@ export function getLatestTag(repoDir: string): string | null {
   }
 }
 
+const prTitleCache = new Map<number, string | null>();
+
 /**
- * Get commit list since the given tag (or all commits if tag is null).
+ * Fetch a PR title safely via GitHub CLI. Treated strictly as data, never interpolated into shell.
+ */
+export function fetchPrTitle(prNumber: number, repoDir: string): string | null {
+  if (prTitleCache.has(prNumber)) {
+    return prTitleCache.get(prNumber)!;
+  }
+
+  try {
+    const ghCmd = process.platform === 'win32' ? 'gh.exe' : 'gh';
+    const stdout = execFileSync(ghCmd, ['pr', 'view', String(prNumber), '--json', 'title'], {
+      cwd: repoDir,
+      encoding: 'utf8',
+      stdio: ['pipe', 'pipe', 'ignore'],
+    });
+    const parsed = JSON.parse(stdout);
+    const title = typeof parsed?.title === 'string' ? parsed.title : null;
+    prTitleCache.set(prNumber, title);
+    return title;
+  } catch {
+    prTitleCache.set(prNumber, null);
+    return null;
+  }
+}
+
+
+/**
+ * Get first-parent commit list since the given tag (or all commits if tag is null).
+ * Resolves PR titles for merge commits via `gh pr view N --json title`.
  */
 export function getCommitsSinceTag(repoDir: string, tag: string | null): ParsedCommit[] {
   const range = tag ? `${tag}..HEAD` : 'HEAD';
-  // Use format: hash%x1fsubject%x1fbody%x1e
   let stdout = '';
   try {
-    stdout = execSync(`git log ${range} --format="%H%x1f%s%x1f%b%x1e"`, {
+    // Generate entries and semver bump from first-parent history
+    stdout = execSync(`git log ${range} --first-parent --format="%H%x1f%s%x1f%b%x1e"`, {
       cwd: repoDir,
       encoding: 'utf8',
     });
@@ -265,7 +325,20 @@ export function getCommitsSinceTag(repoDir: string, tag: string | null): ParsedC
     const parts = raw.split('\x1f');
     if (parts.length >= 2) {
       const [hash, subject, body = ''] = parts;
-      parsed.push(parseCommit(hash.trim(), subject.trim(), body.trim()));
+      const trimmedSubject = subject.trim();
+      let effectiveSubject = trimmedSubject;
+
+      // Check if merge commit
+      const mergeMatch = MERGE_PR_REGEX.exec(trimmedSubject);
+      if (mergeMatch && mergeMatch.groups?.prNumber) {
+        const prNum = Number.parseInt(mergeMatch.groups.prNumber, 10);
+        const prTitle = fetchPrTitle(prNum, repoDir);
+        if (prTitle) {
+          effectiveSubject = prTitle;
+        }
+      }
+
+      parsed.push(parseCommit(hash.trim(), effectiveSubject, body.trim()));
     }
   }
 
@@ -358,24 +431,23 @@ if (import.meta.main) {
     const updated = updateChangelogContent(existing, decision.changelogSection);
     fs.writeFileSync(changelogPath, updated, 'utf8');
 
-    // Update Cargo.lock
+    // Update Cargo.lock cleanly without compilation
     try {
-      execSync('cargo check --manifest-path src-tauri/Cargo.toml', {
+      execSync('cargo update -p tuck --manifest-path src-tauri/Cargo.toml', {
         cwd: projectRoot,
         stdio: 'inherit',
       });
     } catch (e) {
-      console.warn('[release-metadata] Note: cargo check exited with an issue while updating Cargo.lock:', e);
+      console.warn('[release-metadata] Note: cargo update -p tuck encountered an issue:', e);
     }
 
+    // Write multi-line output to GITHUB_OUTPUT using a random delimiter
     if (process.env.GITHUB_OUTPUT) {
-      const bodyPath = path.join(projectRoot, 'release_body.md');
-      fs.writeFileSync(bodyPath, decision.changelogSection, 'utf8');
-
-      fs.appendFileSync(process.env.GITHUB_OUTPUT, `should_release=true\n`);
-      fs.appendFileSync(process.env.GITHUB_OUTPUT, `version=${decision.nextVersion}\n`);
-      fs.appendFileSync(process.env.GITHUB_OUTPUT, `tag_name=${decision.tagName}\n`);
-      fs.appendFileSync(process.env.GITHUB_OUTPUT, `release_body_path=${bodyPath}\n`);
+      const delimiter = `DELIM_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+      fs.appendFileSync(process.env.GITHUB_OUTPUT, `release_body<<${delimiter}\n${decision.changelogSection}\n${delimiter}\n`, 'utf8');
+      fs.appendFileSync(process.env.GITHUB_OUTPUT, `should_release=true\n`, 'utf8');
+      fs.appendFileSync(process.env.GITHUB_OUTPUT, `version=${decision.nextVersion}\n`, 'utf8');
+      fs.appendFileSync(process.env.GITHUB_OUTPUT, `tag_name=${decision.tagName}\n`, 'utf8');
     }
   } else {
     console.log(`Current version: ${decision.currentVersion}`);

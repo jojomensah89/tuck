@@ -53,14 +53,36 @@ function buildSearchIndex(): SearchEntry[] {
   return entries;
 }
 
-function applySearch(query: string): void {
+let updateAvailableState = false;
+
+export function setUpdateAvailableState(available: boolean): void {
+  updateAvailableState = available;
+  const row = document.getElementById('row-update-available');
+  if (row) {
+    const searching = document.body.classList.contains('searching');
+    if (!searching) {
+      row.hidden = !available;
+    }
+  }
+}
+
+export function isUpdateAvailable(): boolean {
+  return updateAvailableState;
+}
+
+export function applySearch(query: string): void {
   const searching = query.trim() !== '';
   document.body.classList.toggle('searching', searching);
   const result = filterSettings(searchIndex, query);
   const matched = new Set(result.ids);
   for (const entry of searchIndex) {
     const row = document.getElementById(entry.id);
-    if (row) row.hidden = searching && !matched.has(entry.id);
+    if (!row) continue;
+    if (entry.id === 'row-update-available') {
+      row.hidden = !updateAvailableState || (searching && !matched.has(entry.id));
+    } else {
+      row.hidden = searching && !matched.has(entry.id);
+    }
   }
   for (const group of document.querySelectorAll<HTMLElement>('.group')) {
     group.hidden = searching && !group.querySelector('.set-row:not([hidden])');
@@ -74,10 +96,13 @@ function applySearch(query: string): void {
     if (searching && !result.views.has(link.dataset.view!)) link.dataset.empty = '';
     else delete link.dataset.empty;
   }
-  $('searchEmpty')!.hidden = !searching || result.ids.length > 0;
-  $('searchSummary')!.textContent = describeResult(result, query);
+  const empty = $('searchEmpty');
+  if (empty) empty.hidden = !searching || result.ids.length > 0;
+  const summary = $('searchSummary');
+  if (summary) summary.textContent = describeResult(result, query);
   if (!searching) showView(currentView());
 }
+
 
 function firstVisibleControl(): HTMLElement | null {
   const selector = '.view:not([hidden]) .set-row:not([hidden]) :is(input:not([disabled]), button:not([disabled]), a[href])';
@@ -358,7 +383,6 @@ function initUpdates(): void {
   const btnCheck = $<HTMLButtonElement>('btnCheckUpdates');
   const btnInstall = $<HTMLButtonElement>('btnInstallUpdate');
   const statusText = $('updateStatusText');
-  const rowAvailable = $('row-update-available');
   const versionBadge = $('updateVersionBadge');
   const updateNotes = $('updateNotes');
   const progressWrap = $('updateProgressWrap');
@@ -374,18 +398,34 @@ function initUpdates(): void {
   }
 
   function showUpdateAvailable(info: UpdateInfo): void {
+    setUpdateAvailableState(true);
     if (statusText) statusText.textContent = `Update to v${info.version} is available.`;
     if (versionBadge) versionBadge.textContent = `v${info.version}`;
     if (updateNotes) {
       updateNotes.textContent = info.body || 'No release notes provided.';
     }
-    if (rowAvailable) rowAvailable.hidden = false;
   }
 
+
+  function clearUpdateAvailable(): void {
+    setUpdateAvailableState(false);
+  }
+
+  // Check cached update from in-memory module
   const cached = getCachedUpdate();
   if (cached) {
     showUpdateAvailable(cached);
   }
+
+  // Check Rust central state for updates found by the background scheduler
+  invokeCommand<UpdateInfo | null>('get_pending_update')
+    .then((pending) => {
+      if (pending) {
+        showUpdateAvailable(pending);
+      }
+    })
+    .catch(() => {});
+
 
   btnCheck.addEventListener('click', async () => {
     btnCheck.disabled = true;
@@ -399,8 +439,8 @@ function initUpdates(): void {
         showUpdateAvailable(update);
         markSaved(btnCheck);
       } else {
+        clearUpdateAvailable();
         if (statusText) statusText.textContent = `Tuck v${pkg.version} is up to date.`;
-        if (rowAvailable) rowAvailable.hidden = true;
         markSaved(btnCheck);
       }
     } catch (err) {
@@ -411,6 +451,18 @@ function initUpdates(): void {
       btnCheck.textContent = originalText;
     }
   });
+
+  // Listen for native request from tray
+  void listenToEvent<null>('check-for-updates-requested', () => {
+    btnCheck.click();
+  });
+
+  // If opened via URL containing check=1 or hash containing check=1, run check immediately
+  const params = new URLSearchParams(window.location.search);
+  const shouldAutoCheck = params.get('check') === '1' || window.location.hash.includes('check=1');
+  if (shouldAutoCheck) {
+    btnCheck.click();
+  }
 
   if (btnInstall) {
     btnInstall.addEventListener('click', async () => {
@@ -438,11 +490,13 @@ function initUpdates(): void {
         console.error('[updater] Download/install error:', err);
         btnInstall.disabled = false;
         btnInstall.textContent = 'Download and install';
-        if (progressLabel) progressLabel.textContent = 'Installation failed. Please try again.';
+        const msg = typeof err === 'string' ? err : (err instanceof Error ? err.message : 'Installation failed. Please try again.');
+        if (progressLabel) progressLabel.textContent = msg;
       }
     });
   }
 }
+
 
 /* ================= Boot ================= */
 

@@ -12,7 +12,11 @@ permissions:
   contents: write
 
 jobs:
+  check:
+    uses: ./.github/workflows/check.yml
+
   release:
+    needs: check
     runs-on: windows-latest
     steps:
       - name: Checkout repository
@@ -23,10 +27,12 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
-          bun-version: latest
+          bun-version: 1.2.4
 
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # stable
+        with:
+          toolchain: stable
 
       - name: Rust Cache
         uses: Swatinem/rust-cache@f0deed1e0edfc6a9be95417288c0e1099b1eeec3 # v2.7.7
@@ -45,34 +51,34 @@ jobs:
 
       - name: Calculate release version and changelog
         id: metadata
-        shell: pwsh
+        shell: bash
         run: |
+          set -euo pipefail
           bun run scripts/release-metadata.ts --apply
 
-      - name: Commit version bump and tag
+      - name: Build and sign Tauri app
         if: steps.metadata.outputs.should_release == 'true'
-        shell: pwsh
+        run: bun run tauri build
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+      - name: Push version bump and tag
+        if: steps.metadata.outputs.should_release == 'true'
+        shell: bash
         run: |
+          set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          git fetch origin main
+          git rebase origin/main
           git add CHANGELOG.md package.json src-tauri/tauri.conf.json src-tauri/Cargo.toml src-tauri/Cargo.lock
           git commit -m "chore(release): v${{ steps.metadata.outputs.version }} [skip ci]"
           git push origin main
           git tag ${{ steps.metadata.outputs.tag_name }}
           git push origin ${{ steps.metadata.outputs.tag_name }}
 
-      - name: Read release body
-        if: steps.metadata.outputs.should_release == 'true'
-        id: body
-        shell: pwsh
-        run: |
-          $content = Get-Content -Raw -Path ${{ steps.metadata.outputs.release_body_path }}
-          $content = $content -replace "%", "%25"
-          $content = $content -replace "`r", "%0D"
-          $content = $content -replace "`n", "%0A"
-          "release_body=$content" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-
-      - name: Build and publish release
+      - name: Publish release
         if: steps.metadata.outputs.should_release == 'true'
         uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0
         env:
@@ -82,9 +88,8 @@ jobs:
         with:
           tagName: ${{ steps.metadata.outputs.tag_name }}
           releaseName: 'Tuck v${{ steps.metadata.outputs.version }}'
-          releaseBody: ${{ steps.body.outputs.release_body }}
+          releaseBody: ${{ steps.metadata.outputs.release_body }}
           releaseDraft: false
           prerelease: false
           updaterJsonPreferNsis: true
-          uploadUpdaterJson: true
           tauriScript: bun run tauri

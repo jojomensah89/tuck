@@ -64,3 +64,29 @@ describe('sidebar keys', () => {
     expect(navTarget(-1, 'ArrowDown', 3)).toBe(1);
   });
 });
+
+describe('update availability and search visibility', () => {
+  function computeRowHidden(id: string, isAvailable: boolean, searching: boolean, matched: Set<string>): boolean {
+    if (id === 'row-update-available') {
+      return !isAvailable || (searching && !matched.has(id));
+    }
+    return searching && !matched.has(id);
+  }
+
+  test('row-update-available remains hidden when no update is available, even on matching search', () => {
+    const matched = new Set(['row-update-available', 'row-update-check']);
+    // When no update is available (isAvailable = false)
+    expect(computeRowHidden('row-update-available', false, false, matched)).toBe(true);
+    expect(computeRowHidden('row-update-available', false, true, matched)).toBe(true);
+  });
+
+  test('row-update-available appears only when an update is available', () => {
+    const matched = new Set(['row-update-available']);
+    // When update IS available (isAvailable = true)
+    expect(computeRowHidden('row-update-available', true, false, matched)).toBe(false);
+    expect(computeRowHidden('row-update-available', true, true, matched)).toBe(false);
+    // When searching for something else
+    expect(computeRowHidden('row-update-available', true, true, new Set(['kAnthropic']))).toBe(true);
+  });
+});
+

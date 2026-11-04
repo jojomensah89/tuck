@@ -482,9 +482,9 @@ try {
   assert.match(await native.locator('#dictationSetupStatus').textContent(),/In use: Tiny/);
   assert.match(await native.locator('.model-row[data-id="ggml-base.bin"]').textContent(),/Found in podcli/);
   assert.equal(await native.locator('.model-row[data-id="ggml-base.bin"] button',{hasText:'Remove'}).count(),0,'Another app\'s model has no Remove button');
-  await native.evaluate(()=>window.__emitNative('dictation_state',{status:'idle',modelInstalled:true,modelDownloadedBytes:0,activeModelLabel:'Tiny',modelNotice:'Base is no longer on this computer. Using Tiny instead.',shortcutProblems:{toggle:'Ctrl+Shift+Space is already used by another app. Record a different shortcut.',hold:null}}));
+  await native.evaluate(()=>window.__emitNative('dictation_state',{status:'idle',modelInstalled:true,modelDownloadedBytes:0,activeModelLabel:'Tiny',modelNotice:'Base is no longer on this computer. Using Tiny instead.',shortcutProblems:{toggle:'Ctrl+Shift+Space is in use by another app right now. Try again once it is free, or record a different shortcut.',hold:null}}));
   assert.match(await native.locator('#dictationModelNotice').textContent(),/no longer on this computer/);
-  assert.match(await native.locator('#dictationShortcutError').textContent(),/already used by another app/);
+  assert.match(await native.locator('#dictationShortcutError').textContent(),/in use by another app/);
   await native.evaluate(()=>window.__emitNative('dictation_state',{status:'idle',modelInstalled:true,modelDownloadedBytes:0,activeModelLabel:'Tiny',models:[]}));
   assert.equal(await native.locator('#dictationModelNotice').isHidden(),true,'A cleared notice disappears');
   assert.equal(await native.locator('#dictationShortcutError').isHidden(),true,'A fixed shortcut clears its reason');

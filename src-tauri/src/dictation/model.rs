@@ -3,6 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::HashSet;
 use std::ffi::OsString;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -21,6 +22,7 @@ const FREE_SPACE_MARGIN: u64 = 64 * 1024 * 1024;
 const VERIFY_CACHE_FILE: &str = "verified-models.json";
 const VERIFY_CACHE_MAX_BYTES: u64 = 256 * 1024;
 const VERIFY_CACHE_MAX_ENTRIES: usize = 128;
+const GIB: u64 = 1024 * 1024 * 1024;
 const SCAN_MAX_ENTRIES: usize = 20_000;
 
 #[derive(Debug, PartialEq, Eq)]
@@ -35,11 +37,21 @@ pub(super) struct CatalogEntry {
     pub note: Option<&'static str>,
     /// Offered for download. The others are only shown when found on this computer.
     pub offered: bool,
+    /// Peak memory while transcribing, measured or scaled as noted at `CATALOG`.
+    pub memory_mb: u64,
 }
 
-const HEAVY_NOTE: &str = "Slow without a GPU. Needs about 8 GB of free memory.";
+const SLOW_NOTE: &str =
+    "Takes longer to write the text than you took to say it, and live transcript turns itself off.";
 const ENGLISH_NOTE: &str = "English only.";
+const COMPRESSED_NOTE: &str = "Smaller than Tiny because this file is compressed.";
 
+/// `memory_mb` is the peak working set of a whole 36 s session with live transcript on, from
+/// `real_session_with_live_transcript`, for Tiny, Base (both), Small, Medium and Large v3
+/// Turbo as offered. The other files are estimates from the research document.
+/// Speed was measured on an 8-core i7-11800H under load: the final pass on that clip took
+/// 3 to 7 s on Tiny and Base, 18 s on Small, 58 s on Medium and 89 s on Large v3 Turbo.
+#[allow(clippy::too_many_arguments)]
 const fn offered(
     id: &'static str,
     label: &'static str,
@@ -48,6 +60,7 @@ const fn offered(
     speed: &'static str,
     accuracy: &'static str,
     note: Option<&'static str>,
+    memory_mb: u64,
 ) -> CatalogEntry {
     CatalogEntry {
         id,
@@ -58,9 +71,11 @@ const fn offered(
         accuracy,
         note,
         offered: true,
+        memory_mb,
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 const fn detected(
     id: &'static str,
     label: &'static str,
@@ -69,6 +84,7 @@ const fn detected(
     speed: &'static str,
     accuracy: &'static str,
     note: Option<&'static str>,
+    memory_mb: u64,
 ) -> CatalogEntry {
     CatalogEntry {
         id,
@@ -79,6 +95,7 @@ const fn detected(
         accuracy,
         note,
         offered: false,
+        memory_mb,
     }
 }
 
@@ -95,6 +112,7 @@ pub(super) const CATALOG: &[CatalogEntry] = &[
         "Fastest",
         "Lower",
         None,
+        280,
     ),
     offered(
         "ggml-base-q5_1.bin",
@@ -103,7 +121,8 @@ pub(super) const CATALOG: &[CatalogEntry] = &[
         "422f1ae452ade6f30a004d7e5c6a43195e4433bc370bf23fac9cc591f01a8898",
         "Very fast",
         "Good",
-        None,
+        Some(COMPRESSED_NOTE),
+        310,
     ),
     offered(
         "ggml-small-q5_1.bin",
@@ -113,6 +132,7 @@ pub(super) const CATALOG: &[CatalogEntry] = &[
         "Fast",
         "Better",
         None,
+        550,
     ),
     offered(
         "ggml-medium-q5_0.bin",
@@ -121,16 +141,18 @@ pub(super) const CATALOG: &[CatalogEntry] = &[
         "19fea4b380c3a618ec4723c3eef2eb785ffba0d0538cf43f8f235e7b3b34220f",
         "Slow",
         "High",
-        Some(HEAVY_NOTE),
+        Some(SLOW_NOTE),
+        1070,
     ),
     offered(
         "ggml-large-v3-turbo-q5_0.bin",
         "Large v3 Turbo",
         574_041_195,
         "394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2",
-        "Slow",
+        "Slowest",
         "Highest",
-        Some(HEAVY_NOTE),
+        Some(SLOW_NOTE),
+        1010,
     ),
     detected(
         "ggml-tiny.en.bin",
@@ -140,24 +162,27 @@ pub(super) const CATALOG: &[CatalogEntry] = &[
         "Fastest",
         "Good",
         Some(ENGLISH_NOTE),
+        280,
     ),
     detected(
         "ggml-base.bin",
-        "Base (full size)",
+        "Base",
         147_951_465,
         "60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe",
         "Very fast",
         "Good",
         None,
+        390,
     ),
     detected(
         "ggml-base.en.bin",
-        "Base English (full size)",
+        "Base English",
         147_964_211,
         "a03779c86df3323075f5e796cb2ce5029f00ec8869eee3fdfb897afe36c6d002",
         "Very fast",
         "Good",
         Some(ENGLISH_NOTE),
+        390,
     ),
     detected(
         "ggml-base.en-q5_1.bin",
@@ -167,24 +192,27 @@ pub(super) const CATALOG: &[CatalogEntry] = &[
         "Very fast",
         "Good",
         Some(ENGLISH_NOTE),
+        310,
     ),
     detected(
         "ggml-small.bin",
-        "Small (full size)",
+        "Small",
         487_601_967,
         "1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b",
         "Fast",
         "Better",
         None,
+        900,
     ),
     detected(
         "ggml-small.en.bin",
-        "Small English (full size)",
+        "Small English",
         487_614_201,
         "c6138d6d58ecc8322097e0f987c32f1be8bb0a18532a3f88f734d1bbf9c41e5d",
         "Fast",
         "Better",
         Some(ENGLISH_NOTE),
+        900,
     ),
     detected(
         "ggml-small.en-q5_1.bin",
@@ -194,33 +222,37 @@ pub(super) const CATALOG: &[CatalogEntry] = &[
         "Fast",
         "Better",
         Some(ENGLISH_NOTE),
+        550,
     ),
     detected(
         "ggml-medium.bin",
-        "Medium (full size)",
+        "Medium",
         1_533_763_059,
         "6c14d5adee5f86394037b4e4e8b59f1673b6cee10e3cf0b11bbdbee79c156208",
         "Slow",
         "High",
-        Some(HEAVY_NOTE),
+        Some(SLOW_NOTE),
+        2100,
     ),
     detected(
         "ggml-medium.en.bin",
-        "Medium English (full size)",
+        "Medium English",
         1_533_774_781,
         "cc37e93478338ec7700281a7ac30a10128929eb8f427dda2e865faa8f6da4356",
         "Slow",
         "High",
-        Some(HEAVY_NOTE),
+        Some(SLOW_NOTE),
+        2100,
     ),
     detected(
         "ggml-large-v3-turbo.bin",
-        "Large v3 Turbo (full size)",
+        "Large v3 Turbo",
         1_624_555_275,
         "1fc70f774d38eb169993ac391eea357ef47c88757ef72ee5943879b7e8e2bc69",
-        "Slow",
+        "Slowest",
         "Highest",
-        Some(HEAVY_NOTE),
+        Some(SLOW_NOTE),
+        2200,
     ),
 ];
 
@@ -237,20 +269,37 @@ fn download_url(entry: &CatalogEntry) -> String {
 
 /* ---------- Integrity: hash once, then remember ---------- */
 
-/// `path`, `size` and `modified` identify the file; `sha256` is what it hashed to, kept
-/// for mismatches too so a same-size stranger is not hashed again on every scan.
+/// `path`, `size`, `modified_ns`, `file_id` and `change_ns` identify the file. `file_id` and
+/// `change_ns` come from NTFS and catch a same-size replacement with its modified time set
+/// back, which the first three cannot. `sha256` is what the file hashed to, kept for
+/// mismatches too, so a same-size stranger is not hashed again on every scan.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 struct VerifiedFile {
     path: String,
     size: u64,
     modified_ns: u64,
+    #[serde(default)]
+    file_id: String,
+    #[serde(default)]
+    change_ns: u64,
     sha256: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct FileIdentity {
+    size: u64,
+    modified_ns: u64,
+    file_id: String,
+    change_ns: u64,
 }
 
 pub(super) struct VerifyCache {
     file: Option<PathBuf>,
     entries: Vec<VerifiedFile>,
+    /// Other apps' files hashed since launch. Their results are never trusted from disk:
+    /// those apps can replace them at any time.
+    hashed_this_launch: Option<HashSet<String>>,
 }
 
 impl VerifyCache {
@@ -258,6 +307,7 @@ impl VerifyCache {
         Self {
             file: None,
             entries: Vec::new(),
+            hashed_this_launch: None,
         }
     }
 
@@ -273,17 +323,46 @@ impl VerifyCache {
         Self {
             file: Some(file),
             entries,
+            hashed_this_launch: None,
         }
     }
 
-    fn lookup(&self, path: &str, size: u64, modified_ns: u64) -> Option<&str> {
+    fn is_external(&self, path: &Path) -> bool {
+        self.file
+            .as_deref()
+            .and_then(Path::parent)
+            .is_none_or(|dir| !path.starts_with(dir))
+    }
+
+    /// `None` means "hash it". A file with no NTFS identity is never trusted from the cache.
+    fn lookup(&self, path: &Path, key: &str, identity: &FileIdentity) -> Option<&str> {
+        if identity.file_id.is_empty() {
+            return None;
+        }
+        if self.is_external(path)
+            && !self
+                .hashed_this_launch
+                .as_ref()
+                .is_some_and(|seen| seen.contains(key))
+        {
+            return None;
+        }
         self.entries
             .iter()
-            .find(|e| e.path == path && e.size == size && e.modified_ns == modified_ns)
+            .find(|e| {
+                e.path == key
+                    && e.size == identity.size
+                    && e.modified_ns == identity.modified_ns
+                    && e.file_id == identity.file_id
+                    && e.change_ns == identity.change_ns
+            })
             .map(|e| e.sha256.as_str())
     }
 
     fn record(&mut self, verified: VerifiedFile) {
+        self.hashed_this_launch
+            .get_or_insert_with(HashSet::new)
+            .insert(verified.path.clone());
         self.entries.retain(|e| e.path != verified.path);
         self.entries.push(verified);
         if self.entries.len() > VERIFY_CACHE_MAX_ENTRIES {
@@ -320,8 +399,11 @@ impl VerifyCache {
     }
 }
 
-fn file_identity(path: &Path) -> Result<(u64, u64), String> {
-    let meta = std::fs::metadata(path).map_err(|e| format!("Could not open the model: {e}"))?;
+fn file_identity(path: &Path) -> Result<FileIdentity, String> {
+    let file = std::fs::File::open(path).map_err(|e| format!("Could not open the model: {e}"))?;
+    let meta = file
+        .metadata()
+        .map_err(|e| format!("Could not open the model: {e}"))?;
     let modified_ns = meta
         .modified()
         .ok()
@@ -329,7 +411,61 @@ fn file_identity(path: &Path) -> Result<(u64, u64), String> {
         .map_or(0, |since| {
             u64::try_from(since.as_nanos()).unwrap_or(u64::MAX)
         });
-    Ok((meta.len(), modified_ns))
+    let (file_id, change_ns) = native_identity(&file);
+    Ok(FileIdentity {
+        size: meta.len(),
+        modified_ns,
+        file_id,
+        change_ns,
+    })
+}
+
+/// The volume and file IDs and the change time, which user code cannot set back through
+/// the usual APIs. Empty on a volume that has neither, which turns off caching for that file.
+#[cfg(windows)]
+fn native_identity(file: &std::fs::File) -> (String, u64) {
+    use std::os::windows::io::AsRawHandle;
+    use windows::Win32::{
+        Foundation::HANDLE,
+        Storage::FileSystem::{
+            FileBasicInfo, FileIdInfo, GetFileInformationByHandleEx, FILE_BASIC_INFO, FILE_ID_INFO,
+        },
+    };
+    let handle = HANDLE(file.as_raw_handle());
+    let mut id = FILE_ID_INFO::default();
+    let mut basic = FILE_BASIC_INFO::default();
+    let read_id = unsafe {
+        GetFileInformationByHandleEx(
+            handle,
+            FileIdInfo,
+            (&mut id as *mut FILE_ID_INFO).cast(),
+            std::mem::size_of::<FILE_ID_INFO>() as u32,
+        )
+    };
+    let read_basic = unsafe {
+        GetFileInformationByHandleEx(
+            handle,
+            FileBasicInfo,
+            (&mut basic as *mut FILE_BASIC_INFO).cast(),
+            std::mem::size_of::<FILE_BASIC_INFO>() as u32,
+        )
+    };
+    if read_id.is_err() || read_basic.is_err() {
+        return (String::new(), 0);
+    }
+    (
+        format!(
+            "{:016x}-{}",
+            id.VolumeSerialNumber,
+            hex_digest(&id.FileId.Identifier)
+        ),
+        u64::try_from(basic.ChangeTime).unwrap_or(0),
+    )
+}
+
+#[cfg(not(windows))]
+fn native_identity(_file: &std::fs::File) -> (String, u64) {
+    (String::new(), 0)
 }
 
 /// Confirms `path` is exactly `entry`, hashing only when this size and modified time have
@@ -340,8 +476,8 @@ pub(super) fn verify(
     cache: &Mutex<VerifyCache>,
     low_priority: bool,
 ) -> Result<(), String> {
-    let (size, modified_ns) = file_identity(path)?;
-    if size != entry.bytes {
+    let identity = file_identity(path)?;
+    if identity.size != entry.bytes {
         return Err(format!(
             "{} has the wrong size. Remove it and download it again.",
             entry.label
@@ -351,7 +487,7 @@ pub(super) fn verify(
     let cached = cache
         .lock()
         .ok()
-        .and_then(|c| c.lookup(&key, size, modified_ns).map(str::to_owned));
+        .and_then(|c| c.lookup(path, &key, &identity).map(str::to_owned));
     let actual = match cached {
         Some(sha256) => sha256,
         None => {
@@ -359,8 +495,10 @@ pub(super) fn verify(
             if let Ok(mut cache) = cache.lock() {
                 cache.record(VerifiedFile {
                     path: key,
-                    size,
-                    modified_ns,
+                    size: identity.size,
+                    modified_ns: identity.modified_ns,
+                    file_id: identity.file_id,
+                    change_ns: identity.change_ns,
                     sha256: sha256.clone(),
                 });
             }
@@ -524,16 +662,26 @@ pub(super) async fn download(
     std::fs::rename(&temporary, &path)
         .map_err(|e| format!("Could not install verified model: {e}"))?;
     // Already hashed while downloading, so the first recording does not repeat it.
-    let (size, modified_ns) = file_identity(&path)?;
+    let identity = file_identity(&path)?;
     if let Ok(mut cache) = cache.lock() {
         cache.record(VerifiedFile {
             path: path.to_string_lossy().into_owned(),
-            size,
-            modified_ns,
+            size: identity.size,
+            modified_ns: identity.modified_ns,
+            file_id: identity.file_id,
+            change_ns: identity.change_ns,
             sha256: entry.sha256.to_owned(),
         });
     }
     Ok(())
+}
+
+/// Removes what a quit in the middle of a download left behind. Only `<catalog id>.part`
+/// in Tuck's own folder is ever touched.
+pub(super) fn sweep_partial_downloads(models_dir: &Path) {
+    for entry in CATALOG {
+        let _ = std::fs::remove_file(models_dir.join(format!("{}.part", entry.id)));
+    }
 }
 
 async fn within_stall_limit<T>(
@@ -671,6 +819,20 @@ pub(super) fn known_locations(env: impl Fn(&str) -> Option<OsString>) -> Vec<Loc
     locations
 }
 
+/// A saved path is only ever a file in a folder this code scans. A network path is refused
+/// without being touched, so a slow share cannot stall every state update.
+pub(super) fn path_is_known(path: &Path, locations: &[Location]) -> bool {
+    use std::path::Component;
+    let is_network = path.to_string_lossy().starts_with(r"\\");
+    !is_network
+        && !path
+            .components()
+            .any(|part| matches!(part, Component::ParentDir))
+        && locations
+            .iter()
+            .any(|location| path.starts_with(&location.root))
+}
+
 pub(super) fn system_locations() -> Vec<Location> {
     known_locations(|name| std::env::var_os(name))
 }
@@ -788,6 +950,7 @@ pub(super) fn resolve_active(
     selected: Option<&str>,
     selected_path: Option<&Path>,
     models_dir: &Path,
+    path_allowed: impl Fn(&Path) -> bool,
     exists: impl Fn(&Path) -> bool,
 ) -> Resolution {
     let fallback = || {
@@ -819,7 +982,7 @@ pub(super) fn resolve_active(
         return Resolution { active, notice };
     };
     let path = selected_path.map_or_else(|| models_dir.join(chosen.id), Path::to_path_buf);
-    if exists(&path) {
+    if selected_path.is_none_or(path_allowed) && exists(&path) {
         return Resolution {
             active: Some(Active {
                 entry: chosen,
@@ -858,6 +1021,9 @@ pub struct ModelRow {
     pub state: String,
     pub found_in: Option<String>,
     pub active: bool,
+    pub memory_note: String,
+    /// Set when this computer has less free memory right now than the model uses.
+    pub memory_warning: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -874,53 +1040,117 @@ pub(super) struct RowInputs<'a> {
     pub downloading: Option<&'a str>,
     pub checking: &'a [String],
     pub locations: &'a [Location],
+    pub available_memory: Option<u64>,
+}
+
+fn format_gb(bytes: u64) -> String {
+    format!("{:.1} GB", bytes as f64 / GIB as f64)
+}
+
+fn memory_note(entry: &CatalogEntry) -> String {
+    if entry.memory_mb < 1000 {
+        format!("Uses about {} MB of memory.", entry.memory_mb)
+    } else {
+        format!(
+            "Uses about {} of memory.",
+            format_gb(entry.memory_mb * 1024 * 1024)
+        )
+    }
+}
+
+fn memory_warning(entry: &CatalogEntry, available: Option<u64>) -> Option<String> {
+    let needed = entry.memory_mb * 1024 * 1024;
+    available.filter(|free| *free < needed).map(|free| {
+        format!(
+            "Only {} of memory is free right now, so this may be very slow.",
+            format_gb(free)
+        )
+    })
+}
+
+/// Free physical memory right now, for the warning on a model row.
+pub(super) fn available_memory() -> Option<u64> {
+    #[cfg(windows)]
+    {
+        use windows::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+        let mut status = MEMORYSTATUSEX {
+            dwLength: std::mem::size_of::<MEMORYSTATUSEX>() as u32,
+            ..Default::default()
+        };
+        unsafe { GlobalMemoryStatusEx(&mut status) }
+            .ok()
+            .map(|()| status.ullAvailPhys)
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
 }
 
 pub(super) fn build_rows(inputs: &RowInputs<'_>, exists: impl Fn(&Path) -> bool) -> Vec<ModelRow> {
-    CATALOG
-        .iter()
-        .filter_map(|entry| {
-            let active = inputs.active.filter(|active| active.entry.id == entry.id);
-            let found = inputs.found.iter().find(|found| found.id == entry.id);
-            let external_active = active.filter(|active| active.external);
-            let owned = external_active.is_none()
-                && inputs
-                    .models_dir
-                    .is_some_and(|dir| exists(&dir.join(entry.id)));
-            let state = if inputs.downloading == Some(entry.id) {
-                "downloading"
-            } else if inputs.checking.iter().any(|id| id == entry.id) {
-                "checking"
-            } else if owned {
-                "installed"
-            } else if external_active.is_some() || found.is_some() {
-                "found"
-            } else {
-                "available"
-            };
-            if !entry.offered && state == "available" {
-                return None;
+    let mut rows: Vec<(u8, ModelRow)> = Vec::new();
+    for entry in CATALOG {
+        let active = inputs.active.filter(|active| active.entry.id == entry.id);
+        let found = inputs.found.iter().find(|found| found.id == entry.id);
+        let external_active = active.filter(|active| active.external);
+        let owned = external_active.is_none()
+            && inputs
+                .models_dir
+                .is_some_and(|dir| exists(&dir.join(entry.id)));
+        let state = if inputs.downloading == Some(entry.id) {
+            "downloading"
+        } else if inputs.checking.iter().any(|id| id == entry.id) {
+            "checking"
+        } else if owned {
+            "installed"
+        } else if external_active.is_some() || found.is_some() {
+            "found"
+        } else {
+            "available"
+        };
+        if !entry.offered && state == "available" {
+            continue;
+        }
+        let found_in = if owned {
+            None
+        } else if let Some(active) = external_active {
+            Some(app_for(&active.path, inputs.locations).unwrap_or("another app"))
+        } else {
+            found.map(|found| found.app)
+        };
+        // One row per model name. The file most worth showing wins: a compressed Base to
+        // download and a full-size Base found in another app are the same choice.
+        let rank = if active.is_some() {
+            0
+        } else {
+            match state {
+                "downloading" => 1,
+                "checking" => 2,
+                "installed" => 3,
+                "found" => 4,
+                _ => 5,
             }
-            let found_in = if owned {
-                None
-            } else if let Some(active) = external_active {
-                Some(app_for(&active.path, inputs.locations).unwrap_or("another app"))
-            } else {
-                found.map(|found| found.app)
-            };
-            Some(ModelRow {
-                id: entry.id.to_owned(),
-                label: entry.label.to_owned(),
-                bytes: entry.bytes,
-                speed: entry.speed.to_owned(),
-                accuracy: entry.accuracy.to_owned(),
-                note: entry.note.map(str::to_owned),
-                state: state.to_owned(),
-                found_in: found_in.map(str::to_owned),
-                active: active.is_some(),
-            })
-        })
-        .collect()
+        };
+        let row = ModelRow {
+            id: entry.id.to_owned(),
+            label: entry.label.to_owned(),
+            bytes: entry.bytes,
+            speed: entry.speed.to_owned(),
+            accuracy: entry.accuracy.to_owned(),
+            note: entry.note.map(str::to_owned),
+            state: state.to_owned(),
+            found_in: found_in.map(str::to_owned),
+            active: active.is_some(),
+            memory_note: memory_note(entry),
+            memory_warning: memory_warning(entry, inputs.available_memory),
+        };
+        match rows.iter_mut().find(|(_, kept)| kept.label == entry.label) {
+            Some(slot) if rank < slot.0 => *slot = (rank, row),
+            Some(_) => {}
+            None => rows.push((rank, row)),
+        }
+    }
+    rows.into_iter().map(|(_, row)| row).collect()
 }
 
 #[cfg(test)]
@@ -950,6 +1180,7 @@ mod tests {
             accuracy: "Good",
             note: None,
             offered: true,
+            memory_mb: 100,
         }
     }
 
@@ -1083,6 +1314,103 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// A same-size replacement with its modified time set back used to pass unhashed.
+    #[cfg(windows)]
+    #[test]
+    fn a_replacement_with_the_modified_time_set_back_is_hashed_again() {
+        let dir = temp_dir();
+        let path = dir.join("ggml-test.bin");
+        std::fs::write(&path, b"model bytes").unwrap();
+        let entry = small_entry(b"model bytes");
+        let cache = Mutex::new(VerifyCache::load(&dir));
+        verify(&path, &entry, &cache, false).unwrap();
+        let original = std::fs::metadata(&path).unwrap().modified().unwrap();
+        std::thread::sleep(Duration::from_millis(20));
+        std::fs::write(&path, b"EVIL  BYTES").unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(original)
+            .unwrap();
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().modified().unwrap(),
+            original
+        );
+        assert!(verify(&path, &entry, &cache, false)
+            .unwrap_err()
+            .contains("integrity"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Another app can replace its files at any time, so a saved result does not count
+    /// across launches. Tuck's own folder does, or large models would hash on every start.
+    #[test]
+    fn other_apps_files_are_hashed_once_per_launch() {
+        let models = temp_dir();
+        let other = temp_dir();
+        let path = other.join("ggml-test.bin");
+        std::fs::write(&path, b"model bytes").unwrap();
+        let entry = small_entry(b"model bytes");
+        let cache = Mutex::new(VerifyCache::load(&models));
+        verify(&path, &entry, &cache, true).unwrap();
+        // Poison the saved digest: the same launch trusts it, a new launch must not.
+        cache.lock().unwrap().entries[0].sha256 = "0".repeat(64);
+        assert!(verify(&path, &entry, &cache, true).is_err(), "same launch");
+        cache.lock().unwrap().persist();
+        let next_launch = Mutex::new(VerifyCache::load(&models));
+        verify(&path, &entry, &next_launch, true).unwrap();
+        std::fs::remove_dir_all(&models).unwrap();
+        std::fs::remove_dir_all(&other).unwrap();
+    }
+
+    #[test]
+    fn an_interrupted_download_is_swept_at_start_and_nothing_else_is() {
+        let dir = temp_dir();
+        let part = dir.join("ggml-large-v3-turbo-q5_0.bin.part");
+        let model = dir.join("ggml-tiny.bin");
+        let other = dir.join("notes.part");
+        for path in [&part, &model, &other] {
+            std::fs::write(path, b"x").unwrap();
+        }
+        sweep_partial_downloads(&dir);
+        assert!(!part.exists());
+        assert!(model.exists());
+        assert!(other.exists());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_saved_path_must_be_in_a_known_folder() {
+        let locations = known_locations(|name| fake_env(name, Path::new("C:/x")));
+        let good = Path::new("C:/x/Local/podcli/models/ggml-base.bin");
+        assert!(path_is_known(good, &locations));
+        assert!(!path_is_known(
+            Path::new("C:/Windows/ggml-base.bin"),
+            &locations
+        ));
+        assert!(!path_is_known(
+            Path::new("C:/x/Local/podcli/models/../../../secret.bin"),
+            &locations
+        ));
+        assert!(!path_is_known(
+            Path::new(r"\\server\share\ggml-base.bin"),
+            &locations
+        ));
+    }
+
+    #[test]
+    fn memory_warning_follows_what_is_free_now() {
+        let turbo = entry("ggml-large-v3-turbo-q5_0.bin").unwrap();
+        assert!(memory_warning(turbo, Some(16 * GIB)).is_none());
+        assert!(memory_warning(turbo, Some(1024 * 1024)).is_some());
+        assert!(
+            memory_warning(turbo, None).is_none(),
+            "no guess when unknown"
+        );
+        assert!(memory_note(turbo).starts_with("Uses about"));
+    }
+
     #[test]
     fn a_mismatch_is_remembered_so_it_is_not_hashed_on_every_scan() {
         let dir = temp_dir();
@@ -1205,6 +1533,7 @@ mod tests {
             selected,
             external.map(Path::new),
             Path::new("models"),
+            |p| p.starts_with("elsewhere"),
             |p| present.iter().any(|item| item == p),
         )
     }
@@ -1254,6 +1583,13 @@ mod tests {
         );
         assert_eq!(with_small.active.unwrap().entry.label, "Small");
 
+        let unknown_folder = resolve(
+            Some("ggml-base.bin"),
+            Some("unknown/ggml-base.bin"),
+            &["unknown/ggml-base.bin", "models/ggml-tiny.bin"],
+        );
+        assert_eq!(unknown_folder.active.unwrap().entry.id, "ggml-tiny.bin");
+
         let nothing = resolve(Some("ggml-base.bin"), Some("gone.bin"), &[]);
         assert_eq!(nothing.active, None);
         assert!(nothing.notice.unwrap().contains("Choose another model"));
@@ -1276,6 +1612,7 @@ mod tests {
                 downloading: Some("ggml-medium-q5_0.bin"),
                 checking: &["ggml-small-q5_1.bin".to_owned()],
                 locations: &known_locations(|name| fake_env(name, Path::new("C:/x"))),
+                available_memory: None,
             },
             |p| present.iter().any(|item| item == p),
         )
@@ -1296,7 +1633,11 @@ mod tests {
         let rows = rows(Some(&tiny), &found, &["models/ggml-tiny.bin"]);
         let state = |id: &str| rows.iter().find(|r| r.id == id).map(|r| r.state.as_str());
         assert_eq!(state("ggml-tiny.bin"), Some("installed"));
-        assert_eq!(state("ggml-base-q5_1.bin"), Some("available"));
+        assert_eq!(
+            state("ggml-base-q5_1.bin"),
+            None,
+            "one Base row: the found file"
+        );
         assert_eq!(state("ggml-small-q5_1.bin"), Some("checking"));
         assert_eq!(state("ggml-medium-q5_0.bin"), Some("downloading"));
         assert_eq!(state("ggml-base.bin"), Some("found"));
@@ -1310,6 +1651,12 @@ mod tests {
         );
         let base = rows.iter().find(|r| r.id == "ggml-base.bin").unwrap();
         assert_eq!(base.found_in.as_deref(), Some("podcli"));
+    }
+
+    #[test]
+    fn each_model_name_has_one_row_in_order_of_speed() {
+        let names: Vec<_> = rows(None, &[], &[]).into_iter().map(|r| r.label).collect();
+        assert_eq!(names, ["Tiny", "Base", "Small", "Medium", "Large v3 Turbo"]);
     }
 
     #[test]
@@ -1347,7 +1694,8 @@ mod tests {
     #[ignore = "downloads a real model over the network"]
     fn real_download_is_verified_and_installed() {
         let dir = std::env::var_os("TUCK_TEST_DOWNLOAD_DIR").map_or_else(temp_dir, PathBuf::from);
-        let entry = entry("ggml-base-q5_1.bin").unwrap();
+        let id = std::env::var("TUCK_TEST_MODEL_ID").unwrap_or("ggml-base-q5_1.bin".to_owned());
+        let entry = entry(&id).unwrap();
         let _ = std::fs::remove_file(dir.join(entry.id));
         let cache = Mutex::new(VerifyCache::load(&dir));
         let cancel = AtomicBool::new(false);

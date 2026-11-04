@@ -1,5 +1,5 @@
 import { modelHeader, modelsLocked, removeConfirmation, rowButtons, rowMeta, rowProgress, rowStateText, type ModelAction, type ModelButton, type ModelRow } from './dictation-models.js';
-import { displayShortcut, DUAL_SHIFT, recordKey } from './shortcut-recorder.js';
+import { displayShortcut, DUAL_SHIFT, isDualShift, recordKey } from './shortcut-recorder.js';
 import { listenToEvent } from './ipc.js';
 import { nativeAction, nativeService, type DictationSettings, type DictationSnapshot } from './live-services.js';
 import { clearSaved, confirmThen, markSaved, setStatus } from './settings-ui.js';
@@ -8,6 +8,7 @@ type ShortcutField = 'dictationShortcut' | 'dictationHoldShortcut';
 const SHORTCUT_FIELDS: ShortcutField[] = ['dictationShortcut', 'dictationHoldShortcut'];
 const RECORD_LIMIT_MS = 25_000;
 const RELEASE_WAIT_MS = 2_000;
+const ACTION_ERROR_MS = 12_000;
 
 /** Tauri rejects with the Rust error string. This is the reason the owner needs to read. */
 function reason(error: unknown, fallback: string): string {
@@ -29,6 +30,7 @@ export function mountDictationSettings(): void {
   const saveErrors: Partial<Record<ShortcutField, string>> = {};
   let saveStatus = '';
   let actionError = '';
+  let actionErrorTimer = 0;
 
   const setFieldError = (field: ShortcutField, text: string) => {
     const target = el(`${field}Error`);
@@ -36,8 +38,13 @@ export function mountDictationSettings(): void {
     if (text) button(field).setAttribute('aria-invalid', 'true'); else button(field).removeAttribute('aria-invalid');
   };
   const renderFieldErrors = () => {
-    setFieldError('dictationShortcut', saveErrors.dictationShortcut || latest?.shortcutProblems?.toggle || '');
-    setFieldError('dictationHoldShortcut', saveErrors.dictationHoldShortcut || latest?.shortcutProblems?.hold || '');
+    const toggleProblem = latest?.shortcutProblems?.toggle || '';
+    const holdProblem = latest?.shortcutProblems?.hold || '';
+    setFieldError('dictationShortcut', saveErrors.dictationShortcut || toggleProblem);
+    setFieldError('dictationHoldShortcut', saveErrors.dictationHoldShortcut || holdProblem);
+    // Try again only helps a shortcut that was already saved, not one just refused
+    button('dictationShortcutTryAgain').hidden = !toggleProblem || Boolean(saveErrors.dictationShortcut);
+    button('dictationHoldShortcutTryAgain').hidden = !holdProblem || Boolean(saveErrors.dictationHoldShortcut);
   };
   const renderGroupStatus = () => {
     const text = saveStatus || latest?.settingsNotice || '';
@@ -48,8 +55,14 @@ export function mountDictationSettings(): void {
       button(field).dataset.value = value;
       button(field).textContent = displayShortcut(value);
     }
+    syncHoldExtras();
     toggle('dictationReview').checked = data.reviewBeforeInsert;
     toggle('dictationPreview').checked = data.partialPreview;
+  };
+  const syncHoldExtras = () => {
+    const dual = isDualShift(button('dictationHoldShortcut').dataset.value ?? '');
+    button('dictationUseBothShifts').hidden = dual;
+    el('dictationFilterKeysNote').hidden = !dual;
   };
   const setLocked = (locked: boolean) => { for (const control of controls()) control.disabled = locked; };
   const readValues = (): DictationSettings => ({
@@ -82,11 +95,13 @@ export function mountDictationSettings(): void {
     } catch (error) {
       if (saved) applyValues(saved);
       clearSaved(changed);
+      // The backend ends the recorder's pause itself. This covers a save that never reached it.
+      void nativeAction('dictation_shortcuts_pause', { paused: false }).catch(() => { /* the backend's own limit ends the pause */ });
       const text = reason(error, 'The change could not be saved.');
       if (field) { saveErrors[field] = `${text} The previous shortcut is back.`; saveStatus = ''; }
       else saveStatus = `${text} The previous value is back.`;
     } finally {
-      saving = false; setLocked(false);
+      saving = false; setLocked(false); syncHoldExtras();
       renderFieldErrors(); renderGroupStatus();
     }
   };
@@ -168,7 +183,13 @@ export function mountDictationSettings(): void {
   });
 
   /* ---------- Model picker ---------- */
-  const rows = new Map<string, { root: HTMLElement; meta: HTMLElement; state: HTMLElement; bar: HTMLElement; actions: HTMLElement; signature: string }>();
+  const rows = new Map<string, { root: HTMLElement; meta: HTMLElement; state: HTMLElement; warning: HTMLElement; bar: HTMLElement; actions: HTMLElement; signature: string }>();
+  // A failed action explains itself for a moment, not for the rest of the session
+  const showActionError = (text: string) => {
+    actionError = text;
+    window.clearTimeout(actionErrorTimer);
+    actionErrorTimer = window.setTimeout(() => { actionError = ''; renderNotice(); }, ACTION_ERROR_MS);
+  };
   const runModelAction = async (row: ModelRow, action: ModelAction) => {
     actionError = '';
     const commands: Record<ModelAction, [string, Record<string, unknown>?]> = {
@@ -180,7 +201,7 @@ export function mountDictationSettings(): void {
     };
     const [command, args] = commands[action];
     try { await nativeAction(command, args); }
-    catch (error) { actionError = reason(error, 'The model could not be changed.'); }
+    catch (error) { showActionError(reason(error, 'The model could not be changed.')); }
     renderNotice();
   };
   const renderNotice = () => {
@@ -213,23 +234,26 @@ export function mountDictationSettings(): void {
         const name = document.createElement('span'); name.className = 'model-name'; name.textContent = row.label;
         const meta = document.createElement('p'); meta.className = 'row-desc';
         const state = document.createElement('p'); state.className = 'row-desc';
+        const warning = document.createElement('p'); warning.className = 'row-desc row-error'; warning.hidden = true;
         const track = document.createElement('div'); track.className = 'model-progress';
         const bar = document.createElement('i'); track.append(bar);
         const actions = document.createElement('div'); actions.className = 'row-actions';
-        text.append(name, meta, state, track); root.append(text, actions);
-        view = { root, meta, state, bar, actions, signature: '' };
+        text.append(name, meta, state, warning, track); root.append(text, actions);
+        view = { root, meta, state, warning, bar, actions, signature: '' };
         rows.set(row.id, view);
       }
       host.append(view.root); // Keeps catalog order without rebuilding the row
-      view.meta.textContent = row.note ? `${rowMeta(row)} · ${row.note}` : rowMeta(row);
+      view.meta.textContent = rowMeta(row);
       const stateText = rowStateText(row, downloaded);
       view.state.textContent = stateText; view.state.hidden = !stateText;
+      view.warning.textContent = row.memoryWarning ?? ''; view.warning.hidden = !row.memoryWarning;
       const progress = rowProgress(row, downloaded);
       (view.bar.parentElement as HTMLElement).hidden = progress === null;
       view.bar.style.transform = `scaleX(${progress ?? 0})`;
       // Buttons are rebuilt only when they change, so progress ticks keep focus and an
       // open confirmation in place.
-      const signature = `${row.state}|${row.active}|${locked}`;
+      // The row can change file (a found Base replaces the one to download), so the id counts.
+      const signature = `${row.id}|${row.state}|${row.active}|${locked}`;
       if (signature !== view.signature) {
         view.signature = signature;
         view.actions.replaceChildren(...rowButtons(row).map(spec => makeButton(row, spec, locked)));
@@ -251,7 +275,7 @@ export function mountDictationSettings(): void {
     latest = data;
     if (!saved && data.settings) adopt(data);
     el('dictationSetupStatus').textContent = data.scanningModels
-      ? `${modelHeader(data.activeModelLabel)} Looking for models on this computer…`
+      ? `${modelHeader(data.activeModelLabel)}. Looking for models on this computer…`
       : modelHeader(data.activeModelLabel);
     button('scanModels').disabled = Boolean(data.scanningModels) || !saved;
     if (data.models) renderRows(data.models, data.modelDownloadedBytes ?? 0, data.status);
@@ -259,9 +283,19 @@ export function mountDictationSettings(): void {
     if (saving) setLocked(true);
   };
 
+  /* A shortcut another app held may be free now. Checked when Settings opens or returns. */
+  const retryShortcuts = () => {
+    delete saveErrors.dictationShortcut; delete saveErrors.dictationHoldShortcut;
+    void nativeAction('dictation_shortcuts_retry').catch(() => { /* the problem stays shown */ });
+  };
+  const hasShortcutProblem = () => Boolean(latest?.shortcutProblems?.toggle || latest?.shortcutProblems?.hold);
+  button('dictationShortcutTryAgain').addEventListener('click', retryShortcuts);
+  button('dictationHoldShortcutTryAgain').addEventListener('click', retryShortcuts);
+  window.addEventListener('focus', () => { if (hasShortcutProblem() && !stopRecording) retryShortcuts(); });
+
   const load = () => {
     setStatus('dictationStatus', '');
-    return nativeService<DictationSnapshot>('dictation_snapshot').then(data => { adopt(data); render(data); if (onScreen) scan(); }).catch((error: unknown) => {
+    return nativeService<DictationSnapshot>('dictation_snapshot').then(data => { adopt(data); render(data); if (onScreen) scan(); if (hasShortcutProblem()) retryShortcuts(); }).catch((error: unknown) => {
       // Never locked without saying why, and never a guess at the cause
       el('dictationSetupStatus').textContent = 'Model status is unavailable.';
       setStatus('dictationStatus', reason(error, 'The dictation service did not answer.'), 'error');
@@ -273,7 +307,7 @@ export function mountDictationSettings(): void {
   void listenToEvent<DictationSnapshot>('dictation_state', render);
 
   /* Detection runs when the picker is on screen, and only then. */
-  const scan = () => { void nativeAction('dictation_models_scan').catch((error: unknown) => { actionError = reason(error, 'Could not look for models.'); renderNotice(); }); };
+  const scan = () => { void nativeAction('dictation_models_scan').catch((error: unknown) => { showActionError(reason(error, 'Could not look for models.')); renderNotice(); }); };
   button('scanModels').addEventListener('click', scan);
   let onScreen = false;
   if ('IntersectionObserver' in window) {

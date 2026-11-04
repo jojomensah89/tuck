@@ -289,6 +289,7 @@
                   <label class="row-title" for="dictationShortcut">Start and stop</label>
                   <p class="row-desc">Press once to start, again to finish.</p>
                   <p class="row-desc row-error" id="dictationShortcutError" role="alert" hidden></p>
+                  <button class="link-button" id="dictationShortcutTryAgain" type="button" hidden>Try again</button>
                 </div>
                 <button class="text-field short shortcut-field" id="dictationShortcut" type="button" aria-describedby="dictationShortcutError" disabled>Ctrl+Shift+Space</button>
               </div>
@@ -296,12 +297,12 @@
                 <div class="row-text">
                   <label class="row-title" for="dictationHoldShortcut">Hold to talk</label>
                   <p class="row-desc">Hold Left + Right Shift, or a hotkey combination.</p>
+                  <p class="row-desc" id="dictationFilterKeysNote" hidden>Holding right Shift for 8 seconds can open the Windows Filter Keys prompt unless its shortcut is off.</p>
                   <p class="row-desc row-error" id="dictationHoldShortcutError" role="alert" hidden></p>
+                  <button class="link-button" id="dictationHoldShortcutTryAgain" type="button" hidden>Try again</button>
+                  <button class="link-button" id="dictationUseBothShifts" type="button" hidden>Use both Shift keys</button>
                 </div>
-                <div class="row-actions">
-                  <button class="button" id="dictationUseBothShifts" type="button" disabled>Use both Shift keys</button>
-                  <button class="text-field short shortcut-field" id="dictationHoldShortcut" type="button" aria-describedby="dictationHoldShortcutError" disabled>Left + Right Shift</button>
-                </div>
+                <button class="text-field short shortcut-field" id="dictationHoldShortcut" type="button" aria-describedby="dictationHoldShortcutError" disabled>Left + Right Shift</button>
               </div>
               <div class="set-row" id="row-dictationReview" data-keywords="dictation review confirm">
                 <div class="row-text">
@@ -321,6 +322,7 @@
                 <div class="row-text">
                   <span class="row-title">Speech model</span>
                   <p class="row-desc" id="dictationSetupStatus" role="status">Reading model status…</p>
+                  <p class="row-desc">Listed from fastest to most accurate. Models load only while you dictate.</p>
                   <p class="row-desc row-error" id="dictationModelNotice" role="alert" hidden></p>
                 </div>
                 <div class="row-actions">

@@ -410,6 +410,22 @@ h2 {
 }
 
 .text-field.short { width: 168px; }
+.link-button {
+  display: block;
+  margin-top: var(--s-1);
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  font-size: var(--t-md);
+  font-weight: var(--w-medium);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+.link-button[hidden] { display: none; }
+.link-button:disabled { opacity: 0.5; cursor: default; }
 .shortcut-field { text-align: left; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .shortcut-field:hover:not(:disabled) { background: var(--control-hover); }
 .shortcut-field[aria-pressed="true"] { outline: 2px solid var(--focus); outline-offset: 2px; color: var(--ink-2); }

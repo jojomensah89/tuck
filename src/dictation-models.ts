@@ -3,7 +3,7 @@
 export interface ModelRow {
   id: string; label: string; bytes: number; speed: string; accuracy: string; note: string | null;
   state: 'available' | 'downloading' | 'checking' | 'installed' | 'found';
-  foundIn: string | null; active: boolean;
+  foundIn: string | null; active: boolean; memoryNote?: string; memoryWarning?: string | null;
 }
 export type ModelAction = 'download' | 'cancel' | 'use' | 'remove' | 'stop';
 export interface ModelButton { action: ModelAction; label: string; danger?: boolean; primary?: boolean }
@@ -14,7 +14,8 @@ export function formatSize(bytes: number): string {
 }
 
 export function rowMeta(row: ModelRow): string {
-  return `${formatSize(row.bytes)} · Speed: ${row.speed.toLowerCase()} · Accuracy: ${row.accuracy.toLowerCase()}`;
+  const basics = `${formatSize(row.bytes)} · Speed: ${row.speed.toLowerCase()} · Accuracy: ${row.accuracy.toLowerCase()}`;
+  return [basics, row.memoryNote, row.note].filter(Boolean).join(' · ');
 }
 
 export function rowStateText(row: ModelRow, downloadedBytes: number): string {

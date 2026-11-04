@@ -12,6 +12,7 @@ describe('model rows', () => {
   });
   test('a row names its size, speed and accuracy', () => {
     expect(rowMeta(row())).toBe('60 MB · Speed: very fast · Accuracy: good');
+    expect(rowMeta(row({ memoryNote: 'Uses about 400 MB of memory.', note: 'English only.' }))).toBe('60 MB · Speed: very fast · Accuracy: good · Uses about 400 MB of memory. · English only.');
   });
   test('each state offers only what it can do', () => {
     expect(actions({ state: 'available' })).toEqual(['download']);

@@ -73,6 +73,7 @@ pub fn run() {
             dictation::dictation_model_use,
             dictation::dictation_models_scan,
             dictation::dictation_shortcuts_pause,
+            dictation::dictation_shortcuts_retry,
             dictation::dictation_toggle,
             dictation::dictation_hold_start,
             dictation::dictation_hold_stop,

@@ -408,7 +408,7 @@ try {
   await native.evaluate(()=>window.__emitNative('media',{active:true,trackId:'long-track',title:'A title far too long to fit in the collapsed pill however wide it gets',artist:'Synthetic test data',playing:true,positionMs:0,durationMs:120000,artwork:null}));
   await native.waitForTimeout(100);
   assert.equal((await native.locator('#isl').boundingBox()).width,300,'Long text keeps the stable width');
-  assert.equal(await native.locator('#cc .compact-title').evaluate(n=>getComputedStyle(n).textOverflow==='ellipsis'&&n.scrollWidth>n.clientWidth&&!n.classList.contains('scroll')&&!n.classList.contains('scroll-once')),true,'Reduced motion ends a long line in an ellipsis without scrolling');
+  assert.equal(await native.locator('#cc .compact-slot.current .compact-title').evaluate(n=>getComputedStyle(n).textOverflow==='ellipsis'&&n.scrollWidth>n.clientWidth&&!n.classList.contains('scroll')&&!n.classList.contains('scroll-once')),true,'Reduced motion ends a long line in an ellipsis without scrolling');
   // A pause between two tracks holds the pill: no resize and no new hit bounds
   const hitsBeforePause = await hitCalls();
   await native.evaluate(()=>window.__emitNative('media',{active:true,trackId:'long-track',title:'A title far too long to fit in the collapsed pill however wide it gets',artist:'Synthetic test data',playing:false,positionMs:0,durationMs:120000,artwork:null}));
@@ -757,7 +757,7 @@ try {
   assert.equal((await running()).filter(name=>name==='eq-bounce').length,3,'The equalizer runs during playback');
   await motion.waitForFunction(()=>!document.getAnimations().some(a=>a.animationName==='compact-marquee-once'),null,{timeout:15000});
   assert.deepEqual([...new Set(await running())],['eq-bounce'],'Only the equalizer runs after the one scroll');
-  assert.equal(await motion.locator('#cc .compact-title').evaluate(n=>getComputedStyle(n).textOverflow==='ellipsis'&&n.scrollWidth>n.clientWidth&&!n.classList.contains('scroll-once')),true,'The line stops on an ellipsis');
+  assert.equal(await motion.locator('#cc .compact-slot.current .compact-title').evaluate(n=>getComputedStyle(n).textOverflow==='ellipsis'&&n.scrollWidth>n.clientWidth&&!n.classList.contains('scroll-once')),true,'The line stops on an ellipsis');
   await emitTrack(longTitle,true);
   await motion.waitForTimeout(600);
   assert.deepEqual([...new Set(await running())],['eq-bounce'],'The same text does not re-arm the scroll');

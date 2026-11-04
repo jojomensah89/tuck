@@ -4,6 +4,7 @@ import {
   getChatGPTMeter,
   logChatGPTMessage,
   formatUntil,
+  connectedUsageMeters,
   mergeMeters,
   checkResets,
   getNextMonthStartUtc,
@@ -25,6 +26,16 @@ describe('Usage Tracker & ChatGPT Rolling Window', () => {
 
     saveJson(STORAGE_KEYS.CHATGPT, { cap: 80, hours: 0, label: 'Test' });
     expect(getChatGPTMeter()).toBeNull();
+  });
+
+  it('omits unconfigured providers but keeps configured stale and error readings', () => {
+    const meter = (status: Meter['status'], usedPct: number | null): Meter => ({
+      id: status || 'ok', provider: 'claude', label: 'Claude', usedPct, spentUsd: null,
+      resetsAt: null, source: 'official', stale: status !== 'ok', status,
+    });
+    expect(connectedUsageMeters([
+      meter('unconfigured', null), meter('error', null), meter('stale', 42), meter('ok', 12),
+    ]).map(item => item.status)).toEqual(['error', 'stale', 'ok']);
   });
 
   it('calculates rolling window count and percentage correctly', () => {

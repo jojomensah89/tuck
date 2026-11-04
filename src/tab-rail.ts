@@ -7,8 +7,11 @@ import { SVG_ICONS } from './icons.js';
 import {
   clampTab,
   DRAG_SLOP,
+  GESTURE_GAP_MS,
   INITIAL_WHEEL_STATE,
   rovingTarget,
+  sectionIndexAt,
+  sectionLabel,
   swipeIntent,
   tabForSection,
   tabIndex,
@@ -39,6 +42,8 @@ export interface TabRail {
   step(delta: number, via: 'key' | 'wheel' | 'swipe', landing?: Landing): void;
   /** Show the tab holding a section and scroll the section into view */
   reveal(section: string): void;
+  /** Include or remove a section from scroll-snap navigation. */
+  setSectionVisible(section: string, visible: boolean): void;
 }
 
 const FOCUSABLE = 'button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex="0"]';
@@ -115,26 +120,71 @@ export function mountTabRail(options: TabRailOptions): TabRail {
   for (const section of sections) if (!section.parentElement?.classList.contains('tab-panel')) fallback.append(section);
   container.replaceChildren(...panels);
 
-  /* ---------- Section position (passive) ---------- */
+  /* ---------- Section position ---------- */
   const sectionIndex = document.createElement('div');
   sectionIndex.className = 'section-index';
-  sectionIndex.setAttribute('aria-hidden', 'true');
+  sectionIndex.setAttribute('role', 'group');
+  sectionIndex.setAttribute('aria-label', 'Sections');
   full.append(sectionIndex);
 
-  const sectionsOf = (panel: HTMLElement) => [...panel.querySelectorAll<HTMLElement>(':scope > .page')];
+  const sectionsOf = (panel: HTMLElement) => [...panel.querySelectorAll<HTMLElement>(':scope > .page:not([hidden])')];
   const visibleSection = (panel: HTMLElement): number =>
-    panel.clientHeight > 0 ? Math.round(panel.scrollTop / panel.clientHeight) : 0;
+    sectionIndexAt(panel.scrollTop, panel.clientHeight, sectionsOf(panel).length);
 
+  /** The same snap scroller the wheel and swipes use */
+  function goToSection(index: number): void {
+    const panel = panels[current];
+    const target = sectionsOf(panel)[index];
+    if (target) panel.scrollTo({ top: target.offsetTop, behavior: reducedMotion.matches ? 'auto' : 'smooth' });
+  }
+
+  function buildMark(name: string, index: number): HTMLButtonElement {
+    const button = document.createElement('button');
+    const label = `Go to ${sectionLabel(name)}`;
+    button.type = 'button';
+    button.className = 'section-index-button';
+    button.setAttribute('aria-label', label);
+    button.title = label;
+    const mark = document.createElement('i');
+    mark.setAttribute('aria-hidden', 'true');
+    button.append(mark);
+    button.addEventListener('click', event => {
+      event.stopPropagation();
+      goToSection(index);
+      options.onUserChange(TABS[current].id);
+    });
+    return button;
+  }
+
+  let indexKey: string | null = null;
   function renderSectionIndex(): void {
     const panel = panels[current];
-    const count = sectionsOf(panel).length;
-    if (sectionIndex.childElementCount !== count) {
-      sectionIndex.replaceChildren(...Array.from({ length: count }, () => document.createElement('i')));
-    }
-    sectionIndex.hidden = count < 2;
+    const names = sectionsOf(panel).map(section => section.dataset.page ?? 'section');
+    const count = names.length;
     const at = visibleSection(panel);
-    [...sectionIndex.children].forEach((dot, i) => dot.classList.toggle('on', i === at));
+    // Tabs can have the same number of sections, so the marks are keyed by name
+    const key = names.join(' ');
+    if (key !== indexKey) {
+      const hadFocus = sectionIndex.contains(document.activeElement);
+      indexKey = key;
+      sectionIndex.replaceChildren(...names.map(buildMark));
+      sectionIndex.hidden = count < 2;
+      if (hadFocus) (count > 1 ? sectionIndex.children[at] as HTMLElement : panel).focus({ preventScroll: true });
+    }
+    [...sectionIndex.children].forEach((button, index) => {
+      button.classList.toggle('on', index === at);
+      if (index === at) button.setAttribute('aria-current', 'true');
+      else button.removeAttribute('aria-current');
+    });
   }
+  /** The section the reader last moved to by hand this session, per panel */
+  const readerSection = new WeakMap<HTMLElement, string>();
+  let readerMoving = false;
+  const noteReader = () => { readerMoving = true; };
+  full.addEventListener('wheel', noteReader, { capture: true, passive: true });
+  full.addEventListener('pointerdown', noteReader, { capture: true, passive: true });
+  full.addEventListener('keydown', noteReader, { capture: true });
+
   let indexFrame = 0;
   for (const panel of panels) {
     panel.addEventListener('scroll', () => {
@@ -142,9 +192,20 @@ export function mountTabRail(options: TabRailOptions): TabRail {
       indexFrame = requestAnimationFrame(() => {
         indexFrame = 0;
         renderSectionIndex();
+        const name = sectionsOf(panel)[visibleSection(panel)]?.dataset.page;
+        if (readerMoving && name) readerSection.set(panel, name);
       });
     }, { passive: true });
   }
+
+  /** Back to the section the reader chose, or the first one if they have not chosen */
+  function placeReader(panel: HTMLElement): void {
+    readerMoving = false;
+    const chosen = sectionsOf(panel).find(section => section.dataset.page === readerSection.get(panel));
+    panel.scrollTop = chosen ? chosen.offsetTop : 0;
+  }
+  /** Panels whose sections changed while they were not laid out */
+  const placeOnShow = new Set<HTMLElement>();
 
   /* ---------- Switching ---------- */
   const leavingHandlers = new WeakMap<HTMLElement, (e: AnimationEvent) => void>();
@@ -178,7 +239,7 @@ export function mountTabRail(options: TabRailOptions): TabRail {
     const changed = next !== previous;
     const focused = document.activeElement;
     const focusOnRail = focused instanceof HTMLElement && tablist.contains(focused);
-    const focusInPanel = focused instanceof HTMLElement && panels[previous].contains(focused);
+    const focusInPanel = focused instanceof HTMLElement && (panels[previous].contains(focused) || sectionIndex.contains(focused));
     const dir = next >= previous ? 1 : -1;
     current = next;
 
@@ -207,6 +268,7 @@ export function mountTabRail(options: TabRailOptions): TabRail {
         clearLeaving(panel);
       }
     });
+    if (placeOnShow.delete(panels[current]) && landing === 'keep') placeReader(panels[current]);
     if (changed) land(panels[current], landing);
 
     tabs.forEach((tab, i) => {
@@ -240,6 +302,17 @@ export function mountTabRail(options: TabRailOptions): TabRail {
     const panel = panels[tabIndex(id)];
     const target = sectionsOf(panel).find(s => s.dataset.page === section);
     if (target) panel.scrollTop = target.offsetTop;
+    renderSectionIndex();
+  }
+
+  function setSectionVisible(section: string, visible: boolean): void {
+    const target = panels.flatMap(panel => [...panel.querySelectorAll<HTMLElement>(':scope > .page')])
+      .find(page => page.dataset.page === section);
+    if (!target || target.hidden === !visible) return;
+    const panel = target.parentElement as HTMLElement;
+    target.hidden = !visible;
+    if (panel === panels[current]) placeReader(panel);
+    else placeOnShow.add(panel);
     renderSectionIndex();
   }
 
@@ -286,15 +359,24 @@ export function mountTabRail(options: TabRailOptions): TabRail {
   full.addEventListener('wheel', e => {
     if (!options.isOpen()) return;
     if ((e.target as Element).closest('input, select, textarea')) return;
+    // The marks sit outside the panel, so the browser would not scroll it for them
+    const overIndex = sectionIndex.contains(e.target as Node);
+    const now = performance.now();
+    const freshGesture = now - wheel.lastWheelAt > GESTURE_GAP_MS;
     const result = wheelStep(wheel, {
       deltaX: e.deltaX,
       deltaY: e.deltaY,
-      now: performance.now(),
-      chain: scrollChain(e.target as Element),
+      now,
+      chain: scrollChain(overIndex ? panels[current] : e.target as Element),
     });
     wheel = result.state;
     const action = result.action;
     if (action.kind === 'block') e.preventDefault();
+    if (overIndex && action.kind === 'scroll') {
+      e.preventDefault();
+      if (freshGesture) goToSection(visibleSection(panels[current]) + (e.deltaY > 0 ? 1 : -1));
+      return;
+    }
     if (action.kind !== 'switch') return;
     e.preventDefault();
     const vertical = Math.abs(e.deltaY) >= Math.abs(e.deltaX);
@@ -341,5 +423,5 @@ export function mountTabRail(options: TabRailOptions): TabRail {
   }, true);
 
   show(TABS[current].id);
-  return { active: () => TABS[current].id, show, step, reveal };
+  return { active: () => TABS[current].id, show, step, reveal, setSectionVisible };
 }

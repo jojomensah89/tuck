@@ -59,24 +59,51 @@ pub fn set_installed_usage_enabled(window: WebviewWindow, enabled: bool) -> Resu
 pub fn refresh_installed_usage() {
     REFRESH.store(true, Ordering::Relaxed);
 }
-fn unavailable(provider: &str, message: &str) -> Meter {
-    Meter {
-        id: format!("{provider}-installed"),
-        provider: provider.into(),
-        label: if provider == "codex" {
-            "ChatGPT / Codex"
-        } else {
-            "Claude Code"
-        }
-        .into(),
-        used_pct: None,
-        spent_usd: None,
-        resets_at: None,
-        source: "official".into(),
-        stale: true,
-        status: Some("unavailable".into()),
-        error: Some(message.into()),
+/// Why a probe returned no quota. Only `NotConnected` keeps a provider off the island:
+/// the client is missing, signed out, or on an account without subscription limits.
+#[derive(Debug)]
+enum ProbeError {
+    NotConnected,
+    Failed(String),
+}
+impl From<String> for ProbeError {
+    fn from(error: String) -> Self {
+        Self::Failed(error)
     }
+}
+/// The reading a connected provider keeps after a failed probe: its last real values
+/// marked stale, or an empty error meter if it has not reported anything yet.
+fn after_failed_probe(provider: &str, previous: &[Meter], error: &str) -> Vec<Meter> {
+    let mut kept: Vec<Meter> = previous
+        .iter()
+        .filter(|meter| meter.provider == provider && meter.used_pct.is_some())
+        .cloned()
+        .collect();
+    for meter in &mut kept {
+        meter.stale = true;
+        meter.status = Some("error".into());
+        meter.error = Some(error.into());
+    }
+    if kept.is_empty() {
+        kept.push(Meter {
+            id: format!("{provider}-installed"),
+            provider: provider.into(),
+            label: if provider == "codex" {
+                "ChatGPT / Codex"
+            } else {
+                "Claude Code"
+            }
+            .into(),
+            used_pct: None,
+            spent_usd: None,
+            resets_at: None,
+            source: "official".into(),
+            stale: true,
+            status: Some("error".into()),
+            error: Some(error.into()),
+        });
+    }
+    kept
 }
 fn quota(
     id: String,
@@ -370,22 +397,34 @@ impl Client {
         }
     }
 }
-fn probe(name: &str) -> Result<Vec<Meter>, String> {
+fn codex_account(account: &Value) -> Result<(), ProbeError> {
+    if account["account"]["type"] == "chatgpt" {
+        Ok(())
+    } else {
+        Err(ProbeError::NotConnected)
+    }
+}
+fn claude_usage(value: &Value) -> Result<Vec<Meter>, ProbeError> {
+    if value["rate_limits_available"] == false {
+        return Err(ProbeError::NotConnected);
+    }
+    Ok(parse_claude(value)?)
+}
+fn probe(name: &str) -> Result<Vec<Meter>, ProbeError> {
+    executable(name).map_err(|_| ProbeError::NotConnected)?;
     let mut client = Client::start(name)?;
     if name == "codex" {
         client.request(1,"initialize",json!({"clientInfo":{"name":"tuck","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":true,"requestAttestation":false}}),false)?;
         client.send(&json!({"method":"initialized","params":{}}))?;
         let account = client.request(2, "account/read", json!({"refreshToken":false}), false)?;
-        if account["account"]["type"] != "chatgpt" {
-            return parse_codex(&account, &Value::Null);
-        }
+        codex_account(&account)?;
         let limits = client.request(
             3,
             "account/rateLimits/read",
             json!({"excludeResetCreditDetails":true}),
             false,
         )?;
-        parse_codex(&account, &limits)
+        Ok(parse_codex(&account, &limits)?)
     } else {
         client.request(1, "", json!({"subtype":"initialize"}), true)?;
         let value = client.request(
@@ -394,7 +433,7 @@ fn probe(name: &str) -> Result<Vec<Meter>, String> {
             json!({"subtype":"get_usage","skip_behaviors":true}),
             true,
         )?;
-        parse_claude(&value)
+        claude_usage(&value)
     }
 }
 pub fn start(app: AppHandle) {
@@ -413,11 +452,15 @@ pub fn start(app: AppHandle) {
                     || last.elapsed() >= Duration::from_secs(300))
             {
                 let epoch = EPOCH.load(Ordering::SeqCst);
+                let previous = METERS.lock().unwrap_or_else(|p| p.into_inner()).clone();
                 let mut meters = Vec::new();
                 for name in ["claude", "codex"] {
                     match probe(name) {
                         Ok(values) => meters.extend(values),
-                        Err(error) => meters.push(unavailable(name, &error)),
+                        Err(ProbeError::NotConnected) => {}
+                        Err(ProbeError::Failed(error)) => {
+                            meters.extend(after_failed_probe(name, &previous, &error))
+                        }
                     }
                 }
                 let committed = {
@@ -455,6 +498,49 @@ mod tests {
         let values=parse_claude(&json!({"rate_limits_available":true,"rate_limits":{"five_hour":{"utilization":35,"resets_at":"2030-01-01T00:00:00Z"}}})).unwrap();
         assert_eq!(values[0].used_pct, Some(35.0));
         assert!(parse_claude(&json!({"rate_limits":{"five_hour":{"utilization":35}}})).is_err());
+    }
+    #[test]
+    fn missing_or_signed_out_clients_are_not_connected() {
+        assert!(matches!(
+            probe("tuck-test-client-that-is-not-installed"),
+            Err(ProbeError::NotConnected)
+        ));
+        assert!(matches!(
+            codex_account(&json!({"account":null})),
+            Err(ProbeError::NotConnected)
+        ));
+        assert!(matches!(
+            codex_account(&json!({"account":{"type":"apiKey"}})),
+            Err(ProbeError::NotConnected)
+        ));
+        assert!(codex_account(&json!({"account":{"type":"chatgpt"}})).is_ok());
+        assert!(matches!(
+            claude_usage(&json!({"rate_limits_available":false})),
+            Err(ProbeError::NotConnected)
+        ));
+    }
+    #[test]
+    fn a_connected_client_without_quota_data_is_a_failure_not_absent() {
+        assert!(matches!(
+            claude_usage(&json!({"rate_limits_available":true})),
+            Err(ProbeError::Failed(_))
+        ));
+    }
+    #[test]
+    fn failed_probe_keeps_real_values_stale_and_never_invents_any() {
+        let account = json!({"account":{"type":"chatgpt"}});
+        let limits = json!({"rateLimits":{"primary":{"usedPercent":22,"windowDurationMins":300,"resetsAt":1900000000}}});
+        let previous = parse_codex(&account, &limits).unwrap();
+        let kept = after_failed_probe("codex", &previous, "timed out");
+        assert_eq!(kept[0].used_pct, Some(22.0));
+        assert!(kept[0].stale);
+        assert_eq!(kept[0].status.as_deref(), Some("error"));
+        // Another provider's data is not borrowed: it shows an empty error reading
+        let empty = after_failed_probe("claude", &previous, "timed out");
+        assert_eq!(empty.len(), 1);
+        assert_eq!(empty[0].provider, "claude");
+        assert_eq!(empty[0].used_pct, None);
+        assert_eq!(empty[0].status.as_deref(), Some("error"));
     }
     #[test]
     #[ignore = "Explicit local installed-client read-only smoke"]

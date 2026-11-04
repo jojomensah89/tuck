@@ -131,6 +131,11 @@ export function mergeMeters(nativeMeters: Meter[]): Meter[] {
   return merged;
 }
 
+/** Native emits only connected sources; this keeps an unconfigured reading off the island regardless. */
+export function connectedUsageMeters(meters: Meter[]): Meter[] {
+  return meters.filter(meter => meter.status !== 'unconfigured');
+}
+
 /**
  * Detects if any meter had a significant drop (> 30%) indicating a quota reset.
  */

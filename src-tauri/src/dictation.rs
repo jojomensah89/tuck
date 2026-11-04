@@ -4,6 +4,7 @@
 //! `docs/phase-two-dictation.md` for builder, state, command and event setup.
 
 mod audio;
+mod dual_shift;
 mod model;
 mod target;
 
@@ -37,19 +38,6 @@ pub fn is_dual_shift_shortcut(shortcut: &str) -> bool {
             | "lshift+rshift"
             | "rshift+lshift"
     )
-}
-
-#[cfg(windows)]
-pub fn are_both_shift_keys_down() -> bool {
-    use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LSHIFT, VK_RSHIFT};
-    let left_down = unsafe { GetAsyncKeyState(VK_LSHIFT.0 as i32) } < 0;
-    let right_down = unsafe { GetAsyncKeyState(VK_RSHIFT.0 as i32) } < 0;
-    left_down && right_down
-}
-
-#[cfg(not(windows))]
-pub fn are_both_shift_keys_down() -> bool {
-    false
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -431,6 +419,19 @@ impl DictationService {
         Ok(())
     }
 
+    /// Ends the recording only if a hold started it; a toggle recording keeps running.
+    fn stop_hold(self: &Arc<Self>) {
+        let holding = self.runtime.lock().is_ok_and(|runtime| {
+            runtime
+                .active
+                .as_ref()
+                .is_some_and(|session| matches!(session.mode, RecordingMode::HoldToTalk))
+        });
+        if holding {
+            let _ = self.stop();
+        }
+    }
+
     fn cancel(&self) -> Result<(), String> {
         let mut runtime = self
             .runtime
@@ -645,6 +646,7 @@ impl DictationService {
 
     pub fn shutdown(&self) {
         self.is_shutdown.store(true, Ordering::Release);
+        dual_shift::stop();
         let _ = self.cancel();
     }
 
@@ -653,54 +655,26 @@ impl DictationService {
     }
 }
 
-static DUAL_SHIFT_SPAWNED: AtomicBool = AtomicBool::new(false);
-
-fn spawn_dual_shift_monitor(service: Arc<DictationService>) {
-    #[cfg(windows)]
-    {
-        if DUAL_SHIFT_SPAWNED.swap(true, Ordering::AcqRel) {
-            return;
-        }
-        std::thread::Builder::new()
-            .name("tuck-dual-shift".into())
-            .spawn(move || {
-                let mut was_holding = false;
-                while !service.is_shutdown() {
-                    std::thread::sleep(std::time::Duration::from_millis(20));
-                    if service.is_shutdown() {
-                        break;
-                    }
-                    let settings = service.settings();
-                    if !is_dual_shift_shortcut(&settings.hold_to_talk_shortcut) {
-                        if was_holding {
-                            was_holding = false;
-                        }
-                        continue;
-                    }
-
-                    let both_down = are_both_shift_keys_down();
-                    if both_down && !was_holding {
-                        was_holding = true;
-                        let _ = service.begin(RecordingMode::HoldToTalk);
-                    } else if !both_down && was_holding {
-                        was_holding = false;
-                        if let Ok(runtime) = service.runtime.lock() {
-                            if runtime
-                                .active
-                                .as_ref()
-                                .is_some_and(|s| matches!(s.mode, RecordingMode::HoldToTalk))
-                            {
-                                drop(runtime);
-                                let _ = service.stop();
-                            }
-                        }
-                    }
+/// Arms the dual-Shift monitor only while it is the configured hold shortcut.
+fn sync_dual_shift(service: &Arc<DictationService>) {
+    let enabled = is_dual_shift_shortcut(&service.settings().hold_to_talk_shortcut);
+    let service = service.clone();
+    dual_shift::set_enabled(enabled, move || {
+        Box::new(move |change| {
+            if service.is_shutdown() {
+                return;
+            }
+            match change {
+                dual_shift::HoldChange::Pressed => {
+                    let _ = service.begin(RecordingMode::HoldToTalk);
                 }
-            })
-            .expect("could not spawn dual shift monitor thread");
-    }
-    #[cfg(not(windows))]
-    let _ = service;
+                dual_shift::HoldChange::Released => service.stop_hold(),
+                dual_shift::HoldChange::Unavailable(message) => {
+                    service.set_status("error", Some(message));
+                }
+            }
+        })
+    });
 }
 
 /// Initialize settings and shortcuts only. This does not access the microphone
@@ -717,7 +691,7 @@ pub fn start(app: AppHandle, service: &Arc<DictationService>) -> Result<(), Stri
     if let Err(error) = register_shortcuts(&app, service) {
         eprintln!("Dictation shortcut registration warning: {error}");
     }
-    spawn_dual_shift_monitor(service.clone());
+    sync_dual_shift(service);
     service.emit_state();
     Ok(())
 }
@@ -786,18 +760,7 @@ pub fn handle_shortcut(app: &AppHandle, shortcut: &Shortcut, event: ShortcutEven
             ShortcutState::Pressed => {
                 let _ = service.begin(RecordingMode::HoldToTalk);
             }
-            ShortcutState::Released => {
-                if let Ok(runtime) = service.runtime.lock() {
-                    if runtime
-                        .active
-                        .as_ref()
-                        .is_some_and(|s| matches!(s.mode, RecordingMode::HoldToTalk))
-                    {
-                        drop(runtime);
-                        let _ = service.stop();
-                    }
-                }
-            }
+            ShortcutState::Released => service.stop_hold(),
         }
     }
 }
@@ -951,6 +914,7 @@ pub fn dictation_set_settings(
         let _ = register_shortcuts(&app, &service);
         return Err(error);
     }
+    sync_dual_shift(&service);
     service.emit_state();
     Ok(service.snapshot())
 }

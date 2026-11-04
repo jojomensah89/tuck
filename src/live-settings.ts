@@ -80,7 +80,7 @@ export function mountLiveSettings(): void {
   type DictationSettings = { toggleShortcut: string; holdToTalkShortcut: string; partialPreview: boolean; reviewBeforeInsert: boolean };
   let savedDictation: DictationSettings | null = null;
   const applyDictation = (data: DictationSettings) => {
-    input('dictationShortcut').value = data.toggleShortcut || 'Ctrl+Shift+Space'; input('dictationHoldShortcut').value = data.holdToTalkShortcut || 'Ctrl+Alt+Space';
+    input('dictationShortcut').value = data.toggleShortcut || 'Ctrl+Shift+Space'; input('dictationHoldShortcut').value = data.holdToTalkShortcut || 'Shift+Shift';
     input('dictationReview').checked = data.reviewBeforeInsert; input('dictationPreview').checked = data.partialPreview;
   };
   void nativeService<DictationSettings & { modelReady: boolean }>('dictation_settings').then(data => {

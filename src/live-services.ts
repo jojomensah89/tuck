@@ -40,7 +40,8 @@ export interface TelemetrySnapshot {
   stale?: boolean;
 }
 export interface DictationSnapshot {
-  status: 'disabled' | 'idle' | 'recording' | 'transcribing' | 'review' | 'error';
+  status: 'disabled' | 'idle' | 'starting' | 'recording' | 'transcribing' | 'processing' | 'cancelling' | 'review' | 'error';
+  previewsPaused?: boolean;
   transcript: string; error?: string | null; modelReady?: boolean;
   canInsert?: boolean;
   message?: string | null; settings?: DictationSettings; modelDownloadedBytes?: number;

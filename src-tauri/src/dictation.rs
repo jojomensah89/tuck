@@ -88,6 +88,7 @@ pub struct ShortcutProblems {
 #[serde(rename_all = "camelCase")]
 pub struct DictationSnapshot {
     pub status: String,
+    pub previews_paused: bool,
     pub model_installed: bool,
     pub model_downloaded_bytes: u64,
     pub transcript: Option<String>,
@@ -141,6 +142,7 @@ struct ActiveSession {
 }
 
 struct Runtime {
+    previews_paused: bool,
     status: String,
     message: Option<String>,
     transcript: Option<String>,
@@ -194,6 +196,7 @@ impl DictationService {
             app: RwLock::new(None),
             settings: RwLock::new(DictationSettings::default()),
             runtime: Mutex::new(Runtime {
+                previews_paused: false,
                 status: "idle".into(),
                 message: None,
                 transcript: None,
@@ -301,9 +304,11 @@ impl DictationService {
                 (problems, runtime.settings_notice.clone())
             })
             .unwrap_or_default();
+        let previews_paused = locked.as_ref().is_ok_and(|r| r.previews_paused);
         drop(locked);
         let active = resolution.active.as_ref();
         DictationSnapshot {
+            previews_paused,
             status,
             model_installed: active.is_some(),
             model_downloaded_bytes: downloaded,
@@ -326,6 +331,18 @@ impl DictationService {
         if let Some(app) = app {
             let _ = app.emit(EVENT_STATE, self.snapshot());
         }
+    }
+
+    fn session_status(&self, status: &str) {
+        if let Ok(mut runtime) = self.runtime.lock() {
+            if runtime.status == "cancelling"
+                || (status == "recording" && runtime.status != "starting")
+            {
+                return;
+            }
+            runtime.status = status.into();
+        }
+        self.emit_state();
     }
 
     fn set_status(&self, status: &str, message: Option<String>) {
@@ -425,6 +442,9 @@ impl DictationService {
             .runtime
             .lock()
             .map_err(|_| "Dictation service unavailable")?;
+        if runtime.status == "cancelling" {
+            return Err("Dictation is cancelling. Wait for the speech engine to finish before recording again.".into());
+        }
         if runtime.active.is_some() || runtime.removing_model || runtime.status == "inserting" {
             return Err("Dictation is already recording or transcribing".into());
         }
@@ -434,6 +454,7 @@ impl DictationService {
         runtime.review_target = None;
         runtime.message = None;
         runtime.active = Some(ActiveSession { stop, cancel, mode });
+        runtime.previews_paused = false;
         runtime.status = "starting".into();
         Ok(())
     }
@@ -1612,6 +1633,51 @@ pub fn dictation_model_download_cancel(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cancellation_cannot_be_overwritten_and_refuses_a_new_session() {
+        let service = DictationService::new();
+        service
+            .claim_session(
+                Arc::new(AtomicBool::new(false)),
+                Arc::new(AtomicBool::new(false)),
+                RecordingMode::Toggle,
+            )
+            .unwrap();
+        service.cancel().unwrap();
+        for phase in ["recording", "transcribing", "processing"] {
+            service.session_status(phase);
+        }
+        assert_eq!(service.runtime.lock().unwrap().status, "cancelling");
+        assert!(service
+            .claim_session(
+                Arc::new(AtomicBool::new(false)),
+                Arc::new(AtomicBool::new(false)),
+                RecordingMode::Toggle
+            )
+            .unwrap_err()
+            .contains("Wait for the speech engine"));
+    }
+
+    #[test]
+    fn recording_only_follows_starting_and_preview_pause_resets() {
+        let service = DictationService::new();
+        service.session_status("recording");
+        assert_eq!(service.runtime.lock().unwrap().status, "idle");
+        service.runtime.lock().unwrap().previews_paused = true;
+        service
+            .claim_session(
+                Arc::new(AtomicBool::new(false)),
+                Arc::new(AtomicBool::new(false)),
+                RecordingMode::Toggle,
+            )
+            .unwrap();
+        assert!(!service.runtime.lock().unwrap().previews_paused);
+        service.session_status("recording");
+        service.session_status("processing");
+        service.session_status("recording");
+        assert_eq!(service.runtime.lock().unwrap().status, "processing");
+    }
 
     #[test]
     fn settings_default_to_explicit_hotkeys_and_immediate_insert() {

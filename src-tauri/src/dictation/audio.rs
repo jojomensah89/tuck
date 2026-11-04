@@ -34,9 +34,6 @@ const PREVIEW_BUDGET: Duration = Duration::from_secs(8);
 const AUDIO_CTX_PER_SECOND: i32 = 50;
 const AUDIO_CTX_MARGIN: i32 = 100;
 const AUDIO_CTX_FULL: i32 = 1500;
-/// Language detection from the first seconds decides the final pass only when it is this
-/// sure. Otherwise a silent start could force the wrong language on the whole recording.
-const LANGUAGE_CONFIDENT: f32 = 0.8;
 
 #[path = "audio_math.rs"]
 mod audio_math;
@@ -45,6 +42,8 @@ use audio_math::{release_audio_frames, resample_to_16k, try_reserve_audio_frames
 /// What a session reports as it goes.
 trait SessionEvents: Sync {
     fn recording(&self);
+    fn processing(&self) {}
+    fn previews_paused(&self) {}
     fn transcribing(&self);
     fn partial(&self, text: &str);
 }
@@ -66,8 +65,8 @@ impl AbortSignal<'_> {
 
 /// The inference side of a session. Whisper in the app, a scripted stand-in in tests.
 trait Engine {
-    /// Runs once, before the first preview. It has no budget: its result saves the same
-    /// pass on every later run, and it cannot be interrupted.
+    /// Runs once before previews. Its language hint is reused only by previews.
+    /// This pass cannot be interrupted and is separate from the preview budget.
     fn prepare(&mut self, _audio: &[f32]) {}
     fn preview(&mut self, audio: &[f32], abort: &AbortSignal<'_>) -> Result<String, String>;
     fn finish(&mut self, audio: &[f32], abort: &AbortSignal<'_>) -> Result<String, String>;
@@ -131,10 +130,19 @@ struct AppEvents<'a> {
 
 impl SessionEvents for AppEvents<'_> {
     fn recording(&self) {
-        self.service.set_status("recording", None);
+        self.service.session_status("recording");
     }
     fn transcribing(&self) {
-        self.service.set_status("transcribing", None);
+        self.service.session_status("transcribing");
+    }
+    fn processing(&self) {
+        self.service.session_status("processing");
+    }
+    fn previews_paused(&self) {
+        if let Ok(mut runtime) = self.service.runtime.lock() {
+            runtime.previews_paused = true;
+        }
+        self.service.emit_state();
     }
     fn partial(&self, text: &str) {
         let _ = self.app.emit(
@@ -247,7 +255,10 @@ fn run_session<E: Engine, S>(
                     Ok(())
                 }
             }
-            CaptureEnd::Failed(error) => Err(error),
+            CaptureEnd::Failed(error) => {
+                events.processing();
+                Err(error)
+            }
         };
         drop(job_tx);
         let engine_result = engine
@@ -278,7 +289,7 @@ fn capture_loop<S>(
     let sample_rate = capture.sample_rate as usize;
     let started = Instant::now();
     let cap = sample_rate.saturating_mul(limits.max_seconds);
-    let mut samples = Zeroizing::new(Vec::<f32>::new());
+    let mut samples = Zeroizing::new(Vec::<f32>::with_capacity(cap));
     let mut next_preview = limits.preview_interval;
     let fail = |capture: &mut Capture<S>, samples: &mut Zeroizing<Vec<f32>>, error: String| {
         capture.stream.take();
@@ -322,7 +333,9 @@ fn capture_loop<S>(
                 );
             }
         }
-        if started.elapsed() >= next_preview
+        if !stop.load(Ordering::Acquire)
+            && !cancel.load(Ordering::Acquire)
+            && started.elapsed() >= next_preview
             && samples.len() >= sample_rate * PREVIEW_MIN_SECONDS
             && flags.ready.load(Ordering::Acquire)
             && !flags.previews_off.load(Ordering::Acquire)
@@ -396,6 +409,10 @@ fn engine_thread<E: Engine>(
     while let Ok(job) = job_rx.recv() {
         match job {
             EngineJob::Preview(mut audio) => {
+                if cancel.load(Ordering::Acquire) || flags.preview_stop.load(Ordering::Acquire) {
+                    flags.preview_busy.store(false, Ordering::Release);
+                    continue;
+                }
                 if !prepared {
                     prepared = true;
                     engine.prepare(&audio);
@@ -415,6 +432,7 @@ fn engine_thread<E: Engine>(
                     .store(took.as_millis() as u64, Ordering::Release);
                 if took >= limits.preview_budget {
                     flags.previews_off.store(true, Ordering::Release);
+                    events.previews_paused();
                 }
                 if let Ok(mut text) = outcome {
                     let trimmed = text.trim();
@@ -439,13 +457,11 @@ fn engine_thread<E: Engine>(
     result
 }
 
-/// One state for the whole session, so a preview and the final pass never hold two sets of
-/// buffers. Language detection is a full encoder pass, so it runs once and is reused.
+/// Preview buffers are released before final full-context inference.
 struct WhisperEngine {
     _context: WhisperContext,
-    state: WhisperState,
+    state: Option<WhisperState>,
     preview_language: Option<&'static str>,
-    final_language: Option<&'static str>,
 }
 
 impl WhisperEngine {
@@ -457,31 +473,25 @@ impl WhisperEngine {
             .map_err(|e| format!("Could not start local transcription: {e}"))?;
         Ok(Self {
             _context: context,
-            state,
+            state: Some(state),
             preview_language: None,
-            final_language: None,
         })
     }
 }
 
 impl Engine for WhisperEngine {
     fn prepare(&mut self, audio: &[f32]) {
-        let threads = inference_threads() as usize;
-        if self.state.pcm_to_mel(audio, threads).is_err() {
+        if !self._context.is_multilingual() {
+            self.preview_language = Some("en");
             return;
         }
-        // English-only models refuse this, and need no language anyway.
-        let Ok((id, probabilities)) = self.state.lang_detect(0, threads) else {
+        let threads = inference_threads() as usize;
+        let state = self.state.as_mut().expect("preview state");
+        if state.pcm_to_mel(audio, threads).is_err() {
             return;
-        };
-        let language = whisper_rs::get_lang_str(id);
-        self.preview_language = language;
-        let sure = usize::try_from(id)
-            .ok()
-            .and_then(|index| probabilities.get(index))
-            .is_some_and(|probability| *probability >= LANGUAGE_CONFIDENT);
-        if sure {
-            self.final_language = language;
+        }
+        if let Ok((id, _)) = state.lang_detect(0, threads) {
+            self.preview_language = whisper_rs::get_lang_str(id);
         }
     }
 
@@ -492,7 +502,7 @@ impl Engine for WhisperEngine {
             .saturating_add(AUDIO_CTX_MARGIN)
             .min(AUDIO_CTX_FULL);
         transcribe(
-            &mut self.state,
+            self.state.as_mut().expect("preview state"),
             self.preview_language,
             audio,
             abort,
@@ -501,7 +511,22 @@ impl Engine for WhisperEngine {
     }
 
     fn finish(&mut self, audio: &[f32], abort: &AbortSignal<'_>) -> Result<String, String> {
-        transcribe(&mut self.state, self.final_language, audio, abort, None)
+        if abort.requested() {
+            return Err("Dictation cancelled".into());
+        }
+        // Drop narrowed preview buffers BEFORE allocating a full-context state. A short
+        // opening guess is never sufficient evidence to force the final language.
+        drop(self.state.take());
+        let mut state = self
+            ._context
+            .create_state()
+            .map_err(|e| format!("Could not start final transcription: {e}"))?;
+        let language = if self._context.is_multilingual() {
+            None
+        } else {
+            Some("en")
+        };
+        transcribe(&mut state, language, audio, abort, None)
     }
 }
 
@@ -680,6 +705,9 @@ fn transcribe(
     abort: &AbortSignal<'_>,
     audio_ctx: Option<i32>,
 ) -> Result<String, String> {
+    if abort.requested() {
+        return Err("Dictation cancelled".into());
+    }
     let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
     params.set_language(language);
     params.set_print_progress(false);
@@ -785,9 +813,17 @@ mod tests {
         recording: AtomicUsize,
         transcribing: AtomicUsize,
         partials: AtomicUsize,
+        paused: AtomicUsize,
+        processing: AtomicUsize,
     }
 
     impl SessionEvents for RecordedEvents {
+        fn processing(&self) {
+            self.processing.fetch_add(1, Ordering::SeqCst);
+        }
+        fn previews_paused(&self) {
+            self.paused.fetch_add(1, Ordering::SeqCst);
+        }
         fn recording(&self) {
             self.recording.fetch_add(1, Ordering::SeqCst);
         }
@@ -923,6 +959,46 @@ mod tests {
         )
     }
 
+    #[test]
+    fn stopped_or_cancelled_preview_jobs_skip_language_preparation() {
+        struct NeverPrepare;
+        impl Engine for NeverPrepare {
+            fn prepare(&mut self, _: &[f32]) {
+                panic!("stopped preview prepared");
+            }
+            fn preview(&mut self, _: &[f32], _: &AbortSignal<'_>) -> Result<String, String> {
+                panic!("stopped preview ran");
+            }
+            fn finish(&mut self, _: &[f32], _: &AbortSignal<'_>) -> Result<String, String> {
+                unreachable!()
+            }
+        }
+        for cancelled in [false, true] {
+            let flags = EngineFlags {
+                ready: AtomicBool::new(false),
+                failed: AtomicBool::new(false),
+                preview_busy: AtomicBool::new(true),
+                previews_off: AtomicBool::new(false),
+                last_preview_ms: AtomicU64::new(0),
+                preview_stop: AtomicBool::new(!cancelled),
+            };
+            let (tx, rx) = bounded(1);
+            tx.send(EngineJob::Preview(Zeroizing::new(vec![0.0; 32000])))
+                .unwrap();
+            drop(tx);
+            let _ = engine_thread(
+                || Ok(NeverPrepare),
+                rx,
+                &RecordedEvents::default(),
+                &flags,
+                &Mutex::new(None),
+                limits(1, 10),
+                &AtomicBool::new(cancelled),
+            );
+            assert!(!flags.preview_busy.load(Ordering::Acquire));
+        }
+    }
+
     /// The blocker from review: inference used to run on the loop that drains audio, so a
     /// slow preview filled the queue and the whole recording was thrown away.
     #[test]
@@ -1006,6 +1082,7 @@ mod tests {
         player.join().unwrap();
         assert_eq!(result.unwrap(), "done");
         assert_eq!(harness.previews.load(Ordering::SeqCst), 1);
+        assert_eq!(events.paused.load(Ordering::SeqCst), 1);
     }
 
     /// Language detection takes a whole encoder pass. Counting it against the first preview
@@ -1100,6 +1177,7 @@ mod tests {
             &cancel,
         );
         assert_eq!(result.unwrap_err(), "The model failed its integrity check");
+        assert_eq!(events.processing.load(Ordering::SeqCst), 1);
         assert!(
             started.elapsed() < Duration::from_secs(1),
             "stopped at once"
@@ -1266,7 +1344,7 @@ mod tests {
         };
         let mut engine = WhisperEngine::load(std::path::Path::new(&model)).unwrap();
         let started = Instant::now();
-        let text = transcribe(&mut engine.state, None, clip, &abort, None).unwrap();
+        let text = transcribe(engine.state.as_mut().unwrap(), None, clip, &abort, None).unwrap();
         println!(
             "old preview, full window + language pass: {:?}: {text}",
             started.elapsed()
@@ -1274,10 +1352,9 @@ mod tests {
         let started = Instant::now();
         engine.prepare(clip);
         println!(
-            "language pass once: {:?}: preview {:?}, final {:?}",
+            "preview language pass: {:?}: preview {:?}",
             started.elapsed(),
-            engine.preview_language,
-            engine.final_language
+            engine.preview_language
         );
         let started = Instant::now();
         let text = engine.preview(clip, &abort);

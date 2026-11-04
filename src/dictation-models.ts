@@ -64,5 +64,5 @@ export function islandModelLine(activeLabel: string | null | undefined): string 
 
 /** Changing the model while a session uses it is refused by the backend too. */
 export function modelsLocked(status: string): boolean {
-  return ['starting', 'recording', 'transcribing', 'cancelling', 'inserting', 'review'].includes(status);
+  return ['starting', 'recording', 'transcribing', 'processing', 'cancelling', 'inserting', 'review'].includes(status);
 }

@@ -1,0 +1,25 @@
+{
+  "date": "2026-11-04",
+  "baselineCommit": "139deb32d013188284e441c75e69ea9abdf4349e",
+  "baselineExecutableSha256": "68F832C48B9C31FCB3E7EC6B76689E2D23375F9DBEC327E6286D1FC396FD2C59",
+  "afterExecutableSha256": "C9D3BBBE2EF0D410F53E1041CE1DD8ED5972F5615A6B9ABB23DF6B24B3359AC9",
+  "measurementIdentifier": "com.jojo.tuck-idle-audit",
+  "productionIdentifierChanged": false,
+  "baselineMeasuredPid": 9884,
+  "afterMeasuredPid": 18856,
+  "ownerInstanceStoppedOrConfigured": false,
+  "baselineReleaseExitCode": 0,
+  "afterReleaseExitCode": 0,
+  "finalCargoTestExitCode": 0,
+  "rustTestsPassed": 130,
+  "rustDiagnosticsIgnored": 7,
+  "finalClippyExitCode": 0,
+  "finalFmtCheckExitCode": 0,
+  "finalBunTestExitCode": 0,
+  "bunTestsPassed": 127,
+  "finalUiExitCodes": [
+    0,
+    0,
+    0
+  ]
+}

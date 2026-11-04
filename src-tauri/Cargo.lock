@@ -4789,9 +4789,11 @@ dependencies = [
  "tokio",
  "url",
  "uuid",
+ "webview2-com",
  "whisper-rs",
  "windows 0.58.0",
  "windows-core 0.58.0",
+ "windows-core 0.62.2",
  "zeroize",
 ]
 

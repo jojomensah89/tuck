@@ -1650,3 +1650,8 @@ body.fullscreen-hidden .island {
 
   .dictation-level i { transform: scaleY(0.3); }
 }
+
+/* Hidden pages have no animation work; the playing compact equalizer stays live. */
+#isl:not([data-state="open"]) .full * {
+  animation-play-state: paused !important;
+}

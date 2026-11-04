@@ -1,7 +1,6 @@
 //! Desktop peeks and the source of the volume/brightness HUD. Only lock-key state,
 //! volume-key state (when a level changes) and foreground input-language identity are
-//! examined, plus the time of the last input; arbitrary key presses and typed text are
-//! never collected. Volume and brightness are event-driven
+//! examined, plus the time of the last input; typed text and key logs are never collected. Volume and brightness are event-driven
 //! (`IAudioEndpointVolumeCallback`, WMI `WmiMonitorBrightnessEvent`); neither is polled.
 use serde::Serialize;
 use std::sync::mpsc;
@@ -227,6 +226,8 @@ mod native {
 
     pub enum Signal {
         Volume(u32, bool),
+        Wifi,
+        Keyboard,
         Brightness(u32),
         /// Default render device changed: rebuild the volume subscription.
         Rebind,
@@ -616,6 +617,50 @@ mod native {
             Some(service)
         }
     }
+    struct WifiWatch(windows::Win32::Foundation::HANDLE);
+    impl WifiWatch {
+        fn new() -> Option<Self> {
+            use windows::Win32::{Foundation::HANDLE, NetworkManagement::WiFi::*};
+            unsafe extern "system" fn changed(
+                _data: *mut L2_NOTIFICATION_DATA,
+                _context: *mut std::ffi::c_void,
+            ) {
+                if let Ok(sender) = SERVICE_TX.lock() {
+                    if let Some(sender) = sender.as_ref() {
+                        let _ = sender.send(Signal::Wifi);
+                    }
+                }
+            }
+            unsafe {
+                let mut handle = HANDLE::default();
+                let mut version = 0;
+                if WlanOpenHandle(2, None, &mut version, &mut handle) != 0 {
+                    return None;
+                }
+                if WlanRegisterNotification(
+                    handle,
+                    WLAN_NOTIFICATION_SOURCE_ACM,
+                    true,
+                    Some(changed),
+                    None,
+                    None,
+                    None,
+                ) != 0
+                {
+                    let _ = WlanCloseHandle(handle, None);
+                    return None;
+                }
+                Some(Self(handle))
+            }
+        }
+    }
+    impl Drop for WifiWatch {
+        fn drop(&mut self) {
+            unsafe {
+                let _ = windows::Win32::NetworkManagement::WiFi::WlanCloseHandle(self.0, None);
+            }
+        }
+    }
     fn wifi_connected() -> Option<bool> {
         use windows::Win32::{
             Foundation::HANDLE,
@@ -692,14 +737,26 @@ mod native {
         let mut audio = subscribe_endpoint(watcher.as_ref(), &sender);
         let mut previous_volume = audio.as_ref().and_then(EndpointSubscription::volume);
         let mut previous_device = audio.as_ref().map(|value| value.device_id.clone());
+        let wifi_watch = WifiWatch::new();
         let mut previous_wifi = wifi_connected();
         let mut caps = unsafe { GetKeyState(VK_CAPITAL.0 as i32) } & 1 != 0;
         let mut layout = None;
-        let mut cycles = 0u32;
+        let mut last_layout = std::time::Instant::now() - std::time::Duration::from_secs(1);
+        let mut last_wifi = std::time::Instant::now();
         loop {
             // A flyout lookup scheduled by a level change runs once Explorer settled.
             crate::osd_flyout::tick();
+            let mut wifi_changed = false;
+            let mut input_changed = false;
+            // Dictation owns raw keyboard registration. Keep Caps Lock's existing
+            // latency without registering a second input sink or a global keyboard hook.
             match receiver.recv_timeout(std::time::Duration::from_millis(250)) {
+                Ok(Signal::Keyboard) => {
+                    input_changed = true;
+                }
+                Ok(Signal::Wifi) => {
+                    wifi_changed = true;
+                }
                 Ok(Signal::Stop) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
                 Ok(Signal::Suspend) => {
                     audio = None;
@@ -771,21 +828,31 @@ mod native {
                 emit_brightness(&app, level);
             }
 
-            let next_caps = unsafe { GetKeyState(VK_CAPITAL.0 as i32) } & 1 != 0;
-            if caps != next_caps {
-                caps = next_caps;
-                peek(&app, "Caps Lock", if caps { "On" } else { "Off" });
-            }
-            let thread = unsafe { GetWindowThreadProcessId(GetForegroundWindow(), None) };
-            let next_layout = unsafe { GetKeyboardLayout(thread) }.0 as usize & 0xffff;
-            if let Some(old) = layout {
-                if old != next_layout {
-                    peek(&app, "Keyboard language", "Input language changed");
+            if input_changed
+                || input_age().is_none_or(|age| age < std::time::Duration::from_secs(2))
+            {
+                let next_caps = unsafe { GetKeyState(VK_CAPITAL.0 as i32) } & 1 != 0;
+                if caps != next_caps {
+                    caps = next_caps;
+                    peek(&app, "Caps Lock", if caps { "On" } else { "Off" });
                 }
             }
-            layout = Some(next_layout);
-            cycles += 1;
-            if cycles.is_multiple_of(8) {
+            if input_changed || last_layout.elapsed() >= std::time::Duration::from_secs(1) {
+                last_layout = std::time::Instant::now();
+                let thread = unsafe { GetWindowThreadProcessId(GetForegroundWindow(), None) };
+                let next_layout = unsafe { GetKeyboardLayout(thread) }.0 as usize & 0xffff;
+                if let Some(old) = layout {
+                    if old != next_layout {
+                        peek(&app, "Keyboard language", "Input language changed");
+                    }
+                }
+                layout = Some(next_layout);
+            }
+            if wifi_changed
+                || (wifi_watch.is_none()
+                    && last_wifi.elapsed() >= std::time::Duration::from_secs(30))
+            {
+                last_wifi = std::time::Instant::now();
                 if let Some(current) = wifi_connected() {
                     if previous_wifi.is_some_and(|previous| previous != current) {
                         peek(
@@ -798,6 +865,7 @@ mod native {
                 }
             }
         }
+        drop(wifi_watch);
         drop(brightness_watch);
         drop(audio);
         drop(watcher);
@@ -901,6 +969,16 @@ mod native {
         assert!(notified);
     }
 }
+/// Foreground changes refresh input state without taking dictation's raw-input registration.
+#[cfg(windows)]
+pub(crate) fn input_state_changed() {
+    if let Ok(sender) = SERVICE_TX.lock() {
+        if let Some(sender) = sender.as_ref() {
+            let _ = sender.send(native::Signal::Keyboard);
+        }
+    }
+}
+
 pub fn start(app: AppHandle) {
     #[cfg(windows)]
     {

@@ -327,16 +327,29 @@ export function mountLivePages(onLayout: () => void): {
   }).then(unlisten => unlisteners.push(unlisten));
   void listenToEvent<string>('visualizer-error', () => { audioStatus.textContent = 'Playback analysis unavailable, check the output device'; }).then(unlisten => unlisteners.push(unlisten));
   void sessions();
-  void refreshTelemetry();
   void nativeService<DictationSnapshot>('dictation_snapshot').then(dictation).catch(() => { speechStatus.textContent = 'Dictation service unavailable, see Settings'; });
   void refreshClipboard().catch(() => { clipboardStatus.textContent = 'Clipboard service unavailable, see Settings'; });
-  const interval = window.setInterval(() => {
-    if (Date.now() - lastAudio > 1000) [...bars, ...wideBars].forEach(bar => bar.style.setProperty('--level', '0'));
-    if (telemetryGate.sampledAt && Date.now() - telemetryGate.sampledAt > 10000) invalidateTelemetry('Stale, warming up');
+  let interval: number | undefined;
+  let sessionInterval: number | undefined;
+  const visible = () => document.getElementById('isl')?.dataset.state === 'open';
+  const syncTimers = () => {
+    window.clearInterval(interval); window.clearInterval(sessionInterval);
+    interval = undefined; sessionInterval = undefined;
+    if (!visible()) return;
+    void sessions();
     if (stats.closest('.tab-panel.on')) void refreshTelemetry();
-  }, 1000);
-  const sessionInterval = window.setInterval(() => { void sessions(); }, 5000);
-  window.addEventListener('pagehide', () => { clearInterval(interval); clearInterval(sessionInterval); unlisteners.forEach(unlisten => unlisten()); }, { once: true });
+    interval = window.setInterval(() => {
+      if (Date.now() - lastAudio > 1000) [...bars, ...wideBars].forEach(bar => bar.style.setProperty('--level', '0'));
+      if (stats.closest('.tab-panel.on')) void refreshTelemetry();
+    }, 1000);
+    sessionInterval = window.setInterval(() => { void sessions(); }, 5000);
+  };
+  window.addEventListener('tuck-visibility', syncTimers);
+  window.addEventListener('pagehide', () => {
+    clearInterval(interval); clearInterval(sessionInterval);
+    window.removeEventListener('tuck-visibility', syncTimers);
+    unlisteners.forEach(unlisten => unlisten());
+  }, { once: true });
   return {
     media(state, position) { latestMedia = state; updatePosition(position); if (state.trackId !== currentTrack || !state.active) { currentTrack = state.trackId; void requestLyrics(state); } },
     position: updatePosition, compactLyric: () => currentLyric,

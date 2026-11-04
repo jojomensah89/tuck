@@ -7,10 +7,26 @@ use std::io::Read;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager, State};
 use uuid::Uuid;
 use zeroize::{Zeroize, Zeroizing};
+
+static CLIPBOARD_WAKE: Mutex<Option<std::sync::mpsc::Sender<()>>> = Mutex::new(None);
+pub(crate) fn clipboard_updated() {
+    if let Some(tx) = CLIPBOARD_WAKE
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .as_ref()
+    {
+        let _ = tx.send(());
+    }
+}
+pub(crate) fn listener_enabled(app: &AppHandle) -> bool {
+    app.state::<Arc<ClipboardHistoryService>>()
+        .snapshot()
+        .enabled
+}
 
 const EVENT_CHANGED: &str = "clipboard_history_changed";
 const EVENT_ERROR: &str = "clipboard_history_error";
@@ -149,6 +165,7 @@ impl ClipboardHistoryService {
                 .map_err(|_| "Clipboard settings unavailable")?;
             update_enabled(&mut state, enabled);
         }
+        crate::lifecycle::request_refresh();
         self.emit_changed();
         Ok(())
     }
@@ -193,6 +210,7 @@ impl ClipboardHistoryService {
             self.last_sequence
                 .store(current_clipboard_sequence(), Ordering::Release);
         }
+        crate::lifecycle::request_refresh();
         self.emit_changed();
         Ok(())
     }
@@ -233,6 +251,7 @@ impl ClipboardHistoryService {
             .lock()
             .map_err(|_| "Clipboard settings unavailable")?
             .persist_on_exit = persist;
+        crate::lifecycle::request_refresh();
         self.emit_changed();
         Ok(())
     }
@@ -285,6 +304,7 @@ impl ClipboardHistoryService {
             .lock()
             .map_err(|_| "Clipboard history unavailable")?
             .items = next;
+        crate::lifecycle::request_refresh();
         self.emit_changed();
         Ok(())
     }
@@ -313,6 +333,7 @@ impl ClipboardHistoryService {
             .lock()
             .map_err(|_| "Clipboard history unavailable")?
             .items = items.into_iter().collect();
+        crate::lifecycle::request_refresh();
         self.emit_changed();
         Ok(())
     }
@@ -342,6 +363,7 @@ impl ClipboardHistoryService {
             .lock()
             .map_err(|_| "Clipboard history unavailable")?
             .items = items.into_iter().collect();
+        crate::lifecycle::request_refresh();
         self.emit_changed();
         Ok(())
     }
@@ -356,6 +378,7 @@ impl ClipboardHistoryService {
         if let Ok(mut state) = self.inner.lock() {
             state.items.clear();
         }
+        crate::lifecycle::request_refresh();
         self.emit_changed();
         Ok(())
     }
@@ -613,6 +636,8 @@ pub fn start(app: AppHandle, service: &Arc<ClipboardHistoryService>) -> Result<(
         // A missing/invalid opt-in setting must not leave stale clipboard text on disk.
         service.remove_items_file(&app)?;
     }
+    let (tx, rx) = std::sync::mpsc::channel();
+    *CLIPBOARD_WAKE.lock().unwrap_or_else(|p| p.into_inner()) = Some(tx);
     let worker_service = service.clone();
     let stop = service.stop.clone();
     service
@@ -621,14 +646,27 @@ pub fn start(app: AppHandle, service: &Arc<ClipboardHistoryService>) -> Result<(
     std::thread::Builder::new()
         .name("tuck-clipboard-history".into())
         .spawn(move || {
-            while !stop.load(Ordering::Acquire) {
+            while rx.recv().is_ok() {
+                if stop.load(Ordering::Acquire) {
+                    break;
+                }
                 let (enabled, generation) = worker_service
                     .inner
                     .lock()
                     .map(|s| (s.enabled, s.generation))
                     .unwrap_or((false, 0));
                 if enabled {
-                    match read_clipboard_text() {
+                    // A producer can still hold the clipboard when Windows posts the event.
+                    // Retry briefly for this notification rather than polling at rest.
+                    let mut result = read_clipboard_text();
+                    for _ in 0..5 {
+                        if !matches!(result, Ok(None)) {
+                            break;
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(20));
+                        result = read_clipboard_text();
+                    }
+                    match result {
                         Ok(Some((sequence, text))) => {
                             let mut text = Zeroizing::new(text);
                             let previous = worker_service
@@ -652,7 +690,6 @@ pub fn start(app: AppHandle, service: &Arc<ClipboardHistoryService>) -> Result<(
                         }
                     }
                 }
-                std::thread::sleep(Duration::from_millis(350));
             }
         })
         .map_err(|e| format!("Could not start clipboard watcher: {e}"))?;
@@ -663,6 +700,7 @@ pub fn start(app: AppHandle, service: &Arc<ClipboardHistoryService>) -> Result<(
 /// Stop clipboard polling during the app exit path.
 pub fn stop(service: &Arc<ClipboardHistoryService>) {
     service.stop.store(true, Ordering::Release);
+    clipboard_updated();
 }
 
 fn valid_items(items: &[ClipboardHistoryItem]) -> bool {

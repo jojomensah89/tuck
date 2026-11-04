@@ -1,5 +1,18 @@
 use serde::Serialize;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
+static HIT_GEOMETRY_DIRTY: AtomicBool = AtomicBool::new(true);
+pub(crate) fn invalidate_hit_geometry() {
+    HIT_GEOMETRY_DIRTY.store(true, Ordering::Release);
+}
+
+pub(crate) fn cursor_poll_ms(near: bool) -> u64 {
+    if near {
+        40
+    } else {
+        120
+    }
+}
+
 static FULLSCREEN: AtomicBool = AtomicBool::new(false);
 static FULLSCREEN_AUTO_HIDE: AtomicBool = AtomicBool::new(true);
 static CURSOR_PAUSE_REASONS: AtomicU8 = AtomicU8::new(0);
@@ -177,6 +190,21 @@ pub fn compute_hit_bounds(
 /// Checks whether a physical cursor point falls within the given hit bounds.
 pub fn is_point_inside(bounds: &HitBounds, x: f64, y: f64) -> bool {
     x >= bounds.left && x <= bounds.right && y >= bounds.top && y <= bounds.bottom
+}
+
+/// Keep fast sampling within 200 CSS pixels, including across negative monitor origins.
+fn cursor_near(bounds: &HitBounds, x: f64, y: f64, scale: f64) -> bool {
+    let margin = 200.0 * scale;
+    is_point_inside(
+        &HitBounds {
+            left: bounds.left - margin,
+            right: bounds.right + margin,
+            top: bounds.top - margin,
+            bottom: bounds.bottom + margin,
+        },
+        x,
+        y,
+    )
 }
 
 /// Rectangle geometry for fullscreen classification.
@@ -541,9 +569,12 @@ pub fn start(app: AppHandle, hit_state: Arc<HitState>) {
         }
 
         let mut was_hovered = false;
+        let mut near = true;
+        #[cfg(windows)]
+        let mut geometry = None;
 
         loop {
-            std::thread::sleep(std::time::Duration::from_millis(40));
+            std::thread::sleep(std::time::Duration::from_millis(cursor_poll_ms(near)));
 
             let Some(win) = app_cursor.get_webview_window("main") else {
                 continue;
@@ -564,15 +595,20 @@ pub fn start(app: AppHandle, hit_state: Arc<HitState>) {
             unsafe {
                 let mut pt = POINT::default();
                 if GetCursorPos(&mut pt).is_ok() {
-                    if let (Ok(pos), Ok(size), Ok(sf)) =
-                        (win.outer_position(), win.outer_size(), win.scale_factor())
-                    {
+                    if geometry.is_none() || HIT_GEOMETRY_DIRTY.swap(false, Ordering::AcqRel) {
+                        geometry = win
+                            .outer_position()
+                            .ok()
+                            .zip(win.outer_size().ok())
+                            .zip(win.scale_factor().ok());
+                    }
+                    if let Some(((pos, size), sf)) = geometry {
                         let hit_w = hit_cursor.width.load(Ordering::Relaxed);
                         let hit_h = hit_cursor.height.load(Ordering::Relaxed);
-                        let bounds = compute_hit_bounds(
-                            pos.x, pos.y, size.width, sf, hit_w, hit_h, 6.0, // 6px slop
-                        );
+                        let bounds =
+                            compute_hit_bounds(pos.x, pos.y, size.width, sf, hit_w, hit_h, 6.0);
                         is_hovered = is_point_inside(&bounds, pt.x as f64, pt.y as f64);
+                        near = cursor_near(&bounds, pt.x as f64, pt.y as f64, sf);
                     }
                 }
             }
@@ -679,5 +715,32 @@ pub(crate) async fn set_autostart(app: AppHandle, enable: bool) -> Result<(), St
         app.autolaunch().enable().map_err(|e| e.to_string())
     } else {
         app.autolaunch().disable().map_err(|e| e.to_string())
+    }
+}
+
+#[cfg(test)]
+mod idle_cursor_tests {
+    use super::*;
+    #[test]
+    fn fast_region_preserves_hit_bounds_and_scales_on_negative_monitors() {
+        let bounds = HitBounds {
+            left: -1000.0,
+            right: -800.0,
+            top: 0.0,
+            bottom: 40.0,
+        };
+        assert!(!is_point_inside(&bounds, -1200.0, 200.0));
+        assert!(cursor_near(&bounds, -1200.0, 200.0, 1.5));
+        assert!(cursor_near(&bounds, -1300.0, 340.0, 1.5));
+        assert!(!cursor_near(&bounds, -1300.1, 340.0, 1.5));
+        assert!(!cursor_near(&bounds, -1000.0, 341.0, 1.5));
+        assert_eq!(
+            cursor_poll_ms(cursor_near(&bounds, -1200.0, 200.0, 1.5)),
+            40
+        );
+        assert_eq!(
+            cursor_poll_ms(cursor_near(&bounds, -1400.0, 200.0, 1.5)),
+            120
+        );
     }
 }

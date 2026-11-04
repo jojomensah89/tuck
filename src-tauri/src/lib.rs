@@ -2,6 +2,7 @@ pub mod clipboard_history;
 pub mod desktop_signals;
 pub mod dictation;
 pub mod extensions;
+mod idle_webview;
 pub mod installed_usage;
 pub mod lifecycle;
 pub mod lyrics;
@@ -65,6 +66,7 @@ pub fn run() {
         .manage(hit_state)
         .invoke_handler(tauri::generate_handler![
             set_hit,
+            idle_webview::island_activity,
             dictation::dictation_get_state,
             dictation::dictation_set_settings,
             dictation::dictation_model_download,
@@ -197,18 +199,28 @@ pub fn run() {
 
                 // Listen for scale and display changes to keep centered, and handle keyboard focus restore
                 let win_clone = main_win.clone();
-                main_win.on_window_event(move |event| match event {
-                    WindowEvent::ScaleFactorChanged { .. } | WindowEvent::Moved(_) => {
-                        let _ = system::center_on_primary_monitor(&win_clone);
+                main_win.on_window_event(move |event| {
+                    if matches!(
+                        event,
+                        WindowEvent::Moved(_)
+                            | WindowEvent::Resized(_)
+                            | WindowEvent::ScaleFactorChanged { .. }
+                    ) {
+                        system::invalidate_hit_geometry();
                     }
-                    WindowEvent::Focused(false) =>
-                    {
-                        #[cfg(windows)]
-                        if let Ok(hwnd) = win_clone.hwnd() {
-                            system::set_island_focusable(HWND(hwnd.0 as _), false);
+                    match event {
+                        WindowEvent::ScaleFactorChanged { .. } | WindowEvent::Moved(_) => {
+                            let _ = system::center_on_primary_monitor(&win_clone);
                         }
+                        WindowEvent::Focused(false) =>
+                        {
+                            #[cfg(windows)]
+                            if let Ok(hwnd) = win_clone.hwnd() {
+                                system::set_island_focusable(HWND(hwnd.0 as _), false);
+                            }
+                        }
+                        _ => {}
                     }
-                    _ => {}
                 });
             }
 

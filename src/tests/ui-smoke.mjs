@@ -15,6 +15,14 @@ try {
   };
   await context.route('http://tuck.test/**', serveDist);
   const page = await context.newPage();
+  const instrumentTimers = () => {
+    const active = new Set();
+    const start = window.setInterval.bind(window), stop = window.clearInterval.bind(window);
+    window.setInterval = (callback, delay, ...args) => { const id = start(callback, delay, ...args); active.add(id); return id; };
+    window.clearInterval = id => { active.delete(id); stop(id); };
+    window.__idleIntervals = active;
+  };
+  await context.addInitScript(instrumentTimers);
   const errors = [];
   page.on('pageerror',error => errors.push(error.message));
   await page.goto('http://tuck.test/');
@@ -168,6 +176,7 @@ try {
   await context.addInitScript(nativeBridge);
   const native=await context.newPage();const nativeErrors=[];native.on('pageerror',error=>nativeErrors.push(error.message));
   await native.goto('http://tuck.test/');await native.waitForTimeout(100);
+  assert.equal(await native.evaluate(() => window.__idleIntervals.size), 0, 'No intervals while collapsed without running activities');
   assert.equal(await native.locator('.page.todos').count(), 0, 'Todos feature must be completely removed');
   // Volume/brightness HUD from a mocked native level event
   const hudState = () => native.locator('#isl').evaluate(el => [el.dataset.state, el.dataset.hud ?? null]);
@@ -735,6 +744,7 @@ try {
   const motionContext = await browser.newContext({viewport:{width:520,height:230}, reducedMotion:'no-preference'});
   await motionContext.route('http://tuck.test/**', serveDist);
   await motionContext.addInitScript(nativeBridge);
+  await motionContext.addInitScript(instrumentTimers);
   const motion = await motionContext.newPage();
   const motionErrors = []; motion.on('pageerror',error=>motionErrors.push(error.message));
   await motion.goto('http://tuck.test/');
@@ -768,7 +778,20 @@ try {
   await emitTrack(`${longTitle} again`,false);
   await motion.waitForTimeout(1600);
   assert.deepEqual(await running(),[],'The equalizer stops on pause and nothing else runs');
+  assert.equal(await motion.evaluate(() => window.__idleIntervals.size), 0, 'Pausing collapsed media parks all intervals');
   assert.deepEqual(motionErrors,[]);
+  // The compact clock stays accurate with one minute-aligned timeout, without an interval.
+  const idleClock = await context.newPage();
+  const minuteEdge = new Date('2026-11-04T12:00:59.900Z');
+  await idleClock.clock.install({time:new Date(minuteEdge.getTime() - 1000)});
+  await idleClock.clock.pauseAt(minuteEdge);
+  await idleClock.goto('http://tuck.test/');
+  const beforeMinute = await idleClock.locator('.compact').innerText();
+  await idleClock.clock.runFor(200);
+  assert.notEqual(await idleClock.locator('.compact').innerText(), beforeMinute, 'Collapsed clock advances at the next minute');
+  assert.equal(await idleClock.evaluate(() => window.__idleIntervals.size), 0, 'The minute clock does not start an interval');
+  await idleClock.close();
+
   console.log('UI smoke passed: geometry, tab rail (keys, wheel edges, swipe, memory), accessibility, keyboard seeking, timers, collapsed media text and its running animations, usage rings, section marks, icon buttons, persistence errors, volume/brightness HUD, wheel and middle-click volume, the pill-sized strip on the open island, queued flyout failure, return to open after HUD, HUD setting, charger-ramp brightness, flyout opt-in, native-bridge call priority, shelf, focused radio updates, drag hold and previews.');
 } finally { await browser.close(); }
 

@@ -225,6 +225,30 @@ window.addEventListener('storage', (e) => {
 /* ================= State Machine ================= */
 
 let state: IslandState = 'idle';
+let seekInterval: number | undefined;
+let openInterval: number | undefined;
+let compactClockTimeout: number | undefined;
+function syncIdleTimers(): void {
+  window.clearInterval(seekInterval);
+  window.clearInterval(openInterval);
+  window.clearTimeout(compactClockTimeout);
+  seekInterval = undefined;
+  openInterval = undefined;
+  if (mediaState.active && mediaState.playing) seekInterval = window.setInterval(tick, 200);
+  if (state === 'open') {
+    tick(); renderToday(); renderMediaHeader(); renderUsage();
+    void fetchUsageNow();
+    openInterval = window.setInterval(() => { renderToday(); renderMediaHeader(); renderUsage(); }, 1000);
+  }
+  if (state !== 'open' && !mediaState.playing) {
+    compactClockTimeout = window.setTimeout(() => {
+      renderCompact();
+      syncIdleTimers();
+    }, 60000 - Date.now() % 60000 + 10);
+  }
+  window.dispatchEvent(new Event('tuck-visibility'));
+}
+
 let closeTimer = 0;
 let openTimer = 0;
 let hoverInside = false;
@@ -275,6 +299,8 @@ function setState(next: IslandState): void {
   isl.style.width = `${w}px`;
   isl.style.height = `${h}px`;
   isl.dataset.state = next;
+  if (isTauri()) void invokeCommand('island_activity', { active: next !== 'idle' || hoverInside });
+  syncIdleTimers();
   if (next === 'peek' && hud.visible(Date.now())) isl.dataset.hud = hud.reading!.kind;
   else delete isl.dataset.hud;
 
@@ -315,6 +341,7 @@ function syncFlyoutPause(): void {
 
 function onHover(inside: boolean): void {
   hoverInside = inside;
+  if (isTauri()) void invokeCommand('island_activity', { active: inside || state !== 'idle' });
   window.clearTimeout(closeTimer);
   window.clearTimeout(openTimer);
   // The HUD owns the shell until it times out; hover is re-read when it leaves
@@ -351,6 +378,7 @@ const rail = mountTabRail({
   initial: livePreferences.lastTab,
   isOpen: () => state === 'open',
   onChange: id => {
+    window.dispatchEvent(new Event('tuck-visibility'));
     if (id !== 'media') return;
     fitTitle();
     renderMediaHeader();
@@ -535,6 +563,7 @@ function onMediaUpdate(payload: MediaState): void {
   ($('prev') as HTMLButtonElement).disabled = !mediaState.active || mediaState.canSkipPrev === false;
   ($('next') as HTMLButtonElement).disabled = !mediaState.active || mediaState.canSkipNext === false;
   live.media(mediaState, currentPosition());
+  syncIdleTimers();
   renderCompact();
 }
 
@@ -560,7 +589,7 @@ function tick(): void {
   trackSlider.setAttribute('aria-disabled', String(!mediaState.active || mediaState.canSeek === false || mediaState.durationMs <= 0));
 }
 
-setInterval(tick, 200);
+
 
 $('play').onclick = (e) => {
   e.stopPropagation();
@@ -939,11 +968,7 @@ function renderPower(): void {
   renderCompact();
 }
 
-setInterval(() => {
-  renderToday();
-  renderMediaHeader();
-  if (state !== 'open') renderCompact();
-}, 1000);
+
 
 /* ================= Live Activities ================= */
 
@@ -1076,9 +1101,7 @@ function onUsageUpdate(meters: Meter[]): void {
 }
 
 window.addEventListener('storage', () => { renderUsage(); });
-setInterval(() => {
-  renderUsage();
-}, 30000);
+
 
 /* ================= Quick Actions ================= */
 
@@ -1409,8 +1432,3 @@ renderUsage();
 renderMedia();
 renderCompact();
 setState('idle');
-
-// Refresh usage meters periodically
-setInterval(() => {
-  void fetchUsageNow();
-}, 60000);

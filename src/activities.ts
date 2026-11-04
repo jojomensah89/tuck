@@ -59,6 +59,7 @@ class ActivitiesRegistry {
     const top = this.getTopActivity();
     this.listeners.forEach((fn) => fn(all, top));
     if (persist) this.saveState();
+    this.startTicker();
   }
 
   public getAll(): Activity[] {
@@ -82,6 +83,11 @@ class ActivitiesRegistry {
   }
 
   private startTicker(): void {
+    if (!this.hasRunningActivities()) {
+      if (this.ticker) clearInterval(this.ticker);
+      this.ticker = null;
+      return;
+    }
     if (this.ticker) return;
     this.ticker = setInterval(() => {
       let changed = false;

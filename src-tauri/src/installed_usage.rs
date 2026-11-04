@@ -8,14 +8,19 @@ use std::{
     process::{Child, ChildStdin, Command, Stdio},
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
-        mpsc, Mutex, OnceLock,
+        mpsc, Condvar, Mutex, OnceLock,
     },
     time::{Duration, Instant},
 };
 use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
 static EPOCH: AtomicU64 = AtomicU64::new(0);
 static ENABLED: AtomicBool = AtomicBool::new(false);
-static REFRESH: AtomicBool = AtomicBool::new(true);
+static REFRESH: Mutex<bool> = Mutex::new(true);
+static WAKE: Condvar = Condvar::new();
+fn request_refresh() {
+    *REFRESH.lock().unwrap_or_else(|p| p.into_inner()) = true;
+    WAKE.notify_all();
+}
 static METERS: Mutex<Vec<Meter>> = Mutex::new(Vec::new());
 static SETTINGS_PATH: OnceLock<PathBuf> = OnceLock::new();
 pub fn snapshot() -> Vec<Meter> {
@@ -49,7 +54,7 @@ pub fn set_installed_usage_enabled(window: WebviewWindow, enabled: bool) -> Resu
     let mut cache = METERS.lock().unwrap_or_else(|p| p.into_inner());
     EPOCH.fetch_add(1, Ordering::SeqCst);
     ENABLED.store(enabled, Ordering::SeqCst);
-    REFRESH.store(true, Ordering::Relaxed);
+    request_refresh();
     if !enabled {
         cache.clear();
     }
@@ -57,7 +62,7 @@ pub fn set_installed_usage_enabled(window: WebviewWindow, enabled: bool) -> Resu
 }
 #[tauri::command]
 pub fn refresh_installed_usage() {
-    REFRESH.store(true, Ordering::Relaxed);
+    request_refresh();
 }
 /// Why a probe returned no quota. Only `NotConnected` keeps a provider off the island:
 /// the client is missing, signed out, or on an account without subscription limits.
@@ -448,8 +453,10 @@ pub fn start(app: AppHandle) {
         let mut last = Instant::now() - Duration::from_secs(300);
         loop {
             if ENABLED.load(Ordering::Relaxed)
-                && (REFRESH.swap(false, Ordering::Relaxed)
-                    || last.elapsed() >= Duration::from_secs(300))
+                && ({
+                    let mut refresh = REFRESH.lock().unwrap_or_else(|p| p.into_inner());
+                    std::mem::take(&mut *refresh)
+                } || last.elapsed() >= Duration::from_secs(300))
             {
                 let epoch = EPOCH.load(Ordering::SeqCst);
                 let previous = METERS.lock().unwrap_or_else(|p| p.into_inner()).clone();
@@ -477,7 +484,19 @@ pub fn start(app: AppHandle) {
                 }
                 last = Instant::now();
             }
-            std::thread::sleep(Duration::from_secs(1));
+            let refresh = REFRESH.lock().unwrap_or_else(|p| p.into_inner());
+            if ENABLED.load(Ordering::Relaxed) {
+                let due = Duration::from_secs(300).saturating_sub(last.elapsed());
+                let _ = WAKE
+                    .wait_timeout_while(refresh, due, |refresh| !*refresh)
+                    .unwrap_or_else(|p| p.into_inner());
+            } else {
+                let _guard = WAKE
+                    .wait_while(refresh, |refresh| {
+                        !ENABLED.load(Ordering::Relaxed) || !*refresh
+                    })
+                    .unwrap_or_else(|p| p.into_inner());
+            }
         }
     });
 }

@@ -163,9 +163,41 @@ mod native {
         location_pid: u32,
         location_debounce: Debouncer,
         fullscreen_timer: bool,
+        clipboard_listener: bool,
     }
 
     impl Context {
+        fn update_clipboard_listener(&mut self) {
+            use windows::Win32::System::DataExchange::{
+                AddClipboardFormatListener, RemoveClipboardFormatListener,
+            };
+            let enabled = crate::clipboard_history::listener_enabled(&self.app);
+            if enabled == self.clipboard_listener {
+                return;
+            }
+            let result = unsafe {
+                if enabled {
+                    AddClipboardFormatListener(self.hwnd)
+                } else {
+                    RemoveClipboardFormatListener(self.hwnd)
+                }
+            };
+            match result {
+                Ok(()) => {
+                    self.clipboard_listener = enabled;
+                    if enabled {
+                        crate::clipboard_history::clipboard_updated();
+                    }
+                }
+                Err(error) => {
+                    let _ = self.app.emit(
+                        "clipboard_history_error",
+                        format!("Clipboard listener: {error}"),
+                    );
+                }
+            }
+        }
+
         fn emit_power(&self) {
             if let Some(power) = crate::system::read_power() {
                 let _ = self.app.emit("power", power);
@@ -243,6 +275,11 @@ mod native {
             }
             if pid == self.location_pid && (pid == 0 || !self.location_hook.0.is_null()) {
                 return;
+            }
+            if self.clipboard_listener {
+                let _ = unsafe {
+                    windows::Win32::System::DataExchange::RemoveClipboardFormatListener(self.hwnd)
+                };
             }
             self.unhook_location();
             if pid == 0 {
@@ -488,6 +525,7 @@ mod native {
                     LRESULT(0)
                 }
                 WM_TUCK_FOREGROUND => {
+                    crate::desktop_signals::input_state_changed();
                     context.watch_foreground();
                     context.refresh_layout();
                     LRESULT(0)
@@ -496,11 +534,20 @@ mod native {
                     context.location_changed();
                     LRESULT(0)
                 }
+                0x031D => {
+                    // WM_CLIPBOARDUPDATE
+                    if context.clipboard_listener {
+                        crate::clipboard_history::clipboard_updated();
+                    }
+                    LRESULT(0)
+                }
                 WM_TUCK_REFRESH => {
+                    context.update_clipboard_listener();
                     context.refresh_layout();
                     LRESULT(0)
                 }
                 WM_DISPLAYCHANGE | WM_SETTINGCHANGE => {
+                    crate::telemetry::invalidate_adapters();
                     context.refresh_layout();
                     DefWindowProcW(hwnd, message, wparam, lparam)
                 }
@@ -596,6 +643,7 @@ mod native {
             location_pid: 0,
             location_debounce: Debouncer::new(LOCATION_QUIET, LOCATION_MAX_WAIT),
             fullscreen_timer: false,
+            clipboard_listener: false,
         });
         let context_ptr = (&mut *context) as *mut Context;
         // A hidden top-level window (never shown) rather than HWND_MESSAGE: message-only
@@ -617,7 +665,6 @@ mod native {
             )?
         };
         EVENT_WINDOW.store(hwnd.0 as isize, Ordering::SeqCst);
-
         let session_registered = unsafe {
             WTSRegisterSessionNotification(hwnd, NOTIFY_FOR_THIS_SESSION)
                 .map_err(|error| eprintln!("WTS registration: {error}"))
@@ -661,6 +708,7 @@ mod native {
             instance,
         };
 
+        context.update_clipboard_listener();
         context.emit_power();
         context.watch_foreground();
         context.refresh_layout();

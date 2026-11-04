@@ -149,6 +149,7 @@ try {
       if(command==='usage_now')return [];
       if(command==='clipboard_get_state')return {enabled:false,persistOnExit:false,items:[]};
       if(command==='clipboard_configure')throw 'Fixture atomic save failure';
+      if(command==='plugin:updater|check'||command==='set_tray_update_title')return null;
       if(command==='get_autostart'||command==='installed_usage_enabled'||command==='fullscreen_now')return false;
       if(command==='volume_step')return {kind:'volume',level:40+args.delta,muted:false};
       if(command==='volume_toggle_mute')return {kind:'volume',level:40,muted:true};

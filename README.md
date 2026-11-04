@@ -31,6 +31,15 @@ Offline speech adds CMake and libclang build prerequisites. `prepare-native.ps1`
 
 Phase-two work is tracked in [the approved scope](docs/live-island-phase-two.md) and [integration verification](docs/phase-two-verification.md). Its PR remains a draft until independent review and checks finish.
 
+## Releases and Installation
+
+Packaged installers and updates are published automatically on GitHub Releases.
+
+> [!NOTE]
+> **Windows SmartScreen Notice:** Tuck is an open-source project and is not signed with a paid Microsoft Authenticode certificate. On first install, Windows SmartScreen will display an *"Unknown Publisher"* warning. Click **More info** &rarr; **Run anyway** to proceed.
+
+Tuck checks for updates automatically every 6 hours and allows one-click update installation from Settings or the system tray menu. See [Releasing Guide](docs/releasing.md) for full details on release automation and signing.
+
 ## Scope and setup
 
 See [feature inventory](docs/feature-matrix.md), [Windows verification](docs/windows-verification.md), and [usage setup](docs/usage-setup.md), [installed-client sources](docs/installed-client-usage.md), and [v1 integrations](docs/v1-integrations.md). Optional monitoring and startup require opt-in. API budgets cover API spending, not subscription prices. ChatGPT counts are manual estimates.

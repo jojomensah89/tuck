@@ -446,6 +446,19 @@ pub fn open_island(win: &WebviewWindow) -> Result<(), Box<dyn std::error::Error>
     Ok(())
 }
 
+/// Toggles keyboard navigation/expansion for the island:
+/// Emits `toggle-island` to the main window.
+pub fn toggle_island(win: &WebviewWindow) -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(windows)]
+    if let Ok(hwnd) = win.hwnd() {
+        set_island_focusable(HWND(hwnd.0 as _), true);
+    }
+    let _ = win.set_ignore_cursor_events(false);
+    let _ = win.show();
+    let _ = win.emit("toggle-island", ());
+    Ok(())
+}
+
 /// Tauri command to trigger island keyboard entry route.
 #[tauri::command]
 pub(crate) async fn open_island_cmd(app: AppHandle) -> Result<(), String> {
@@ -658,6 +671,15 @@ pub fn open_settings(app: &AppHandle) -> Result<(), String> {
     }
 }
 
+/// Opens or focuses settings.html and navigates to the specified view.
+pub fn open_settings_view(app: &AppHandle, view: &str) -> Result<(), String> {
+    open_settings(app)?;
+    if let Some(win) = app.get_webview_window("settings") {
+        let _ = win.emit("navigate-settings-view", view);
+    }
+    Ok(())
+}
+
 /// Frontend command to open settings window without phantom successes.
 #[tauri::command]
 pub(crate) async fn open_settings_cmd(app: AppHandle) -> Result<(), String> {
@@ -671,13 +693,42 @@ pub(crate) async fn get_autostart(app: AppHandle) -> Result<bool, String> {
     app.autolaunch().is_enabled().map_err(|e| e.to_string())
 }
 
+/// Handle to dynamic tray items for state synchronization.
+pub struct TrayItems {
+    pub autostart: tauri::menu::CheckMenuItem<tauri::Wry>,
+    pub check_updates: tauri::menu::MenuItem<tauri::Wry>,
+}
+
+/// Synchronizes the tray menu checkmark with the autostart setting.
+pub fn update_tray_autostart(app: &AppHandle, enabled: bool) {
+    if let Some(tray) = app.try_state::<TrayItems>() {
+        let _ = tray.autostart.set_checked(enabled);
+    }
+}
+
 /// Autostart enable/disable toggle.
 #[tauri::command]
 pub(crate) async fn set_autostart(app: AppHandle, enable: bool) -> Result<(), String> {
     use tauri_plugin_autostart::ManagerExt;
-    if enable {
+    let res = if enable {
         app.autolaunch().enable().map_err(|e| e.to_string())
     } else {
         app.autolaunch().disable().map_err(|e| e.to_string())
+    };
+    if res.is_ok() {
+        update_tray_autostart(&app, enable);
+    }
+    res
+}
+
+/// Updates the tray menu item title for updates (e.g. "Update to v0.2.0" or "Check for updates").
+#[tauri::command]
+pub(crate) fn set_tray_update_title(app: AppHandle, version: Option<String>) {
+    if let Some(tray) = app.try_state::<TrayItems>() {
+        let text = match version {
+            Some(v) => format!("Update to v{}", v),
+            None => "Check for updates".to_string(),
+        };
+        let _ = tray.check_updates.set_text(text);
     }
 }

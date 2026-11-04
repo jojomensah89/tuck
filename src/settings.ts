@@ -5,6 +5,7 @@ import { isTauri, setSecret, invokeCommand, listenToEvent } from './ipc.js';
 import { STORAGE_KEYS, getJson, saveJson } from './usage.js';
 import { describeResult, filterSettings, navTarget, type SearchEntry } from './settings-search.js';
 import { clearSaved, confirmThen, markSaved, onCommit, setStatus } from './settings-ui.js';
+import { checkForUpdates, getCachedUpdate, downloadAndInstallUpdate, type UpdateInfo } from './updater.js';
 import type { ShapeStyle, ChatGPTConfig } from './types.js';
 import pkg from '../package.json';
 
@@ -319,6 +320,22 @@ function initNativeToggles(): void {
     finally { startup.disabled = false; }
   });
 
+  void listenToEvent<boolean>('autostart-changed', enabled => {
+    startup.checked = enabled;
+    refreshPrivacy();
+  });
+  void listenToEvent<string>('navigate-settings-view', view => {
+    if (VIEWS.includes(view)) {
+      showView(view);
+      location.hash = `#${view}`;
+    }
+  });
+  void listenToEvent('check-for-updates-requested', () => {
+    showView('about');
+    location.hash = '#about';
+    $<HTMLButtonElement>('btnCheckUpdates')?.click();
+  });
+
   void invokeCommand<boolean>('installed_usage_enabled').then(value => { installed.checked = value; refreshPrivacy(); })
     .catch(() => setStatus('installedUsageStatus', 'Could not read usage preference.', 'error'));
   installed.addEventListener('change', async () => {
@@ -337,6 +354,96 @@ function initNativeToggles(): void {
   });
 }
 
+function initUpdates(): void {
+  const btnCheck = $<HTMLButtonElement>('btnCheckUpdates');
+  const btnInstall = $<HTMLButtonElement>('btnInstallUpdate');
+  const statusText = $('updateStatusText');
+  const rowAvailable = $('row-update-available');
+  const versionBadge = $('updateVersionBadge');
+  const updateNotes = $('updateNotes');
+  const progressWrap = $('updateProgressWrap');
+  const progressBar = $<HTMLElement>('updateProgressBar');
+  const progressLabel = $('updateProgressLabel');
+
+  if (!btnCheck) return;
+
+  if (!isTauri()) {
+    btnCheck.disabled = true;
+    if (statusText) statusText.textContent = 'Updates are available in the desktop app.';
+    return;
+  }
+
+  function showUpdateAvailable(info: UpdateInfo): void {
+    if (statusText) statusText.textContent = `Update to v${info.version} is available.`;
+    if (versionBadge) versionBadge.textContent = `v${info.version}`;
+    if (updateNotes) {
+      updateNotes.textContent = info.body || 'No release notes provided.';
+    }
+    if (rowAvailable) rowAvailable.hidden = false;
+  }
+
+  const cached = getCachedUpdate();
+  if (cached) {
+    showUpdateAvailable(cached);
+  }
+
+  btnCheck.addEventListener('click', async () => {
+    btnCheck.disabled = true;
+    const originalText = btnCheck.textContent;
+    btnCheck.textContent = 'Checking...';
+    if (statusText) statusText.textContent = 'Checking for updates...';
+
+    try {
+      const update = await checkForUpdates(true);
+      if (update) {
+        showUpdateAvailable(update);
+        markSaved(btnCheck);
+      } else {
+        if (statusText) statusText.textContent = `Tuck v${pkg.version} is up to date.`;
+        if (rowAvailable) rowAvailable.hidden = true;
+        markSaved(btnCheck);
+      }
+    } catch (err) {
+      console.warn('[updater] Manual check failed:', err);
+      if (statusText) statusText.textContent = 'Could not reach update server. Check your connection.';
+    } finally {
+      btnCheck.disabled = false;
+      btnCheck.textContent = originalText;
+    }
+  });
+
+  if (btnInstall) {
+    btnInstall.addEventListener('click', async () => {
+      btnInstall.disabled = true;
+      btnInstall.textContent = 'Downloading...';
+      if (progressWrap) progressWrap.hidden = false;
+
+      try {
+        await downloadAndInstallUpdate((downloaded, total) => {
+          if (total && total > 0) {
+            const pct = Math.min(100, Math.round((downloaded / total) * 100));
+            if (progressBar) progressBar.style.width = `${pct}%`;
+            if (progressLabel) {
+              const mbDl = (downloaded / (1024 * 1024)).toFixed(1);
+              const mbTot = (total / (1024 * 1024)).toFixed(1);
+              progressLabel.textContent = `Downloading... ${pct}% (${mbDl} / ${mbTot} MB)`;
+            }
+          } else {
+            const mbDl = (downloaded / (1024 * 1024)).toFixed(1);
+            if (progressLabel) progressLabel.textContent = `Downloading... ${mbDl} MB`;
+          }
+        });
+        if (progressLabel) progressLabel.textContent = 'Installing update... Tuck will restart.';
+      } catch (err) {
+        console.error('[updater] Download/install error:', err);
+        btnInstall.disabled = false;
+        btnInstall.textContent = 'Download and install';
+        if (progressLabel) progressLabel.textContent = 'Installation failed. Please try again.';
+      }
+    });
+  }
+}
+
 /* ================= Boot ================= */
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -346,6 +453,7 @@ document.addEventListener('DOMContentLoaded', () => {
   $('pickFloat')?.addEventListener('click', event => setShape('float', event.currentTarget as HTMLElement));
   markShape();
   initNativeToggles();
+  initUpdates();
   mountExtensionSettings();
   mountLiveSettings();
   initBudgets();

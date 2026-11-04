@@ -2,6 +2,7 @@ import {mountExtensions} from './extensions.js';
 import { mountLivePages } from './live-ui.js';
 import { LIVE_SETTINGS_KEY, readPreferences, writePreferences } from './live-state.js';
 import { mountTabRail } from './tab-rail.js';
+import { startBackgroundUpdateScheduler } from './updater.js';
 import './live.css';
 import {
   isTauri,
@@ -1211,6 +1212,19 @@ window.addEventListener('blur',()=>{keyboardMode=false;if(!nativeDragActive)onHo
 /* ================= Subscriptions & Native Events ================= */
 
 void listenToEvent<null>('open-island', () => { keyboardMode=true;window.clearTimeout(closeTimer);setState('open');isl.focus(); });
+void listenToEvent<null>('toggle-island', () => {
+  if (state === 'open') {
+    keyboardMode = false;
+    window.clearTimeout(closeTimer);
+    setState('idle');
+  } else {
+    keyboardMode = true;
+    window.clearTimeout(closeTimer);
+    setState('open');
+    isl.focus();
+  }
+});
+startBackgroundUpdateScheduler();
 void listenToEvent<boolean>('hover', (inside) => onHover(inside));
 void listenToEvent<boolean>('fullscreen', (hidden) => {
   document.body.classList.toggle('fullscreen-hidden', hidden);

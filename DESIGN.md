@@ -14,7 +14,7 @@ Surface #000000; raised #1c1c1e / hover #2c2c2e / active #3a3a3c. Ink #ffffff, s
 - Radius: 2, 4, 8 (controls), 12 (chips), 16; island 16 idle, 20 peek, 32 open; notch ears 14.
 - Type: Segoe UI Variable Text, Segoe UI, system-ui. Sizes 10, 11, 12, 13, 14, 20, 28, 40. Weights 400 and 500; 600 only for rare emphasis such as the track title and page headings. No negative tracking below 28px. Numbers use `tabular-nums`.
 - Icons: one hand-drawn line family (`src/icons.ts`) on a 20x20 grid: 1.5px stroke (`--stroke`, non-scaling so every size carries the same weight), round caps and joins, no icon fonts. Transport glyphs and small dots are filled with the same rounded outline. Sizes 10 (badge glyph), 14 (compact), 16, 20 (controls, chips, rail), 24 (play/pause).
-- Hit targets: 36px; 32px for media transport, the lyrics toggle and inline row actions (grip, radio icon); 24px for the section marks. Nothing smaller.
+- Hit targets: 36px; 32px for media transport, the lyrics toggle, the lyrics timing steppers and inline row actions (grip, radio icon); 24px for the section marks. Nothing smaller.
 - Icon buttons (`.icon-btn`): one line icon, 36px, `--ink-2` at rest and `--ink` with a `--raise` step on hover; the name is both `title` and `aria-label`. The one primary control of a group (play, record, start call timer) is a round `--raise` fill. Text labels stay only where an icon would be ambiguous (timer presets are numerals, row text is the content itself). Provider marks (`claude`, `anthropic`, `openai`) are the companies' own marks, unmodified and monochrome, for identification only (sources are in `src/icons.ts`); providers without one show their initial.
 
 ## Graphics instead of text

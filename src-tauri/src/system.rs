@@ -775,9 +775,20 @@ fn set_tray_update_title(app: &AppHandle, version: Option<&str>) {
     }
 }
 
-/// Only an idle or failed dictation may be interrupted by an update.
+/// A dictation that is doing work blocks an update. Resting states, including a missing
+/// model, must not: nothing can be finished or cancelled to get out of them.
 fn update_allowed_during(dictation_status: &str) -> bool {
-    matches!(dictation_status, "idle" | "error")
+    !matches!(
+        dictation_status,
+        "starting"
+            | "recording"
+            | "transcribing"
+            | "review"
+            | "inserting"
+            | "cancelling"
+            | "downloadingModel"
+            | "removingModel"
+    )
 }
 
 fn ensure_update_allowed(app: &AppHandle) -> Result<(), String> {
@@ -816,9 +827,10 @@ mod update_guard_tests {
     use super::update_allowed_during;
 
     #[test]
-    fn only_idle_and_error_allow_an_update() {
+    fn only_a_resting_dictation_allows_an_update() {
         assert!(update_allowed_during("idle"));
         assert!(update_allowed_during("error"));
+        assert!(update_allowed_during("modelMissing"));
         for busy in [
             "starting",
             "recording",

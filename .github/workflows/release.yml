@@ -73,6 +73,8 @@ jobs:
         uses: Swatinem/rust-cache@f0deed1e0edfc6a9be95417288c0e1099b1eeec3 # v2.7.7
         with:
           workspaces: src-tauri
+          # whisper-rs-sys does not rebuild when GGML_NATIVE changes, so no other job's cache
+          key: avx2-baseline
 
       - name: Prepare local speech build tools
         shell: pwsh
@@ -121,6 +123,8 @@ jobs:
         if: steps.metadata.outputs.should_release == 'true'
         run: bun run tauri build
         env:
+          # A fixed CPU target: AVX2, without AVX-512. See verify-cpu-baseline.
+          GGML_NATIVE: "OFF"
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
 
@@ -128,6 +132,11 @@ jobs:
         if: steps.metadata.outputs.should_release == 'true'
         shell: bash
         run: bash scripts/release-steps.sh verify-clean
+
+      - name: Confirm the CPU baseline
+        if: steps.metadata.outputs.should_release == 'true'
+        shell: bash
+        run: bash scripts/release-steps.sh verify-cpu-baseline
 
       - name: Verify the signature and write latest.json
         if: steps.metadata.outputs.should_release == 'true'

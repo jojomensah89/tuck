@@ -78,11 +78,15 @@ Tuck includes an in-app updater powered by `@tauri-apps/plugin-updater`.
 - **Checks:** 20 seconds after startup, then every 6 hours with a one-shot `setTimeout` rescheduled after each check. Nothing runs in between. Background failures stay quiet. Only a check you start reports an error.
 - **Tray:** `Check for updates` becomes `Update available (vX.Y.Z)`. Clicking it opens Settings at **About** and checks again.
 - **Settings:** **About** shows the current version and a **Check for updates** button. When an update is known, including one the background check finds while Settings is open, an **Update available** row shows the version, the notes and **Download and install**.
-- **Downloads:** Only after that click. Tuck refuses while dictation is doing anything other than idle or error.
+- **Downloads:** Only after that click. Tuck refuses while dictation is recording, transcribing, reviewing or inserting, or while a speech model is downloading or being removed. A missing speech model does not block an update.
 - **Install:** Tuck stops its background services and hands over to the installer. If the installer cannot start, Tuck restarts itself so those services come back.
 - **Island:** No update UI at all.
 
 ---
+
+## CPU requirement
+
+Releases set `GGML_NATIVE=OFF`, so the speech engine targets AVX2 rather than whichever CPU the build machine has. Without this, a release built on an AVX-512 runner would crash on PCs without it. AVX2 covers most PCs from about 2013 onward; dictation will not run on older CPUs. The `Confirm the CPU baseline` step fails the release if these settings ever stop applying, and the build job has its own cache key because `whisper-rs-sys` does not rebuild when this variable changes.
 
 ## 3. First release
 
@@ -95,6 +99,16 @@ git push origin v0.1.0
 ```
 
 `v0.1.0` has no GitHub release, and the pipeline treats it as a baseline. The merge then releases `v0.2.0` with only that PR in its notes. Without the tag, the run stops with an error rather than releasing the whole history.
+
+If you already merged, tag the commit before the merge, not `origin/main`, or the run finds nothing to release:
+
+```powershell
+git fetch origin
+git tag v0.1.0 origin/main^1
+git push origin v0.1.0
+```
+
+Then re-run the failed workflow.
 
 ---
 
@@ -137,7 +151,7 @@ The system tray icon and its native Win32 context menu are rendered directly by 
 
 ## 6. Recovery
 
-Re-running the failed workflow is always safe, and it is the first thing to try. Use **Re-run all jobs**, or **Re-run failed jobs** if only `publish` failed.
+Re-running the failed workflow is safe and is the first thing to try. If a newer merge is already queued, let that run go instead: it covers everything since the last tag. Use **Re-run all jobs**, or **Re-run failed jobs** if only `publish` failed.
 
 | What happened | State | What to do |
 |---|---|---|

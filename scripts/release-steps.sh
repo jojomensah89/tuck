@@ -37,8 +37,16 @@ remote_head() {
   git ls-remote origin "refs/heads/$1" | cut -f1
 }
 
+# ls-remote exits 2 only when the tag is missing. Anything else is a failed read, which must not
+# look like a missing tag, because that would delete a draft.
 remote_tag_exists() {
-  git ls-remote --exit-code origin "refs/tags/$1" >/dev/null
+  local status=0
+  git ls-remote --exit-code origin "refs/tags/$1" >/dev/null || status=$?
+  case "$status" in
+    0) return 0 ;;
+    2) return 1 ;;
+    *) die "Could not read tags from origin (git exited $status)." ;;
+  esac
 }
 
 # Prints draft, published or none. A network failure stops the script instead of reading as none.
@@ -80,11 +88,31 @@ publish_draft() {
 
 # Confirms what an installed Tuck will actually fetch.
 verify_live() {
-  local version=$1 url
+  local version=$1 url body attempt
   url=$(grep -o 'https://[^"]*latest\.json' src-tauri/tauri.conf.json)
-  "${RELEASE_CURL:-curl}" -fsSL --retry 5 --retry-delay "$RETRY_DELAY" --retry-all-errors "$url" | grep -q "\"version\": \"$version\"" ||
-    die "$url does not serve version $version."
-  echo "$url serves $version."
+  # GitHub can serve the previous release for a moment after publishing
+  for attempt in 1 2 3 4 5 6; do
+    body=$("${RELEASE_CURL:-curl}" -fsSL "$url") || body=""
+    if [[ "$body" == *"\"version\": \"$version\""* ]]; then
+      echo "$url serves $version."
+      return 0
+    fi
+    [ "$attempt" = 6 ] || sleep "$RETRY_DELAY"
+  done
+  die "$url does not serve version $version."
+}
+
+# whisper.cpp otherwise compiles for the build machine's CPU, and a release built on an AVX-512
+# runner would crash on any PC without it. Fails the release instead of shipping that.
+verify_cpu_baseline() {
+  local caches=(src-tauri/target/release/build/whisper-rs-sys-*/out/build/CMakeCache.txt) cache setting
+  [ -f "${caches[0]}" ] || die "No whisper.cpp build found to check the CPU baseline of."
+  for cache in "${caches[@]}"; do
+    for setting in GGML_NATIVE:BOOL=OFF GGML_AVX2:BOOL=ON GGML_AVX512:BOOL=OFF; do
+      grep -qx "$setting" "$cache" || die "$cache does not have $setting."
+    done
+  done
+  echo "whisper.cpp is built for the AVX2 baseline."
 }
 
 cmd_is_current() {
@@ -200,6 +228,7 @@ case "$command" in
   is-current) cmd_is_current "$@" ;;
   commit-bump) cmd_commit_bump "$@" ;;
   verify-clean) cmd_verify_clean ;;
+  verify-cpu-baseline) verify_cpu_baseline ;;
   finish-pending) cmd_finish_pending ;;
   publish) cmd_publish "$@" ;;
   *) die "Unknown command: $command" ;;

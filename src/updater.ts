@@ -31,8 +31,12 @@ function describeUpdate(update: Update): UpdateInfo {
   };
 }
 
+/** A hung request must not stop later checks or leave a button on "Checking...". */
+const CHECK_TIMEOUT_MS = 30_000;
+const DOWNLOAD_TIMEOUT_MS = 10 * 60_000;
+
 async function runCheck(): Promise<UpdateInfo | null> {
-  const update = await check();
+  const update = await check({ timeout: CHECK_TIMEOUT_MS });
   await replaceCachedUpdate(update);
   const info = update ? describeUpdate(update) : null;
   await invokeCommand('set_pending_update', { update: info }).catch((e) => {
@@ -78,7 +82,7 @@ export async function downloadAndInstallUpdate(
   installInProgress = true;
   try {
     if (!cachedUpdate) {
-      const found = await check();
+      const found = await check({ timeout: CHECK_TIMEOUT_MS });
       if (!found) throw new Error('No update available to install');
       await replaceCachedUpdate(found);
     }
@@ -102,7 +106,7 @@ export async function downloadAndInstallUpdate(
             onProgress(downloaded, downloaded);
             break;
         }
-      });
+      }, { timeout: DOWNLOAD_TIMEOUT_MS });
       downloadedUpdate = update;
     }
 

@@ -20,8 +20,37 @@ const EVENT_PARTIAL: &str = "dictation_partial";
 const EVENT_TRANSCRIPT: &str = "dictation_transcript";
 const EVENT_ERROR: &str = "dictation_error";
 const DEFAULT_TOGGLE: &str = "Ctrl+Shift+Space";
-const DEFAULT_HOLD: &str = "Ctrl+Alt+Space";
+const DEFAULT_HOLD: &str = "Shift+Shift";
 const MAX_TRANSCRIPT_BYTES: usize = 64 * 1024;
+
+pub fn is_dual_shift_shortcut(shortcut: &str) -> bool {
+    let s = shortcut.trim().to_lowercase().replace(' ', "");
+    matches!(
+        s.as_str(),
+        "shift+shift"
+            | "twoshifts"
+            | "twoshift"
+            | "dualshift"
+            | "dualshifts"
+            | "leftshift+rightshift"
+            | "rightshift+leftshift"
+            | "lshift+rshift"
+            | "rshift+lshift"
+    )
+}
+
+#[cfg(windows)]
+pub fn are_both_shift_keys_down() -> bool {
+    use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LSHIFT, VK_RSHIFT};
+    let left_down = unsafe { GetAsyncKeyState(VK_LSHIFT.0 as i32) } < 0;
+    let right_down = unsafe { GetAsyncKeyState(VK_RSHIFT.0 as i32) } < 0;
+    left_down && right_down
+}
+
+#[cfg(not(windows))]
+pub fn are_both_shift_keys_down() -> bool {
+    false
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -118,6 +147,7 @@ pub struct DictationService {
     model_busy: AtomicBool,
     registered_shortcuts: Mutex<Vec<Shortcut>>,
     settings_operation: Mutex<()>,
+    is_shutdown: AtomicBool,
 }
 
 impl Default for DictationService {
@@ -145,6 +175,7 @@ impl DictationService {
             model_busy: AtomicBool::new(false),
             registered_shortcuts: Mutex::new(Vec::new()),
             settings_operation: Mutex::new(()),
+            is_shutdown: AtomicBool::new(false),
         }
     }
 
@@ -613,8 +644,63 @@ impl DictationService {
     }
 
     pub fn shutdown(&self) {
+        self.is_shutdown.store(true, Ordering::Release);
         let _ = self.cancel();
     }
+
+    pub fn is_shutdown(&self) -> bool {
+        self.is_shutdown.load(Ordering::Acquire)
+    }
+}
+
+static DUAL_SHIFT_SPAWNED: AtomicBool = AtomicBool::new(false);
+
+fn spawn_dual_shift_monitor(service: Arc<DictationService>) {
+    #[cfg(windows)]
+    {
+        if DUAL_SHIFT_SPAWNED.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        std::thread::Builder::new()
+            .name("tuck-dual-shift".into())
+            .spawn(move || {
+                let mut was_holding = false;
+                while !service.is_shutdown() {
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                    if service.is_shutdown() {
+                        break;
+                    }
+                    let settings = service.settings();
+                    if !is_dual_shift_shortcut(&settings.hold_to_talk_shortcut) {
+                        if was_holding {
+                            was_holding = false;
+                        }
+                        continue;
+                    }
+
+                    let both_down = are_both_shift_keys_down();
+                    if both_down && !was_holding {
+                        was_holding = true;
+                        let _ = service.begin(RecordingMode::HoldToTalk);
+                    } else if !both_down && was_holding {
+                        was_holding = false;
+                        if let Ok(runtime) = service.runtime.lock() {
+                            if runtime
+                                .active
+                                .as_ref()
+                                .is_some_and(|s| matches!(s.mode, RecordingMode::HoldToTalk))
+                            {
+                                drop(runtime);
+                                let _ = service.stop();
+                            }
+                        }
+                    }
+                }
+            })
+            .expect("could not spawn dual shift monitor thread");
+    }
+    #[cfg(not(windows))]
+    let _ = service;
 }
 
 /// Initialize settings and shortcuts only. This does not access the microphone
@@ -628,7 +714,10 @@ pub fn start(app: AppHandle, service: &Arc<DictationService>) -> Result<(), Stri
             *current = settings;
         }
     }
-    register_shortcuts(&app, service)?;
+    if let Err(error) = register_shortcuts(&app, service) {
+        eprintln!("Dictation shortcut registration warning: {error}");
+    }
+    spawn_dual_shift_monitor(service.clone());
     service.emit_state();
     Ok(())
 }
@@ -638,8 +727,14 @@ pub fn register_shortcuts(app: &AppHandle, service: &Arc<DictationService>) -> R
     let shortcuts = app.global_shortcut();
     let toggle = Shortcut::try_from(settings.toggle_shortcut.as_str())
         .map_err(|e| format!("Invalid toggle shortcut: {e}"))?;
-    let hold = Shortcut::try_from(settings.hold_to_talk_shortcut.as_str())
-        .map_err(|e| format!("Invalid hold-to-talk shortcut: {e}"))?;
+    let hold = if is_dual_shift_shortcut(&settings.hold_to_talk_shortcut) {
+        None
+    } else {
+        Some(
+            Shortcut::try_from(settings.hold_to_talk_shortcut.as_str())
+                .map_err(|e| format!("Invalid hold-to-talk shortcut: {e}"))?,
+        )
+    };
     let previous = service
         .registered_shortcuts
         .lock()
@@ -654,15 +749,19 @@ pub fn register_shortcuts(app: &AppHandle, service: &Arc<DictationService>) -> R
         }
         return Err(format!("Could not register toggle shortcut: {error}"));
     }
-    if let Err(error) = shortcuts.register(hold) {
-        let _ = shortcuts.unregister(toggle);
-        for prior in &previous {
-            let _ = shortcuts.register(*prior);
+    if let Some(hold_shortcut) = hold {
+        if let Err(error) = shortcuts.register(hold_shortcut) {
+            let _ = shortcuts.unregister(toggle);
+            for prior in &previous {
+                let _ = shortcuts.register(*prior);
+            }
+            return Err(format!("Could not register hold-to-talk shortcut: {error}"));
         }
-        return Err(format!("Could not register hold-to-talk shortcut: {error}"));
-    }
-    if let Ok(mut registered) = service.registered_shortcuts.lock() {
-        *registered = vec![toggle, hold];
+        if let Ok(mut registered) = service.registered_shortcuts.lock() {
+            *registered = vec![toggle, hold_shortcut];
+        }
+    } else if let Ok(mut registered) = service.registered_shortcuts.lock() {
+        *registered = vec![toggle];
     }
     Ok(())
 }
@@ -709,6 +808,9 @@ fn validate_settings(settings: &DictationSettings) -> Result<(), String> {
     }
     let toggle = Shortcut::try_from(settings.toggle_shortcut.as_str())
         .map_err(|e| format!("Invalid toggle shortcut: {e}"))?;
+    if is_dual_shift_shortcut(&settings.hold_to_talk_shortcut) {
+        return Ok(());
+    }
     let hold = Shortcut::try_from(settings.hold_to_talk_shortcut.as_str())
         .map_err(|e| format!("Invalid hold-to-talk shortcut: {e}"))?;
     if toggle == hold {
@@ -736,8 +838,11 @@ fn load_settings(app: &AppHandle) -> Result<DictationSettings, String> {
         }
         Err(e) => return Err(format!("Could not read dictation settings: {e}")),
     };
-    let settings: DictationSettings = serde_json::from_slice(&bytes)
+    let mut settings: DictationSettings = serde_json::from_slice(&bytes)
         .map_err(|e| format!("Dictation settings are invalid: {e}"))?;
+    if settings.hold_to_talk_shortcut == "Ctrl+Alt+Space" {
+        settings.hold_to_talk_shortcut = DEFAULT_HOLD.to_owned();
+    }
     validate_settings(&settings)?;
     Ok(settings)
 }
@@ -925,6 +1030,18 @@ mod tests {
         assert!(validate_settings(&settings).is_err());
         settings.hold_to_talk_shortcut = "X".repeat(65);
         assert!(validate_settings(&settings).is_err());
+    }
+
+    #[test]
+    fn dual_shift_shortcut_recognition() {
+        assert!(is_dual_shift_shortcut("Shift+Shift"));
+        assert!(is_dual_shift_shortcut("shift + shift"));
+        assert!(is_dual_shift_shortcut("TwoShifts"));
+        assert!(is_dual_shift_shortcut("two shifts"));
+        assert!(is_dual_shift_shortcut("LeftShift+RightShift"));
+        assert!(is_dual_shift_shortcut("dualshift"));
+        assert!(!is_dual_shift_shortcut("Ctrl+Shift+Space"));
+        assert!(!is_dual_shift_shortcut("Ctrl+Alt+Space"));
     }
     #[test]
     fn model_removal_is_rejected_during_startup_and_download() {

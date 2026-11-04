@@ -647,6 +647,7 @@ function fitCompactTitle(): void {
     const overflow = Math.max(0, track.offsetWidth - title.clientWidth);
     const overflows = overflow > 2 && !reducedMotion.matches;
     title.classList.toggle('scroll', overflows && state === 'peek');
+    if (!overflows) scrolledCompactLine = '';
     if (!overflows || state === 'peek') {
       title.classList.remove('scroll-once');
       title.style.setProperty('--compact-shift', `-${overflow}px`);

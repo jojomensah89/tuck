@@ -621,10 +621,11 @@ try {
   // Keyboard focus survives a card being rebuilt or removed
   await native.locator('#uList .u-face').nth(1).focus();
   const codexWindows = now => [{id:'codex-primary',provider:'codex',label:'Codex 5 h',usedPct:72,spentUsd:null,resetsAt:now+3630,source:'official',stale:false,status:'ok'},{id:'codex-secondary',provider:'codex',label:'Codex weekly',usedPct:9,spentUsd:null,resetsAt:now+86400*5,source:'official',stale:false,status:'ok'}];
-  await native.evaluate(meters=>window.__emitNative('usage',meters),[week(Math.round(Date.now()/1000)),...codexWindows(Math.round(Date.now()/1000))]);
+  const rebuildNow = Math.round(Date.now()/1000);
+  await native.evaluate(meters=>window.__emitNative('usage',meters),[week(rebuildNow),...codexWindows(rebuildNow)]);
   assert.match(await native.evaluate(()=>document.activeElement.getAttribute('aria-label')),/^OpenAI/,'A rebuilt card keeps focus');
   await native.evaluate(()=>{window.__titleWrites=0;new MutationObserver(list=>{window.__titleWrites+=list.length;}).observe(document.querySelector('#uList .u-provider'),{attributes:true,attributeFilter:['title']});});
-  await native.evaluate(meters=>window.__emitNative('usage',meters),[week(Math.round(Date.now()/1000)),...codexWindows(Math.round(Date.now()/1000))]);
+  await native.evaluate(meters=>window.__emitNative('usage',meters),[week(rebuildNow),...codexWindows(rebuildNow)]);
   await native.waitForTimeout(20);
   assert.equal(await native.evaluate(()=>window.__titleWrites),0,'An unchanged reading writes nothing');
     await native.evaluate(meter=>window.__emitNative('usage',[meter]),week(Math.round(Date.now()/1000)));

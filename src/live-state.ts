@@ -7,7 +7,7 @@ export function newRequestId(): string {
 export interface LivePreferences {
   hoverExpand: boolean; openDelayMs: number; closeDelayMs: number; pinned: boolean;
   fullscreenAutoHide: boolean;
-  compactContent: 'lyrics' | 'title'; lyricsOpen: boolean; openWidth: number;
+  compactContent: 'artwork' | 'title' | 'lyrics'; lyricsOpen: boolean; openWidth: number;
   desktopPeeks: boolean;
   /** Volume and brightness changes from outside the island show the HUD */
   levelHud: boolean;
@@ -29,7 +29,7 @@ export function normalizePreferences(input: unknown): LivePreferences {
   return {
     hoverExpand: typeof p.hoverExpand === 'boolean' ? p.hoverExpand : true,
     pinned: p.pinned === true, lyricsOpen: p.lyricsOpen !== false,
-    compactContent: p.compactContent === 'title' ? 'title' : 'lyrics',
+    compactContent: p.compactContent === 'artwork' || p.compactContent === 'title' ? p.compactContent : 'lyrics',
     desktopPeeks: p.desktopPeeks !== false,
     // Before this setting existed, System peeks also carried the level peeks
     levelHud: typeof p.levelHud === 'boolean' ? p.levelHud : p.desktopPeeks !== false,

@@ -89,7 +89,7 @@ describe('one duration format', () => {
 
 describe('provider identity', () => {
   it('maps providers to a mark family, or an initial', () => {
-    expect(providerMark('claude')).toBe('anthropic');
+    expect(providerMark('claude')).toBe('claude');
     expect(providerMark('anthropic-api')).toBe('anthropic');
     expect(providerMark('codex')).toBe('openai');
     expect(providerMark('chatgpt')).toBe('openai');

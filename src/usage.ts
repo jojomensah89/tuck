@@ -131,6 +131,11 @@ export function mergeMeters(nativeMeters: Meter[]): Meter[] {
   return merged;
 }
 
+/** Native sources mark absent keys/clients as unconfigured; those are not UI providers. */
+export function connectedUsageMeters(meters: Meter[]): Meter[] {
+  return meters.filter(meter => meter.status !== 'unconfigured');
+}
+
 /**
  * Detects if any meter had a significant drop (> 30%) indicating a quota reset.
  */

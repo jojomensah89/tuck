@@ -357,13 +357,11 @@ pub fn resolve_claude_status_path() -> (Option<PathBuf>, bool) {
 pub fn claude_meters() -> Vec<Meter> {
     let (target_path, exists) = resolve_claude_status_path();
     let Some(path) = target_path else {
-        return unavailable_claude_meters("APPDATA environment variable not set");
+        return Vec::new();
     };
 
     if !exists {
-        return unavailable_claude_meters(
-            "Status file not found in %APPDATA%\\Tuck or %APPDATA%\\Notch",
-        );
+        return Vec::new();
     }
 
     let meta = match std::fs::metadata(&path) {
@@ -689,25 +687,25 @@ pub fn current_snapshot() -> Vec<Meter> {
     let month = current_month_start_utc().timestamp();
     let reset = next_month_start_utc().timestamp();
     let state = get_cache().lock().unwrap_or_else(|p| p.into_inner());
-    let mut meters = if state.claude.is_empty() {
-        parse_claude_status_content(b"{}", None)
-    } else {
-        state.claude.clone()
-    };
-    meters.push(build_api_meter(
-        "anthropic-api",
-        "Claude API",
-        &state.anthropic,
-        month,
-        reset,
-    ));
-    meters.push(build_api_meter(
-        "openai-api",
-        "OpenAI API",
-        &state.openai,
-        month,
-        reset,
-    ));
+    let mut meters = state.claude.clone();
+    if state.anthropic.configured {
+        meters.push(build_api_meter(
+            "anthropic-api",
+            "Claude API",
+            &state.anthropic,
+            month,
+            reset,
+        ));
+    }
+    if state.openai.configured {
+        meters.push(build_api_meter(
+            "openai-api",
+            "OpenAI API",
+            &state.openai,
+            month,
+            reset,
+        ));
+    }
     let installed = crate::installed_usage::snapshot();
     if installed
         .iter()
@@ -1068,6 +1066,18 @@ mod tests {
             Some(SystemTime::now()),
         );
         assert_eq!(meters[0].status.as_deref(), Some("unavailable"));
+    }
+    #[test]
+    fn unconfigured_api_slot_is_marked_and_a_configured_failure_is_not() {
+        let unconfigured = build_api_meter("openai-api", "API", &ApiSlot::default(), 10, 20);
+        assert_eq!(unconfigured.status.as_deref(), Some("unconfigured"));
+        let failed = ApiSlot {
+            configured: true,
+            last_error: Some("Could not reach the provider".into()),
+            ..Default::default()
+        };
+        let meter = build_api_meter("openai-api", "API", &failed, 10, 20);
+        assert_eq!(meter.status.as_deref(), Some("error"));
     }
     #[test]
     fn credential_read_error_preserves_cached_total() {

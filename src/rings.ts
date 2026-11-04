@@ -72,11 +72,12 @@ export function formatSpan(seconds: number): string {
 }
 
 /** Which family of mark identifies a meter's provider; null falls back to an initial */
-export type ProviderMark = 'anthropic' | 'openai';
+export type ProviderMark = 'claude' | 'anthropic' | 'openai';
 
 export function providerMark(provider: string): ProviderMark | null {
   const p = provider.toLowerCase();
-  if (p === 'claude' || p.startsWith('anthropic')) return 'anthropic';
+  if (p === 'claude') return 'claude';
+  if (p.startsWith('anthropic')) return 'anthropic';
   if (p === 'codex' || p === 'chatgpt' || p.startsWith('openai')) return 'openai';
   return null;
 }
@@ -87,10 +88,7 @@ export function providerInitial(meter: Pick<Meter, 'provider' | 'label'>): strin
   return (source[0] || '?').toUpperCase();
 }
 
-/**
- * The short window name under a ring, so two rings with the same mark stay
- * apart: "5h", "7d", "API", "Est".
- */
+/** The short window name beside a ring: "5h", "7d", "API", "Est". */
 export function meterWindow(meter: Pick<Meter, 'id' | 'label' | 'source'>): string {
   if (meter.source === 'manual') return 'Est';
   if (meter.source === 'api') return 'API';

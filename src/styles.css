@@ -94,6 +94,11 @@ svg.ico .f {
   fill: currentColor;
 }
 
+svg.ico.brand-mark {
+  fill: currentColor;
+  stroke: none;
+}
+
 svg.ico.big {
   width: var(--i-lg);
   height: var(--i-lg);
@@ -244,6 +249,11 @@ body.fullscreen-hidden .island {
 
 .island[data-state="peek"] .compact {
   grid-template-columns: var(--s-8) minmax(0, 1fr) var(--s-12);
+}
+
+/* Title and lyric modes keep a stable per-track shell width; long text reuses the marquee. */
+.island[data-state="idle"][data-compact-text] .compact {
+  grid-template-columns: var(--s-6) minmax(0, 1fr) auto;
 }
 
 .island[data-state="open"] .compact {
@@ -716,40 +726,66 @@ body.fullscreen-hidden .island {
   pointer-events: none;
 }
 
-/* Which section of the tab is in view: passive, follows the panel's scroll */
+/* Which section is in view; thin marks sit inside accessible button targets. */
 .section-index {
   position: absolute;
   top: 50%;
-  right: var(--s-2);
+  right: 0;
   display: flex;
   flex-direction: column;
-  gap: var(--s-1);
+  gap: 0;
   transform: translateY(-50%);
-  pointer-events: none;
+  z-index: 10;
 }
 
 .section-index[hidden] {
   display: none;
 }
 
-.section-index i {
+.section-index-button {
+  width: var(--s-6);
+  height: var(--s-6);
+  border-radius: var(--r-md);
+  color: var(--wash-strong);
+  transition:
+    color var(--d-fast) var(--ease-out),
+    background-color var(--d-fast) var(--ease-out),
+    transform var(--d-instant) var(--ease-out);
+}
+
+.section-index-button:hover {
+  color: var(--ink-2);
+  background: var(--raise-subtle);
+}
+
+.section-index-button:active {
+  transform: scale(var(--press));
+  background: var(--raise);
+}
+
+.section-index-button:focus-visible {
+  outline-offset: -3px;
+}
+
+.section-index-button i {
+  display: block;
   width: var(--s-half);
   height: var(--s-3);
   border-radius: var(--r-xs);
-  background: var(--wash-strong);
+  background: currentColor;
   transition: background var(--d-fast) var(--ease-out);
 }
 
-.section-index i.on {
-  background: var(--ink-2);
+.section-index-button.on {
+  color: var(--ink-2);
 }
 
 /* ================= Tab Panels and Sections ================= */
 
 .pages-container {
   position: absolute;
-  /* The left edge clears the rail; the right edge leaves room for the section index */
-  inset: var(--s-4) var(--s-5) var(--s-4) calc(var(--s-2) + var(--hit) + var(--s-3));
+  /* The left edge clears the rail; the right edge holds the 24px section marks */
+  inset: var(--s-4) var(--s-6) var(--s-4) calc(var(--s-2) + var(--hit) + var(--s-3));
   overflow: hidden;
 }
 
@@ -787,6 +823,10 @@ body.fullscreen-hidden .island {
   height: 100%;
   scroll-snap-align: start;
   scroll-snap-stop: always;
+}
+
+.page[hidden] {
+  display: none !important;
 }
 
 /* Cross-fade: the outgoing tab leaves opposite to the travel direction while the
@@ -1312,36 +1352,46 @@ body.fullscreen-hidden .island {
   display: flex;
   flex-wrap: wrap;
   justify-content: center;
+  align-content: center;
   gap: var(--s-3) var(--s-4);
 }
 
-.u-cell {
-  width: 76px;
+.u-provider {
+  width: calc(50% - var(--s-2));
+  max-width: 180px;
   display: flex;
-  flex-direction: column;
+  justify-content: center;
   align-items: center;
-  gap: var(--s-1);
-  text-align: center;
+  gap: var(--s-3);
 }
 
 .u-face {
   position: relative;
   display: grid;
   place-items: center;
-  width: 64px;
-  height: 64px;
+  width: 72px;
+  height: 72px;
+  flex: 0 0 72px;
   border-radius: var(--r-round);
-  margin-bottom: var(--s-1);
 }
 
 .u-face > .ring {
   position: absolute;
+}
+
+.u-face > .u-ring-outer {
   inset: 0;
 }
 
+.u-face > .u-ring-inner {
+  inset: 12.5%;
+  width: 75%;
+  height: 75%;
+}
+
 .u-face > .ring-glyph svg.ico {
-  width: var(--i-lg);
-  height: var(--i-lg);
+  width: var(--u-mark, var(--s-8));
+  height: var(--u-mark, var(--s-8));
 }
 
 .u-face:focus-visible {
@@ -1381,6 +1431,27 @@ body.fullscreen-hidden .island {
   height: var(--i-xs);
 }
 
+.u-values {
+  min-width: 62px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-1);
+}
+
+.u-value-line {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s-1);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.u-window {
+  min-width: var(--s-5);
+  color: var(--ink-2);
+  font-size: var(--t-xs);
+}
+
 .u-val {
   font-size: var(--t-md);
   font-weight: var(--w-medium);
@@ -1388,50 +1459,64 @@ body.fullscreen-hidden .island {
   line-height: 16px;
 }
 
-.u-sub {
-  font-size: var(--t-xs);
+/* The word beside the values only appears when a reading cannot be trusted */
+.u-state {
   color: var(--ink-2);
-  font-variant-numeric: tabular-nums;
-  line-height: 14px;
+  font-size: var(--t-2xs);
+  line-height: 12px;
   white-space: nowrap;
 }
 
-/* Stale or unavailable: the ring dims, the dash says there is no value */
-.u-cell[data-stale="true"] .ring,
-.u-cell[data-stale="true"] .ring-glyph {
-  opacity: 0.45;
+.u-state:empty {
+  display: none;
 }
 
-.u-cell[data-stale="true"] .u-val {
-  color: var(--ink-2);
-}
-
-/* More than five sources: smaller rings so two rows fit the section */
+/* A fifth card: smaller rings in three columns, so two rows still fit the section */
 .u-list.dense {
+  --u-mark: var(--i-md);
   gap: var(--s-2) var(--s-3);
 }
 
-.u-list.dense .u-cell {
-  width: 64px;
-  gap: 0;
+.u-list.dense .u-provider {
+  width: calc((100% - 2 * var(--s-3)) / 3);
+  gap: var(--s-1);
 }
 
 .u-list.dense .u-face {
   width: 44px;
   height: 44px;
+  flex-basis: 44px;
 }
 
-.u-list.dense .u-face > .ring-glyph svg.ico {
+.u-list.dense .u-log-badge {
   width: var(--i-sm);
   height: var(--i-sm);
 }
 
-.u-empty {
+.u-list.dense .u-log-badge svg.ico {
+  width: var(--i-2xs);
+  height: var(--i-2xs);
+}
+
+.u-list.dense .u-values {
+  min-width: 0;
+  gap: 0;
+}
+
+.u-list.dense .u-window,
+.u-list.dense .u-val {
+  min-width: 0;
+  font-size: var(--t-2xs);
+}
+
+/* Stale or unavailable readings remain visible but clearly recede. */
+.u-provider[data-stale="true"] .ring,
+.u-provider[data-stale="true"] .ring-glyph {
+  opacity: 0.45;
+}
+
+.u-provider[data-stale="true"] .u-val {
   color: var(--ink-2);
-  font-size: var(--t-sm);
-  text-align: center;
-  margin: 0;
-  width: 100%;
 }
 
 /* ================= Quick Actions Page ================= */

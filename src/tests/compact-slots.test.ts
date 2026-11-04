@@ -1,6 +1,7 @@
 import './setup.js';
 import { describe, expect, it } from 'bun:test';
 import {
+  compactShellWidth,
   selectCompactActivity,
   type CompactActivityCandidate,
 } from '../compact-slots.js';
@@ -77,5 +78,16 @@ describe('compact slot background dot', () => {
     ]);
 
     expect(selection.hasBackgroundActivity).toBe(false);
+  });
+});
+
+describe('collapsed media width', () => {
+  it('reserves one stable width for title and lyric modes only while media owns the slot', () => {
+    const media = activity();
+    expect(compactShellWidth(media, 'lyrics')).toBe(300);
+    expect(compactShellWidth(media, 'title')).toBe(300);
+    expect(compactShellWidth(media, 'artwork')).toBe(212);
+    expect(compactShellWidth(activity({ kind: 'timer' }), 'lyrics')).toBe(212);
+    expect(compactShellWidth(null, 'title')).toBe(212);
   });
 });

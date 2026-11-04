@@ -24,6 +24,25 @@ export const TABS: readonly TabDef[] = [
 
 export const DEFAULT_TAB: TabId = 'media';
 
+/** What each section is called on its indicator mark ("Go to AI usage") */
+const SECTION_LABELS: Readonly<Record<string, string>> = {
+  media: 'now playing',
+  visualizer: 'visualizer',
+  today: 'clock and battery',
+  activities: 'timer',
+  calendar: 'calendar',
+  quick: 'quick actions',
+  clipboard: 'clipboard',
+  extensions: 'files and devices',
+  dictation: 'dictation',
+  usage: 'AI usage',
+  stats: 'system',
+};
+
+export function sectionLabel(section: string): string {
+  return SECTION_LABELS[section] ?? section;
+}
+
 /** Lock after a wheel or swipe tab change, so one gesture moves one tab */
 export const SWITCH_LOCK_MS = 350;
 /** Wheel events closer together than this belong to the same gesture */
@@ -75,6 +94,12 @@ export function canScroll(m: ScrollMetrics, delta: number): boolean {
   if (delta > 0) return m.scrollTop + m.clientHeight < m.scrollHeight - 1;
   if (delta < 0) return m.scrollTop > 1;
   return false;
+}
+
+/** Active section for a snap panel, clamped when sections appear or disappear. */
+export function sectionIndexAt(scrollTop: number, clientHeight: number, count: number): number {
+  if (count <= 0 || clientHeight <= 0) return 0;
+  return Math.max(0, Math.min(count - 1, Math.round(scrollTop / clientHeight)));
 }
 
 export interface WheelState {

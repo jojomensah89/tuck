@@ -14,6 +14,18 @@ export interface CompactSlotSelection {
   hasBackgroundActivity: boolean;
 }
 
+export type CompactContent = 'artwork' | 'title' | 'lyrics';
+export const COMPACT_IDLE_WIDTH = 212;
+export const COMPACT_TEXT_WIDTH = 300;
+
+/** Text modes reserve one width for the track instead of resizing on each lyric. */
+export function compactShellWidth(
+  primary: CompactActivityCandidate | null,
+  content: CompactContent,
+): number {
+  return primary?.kind === 'media' && content !== 'artwork' ? COMPACT_TEXT_WIDTH : COMPACT_IDLE_WIDTH;
+}
+
 /**
  * Chooses the activity that owns compact leading/trailing slots.
  * Equal priorities remain in caller order so the visible activity does not

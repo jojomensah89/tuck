@@ -23,7 +23,7 @@ import { batteryGlyph, SVG_ICONS } from './icons.js';
 import { activitiesManager } from './activities.js';
 import { renderUsageRings } from './usage-rings.js';
 import { activityProgress, batteryTone, createRing, formatSpan } from './rings.js';
-import { selectCompactActivity, type CompactActivityCandidate } from './compact-slots.js';
+import { compactShellWidth, selectCompactActivity, type CompactActivityCandidate } from './compact-slots.js';
 import { formatClockTime } from './time-format.js';
 import {
   AnnouncementQueue,
@@ -42,6 +42,7 @@ import {
 import {
   STORAGE_KEYS,
   mergeMeters,
+  connectedUsageMeters,
   checkResets,
   logChatGPTMessage,
 } from './usage.js';
@@ -61,6 +62,9 @@ const SIZES: Record<IslandState, [number, number]> = {
   peek: [300, 38],
   open: [440, 210],
 };
+
+/** The width the idle pill last asked for; it changes with what owns the slots */
+let idleWidth = SIZES.idle[0];
 
 /** The strip of the open island that keeps acting like the idle pill */
 const PILL_STRIP = { width: SIZES.idle[0], height: SIZES.idle[1] };
@@ -114,14 +118,15 @@ function setCompactSlot(
   key: string,
   signature: string,
   build: () => HTMLElement,
-): void {
+): boolean {
   const previous = compactSlotState.get(slot);
   if (previous?.key === key) {
     if (previous.signature !== signature) {
       previous.layer.replaceChildren(build());
       previous.signature = signature;
+      return true;
     }
-    return;
+    return false;
   }
 
   const layer = document.createElement('span');
@@ -139,6 +144,7 @@ function setCompactSlot(
 
   slot.append(layer);
   compactSlotState.set(slot, { key, signature, layer });
+  return true;
 }
 
 function compactText(text: string, className = ''): HTMLElement {
@@ -256,7 +262,12 @@ function setState(next: IslandState): void {
   if (next !== 'open') delete levelStrip.dataset.on;
   state = next;
   syncFlyoutPause();
-  const [w, h] = next === 'open' ? [livePreferences.openWidth, 210] : SIZES[next];
+  if (next === 'idle') idleWidth = compactShellWidth(selectCompactActivity(compactCandidates()).primary, livePreferences.compactContent);
+  const [w, h] = next === 'open'
+    ? [livePreferences.openWidth, 210]
+    : next === 'idle'
+      ? [idleWidth, SIZES.idle[1]]
+      : SIZES.peek;
   isl.style.setProperty('--w', `${w}px`);
   isl.style.setProperty('--h', `${h}px`);
   isl.style.setProperty('--open-w', `${livePreferences.openWidth}px`);
@@ -635,34 +646,9 @@ function compactTextIndicator(
   return indicator;
 }
 
-function renderCompact(): void {
-  const cl = $('cl');
-  const cc = $('cc');
-  const cr = $('cr');
-  const compact = document.querySelector<HTMLElement>('.compact')!;
-
-  if (state === 'peek' && hud.visible(Date.now())) {
-    renderHud(hud.reading!, compact);
-    return;
-  }
-
-  if (announcement && announcement.until > Date.now() && state === 'peek') {
-    setCompactSlot(cl, 'announcement:leading', 'note', () => compactMarkup(SVG_ICONS.note));
-    setCompactSlot(cc, 'announcement:title', announcement.text, () => compactTitle(announcement!.text));
-    setCompactSlot(cr, 'announcement:trailing', 'notification', () => compactIndicator(
-      '<span class="peek-indicator"></span>',
-      'Notification',
-      false,
-    ));
-    setLabel(compact, announcement.text);
-    fitCompactTitle();
-    return;
-  }
-
-  const timerActivities = activitiesManager.getAll().filter(activity => activity.active);
-  const externalEntries = [...externalActivities.entries()];
-  const candidates: CompactActivityCandidate[] = [
-    ...externalEntries.map(([id, activity]) => ({
+function compactCandidates(): CompactActivityCandidate[] {
+  return [
+    ...[...externalActivities.entries()].map(([id, activity]) => ({
       id: `external:${id}`,
       kind: activity.type === 'dictation' ? 'dictation' as const : 'external' as const,
       title: activity.title,
@@ -676,10 +662,11 @@ function renderCompact(): void {
       title: mediaState.title || 'Media',
       // Playing media outranks timers and downloads; paused media yields to everything running
       priority: mediaState.playing ? 85 : 40,
-      active: mediaState.active,
+      // A paused track gives the idle pill back to time and battery; a peek can still name it
+      active: mediaState.active && (mediaState.playing || state === 'peek'),
       running: mediaState.playing,
     },
-    ...timerActivities.map(activity => ({
+    ...activitiesManager.getAll().filter(activity => activity.active).map(activity => ({
       id: `timer:${activity.id}`,
       kind: 'timer' as const,
       title: activity.title,
@@ -688,15 +675,56 @@ function renderCompact(): void {
       running: !activity.paused,
     })),
   ];
-  const selection = selectCompactActivity(candidates);
+}
+
+/** Morphs the idle pill and moves the native hit area with it, so the whole pill stays clickable */
+function syncIdleWidth(width: number): void {
+  if (width === idleWidth) return;
+  idleWidth = width;
+  isl.style.setProperty('--w', `${width}px`);
+  isl.style.width = `${width}px`;
+  const hit = hitGeometry(width, SIZES.idle[1], topOffset);
+  runAction(setHit(hit.w, hit.h), 'Update island bounds');
+}
+
+function renderCompact(): void {
+  const cl = $('cl');
+  const cc = $('cc');
+  const cr = $('cr');
+  const compact = document.querySelector<HTMLElement>('.compact')!;
+
+  if (state === 'peek' && hud.visible(Date.now())) {
+    renderHud(hud.reading!, compact);
+    return;
+  }
+
+  if (announcement && announcement.until > Date.now() && state === 'peek') {
+    setCompactSlot(cl, 'announcement:leading', 'note', () => compactMarkup(SVG_ICONS.note));
+    const changed = setCompactSlot(cc, 'announcement:title', announcement.text, () => compactTitle(announcement!.text));
+    setCompactSlot(cr, 'announcement:trailing', 'notification', () => compactIndicator(
+      '<span class="peek-indicator"></span>',
+      'Notification',
+      false,
+    ));
+    setLabel(compact, announcement.text);
+    if (changed) fitCompactTitle();
+    return;
+  }
+
+  const timerActivities = activitiesManager.getAll().filter(activity => activity.active);
+  const selection = selectCompactActivity(compactCandidates());
   const primary = selection.primary;
+
+  const mediaText = primary?.kind === 'media' && livePreferences.compactContent !== 'artwork';
+  isl.toggleAttribute('data-compact-text', mediaText);
+  if (state === 'idle') syncIdleWidth(compactShellWidth(primary, livePreferences.compactContent));
 
   if (!primary) {
     const time = formatClockTime();
     if (state === 'peek') {
       setCompactSlot(cl, 'idle-peek:leading', 'clock', () => compactMarkup(SVG_ICONS.clock));
-      setCompactSlot(cc, 'idle-peek:title', time, () => compactTitle(time));
-      fitCompactTitle();
+      const changed = setCompactSlot(cc, 'idle-peek:title', time, () => compactTitle(time));
+      if (changed) fitCompactTitle();
     } else {
       setCompactSlot(cl, 'idle:leading', time, () => compactText(time, 'compact-time'));
       setCompactSlot(cc, 'idle:center', '', () => compactText(''));
@@ -716,9 +744,9 @@ function renderCompact(): void {
   // Media can show the current lyric line instead of the track title (Settings > Collapsed content)
   const lyric = primary.kind === 'media' && livePreferences.compactContent === 'lyrics' ? compactLyric() : '';
   const title = lyric || primary.title;
-  if (state === 'peek') {
-    setCompactSlot(cc, `${primary.id}:title`, title, () => compactTitle(title));
-    fitCompactTitle();
+  if (state === 'peek' || mediaText) {
+    const changed = setCompactSlot(cc, `${primary.id}:title`, title, () => compactTitle(title));
+    if (changed) fitCompactTitle();
   } else {
     setCompactSlot(cc, 'activity:center', '', () => compactText(''));
   }
@@ -987,15 +1015,17 @@ let prevPcts: Record<string, number> = {};
 function announceReset(meter: Meter): void { showAnnouncement(`${meter.label} reset`); }
 
 function renderUsage(): void {
-  renderUsageRings($('uList'), mergeMeters(rawMeters), () => {
+  const meters = connectedUsageMeters(mergeMeters(rawMeters));
+  const providers = renderUsageRings($('uList'), meters, () => {
     logChatGPTMessage();
     renderUsage();
   });
+  rail.setSectionVisible('usage', providers > 0);
 }
 
 function onUsageUpdate(meters: Meter[]): void {
   rawMeters = meters || [];
-  const merged = mergeMeters(rawMeters);
+  const merged = connectedUsageMeters(mergeMeters(rawMeters));
   prevPcts = checkResets(merged, prevPcts, announceReset);
   renderUsage();
 }

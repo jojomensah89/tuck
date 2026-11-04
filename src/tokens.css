@@ -65,6 +65,7 @@
   --d-content-in: 90ms;  /* the shell is ~65% open on --spring at this point */
   --d-marquee: 8s;
   --d-marquee-hold: 1s;
+  --d-marquee-lead: 300ms; /* before a collapsed line's one scroll */
 
   /* Motion: easings (damped springs sampled into linear()) */
   /* Shell morph, zeta 0.68: ~5% overshoot, settles by the end */

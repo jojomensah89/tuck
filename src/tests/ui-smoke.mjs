@@ -6,13 +6,14 @@ const root = process.cwd();
 const browser = await chromium.launch({channel:'msedge',headless:true});
 try {
   const context = await browser.newContext({viewport:{width:520,height:230}, reducedMotion:'reduce'});
-  await context.route('http://tuck.test/**', async route => {
+  const serveDist = async route => {
     const pathname = new URL(route.request().url()).pathname;
     const file = path.join(root, 'dist', pathname === '/' ? 'index.html' : pathname);
     const types = {'.html':'text/html','.js':'application/javascript','.css':'text/css','.svg':'image/svg+xml'};
     try { await route.fulfill({body:await readFile(file),contentType:types[path.extname(file)] || 'application/octet-stream'}); }
     catch { await route.fulfill({status:404,body:'Not found'}); }
-  });
+  };
+  await context.route('http://tuck.test/**', serveDist);
   const page = await context.newPage();
   const errors = [];
   page.on('pageerror',error => errors.push(error.message));
@@ -106,6 +107,13 @@ try {
   assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem('tuck.live.v2') || '{}').hoverExpand), !hoverBefore, 'Default delays do not block saving');
   await page.locator('#hoverExpand').click(); // restore for the island checks below
   assert.equal(await page.locator('#row-openDelay').isVisible(),true);
+  // Collapsed content offers all three modes and defaults to the lyric
+  await page.evaluate(() => document.querySelector('#row-compactContent').closest('.view').dataset.view).then(view => page.locator(`#nav a[data-view="${view}"]`).click());
+  assert.deepEqual(await page.locator('#row-compactContent .segmented label').allTextContents(),['Artwork','Title','Lyric']);
+  assert.equal(await page.locator('input[name="compactContent"]:checked').getAttribute('value'),'lyrics');
+  await page.locator('#row-compactContent label',{hasText:'Artwork'}).click();
+  assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem('tuck.live.v2')).compactContent),'artwork');
+  await page.locator('#row-compactContent label',{hasText:'Lyric'}).click();
   await page.locator('#nav a[data-view="keys"]').click();
   await page.locator('#kAnthropic').fill('test-placeholder-not-a-key');
   await page.locator('#saveKeys').click();
@@ -139,7 +147,7 @@ try {
   assert.deepEqual(errors,[]);
 
   // A mocked native bridge exercises the actual controllers; this is not a hardware smoke.
-  await context.addInitScript(() => {
+  const nativeBridge = () => {
     window.isTauri=true;
     let serial=0;const callbacks=new Map();const listeners=new Map();
     const state={settings:{downloads:false,calendar:false,notifications:false,radios:true},downloads:[],call:null,calendar:[],shelf:[],radios:[{kind:'wifi',name:'Test Wi-Fi',state:'On'}],notificationStatus:'Disabled',errors:[]};
@@ -165,7 +173,8 @@ try {
       if(command==='set_hide_system_flyout')return {enabled:false,state:'unavailable',message:"Turned off: Windows showed its volume flyout several times, but Tuck couldn't find it on this version of Windows"};
       return null;
     }};
-  });
+  };
+  await context.addInitScript(nativeBridge);
   const native=await context.newPage();const nativeErrors=[];native.on('pageerror',error=>nativeErrors.push(error.message));
   await native.goto('http://tuck.test/');await native.waitForTimeout(100);
   assert.equal(await native.locator('.page.todos').count(), 0, 'Todos feature must be completely removed');
@@ -391,6 +400,82 @@ try {
   await native.locator('.lyric-line').last().click();
   assert.equal(await native.evaluate(()=>window.__calls.some(call=>call.command==='media_seek'&&call.args.ms===5000)),true);
   await native.screenshot({path:path.join(root,'artifacts','island-phase-two-media.png')});
+
+  // Closed media content stays present while playing and uses one stable width per track.
+  await native.evaluate(()=>document.getElementById('actReset').click());
+  await native.evaluate(()=>window.dispatchEvent(new CustomEvent('tuck-activity',{detail:{id:'native-call',type:'call',title:'Manual call timer',text:'',priority:95,active:false}})));
+  await native.evaluate(()=>window.__emitNative('media',{active:true,trackId:'fixture-track',title:'Artwork color fixture',artist:'Synthetic test data',playing:true,positionMs:3000,durationMs:120000,artwork:null}));
+  await setLive({compactContent:'lyrics'});
+  await native.keyboard.press('Escape');
+  await native.waitForTimeout(450);
+  assert.equal(await native.locator('#isl').getAttribute('data-state'),'idle');
+  assert.equal((await native.locator('#isl').boundingBox()).width,300,'Lyric mode reserves a stable wider closed pill');
+  assert.equal((await native.locator('#cc .compact-title-track').textContent()).trim(),'Current fixture line');
+  await setLive({compactContent:'title'}); await native.waitForTimeout(50);
+  assert.equal((await native.locator('#cc .compact-title-track').textContent()).trim(),'Artwork color fixture');
+  assert.equal((await native.locator('#isl').boundingBox()).width,300,'Title mode keeps the same stable width');
+  // The native hit area follows the wider pill, so all of it clicks and takes the volume wheel
+  const lastHit = () => native.evaluate(()=>window.__calls.findLast(call=>call.command==='set_hit').args.w);
+  assert.equal(await lastHit(),300,'Native hit bounds cover the wider pill');
+  const textPill = await native.locator('#isl').boundingBox();
+  await native.mouse.move(textPill.x + textPill.width - 4, textPill.y + 16);
+  await native.mouse.wheel(0,-100);
+  await native.locator('.compact[aria-label^="Volume"]').waitFor({timeout:2000});
+  await native.mouse.move(0, 220);
+  await toIdle();
+  assert.equal((await native.locator('#isl').boundingBox()).width,300,'The pill comes back wide after the HUD');
+  await native.mouse.click(textPill.x + 4, textPill.y + 16);
+  assert.equal(await native.locator('#isl').getAttribute('data-state'),'open','The far edge of the wider pill opens the island');
+  // A cursor resting there keeps the volume wheel once the pill has opened under it
+  const volumeBeforeEdge = (await volumeCalls()).length;
+  await native.mouse.move(textPill.x + 4, textPill.y + 16);
+  await native.mouse.wheel(0,-100);
+  await native.locator('#levelStrip[data-on="volume"]').waitFor({timeout:2000});
+  assert.equal((await volumeCalls()).length,volumeBeforeEdge + 1,'The open strip uses the width the pill would close to');
+  assert.equal(await native.locator('#isl').getAttribute('data-state'),'open');
+  await native.keyboard.press('Escape');
+  await native.mouse.move(0, 220);
+  // Lyric lines change the text only: same width, no new hit bounds
+  await setLive({compactContent:'lyrics'}); await native.waitForTimeout(50);
+  const hitCalls = () => native.evaluate(()=>window.__calls.filter(call=>call.command==='set_hit').length);
+  const hitsBefore = await hitCalls();
+  await native.evaluate(()=>window.__emitNative('media',{active:true,trackId:'fixture-track',title:'Artwork color fixture',artist:'Synthetic test data',playing:true,positionMs:5000,durationMs:120000,artwork:null}));
+  await native.locator('#cc .compact-title-track',{hasText:'Next fixture line'}).waitFor({timeout:2000});
+  assert.equal((await native.locator('#isl').boundingBox()).width,300,'A new lyric line never resizes the pill');
+  assert.equal(await hitCalls(),hitsBefore,'A new lyric line never touches the native bounds');
+  // A line too long for the pill marquees instead of widening it
+  await setLive({compactContent:'title'}); await native.waitForTimeout(50);
+  await native.evaluate(()=>window.__emitNative('media',{active:true,trackId:'long-track',title:'A title far too long to fit in the collapsed pill however wide it gets',artist:'Synthetic test data',playing:true,positionMs:0,durationMs:120000,artwork:null}));
+  await native.waitForTimeout(100);
+  assert.equal((await native.locator('#isl').boundingBox()).width,300,'Long text keeps the stable width');
+  assert.equal(await native.locator('#cc .compact-slot.current .compact-title').evaluate(n=>getComputedStyle(n).textOverflow==='ellipsis'&&n.scrollWidth>n.clientWidth&&!n.classList.contains('scroll')&&!n.classList.contains('scroll-once')),true,'Reduced motion ends a long line in an ellipsis without scrolling');
+  // A pause between two tracks holds the pill: no resize and no new hit bounds
+  const hitsBeforePause = await hitCalls();
+  await native.evaluate(()=>window.__emitNative('media',{active:true,trackId:'long-track',title:'A title far too long to fit in the collapsed pill however wide it gets',artist:'Synthetic test data',playing:false,positionMs:0,durationMs:120000,artwork:null}));
+  await native.waitForTimeout(200);
+  assert.equal((await native.locator('#isl').boundingBox()).width,300,'A pause holds the pill for a moment');
+  await native.evaluate(()=>window.__emitNative('media',{active:true,trackId:'fixture-track',title:'Artwork color fixture',artist:'Synthetic test data',playing:true,positionMs:5000,durationMs:120000,artwork:null}));
+  assert.equal((await native.locator('#isl').boundingBox()).width,300,'The next track finds the pill unchanged');
+  assert.equal(await hitCalls(),hitsBeforePause,'A pause between tracks never touches the native bounds');
+  // Dictation outranks media and gives the pill back its base width
+  await native.evaluate(()=>window.dispatchEvent(new CustomEvent('tuck-activity',{detail:{id:'dictation',type:'dictation',phase:'recording',title:'Dictation',text:'',priority:100,active:true}})));
+  assert.equal(await native.locator('.compact').getAttribute('aria-label'),'Dictation recording');
+  await native.waitForTimeout(50);
+  assert.equal((await native.locator('#isl').boundingBox()).width,212,'A higher-priority activity takes the slot');
+  await native.evaluate(()=>window.dispatchEvent(new CustomEvent('tuck-activity',{detail:{id:'dictation',type:'dictation',title:'Dictation',text:'',priority:100,active:false}})));
+  await setLive({compactContent:'title'}); await native.waitForTimeout(50);
+  await setLive({compactContent:'artwork'}); await native.waitForTimeout(450);
+  assert.equal((await native.locator('#isl').boundingBox()).width,212,'Artwork mode returns to the base pill width');
+  assert.equal((await native.locator('#cc').textContent()).trim(),'');
+  await setLive({compactContent:'title'});
+  await native.evaluate(()=>window.__emitNative('media',{active:true,trackId:'fixture-track',title:'Artwork color fixture',artist:'Synthetic test data',playing:false,positionMs:3000,durationMs:120000,artwork:null}));
+  await native.waitForTimeout(300);
+  assert.equal((await native.locator('#isl').boundingBox()).width,300,'The pill holds just after a pause');
+  await native.waitForTimeout(1000);
+  assert.equal((await native.locator('#isl').boundingBox()).width,212,'Paused media returns to the idle glyph layout');
+  assert.match(await native.locator('.compact').getAttribute('aria-label'),/^Time /);
+  assert.equal(await native.locator('#cr .battery-glyph').count(),1);
+  await native.evaluate(()=>window.__emitNative('open-island',null));
   for (const width of [440, 500]) {
     await native.evaluate(width => {
       const key = 'tuck.live.v2';
@@ -436,30 +521,168 @@ try {
   assert.equal(await native.locator('.stat-value').first().textContent(),'\u2013');
   await native.evaluate(()=>window.__emitNative('media',{active:true,trackId:'other',title:'Other fixture',artist:'Test',playing:true,positionMs:0,durationMs:10000}));
   assert.equal(await native.locator('.tab-panel.on').getAttribute('data-tab'),'usage','Track changes must not steal a selected tool');
-  // AI usage: one ring per meter, the provider mark inside, a threshold tone, details in the name
+  // AI usage: one provider card, double rings for 5h + 7d, official marks, no unconnected cards
   await native.evaluate(()=>{
-    localStorage.setItem('notch.chatgpt',JSON.stringify({label:'ChatGPT (estimate)',cap:10,hours:3}));
+    localStorage.removeItem('notch.chatgpt');
     const now=Math.round(Date.now()/1000);
     window.__emitNative('usage',[
-      {id:'claude-5h',provider:'claude',label:'Claude session (5 h)',usedPct:93,spentUsd:null,resetsAt:now+8130,source:'official',stale:false},
-      {id:'codex-installed-c-primary',provider:'codex',label:'Codex 5 h',usedPct:72,spentUsd:null,resetsAt:now+3630,source:'official',stale:false},
-      {id:'openai-api',provider:'openai-api',label:'OpenAI API',usedPct:null,spentUsd:null,resetsAt:null,source:'api',stale:false,status:'unavailable',error:'No admin key'}]);
+      {id:'claude-5h',provider:'claude',label:'Claude session (5 h)',usedPct:42,spentUsd:null,resetsAt:now+8130,source:'official',stale:false,status:'ok'},
+      {id:'claude-week',provider:'claude',label:'Claude weekly',usedPct:18,spentUsd:null,resetsAt:now+86400*2,source:'official',stale:false,status:'ok'},
+      {id:'codex-installed-c-primary',provider:'codex',label:'Codex 5 h',usedPct:72,spentUsd:null,resetsAt:now+3630,source:'official',stale:false,status:'ok'},
+      {id:'codex-installed-c-secondary',provider:'codex',label:'Codex weekly',usedPct:9,spentUsd:null,resetsAt:now+86400*5,source:'official',stale:true,status:'stale'},
+      {id:'openai-api',provider:'openai-api',label:'OpenAI API',usedPct:null,spentUsd:null,resetsAt:null,source:'api',stale:true,status:'unconfigured'}]);
   });
   await native.locator('.page.usage').scrollIntoViewIfNeeded();
-  assert.equal(await native.locator('#uList .u-cell').count(),4,'Three native meters and the ChatGPT estimate');
-  assert.equal(await native.locator('#uList .u-cell svg.mark').count(),4,'Every meter shows its provider mark');
+  assert.equal(await native.locator('#uList .u-provider').count(),2,'Two connected providers become two cards');
+  assert.equal(await native.locator('#uList .u-provider .brand-mark').count(),2,'Every provider shows its real mark');
+  assert.equal(await native.locator('#uList .u-ring-outer').count(),2);
+  assert.equal(await native.locator('#uList .u-ring-inner').count(),2);
   await native.waitForTimeout(100);
-  assert.deepEqual(await native.locator('#uList .ring').evaluateAll(n=>n.map(x=>x.dataset.tone)),['warn','caution','none','ok']);
-  assert.equal(await native.locator('#uList .u-face').first().getAttribute('aria-label'),'Claude session (5 h), 93% used, resets in 2h 15m, official');
-  assert.deepEqual(await native.locator('#uList .u-sub').evaluateAll(n=>n.map(x=>x.textContent)),['5h \u00b7 2h 15m','5h \u00b7 1h','API \u00b7 off','Est']);
-  assert.equal(await native.locator('#uList .u-cell').nth(2).getAttribute('data-stale'),'true','An unavailable meter dims');
-  const logButton = native.getByRole('button',{name:/^Log a ChatGPT message/});
-  assert.equal(await logButton.count(),1);
-  await logButton.click();
-  assert.equal(await native.locator('#uList .u-cell').nth(3).locator('.u-val').textContent(),'1/10');
-  assert.equal(await logButton.evaluate(n=>document.activeElement===n),true,'Logging keeps focus on the ring');
+  assert.deepEqual(await native.locator('#uList .ring').evaluateAll(n=>n.map(x=>x.dataset.tone)),['ok','ok','caution','ok']);
+  assert.deepEqual(await native.locator('#uList .u-provider').first().locator('.u-value-line').evaluateAll(n=>n.map(x=>x.textContent)),['5h42%','7d18%']);
+  assert.match(await native.locator('#uList .u-face').first().getAttribute('aria-label'),/Claude\. 5h, 42% used.*7d, 18% used/);
+  assert.equal(await native.locator('#uList .u-provider').nth(1).getAttribute('data-stale'),'true','A stale configured provider remains and dims');
+  assert.equal(await native.locator('#uList .u-provider').nth(1).locator('.u-state').textContent(),'Stale','A stale provider says so');
+  assert.equal(await native.locator('#uList .u-provider').first().locator('.u-state').isHidden(),true,'A fresh provider has no state word');
+  assert.match(await native.locator('#uList .u-provider').first().getAttribute('title'),/resets in 2h 15m/,'Reset times live in the tooltip');
   const ringTargets = await native.locator('#uList .u-face').evaluateAll(nodes => nodes.map(n => n.getBoundingClientRect().width));
-  assert.equal(ringTargets.every(size => size >= 36), true, 'Usage rings are at least 36px');
+  assert.equal(ringTargets.every(size => size >= 72), true, 'Provider rings are larger than the old rings');
+
+  // Every card fits, whatever the island width and however many providers are connected
+  const fiveProviders = now => [
+    {id:'claude-5h',provider:'claude',label:'Claude session (5 h)',usedPct:100,spentUsd:null,resetsAt:now+8130,source:'official',stale:false,status:'ok'},
+    {id:'claude-week',provider:'claude',label:'Claude weekly',usedPct:93,spentUsd:null,resetsAt:now+86400*2,source:'official',stale:false,status:'ok'},
+    {id:'codex-primary',provider:'codex',label:'Codex 5 h',usedPct:72,spentUsd:null,resetsAt:now+3630,source:'official',stale:false,status:'ok'},
+    {id:'codex-secondary',provider:'codex',label:'Codex weekly',usedPct:9,spentUsd:null,resetsAt:now+86400*5,source:'official',stale:true,status:'stale'},
+    {id:'anthropic-api',provider:'anthropic-api',label:'Claude API',usedPct:null,spentUsd:1234.5,resetsAt:now+86400,source:'api',stale:false,status:'ok'},
+    {id:'openai-api',provider:'openai-api',label:'OpenAI API',usedPct:null,spentUsd:null,resetsAt:now+86400,source:'api',stale:true,status:'error',error:'Credential Manager read failed'},
+  ];
+  const usageFit = () => native.evaluate(()=>{
+    const list=document.getElementById('uList'),page=document.querySelector('.page.usage').getBoundingClientRect();
+    const container=document.querySelector('.pages-container').getBoundingClientRect();
+    const inside=r=>r.left>=container.left-1&&r.right<=container.right+1&&r.top>=page.top-1&&r.bottom<=page.bottom+1;
+    const parts=[...list.querySelectorAll('.u-face,.u-values,.u-value-line,.u-state')].filter(n=>n.getBoundingClientRect().height>0);
+    const clear=[...list.querySelectorAll('.u-provider')].every(card=>card.querySelector('.u-face').getBoundingClientRect().right<=card.querySelector('.u-values').getBoundingClientRect().left&&card.querySelector('.u-values').scrollWidth<=card.querySelector('.u-values').clientWidth+1);
+    const marks=[...document.querySelectorAll('.section-index-button')].map(n=>n.getBoundingClientRect());
+    return {inside:parts.every(n=>inside(n.getBoundingClientRect())),clear,marksClear:marks.every(r=>r.left>=container.right-0.5),fits:list.scrollHeight<=page.height+1};
+  });
+  for (const width of [440,500]) {
+    await setLive({openWidth:width});
+    await native.waitForTimeout(50);
+    assert.deepEqual(await usageFit(),{inside:true,clear:true,marksClear:true,fits:true},`Two provider cards fit at ${width}px`);
+    await native.evaluate(meters=>window.__emitNative('usage',meters),fiveProviders(Math.round(Date.now()/1000)));
+    await native.waitForTimeout(50);
+    assert.equal(await native.locator('#uList .u-provider').count(),4,'Each connected source is one card');
+    assert.deepEqual(await usageFit(),{inside:true,clear:true,marksClear:true,fits:true},`Four provider cards fit at ${width}px`);
+    await native.evaluate(()=>{localStorage.setItem('notch.chatgpt',JSON.stringify({label:'ChatGPT (estimate)',cap:10,hours:3}));localStorage.removeItem('notch.chatgpt.log');window.dispatchEvent(new StorageEvent('storage',{key:'notch.chatgpt'}));});
+    await native.waitForTimeout(50);
+    assert.equal(await native.locator('#uList .u-provider').count(),5);
+    assert.equal(await native.locator('#uList').evaluate(n=>n.classList.contains('dense')),true);
+    assert.deepEqual(await usageFit(),{inside:true,clear:true,marksClear:true,fits:true},`Five provider cards fit at ${width}px`);
+    // The ChatGPT estimate is logged by pressing its ring
+    const logButton = native.getByRole('button',{name:/^Log a ChatGPT message/});
+    await logButton.click();
+    assert.equal(await native.locator('#uList .u-provider').last().locator('.u-val').textContent(),'1/10');
+    assert.equal(await logButton.evaluate(n=>document.activeElement===n),true,'Logging keeps focus on the ring');
+    await native.evaluate(()=>{localStorage.removeItem('notch.chatgpt');localStorage.removeItem('notch.chatgpt.log');});
+    await native.evaluate(meters=>window.__emitNative('usage',meters),fiveProviders(Math.round(Date.now()/1000)).slice(0,4));
+  }
+  assert.equal(await native.locator('#uList .u-provider').count(),2);
+
+  // The section indicator is an actual control and follows the same snap scroller.
+  const sectionButtons = native.locator('.section-index-button');
+  assert.equal(await sectionButtons.count(),2);
+  assert.equal(await sectionButtons.first().getAttribute('aria-label'),'Go to AI usage');
+  assert.equal(await sectionButtons.first().getAttribute('aria-current'),'true');
+  const sectionTargets = await sectionButtons.evaluateAll(nodes=>nodes.map(node=>{const r=node.getBoundingClientRect();return [r.width,r.height];}));
+  assert.equal(sectionTargets.every(([w,h])=>w>=24&&h>=24),true,'Section controls have 24px hit targets');
+  await sectionButtons.nth(1).focus();
+  assert.equal(await sectionButtons.nth(1).evaluate(node=>document.activeElement===node),true,'Section controls are keyboard focusable');
+  await sectionButtons.nth(1).click();
+  await native.waitForTimeout(400);
+  assert.equal(await sectionButtons.nth(1).getAttribute('aria-current'),'true');
+  assert.equal(await native.locator('#isl').getAttribute('data-state'),'open','Section clicks do not collapse the island');
+  const usageTop = () => native.locator('#panel-usage').evaluate(el => el.scrollTop);
+  assert.ok(await usageTop() > 0,'A click snaps the panel to its section');
+  assert.equal(await native.evaluate(()=>JSON.parse(localStorage.getItem('tuck.live.v2')).lastTab),'usage','A section click keeps the tab remembered');
+  await sectionButtons.first().focus();
+  await native.keyboard.press('Enter');
+  await native.waitForTimeout(400);
+  assert.equal(await usageTop(),0,'The keyboard reaches the same navigation');
+  assert.equal(await sectionButtons.first().evaluate(n=>getComputedStyle(n).outlineStyle),'solid','A focused mark shows its focus ring');
+  // The wheel over the marks moves between sections, like over the page, and only then between tabs
+  await native.waitForTimeout(400);
+  await sectionButtons.first().hover();
+  await native.mouse.wheel(0,120); await native.waitForTimeout(400);
+  assert.equal(await sectionButtons.nth(1).getAttribute('aria-current'),'true','Wheel over the marks scrolls to the next section');
+  assert.equal(await native.locator('.tab-panel.on').getAttribute('data-tab'),'usage');
+  // The section count can change while the tab is open
+  await native.evaluate(()=>window.__emitNative('usage',[]));
+  assert.equal(await native.locator('.section-index').isHidden(),true);
+  assert.equal(await native.evaluate(()=>document.querySelector('.tab-panel.on').contains(document.activeElement)||document.activeElement===document.querySelector('.tab-panel.on')),true,'Focus does not fall out of the island when the marks leave');
+  await native.evaluate(()=>{const now=Math.round(Date.now()/1000);window.__emitNative('usage',[
+    {id:'claude-5h',provider:'claude',label:'Claude session (5 h)',usedPct:42,spentUsd:null,resetsAt:now+8130,source:'official',stale:false,status:'ok'}]);});
+  assert.equal(await sectionButtons.nth(1).getAttribute('aria-current'),'true','A section the reader moved to stays in view when another returns above it');
+  assert.ok(await usageTop() > 0);
+  await sectionButtons.first().click(); await native.waitForTimeout(400);
+  assert.equal(await sectionButtons.first().getAttribute('aria-current'),'true');
+  assert.deepEqual(await sectionButtons.evaluateAll(n=>n.map(x=>getComputedStyle(x).color)),['rgb(161, 161, 166)','rgb(99, 99, 102)'],'Inactive marks are --ink-3, the active one --ink-2');
+  assert.deepEqual(await sectionButtons.first().evaluate(n=>[getComputedStyle(n,'::before').left,getComputedStyle(n,'::before').right]),['4px','4px'],'The hover fill keeps a gap from the page beside it');
+  // ArrowLeft from a mark moves into the tab, as anywhere else in the open island
+  await sectionButtons.nth(1).focus();
+  await native.keyboard.press('ArrowLeft');
+  assert.equal(await native.locator('.tab-panel.on').getAttribute('data-tab'),'tools');
+  assert.equal(await native.evaluate(()=>document.querySelector('.tab-panel.on').contains(document.activeElement)||document.activeElement===document.querySelector('.tab-panel.on')),true,'Focus moves into the new tab');
+  // Marks belong to the tab on screen, even when two tabs have the same number of sections
+  await native.getByRole('tab',{name:'Media',exact:true}).click();
+  assert.deepEqual(await sectionButtons.evaluateAll(n=>n.map(x=>x.getAttribute('aria-label'))),['Go to now playing','Go to visualizer']);
+  await native.getByRole('tab',{name:'Today',exact:true}).click();
+  assert.equal(await sectionButtons.count(),3);
+  await native.getByRole('tab',{name:'Usage',exact:true}).click();
+  assert.deepEqual(await sectionButtons.evaluateAll(n=>n.map(x=>x.getAttribute('aria-label'))),['Go to AI usage','Go to system']);
+
+  // One provider keeps one card; no connected providers remove AI usage and its index mark.
+  await native.evaluate(()=>{const now=Math.round(Date.now()/1000);window.__emitNative('usage',[
+    {id:'claude-5h',provider:'claude',label:'Claude session (5 h)',usedPct:42,spentUsd:null,resetsAt:now+8130,source:'official',stale:false,status:'ok'},
+    {id:'claude-week',provider:'claude',label:'Claude weekly',usedPct:18,spentUsd:null,resetsAt:now+86400*2,source:'official',stale:false,status:'ok'}]);});
+  assert.equal(await native.locator('#uList .u-provider').count(),1);
+  assert.equal(await native.locator('#uList .u-ring-inner').count(),1,'Both windows draw for the one provider');
+  await native.evaluate(()=>{const now=Math.round(Date.now()/1000);window.__emitNative('usage',[
+    {id:'claude-week',provider:'claude',label:'Claude weekly',usedPct:18,spentUsd:null,resetsAt:now+86400*2,source:'official',stale:false,status:'ok'}]);});
+  assert.equal(await native.locator('#uList .u-ring-outer').count(),1);
+  assert.equal(await native.locator('#uList .u-ring-inner').count(),0,'A single-window provider draws one ring');
+  assert.equal(await native.locator('#uList .u-value-line').count(),1);
+  // A client that has failed before its first reading: no source word in the window slot
+  const errorCard = {id:'codex-installed',provider:'codex',label:'ChatGPT / Codex',usedPct:null,spentUsd:null,resetsAt:null,source:'official',stale:true,status:'error',error:'Installed client usage request timed out'};
+  const week = now => ({id:'claude-week',provider:'claude',label:'Claude weekly',usedPct:18,spentUsd:null,resetsAt:now+86400*2,source:'official',stale:false,status:'ok'});
+  await native.evaluate(([a,b])=>window.__emitNative('usage',[a,b]),[week(Math.round(Date.now()/1000)),errorCard]);
+  assert.equal((await native.locator('#uList .u-provider').nth(1).locator('.u-values').textContent()).trim(),'\u2013Error');
+  assert.match(await native.locator('#uList .u-provider').nth(1).getAttribute('title'),/official/,'The source stays in the tooltip');
+  // Keyboard focus survives a card being rebuilt or removed
+  await native.locator('#uList .u-face').nth(1).focus();
+  const codexWindows = now => [{id:'codex-primary',provider:'codex',label:'Codex 5 h',usedPct:72,spentUsd:null,resetsAt:now+3630,source:'official',stale:false,status:'ok'},{id:'codex-secondary',provider:'codex',label:'Codex weekly',usedPct:9,spentUsd:null,resetsAt:now+86400*5,source:'official',stale:false,status:'ok'}];
+  const rebuildNow = Math.round(Date.now()/1000);
+  await native.evaluate(meters=>window.__emitNative('usage',meters),[week(rebuildNow),...codexWindows(rebuildNow)]);
+  assert.match(await native.evaluate(()=>document.activeElement.getAttribute('aria-label')),/^OpenAI/,'A rebuilt card keeps focus');
+  await native.evaluate(()=>{window.__titleWrites=0;new MutationObserver(list=>{window.__titleWrites+=list.length;}).observe(document.querySelector('#uList .u-provider'),{attributes:true,attributeFilter:['title']});});
+  await native.evaluate(meters=>window.__emitNative('usage',meters),[week(rebuildNow),...codexWindows(rebuildNow)]);
+  await native.waitForTimeout(20);
+  assert.equal(await native.evaluate(()=>window.__titleWrites),0,'An unchanged reading writes nothing');
+    await native.evaluate(meter=>window.__emitNative('usage',[meter]),week(Math.round(Date.now()/1000)));
+  assert.match(await native.evaluate(()=>document.activeElement.getAttribute('aria-label')),/^Claude/,'A removed card hands focus to the next one');
+  await native.evaluate(()=>window.__emitNative('usage',[]));
+  assert.equal(await native.evaluate(()=>document.activeElement.id),'panel-usage','The last card hands focus to its tab');
+  await native.evaluate(meter=>window.__emitNative('usage',[meter]),week(Math.round(Date.now()/1000)));
+  await native.evaluate(()=>window.__emitNative('usage',[
+    {id:'openai-api',provider:'openai-api',label:'OpenAI API',usedPct:null,spentUsd:null,resetsAt:null,source:'api',stale:true,status:'unconfigured'}]));
+  assert.equal(await native.locator('.page.usage').isHidden(),true,'No connected provider removes the AI section');
+  assert.equal(await native.locator('.section-index').isHidden(),true,'One remaining Usage section hides the index');
+  await native.evaluate(()=>{const now=Math.round(Date.now()/1000);window.__emitNative('usage',[
+    {id:'claude-5h',provider:'claude',label:'Claude session (5 h)',usedPct:42,spentUsd:null,resetsAt:now+8130,source:'official',stale:false,status:'ok'},
+    {id:'claude-week',provider:'claude',label:'Claude weekly',usedPct:18,spentUsd:null,resetsAt:now+86400*2,source:'official',stale:false,status:'ok'},
+    {id:'codex-primary',provider:'codex',label:'Codex 5 h',usedPct:72,spentUsd:null,resetsAt:now+3630,source:'official',stale:false,status:'ok'},
+    {id:'codex-secondary',provider:'codex',label:'Codex weekly',usedPct:9,spentUsd:null,resetsAt:now+86400*5,source:'official',stale:false,status:'ok'}]);});
+  await setLive({openWidth:500});
   await native.getByRole('tab',{name:'Tools',exact:true}).click();
   await native.locator('.page.dictation').scrollIntoViewIfNeeded();
   await native.evaluate(()=>window.__emitNative('dictation_state',{status:'review',transcript:'<b>Text, not markup</b>',modelReady:true}));
@@ -499,7 +722,8 @@ try {
   assert.ok(await panelTop() > 0,'Moving back lands on the last section');
   await native.mouse.wheel(120,0); await native.waitForTimeout(400);
   assert.equal(await activeTab(),'today','Horizontal wheel switches tabs');
-  assert.equal((await volumeCalls()).length,volumeCallsBeforeOpen,'Wheel outside the strip never changes the volume');
+  // Two calls since then: the wheel over the far edge of the wider pill, collapsed and open
+  assert.equal((await volumeCalls()).length,volumeCallsBeforeOpen + 2,'Wheel outside the strip never changes the volume');
   // Pointer drag swipe: dragging left moves to the next tab
   const area = await native.locator('.pages-container').boundingBox();
   await native.mouse.move(area.x + area.width - 40, area.y + 60);
@@ -513,6 +737,11 @@ try {
   assert.equal(await native.evaluate(() => JSON.parse(localStorage.getItem('tuck.live.v2')).lastTab),'usage');
   await native.reload(); await native.waitForTimeout(150);
   assert.equal(await native.locator('.tab-panel.on').getAttribute('data-tab'),'usage','The last tab is restored');
+  // A fresh session has no chosen section, so the first reading to arrive is what shows
+  await native.evaluate(()=>window.__emitNative('usage',[{id:'claude-5h',provider:'claude',label:'Claude session (5 h)',usedPct:42,spentUsd:null,resetsAt:Math.round(Date.now()/1000)+8130,source:'official',stale:false,status:'ok'}]));
+  await native.waitForTimeout(50);
+  assert.equal(await native.locator('.section-index-button').first().getAttribute('aria-current'),'true');
+  assert.equal(await native.locator('#panel-usage').evaluate(el=>el.scrollTop),0);
   await native.evaluate(()=>window.__emitNative('open-island',null));
   await native.locator('#railSettings').click();
   assert.equal(await native.evaluate(()=>window.__calls.some(call=>call.command==='open_settings_cmd')),true,'The rail settings button opens the settings window');
@@ -541,6 +770,45 @@ try {
   assert.equal(await native.locator('#hideSystemFlyout').isChecked(),false,'An unavailable flyout turns the setting back off');
   assert.equal(await native.locator('#flyoutStatus').getAttribute('data-kind'),'error');
   assert.deepEqual(nativeErrors,[]);
-  console.log('UI smoke passed: geometry, tab rail (keys, wheel edges, swipe, memory), accessibility, keyboard seeking, timers, usage rings, icon buttons, persistence errors, volume/brightness HUD, wheel and middle-click volume, the pill-sized strip on the open island, queued flyout failure, return to open after HUD, HUD setting, charger-ramp brightness, flyout opt-in, native-bridge call priority, shelf, focused radio updates, drag hold and previews.');
+
+  // With motion on: what actually keeps running while the island is collapsed
+  const motionContext = await browser.newContext({viewport:{width:520,height:230}, reducedMotion:'no-preference'});
+  await motionContext.route('http://tuck.test/**', serveDist);
+  await motionContext.addInitScript(nativeBridge);
+  const motion = await motionContext.newPage();
+  const motionErrors = []; motion.on('pageerror',error=>motionErrors.push(error.message));
+  await motion.goto('http://tuck.test/');
+  const running = () => motion.evaluate(()=>document.getAnimations().filter(a=>a.playState==='running').map(a=>a.animationName||a.transitionProperty).sort());
+  const emitTrack = (title,playing) => motion.evaluate(([title,playing])=>window.__emitNative('media',{active:true,trackId:title,title,artist:'Fixture',playing,positionMs:0,durationMs:120000,artwork:null}),[title,playing]);
+  const longTitle = 'A synthetic title just long enough to need a single scroll here';
+  await motion.waitForTimeout(600);
+  assert.deepEqual(await running(),[],'Collapsed with nothing playing runs no animations');
+  await emitTrack(longTitle,false);
+  await motion.waitForTimeout(600);
+  assert.deepEqual(await running(),[],'A paused track with an overflowing open-page title runs no animations while collapsed');
+  await motion.locator('#isl').focus(); await motion.keyboard.press('Enter');
+  await motion.waitForTimeout(600);
+  assert.ok((await running()).includes('marquee-anim'),'The open page title still marquees');
+  await motion.keyboard.press('Escape');
+  await motion.waitForTimeout(600);
+  assert.deepEqual(await running(),[],'Closing stops the open page title');
+  await emitTrack(longTitle,true);
+  await motion.waitForTimeout(700);
+  assert.ok((await running()).includes('compact-marquee-once'),'A long collapsed line scrolls');
+  assert.equal((await running()).filter(name=>name==='eq-bounce').length,3,'The equalizer runs during playback');
+  await motion.waitForFunction(()=>!document.getAnimations().some(a=>a.animationName==='compact-marquee-once'),null,{timeout:15000});
+  assert.deepEqual([...new Set(await running())],['eq-bounce'],'Only the equalizer runs after the one scroll');
+  assert.equal(await motion.locator('#cc .compact-slot.current .compact-title').evaluate(n=>getComputedStyle(n).textOverflow==='ellipsis'&&n.scrollWidth>n.clientWidth&&!n.classList.contains('scroll-once')),true,'The line stops on an ellipsis');
+  await emitTrack(longTitle,true);
+  await motion.waitForTimeout(600);
+  assert.deepEqual([...new Set(await running())],['eq-bounce'],'The same text does not re-arm the scroll');
+  await emitTrack(`${longTitle} again`,true);
+  await motion.waitForTimeout(600);
+  assert.ok((await running()).includes('compact-marquee-once'),'New text re-arms the scroll');
+  await emitTrack(`${longTitle} again`,false);
+  await motion.waitForTimeout(1600);
+  assert.deepEqual(await running(),[],'The equalizer stops on pause and nothing else runs');
+  assert.deepEqual(motionErrors,[]);
+  console.log('UI smoke passed: geometry, tab rail (keys, wheel edges, swipe, memory), accessibility, keyboard seeking, timers, collapsed media text and its running animations, usage rings, section marks, icon buttons, persistence errors, volume/brightness HUD, wheel and middle-click volume, the pill-sized strip on the open island, queued flyout failure, return to open after HUD, HUD setting, charger-ramp brightness, flyout opt-in, native-bridge call priority, shelf, focused radio updates, drag hold and previews.');
 } finally { await browser.close(); }
 

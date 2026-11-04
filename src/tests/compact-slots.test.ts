@@ -1,6 +1,7 @@
 import './setup.js';
 import { describe, expect, it } from 'bun:test';
 import {
+  compactScrollMs,
   compactShellWidth,
   selectCompactActivity,
   type CompactActivityCandidate,
@@ -89,5 +90,18 @@ describe('collapsed media width', () => {
     expect(compactShellWidth(media, 'artwork')).toBe(212);
     expect(compactShellWidth(activity({ kind: 'timer' }), 'lyrics')).toBe(212);
     expect(compactShellWidth(null, 'title')).toBe(212);
+  });
+});
+
+describe('collapsed one-shot scroll', () => {
+  it('fits a long lyric inside a 4s line, lead included', () => {
+    expect(compactScrollMs(1000, true)).toBe(3200);
+    expect(300 + compactScrollMs(1000, true)).toBeLessThan(4000);
+  });
+
+  it('gives titles reading time and bounds the longest', () => {
+    expect(compactScrollMs(10, false)).toBe(2000);
+    expect(compactScrollMs(210, false)).toBe(5000);
+    expect(compactScrollMs(5000, false)).toBe(12000);
   });
 });

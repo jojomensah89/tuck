@@ -177,6 +177,14 @@ export function mountTabRail(options: TabRailOptions): TabRail {
       else button.removeAttribute('aria-current');
     });
   }
+  /** The section the reader last moved to by hand this session, per panel */
+  const readerSection = new WeakMap<HTMLElement, string>();
+  let readerMoving = false;
+  const noteReader = () => { readerMoving = true; };
+  full.addEventListener('wheel', noteReader, { capture: true, passive: true });
+  full.addEventListener('pointerdown', noteReader, { capture: true, passive: true });
+  full.addEventListener('keydown', noteReader, { capture: true });
+
   let indexFrame = 0;
   for (const panel of panels) {
     panel.addEventListener('scroll', () => {
@@ -184,9 +192,20 @@ export function mountTabRail(options: TabRailOptions): TabRail {
       indexFrame = requestAnimationFrame(() => {
         indexFrame = 0;
         renderSectionIndex();
+        const name = sectionsOf(panel)[visibleSection(panel)]?.dataset.page;
+        if (readerMoving && name) readerSection.set(panel, name);
       });
     }, { passive: true });
   }
+
+  /** Back to the section the reader chose, or the first one if they have not chosen */
+  function placeReader(panel: HTMLElement): void {
+    readerMoving = false;
+    const chosen = sectionsOf(panel).find(section => section.dataset.page === readerSection.get(panel));
+    panel.scrollTop = chosen ? chosen.offsetTop : 0;
+  }
+  /** Panels whose sections changed while they were not laid out */
+  const placeOnShow = new Set<HTMLElement>();
 
   /* ---------- Switching ---------- */
   const leavingHandlers = new WeakMap<HTMLElement, (e: AnimationEvent) => void>();
@@ -220,7 +239,7 @@ export function mountTabRail(options: TabRailOptions): TabRail {
     const changed = next !== previous;
     const focused = document.activeElement;
     const focusOnRail = focused instanceof HTMLElement && tablist.contains(focused);
-    const focusInPanel = focused instanceof HTMLElement && panels[previous].contains(focused);
+    const focusInPanel = focused instanceof HTMLElement && (panels[previous].contains(focused) || sectionIndex.contains(focused));
     const dir = next >= previous ? 1 : -1;
     current = next;
 
@@ -249,6 +268,7 @@ export function mountTabRail(options: TabRailOptions): TabRail {
         clearLeaving(panel);
       }
     });
+    if (placeOnShow.delete(panels[current]) && landing === 'keep') placeReader(panels[current]);
     if (changed) land(panels[current], landing);
 
     tabs.forEach((tab, i) => {
@@ -290,11 +310,9 @@ export function mountTabRail(options: TabRailOptions): TabRail {
       .find(page => page.dataset.page === section);
     if (!target || target.hidden === !visible) return;
     const panel = target.parentElement as HTMLElement;
-    const hadFocus = target.contains(document.activeElement);
     target.hidden = !visible;
-    // The tab goes back to its first section, so the first reading to arrive is what shows
-    panel.scrollTop = 0;
-    if (hadFocus) panel.focus({ preventScroll: true });
+    if (panel === panels[current]) placeReader(panel);
+    else placeOnShow.add(panel);
     renderSectionIndex();
   }
 

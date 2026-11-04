@@ -397,6 +397,19 @@ impl Client {
         }
     }
 }
+fn codex_account(account: &Value) -> Result<(), ProbeError> {
+    if account["account"]["type"] == "chatgpt" {
+        Ok(())
+    } else {
+        Err(ProbeError::NotConnected)
+    }
+}
+fn claude_usage(value: &Value) -> Result<Vec<Meter>, ProbeError> {
+    if value["rate_limits_available"] == false {
+        return Err(ProbeError::NotConnected);
+    }
+    Ok(parse_claude(value)?)
+}
 fn probe(name: &str) -> Result<Vec<Meter>, ProbeError> {
     executable(name).map_err(|_| ProbeError::NotConnected)?;
     let mut client = Client::start(name)?;
@@ -404,9 +417,7 @@ fn probe(name: &str) -> Result<Vec<Meter>, ProbeError> {
         client.request(1,"initialize",json!({"clientInfo":{"name":"tuck","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":true,"requestAttestation":false}}),false)?;
         client.send(&json!({"method":"initialized","params":{}}))?;
         let account = client.request(2, "account/read", json!({"refreshToken":false}), false)?;
-        if account["account"]["type"] != "chatgpt" {
-            return Err(ProbeError::NotConnected);
-        }
+        codex_account(&account)?;
         let limits = client.request(
             3,
             "account/rateLimits/read",
@@ -422,10 +433,7 @@ fn probe(name: &str) -> Result<Vec<Meter>, ProbeError> {
             json!({"subtype":"get_usage","skip_behaviors":true}),
             true,
         )?;
-        if value["rate_limits_available"] == false {
-            return Err(ProbeError::NotConnected);
-        }
-        Ok(parse_claude(&value)?)
+        claude_usage(&value)
     }
 }
 pub fn start(app: AppHandle) {
@@ -490,6 +498,33 @@ mod tests {
         let values=parse_claude(&json!({"rate_limits_available":true,"rate_limits":{"five_hour":{"utilization":35,"resets_at":"2030-01-01T00:00:00Z"}}})).unwrap();
         assert_eq!(values[0].used_pct, Some(35.0));
         assert!(parse_claude(&json!({"rate_limits":{"five_hour":{"utilization":35}}})).is_err());
+    }
+    #[test]
+    fn missing_or_signed_out_clients_are_not_connected() {
+        assert!(matches!(
+            probe("tuck-test-client-that-is-not-installed"),
+            Err(ProbeError::NotConnected)
+        ));
+        assert!(matches!(
+            codex_account(&json!({"account":null})),
+            Err(ProbeError::NotConnected)
+        ));
+        assert!(matches!(
+            codex_account(&json!({"account":{"type":"apiKey"}})),
+            Err(ProbeError::NotConnected)
+        ));
+        assert!(codex_account(&json!({"account":{"type":"chatgpt"}})).is_ok());
+        assert!(matches!(
+            claude_usage(&json!({"rate_limits_available":false})),
+            Err(ProbeError::NotConnected)
+        ));
+    }
+    #[test]
+    fn a_connected_client_without_quota_data_is_a_failure_not_absent() {
+        assert!(matches!(
+            claude_usage(&json!({"rate_limits_available":true})),
+            Err(ProbeError::Failed(_))
+        ));
     }
     #[test]
     fn failed_probe_keeps_real_values_stale_and_never_invents_any() {

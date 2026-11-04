@@ -321,15 +321,29 @@ body.fullscreen-hidden .island {
   min-width: 0;
   overflow: hidden;
   white-space: nowrap;
+  text-overflow: ellipsis;
   text-align: left;
 }
 
-.compact-title-track {
+/* Inline at rest, so an overflowing line ends in an ellipsis; a box only while it scrolls */
+.compact-title.scroll .compact-title-track,
+.compact-title.scroll-once .compact-title-track {
   display: inline-block;
 }
 
+/* A peek is short-lived and can loop; the idle pill scrolls a line once and stops */
 .compact-title.scroll .compact-title-track {
   animation: compact-marquee var(--d-marquee) var(--ease-out) var(--d-marquee-hold) infinite alternate;
+}
+
+.compact-title.scroll-once .compact-title-track {
+  animation: compact-marquee-once var(--compact-scroll, 2s) linear var(--d-marquee-lead) both;
+}
+
+@keyframes compact-marquee-once {
+  0% { transform: translateX(0); }
+  70%, 85% { transform: translateX(var(--compact-shift, 0)); }
+  100% { transform: translateX(0); }
 }
 
 @keyframes compact-marquee {
@@ -743,24 +757,39 @@ body.fullscreen-hidden .island {
 }
 
 .section-index-button {
+  position: relative;
   width: var(--s-6);
   height: var(--s-6);
   border-radius: var(--r-md);
-  color: var(--wash-strong);
+  color: var(--ink-3);
   transition:
     color var(--d-fast) var(--ease-out),
-    background-color var(--d-fast) var(--ease-out),
     transform var(--d-instant) var(--ease-out);
+}
+
+/* The fill is narrower than the 24px target, which keeps a gap from the page beside it */
+.section-index-button::before {
+  content: "";
+  position: absolute;
+  inset: var(--s-half) var(--s-1);
+  border-radius: var(--r-sm);
+  transition: background-color var(--d-fast) var(--ease-out);
 }
 
 .section-index-button:hover {
   color: var(--ink-2);
-  background: var(--raise-subtle);
+}
+
+.section-index-button:hover::before {
+  background: var(--raise);
 }
 
 .section-index-button:active {
   transform: scale(var(--press));
-  background: var(--raise);
+}
+
+.section-index-button:active::before {
+  background: var(--raise-hover);
 }
 
 .section-index-button:focus-visible {
@@ -768,6 +797,7 @@ body.fullscreen-hidden .island {
 }
 
 .section-index-button i {
+  position: relative;
   display: block;
   width: var(--s-half);
   height: var(--s-3);
@@ -916,7 +946,7 @@ body.fullscreen-hidden .island {
   display: inline-block;
 }
 
-.title.scroll span {
+.island[data-state="open"] .title.scroll span {
   animation: marquee-anim 10s linear infinite alternate;
 }
 
@@ -1446,6 +1476,10 @@ body.fullscreen-hidden .island {
   font-variant-numeric: tabular-nums;
 }
 
+.u-window:empty {
+  display: none;
+}
+
 .u-window {
   min-width: var(--s-5);
   color: var(--ink-2);
@@ -1599,7 +1633,8 @@ body.fullscreen-hidden .island {
   .eq i,
   .dictation-level i,
   .compact-title.scroll .compact-title-track,
-  .title.scroll span,
+  .compact-title.scroll-once .compact-title-track,
+  .island[data-state="open"] .title.scroll span,
   .tab-panel.on {
     animation: none !important;
   }

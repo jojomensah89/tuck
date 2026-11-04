@@ -6,13 +6,14 @@ const root = process.cwd();
 const browser = await chromium.launch({channel:'msedge',headless:true});
 try {
   const context = await browser.newContext({viewport:{width:520,height:230}, reducedMotion:'reduce'});
-  await context.route('http://tuck.test/**', async route => {
+  const serveDist = async route => {
     const pathname = new URL(route.request().url()).pathname;
     const file = path.join(root, 'dist', pathname === '/' ? 'index.html' : pathname);
     const types = {'.html':'text/html','.js':'application/javascript','.css':'text/css','.svg':'image/svg+xml'};
     try { await route.fulfill({body:await readFile(file),contentType:types[path.extname(file)] || 'application/octet-stream'}); }
     catch { await route.fulfill({status:404,body:'Not found'}); }
-  });
+  };
+  await context.route('http://tuck.test/**', serveDist);
   const page = await context.newPage();
   const errors = [];
   page.on('pageerror',error => errors.push(error.message));
@@ -138,7 +139,7 @@ try {
   assert.deepEqual(errors,[]);
 
   // A mocked native bridge exercises the actual controllers; this is not a hardware smoke.
-  await context.addInitScript(() => {
+  const nativeBridge = () => {
     window.isTauri=true;
     let serial=0;const callbacks=new Map();const listeners=new Map();
     const state={settings:{downloads:false,calendar:false,notifications:false,radios:true},downloads:[],call:null,calendar:[],shelf:[],radios:[{kind:'wifi',name:'Test Wi-Fi',state:'On'}],notificationStatus:'Disabled',errors:[]};
@@ -163,7 +164,8 @@ try {
       if(command==='set_hide_system_flyout')return {enabled:false,state:'unavailable',message:"Turned off: Windows showed its volume flyout several times, but Tuck couldn't find it on this version of Windows"};
       return null;
     }};
-  });
+  };
+  await context.addInitScript(nativeBridge);
   const native=await context.newPage();const nativeErrors=[];native.on('pageerror',error=>nativeErrors.push(error.message));
   await native.goto('http://tuck.test/');await native.waitForTimeout(100);
   assert.equal(await native.locator('.page.todos').count(), 0, 'Todos feature must be completely removed');
@@ -384,6 +386,13 @@ try {
   assert.equal((await native.locator('#isl').boundingBox()).width,300,'The pill comes back wide after the HUD');
   await native.mouse.click(textPill.x + 4, textPill.y + 16);
   assert.equal(await native.locator('#isl').getAttribute('data-state'),'open','The far edge of the wider pill opens the island');
+  // A cursor resting there keeps the volume wheel once the pill has opened under it
+  const volumeBeforeEdge = (await volumeCalls()).length;
+  await native.mouse.move(textPill.x + 4, textPill.y + 16);
+  await native.mouse.wheel(0,-100);
+  await native.locator('#levelStrip[data-on="volume"]').waitFor({timeout:2000});
+  assert.equal((await volumeCalls()).length,volumeBeforeEdge + 1,'The open strip uses the width the pill would close to');
+  assert.equal(await native.locator('#isl').getAttribute('data-state'),'open');
   await native.keyboard.press('Escape');
   await native.mouse.move(0, 220);
   // Lyric lines change the text only: same width, no new hit bounds
@@ -397,9 +406,17 @@ try {
   // A line too long for the pill marquees instead of widening it
   await setLive({compactContent:'title'}); await native.waitForTimeout(50);
   await native.evaluate(()=>window.__emitNative('media',{active:true,trackId:'long-track',title:'A title far too long to fit in the collapsed pill however wide it gets',artist:'Synthetic test data',playing:true,positionMs:0,durationMs:120000,artwork:null}));
-  await native.locator('#cc .compact-title.scroll').waitFor({timeout:2000});
+  await native.waitForTimeout(100);
   assert.equal((await native.locator('#isl').boundingBox()).width,300,'Long text keeps the stable width');
+  assert.equal(await native.locator('#cc .compact-title').evaluate(n=>getComputedStyle(n).textOverflow==='ellipsis'&&n.scrollWidth>n.clientWidth&&!n.classList.contains('scroll')&&!n.classList.contains('scroll-once')),true,'Reduced motion ends a long line in an ellipsis without scrolling');
+  // A pause between two tracks holds the pill: no resize and no new hit bounds
+  const hitsBeforePause = await hitCalls();
+  await native.evaluate(()=>window.__emitNative('media',{active:true,trackId:'long-track',title:'A title far too long to fit in the collapsed pill however wide it gets',artist:'Synthetic test data',playing:false,positionMs:0,durationMs:120000,artwork:null}));
+  await native.waitForTimeout(200);
+  assert.equal((await native.locator('#isl').boundingBox()).width,300,'A pause holds the pill for a moment');
   await native.evaluate(()=>window.__emitNative('media',{active:true,trackId:'fixture-track',title:'Artwork color fixture',artist:'Synthetic test data',playing:true,positionMs:5000,durationMs:120000,artwork:null}));
+  assert.equal((await native.locator('#isl').boundingBox()).width,300,'The next track finds the pill unchanged');
+  assert.equal(await hitCalls(),hitsBeforePause,'A pause between tracks never touches the native bounds');
   // Dictation outranks media and gives the pill back its base width
   await native.evaluate(()=>window.dispatchEvent(new CustomEvent('tuck-activity',{detail:{id:'dictation',type:'dictation',phase:'recording',title:'Dictation',text:'',priority:100,active:true}})));
   assert.equal(await native.locator('.compact').getAttribute('aria-label'),'Dictation recording');
@@ -412,7 +429,9 @@ try {
   assert.equal((await native.locator('#cc').textContent()).trim(),'');
   await setLive({compactContent:'title'});
   await native.evaluate(()=>window.__emitNative('media',{active:true,trackId:'fixture-track',title:'Artwork color fixture',artist:'Synthetic test data',playing:false,positionMs:3000,durationMs:120000,artwork:null}));
-  await native.waitForTimeout(450);
+  await native.waitForTimeout(300);
+  assert.equal((await native.locator('#isl').boundingBox()).width,300,'The pill holds just after a pause');
+  await native.waitForTimeout(1000);
   assert.equal((await native.locator('#isl').boundingBox()).width,212,'Paused media returns to the idle glyph layout');
   assert.match(await native.locator('.compact').getAttribute('aria-label'),/^Time /);
   assert.equal(await native.locator('#cr .battery-glyph').count(),1);
@@ -563,8 +582,17 @@ try {
   assert.equal(await native.evaluate(()=>document.querySelector('.tab-panel.on').contains(document.activeElement)||document.activeElement===document.querySelector('.tab-panel.on')),true,'Focus does not fall out of the island when the marks leave');
   await native.evaluate(()=>{const now=Math.round(Date.now()/1000);window.__emitNative('usage',[
     {id:'claude-5h',provider:'claude',label:'Claude session (5 h)',usedPct:42,spentUsd:null,resetsAt:now+8130,source:'official',stale:false,status:'ok'}]);});
-  assert.equal(await sectionButtons.first().getAttribute('aria-current'),'true','The first reading to arrive is what shows');
-  assert.equal(await usageTop(),0);
+  assert.equal(await sectionButtons.nth(1).getAttribute('aria-current'),'true','A section the reader moved to stays in view when another returns above it');
+  assert.ok(await usageTop() > 0);
+  await sectionButtons.first().click(); await native.waitForTimeout(400);
+  assert.equal(await sectionButtons.first().getAttribute('aria-current'),'true');
+  assert.deepEqual(await sectionButtons.evaluateAll(n=>n.map(x=>getComputedStyle(x).color)),['rgb(161, 161, 166)','rgb(99, 99, 102)'],'Inactive marks are --ink-3, the active one --ink-2');
+  assert.deepEqual(await sectionButtons.first().evaluate(n=>[getComputedStyle(n,'::before').left,getComputedStyle(n,'::before').right]),['4px','4px'],'The hover fill keeps a gap from the page beside it');
+  // ArrowLeft from a mark moves into the tab, as anywhere else in the open island
+  await sectionButtons.nth(1).focus();
+  await native.keyboard.press('ArrowLeft');
+  assert.equal(await native.locator('.tab-panel.on').getAttribute('data-tab'),'tools');
+  assert.equal(await native.evaluate(()=>document.querySelector('.tab-panel.on').contains(document.activeElement)||document.activeElement===document.querySelector('.tab-panel.on')),true,'Focus moves into the new tab');
   // Marks belong to the tab on screen, even when two tabs have the same number of sections
   await native.getByRole('tab',{name:'Media',exact:true}).click();
   assert.deepEqual(await sectionButtons.evaluateAll(n=>n.map(x=>x.getAttribute('aria-label'))),['Go to now playing','Go to visualizer']);
@@ -584,6 +612,26 @@ try {
   assert.equal(await native.locator('#uList .u-ring-outer').count(),1);
   assert.equal(await native.locator('#uList .u-ring-inner').count(),0,'A single-window provider draws one ring');
   assert.equal(await native.locator('#uList .u-value-line').count(),1);
+  // A client that has failed before its first reading: no source word in the window slot
+  const errorCard = {id:'codex-installed',provider:'codex',label:'ChatGPT / Codex',usedPct:null,spentUsd:null,resetsAt:null,source:'official',stale:true,status:'error',error:'Installed client usage request timed out'};
+  const week = now => ({id:'claude-week',provider:'claude',label:'Claude weekly',usedPct:18,spentUsd:null,resetsAt:now+86400*2,source:'official',stale:false,status:'ok'});
+  await native.evaluate(([a,b])=>window.__emitNative('usage',[a,b]),[week(Math.round(Date.now()/1000)),errorCard]);
+  assert.equal((await native.locator('#uList .u-provider').nth(1).locator('.u-values').textContent()).trim(),'\u2013Error');
+  assert.match(await native.locator('#uList .u-provider').nth(1).getAttribute('title'),/official/,'The source stays in the tooltip');
+  // Keyboard focus survives a card being rebuilt or removed
+  await native.locator('#uList .u-face').nth(1).focus();
+  const codexWindows = now => [{id:'codex-primary',provider:'codex',label:'Codex 5 h',usedPct:72,spentUsd:null,resetsAt:now+3630,source:'official',stale:false,status:'ok'},{id:'codex-secondary',provider:'codex',label:'Codex weekly',usedPct:9,spentUsd:null,resetsAt:now+86400*5,source:'official',stale:false,status:'ok'}];
+  await native.evaluate(meters=>window.__emitNative('usage',meters),[week(Math.round(Date.now()/1000)),...codexWindows(Math.round(Date.now()/1000))]);
+  assert.match(await native.evaluate(()=>document.activeElement.getAttribute('aria-label')),/^OpenAI/,'A rebuilt card keeps focus');
+  await native.evaluate(()=>{window.__titleWrites=0;new MutationObserver(list=>{window.__titleWrites+=list.length;}).observe(document.querySelector('#uList .u-provider'),{attributes:true,attributeFilter:['title']});});
+  await native.evaluate(meters=>window.__emitNative('usage',meters),[week(Math.round(Date.now()/1000)),...codexWindows(Math.round(Date.now()/1000))]);
+  await native.waitForTimeout(20);
+  assert.equal(await native.evaluate(()=>window.__titleWrites),0,'An unchanged reading writes nothing');
+    await native.evaluate(meter=>window.__emitNative('usage',[meter]),week(Math.round(Date.now()/1000)));
+  assert.match(await native.evaluate(()=>document.activeElement.getAttribute('aria-label')),/^Claude/,'A removed card hands focus to the next one');
+  await native.evaluate(()=>window.__emitNative('usage',[]));
+  assert.equal(await native.evaluate(()=>document.activeElement.id),'panel-usage','The last card hands focus to its tab');
+  await native.evaluate(meter=>window.__emitNative('usage',[meter]),week(Math.round(Date.now()/1000)));
   await native.evaluate(()=>window.__emitNative('usage',[
     {id:'openai-api',provider:'openai-api',label:'OpenAI API',usedPct:null,spentUsd:null,resetsAt:null,source:'api',stale:true,status:'unconfigured'}]));
   assert.equal(await native.locator('.page.usage').isHidden(),true,'No connected provider removes the AI section');
@@ -633,8 +681,8 @@ try {
   assert.ok(await panelTop() > 0,'Moving back lands on the last section');
   await native.mouse.wheel(120,0); await native.waitForTimeout(400);
   assert.equal(await activeTab(),'today','Horizontal wheel switches tabs');
-  // One call since then: the wheel over the far edge of the wider collapsed pill
-  assert.equal((await volumeCalls()).length,volumeCallsBeforeOpen + 1,'Wheel outside the strip never changes the volume');
+  // Two calls since then: the wheel over the far edge of the wider pill, collapsed and open
+  assert.equal((await volumeCalls()).length,volumeCallsBeforeOpen + 2,'Wheel outside the strip never changes the volume');
   // Pointer drag swipe: dragging left moves to the next tab
   const area = await native.locator('.pages-container').boundingBox();
   await native.mouse.move(area.x + area.width - 40, area.y + 60);
@@ -648,6 +696,11 @@ try {
   assert.equal(await native.evaluate(() => JSON.parse(localStorage.getItem('tuck.live.v2')).lastTab),'usage');
   await native.reload(); await native.waitForTimeout(150);
   assert.equal(await native.locator('.tab-panel.on').getAttribute('data-tab'),'usage','The last tab is restored');
+  // A fresh session has no chosen section, so the first reading to arrive is what shows
+  await native.evaluate(()=>window.__emitNative('usage',[{id:'claude-5h',provider:'claude',label:'Claude session (5 h)',usedPct:42,spentUsd:null,resetsAt:Math.round(Date.now()/1000)+8130,source:'official',stale:false,status:'ok'}]));
+  await native.waitForTimeout(50);
+  assert.equal(await native.locator('.section-index-button').first().getAttribute('aria-current'),'true');
+  assert.equal(await native.locator('#panel-usage').evaluate(el=>el.scrollTop),0);
   await native.evaluate(()=>window.__emitNative('open-island',null));
   await native.locator('#railSettings').click();
   assert.equal(await native.evaluate(()=>window.__calls.some(call=>call.command==='open_settings_cmd')),true,'The rail settings button opens the settings window');
@@ -676,6 +729,45 @@ try {
   assert.equal(await native.locator('#hideSystemFlyout').isChecked(),false,'An unavailable flyout turns the setting back off');
   assert.equal(await native.locator('#flyoutStatus').getAttribute('data-kind'),'error');
   assert.deepEqual(nativeErrors,[]);
-  console.log('UI smoke passed: geometry, tab rail (keys, wheel edges, swipe, memory), accessibility, keyboard seeking, timers, collapsed media text, usage rings, section marks, icon buttons, persistence errors, volume/brightness HUD, wheel and middle-click volume, the pill-sized strip on the open island, queued flyout failure, return to open after HUD, HUD setting, charger-ramp brightness, flyout opt-in, native-bridge call priority, shelf, focused radio updates, drag hold and previews.');
+
+  // With motion on: what actually keeps running while the island is collapsed
+  const motionContext = await browser.newContext({viewport:{width:520,height:230}, reducedMotion:'no-preference'});
+  await motionContext.route('http://tuck.test/**', serveDist);
+  await motionContext.addInitScript(nativeBridge);
+  const motion = await motionContext.newPage();
+  const motionErrors = []; motion.on('pageerror',error=>motionErrors.push(error.message));
+  await motion.goto('http://tuck.test/');
+  const running = () => motion.evaluate(()=>document.getAnimations().filter(a=>a.playState==='running').map(a=>a.animationName||a.transitionProperty).sort());
+  const emitTrack = (title,playing) => motion.evaluate(([title,playing])=>window.__emitNative('media',{active:true,trackId:title,title,artist:'Fixture',playing,positionMs:0,durationMs:120000,artwork:null}),[title,playing]);
+  const longTitle = 'A synthetic title just long enough to need a single scroll here';
+  await motion.waitForTimeout(600);
+  assert.deepEqual(await running(),[],'Collapsed with nothing playing runs no animations');
+  await emitTrack(longTitle,false);
+  await motion.waitForTimeout(600);
+  assert.deepEqual(await running(),[],'A paused track with an overflowing open-page title runs no animations while collapsed');
+  await motion.locator('#isl').focus(); await motion.keyboard.press('Enter');
+  await motion.waitForTimeout(600);
+  assert.ok((await running()).includes('marquee-anim'),'The open page title still marquees');
+  await motion.keyboard.press('Escape');
+  await motion.waitForTimeout(600);
+  assert.deepEqual(await running(),[],'Closing stops the open page title');
+  await emitTrack(longTitle,true);
+  await motion.waitForTimeout(700);
+  assert.ok((await running()).includes('compact-marquee-once'),'A long collapsed line scrolls');
+  assert.equal((await running()).filter(name=>name==='eq-bounce').length,3,'The equalizer runs during playback');
+  await motion.waitForFunction(()=>!document.getAnimations().some(a=>a.animationName==='compact-marquee-once'),null,{timeout:15000});
+  assert.deepEqual([...new Set(await running())],['eq-bounce'],'Only the equalizer runs after the one scroll');
+  assert.equal(await motion.locator('#cc .compact-title').evaluate(n=>getComputedStyle(n).textOverflow==='ellipsis'&&n.scrollWidth>n.clientWidth&&!n.classList.contains('scroll-once')),true,'The line stops on an ellipsis');
+  await emitTrack(longTitle,true);
+  await motion.waitForTimeout(600);
+  assert.deepEqual([...new Set(await running())],['eq-bounce'],'The same text does not re-arm the scroll');
+  await emitTrack(`${longTitle} again`,true);
+  await motion.waitForTimeout(600);
+  assert.ok((await running()).includes('compact-marquee-once'),'New text re-arms the scroll');
+  await emitTrack(`${longTitle} again`,false);
+  await motion.waitForTimeout(1600);
+  assert.deepEqual(await running(),[],'The equalizer stops on pause and nothing else runs');
+  assert.deepEqual(motionErrors,[]);
+  console.log('UI smoke passed: geometry, tab rail (keys, wheel edges, swipe, memory), accessibility, keyboard seeking, timers, collapsed media text and its running animations, usage rings, section marks, icon buttons, persistence errors, volume/brightness HUD, wheel and middle-click volume, the pill-sized strip on the open island, queued flyout failure, return to open after HUD, HUD setting, charger-ramp brightness, flyout opt-in, native-bridge call priority, shelf, focused radio updates, drag hold and previews.');
 } finally { await browser.close(); }
 

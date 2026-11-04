@@ -101,6 +101,9 @@ export function meterWindow(meter: Pick<Meter, 'id' | 'label' | 'source'>): stri
     if (hours) return `${hours[1]}h`;
     const days = text.match(/\b(\d+)\s*-?\s*d(?:ay)?s?\b/);
     if (days) return `${days[1]}d`;
+    // "Claude weekly Opus" is one model's quota, not the general weekly window
+    const scoped = raw.match(/\bweekly\s+(\S+)/i);
+    if (scoped) return scoped[1];
     if (/week/.test(text)) return '7d';
     if (/month/.test(text)) return '30d';
   }

@@ -57,6 +57,36 @@ describe('windows a card draws', () => {
   });
 });
 
+describe('windows from one quota', () => {
+  it('prefers the bucket that has both windows over pairing across buckets', () => {
+    const drawn = ringMeters([
+      meter('codex-installed-a-primary', 'codex', 'Spark 5 h'),
+      meter('codex-installed-b-primary', 'codex', 'Codex 5 h'),
+      meter('codex-installed-b-secondary', 'codex', 'Codex weekly'),
+    ]);
+    expect(drawn.map(item => item.id)).toEqual(['codex-installed-b-primary', 'codex-installed-b-secondary']);
+  });
+
+  it('never pairs a 5h from one bucket with a weekly from another', () => {
+    const drawn = ringMeters([
+      meter('codex-installed-a-primary', 'codex', 'Spark 5 h'),
+      meter('codex-installed-b-secondary', 'codex', 'Codex weekly'),
+    ]);
+    expect(drawn.map(item => item.id)).toEqual(['codex-installed-a-primary']);
+  });
+
+  it('does not draw a model-scoped window as the general weekly', () => {
+    const drawn = ringMeters([
+      meter('claude-installed-five_hour', 'claude', 'Claude 5 h'),
+      meter('claude-installed-seven_day_opus', 'claude', 'Claude weekly Opus'),
+    ]);
+    expect(drawn.map(item => item.id)).toEqual(['claude-installed-five_hour']);
+    const only = ringMeters([meter('claude-installed-seven_day_opus', 'claude', 'Claude weekly Opus')]);
+    expect(only).toHaveLength(1);
+    expect(meterDetails(only[0], 0)).toStartWith('Opus,');
+  });
+});
+
 describe('card state', () => {
   it('names a reading that cannot be trusted and stays quiet otherwise', () => {
     expect(usageStateWord([meter('a', 'claude', 'A')])).toBe('');

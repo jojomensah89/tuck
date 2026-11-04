@@ -26,6 +26,7 @@ async function open(prefs) {
         if (command === 'plugin:event|listen') { const ids = listeners.get(args.event) || []; ids.push(args.handler); listeners.set(args.event, ids); return ++serial; }
         if (command === 'media_now') return { active: false, trackId: '', title: '', artist: '', playing: false, positionMs: 0, durationMs: 0, artwork: null };
         if (command === 'usage_now') return [];
+        if (command === 'telemetry_snapshot') return { sampledAt: Date.now(), cpuPct: 23, ramUsedBytes: 11.6 * 1073741824, ramTotalBytes: 16 * 1073741824, gpus: [{ id: 'gpu0', name: 'Fixture GPU', usedPct: 41 }] };
         if (command === 'fullscreen_now') return false;
         if (command === 'extension_snapshot') return { settings: {}, downloads: [], call: null, calendar: [], shelf: [], radios: [], notificationStatus: 'Disabled', errors: [] };
         if (command === 'clipboard_get_state') return { enabled: false, persistOnExit: false, items: [] };
@@ -66,6 +67,9 @@ const art = () => {
   await page.evaluate(id => window.__emitNative('lyrics', { trackId: 'fixture-track', requestId: id, status: 'synced', syncedLyrics: '[00:01]Line before\n[00:03]A synthetic lyric line\n[00:06]A much longer synthetic lyric line that cannot fit in the pill at all' }), requestId);
   await page.waitForTimeout(350);
   await page.screenshot({ path: path.join(out, 'collapsed-lyric.png') });
+  await page.evaluate(t => window.__emitNative('media', { ...t, playing: true, positionMs: 6000 }), track);
+  await page.waitForTimeout(350);
+  await page.screenshot({ path: path.join(out, 'collapsed-long-lyric.png') });
   const setPref = update => page.evaluate(([key, update]) => { localStorage.setItem(key, JSON.stringify({ ...JSON.parse(localStorage.getItem(key)), ...update })); window.dispatchEvent(new StorageEvent('storage', { key })); }, ['tuck.live.v2', update]);
   await setPref({ compactContent: 'title' }); await page.waitForTimeout(300);
   await page.screenshot({ path: path.join(out, 'collapsed-title.png') });
@@ -100,11 +104,8 @@ for (const width of [500, 440]) {
   if (width === 500) {
     await page.evaluate(a => window.__emitNative('usage', a), claude(now())); await page.waitForTimeout(300);
     await page.screenshot({ path: path.join(out, 'usage-one-provider.png') });
-    await page.evaluate(() => {
-      window.__emitNative('usage', []);
-      window.__emitNative('telemetry', { sampledAt: Date.now(), cpuPct: 23, ramUsedBytes: 11.6 * 1073741824, ramTotalBytes: 16 * 1073741824, gpus: [{ id: 'gpu0', name: 'Fixture GPU', usedPct: 41 }] });
-    });
-    await page.waitForTimeout(300);
+    await page.evaluate(() => window.__emitNative('usage', []));
+    await page.waitForTimeout(1500);
     await page.screenshot({ path: path.join(out, 'usage-none-connected.png') });
   }
   const stale = codex(now()).map(m => ({ ...m, stale: true, status: 'error', error: 'Installed client usage request timed out' }));

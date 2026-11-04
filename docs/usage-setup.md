@@ -83,7 +83,7 @@ export interface Meter {
 ```
 
 ### No Fabrication Invariant
-* A source that is not connected (no status file, no saved key, an installed client that is missing or signed out) returns no meter, so it does not appear on the island.
+* A source that is not connected (no status file or one older than the 7-day window, no saved key, an installed client that is missing or signed out) returns no meter, so it does not appear on the island.
 * A connected source that fails returns `used_pct: None` and `spent_usd: None` with `status: "unavailable"` or `status: "error"`, or its last real values marked stale.
 * Tuck never returns `0.0` or `0%` for unmeasured or missing data.
 

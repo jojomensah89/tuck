@@ -85,16 +85,24 @@ function sourceWord(meter: Meter): string {
   return meter.source === 'manual' ? 'estimate' : meter.source === 'api' ? 'API' : 'official';
 }
 
+/** Codex reports each quota bucket as `<bucket>-primary` and `<bucket>-secondary` */
+function quotaBucket(meter: Meter): string {
+  const bucket = meter.id.replace(/-(primary|secondary)$/, '');
+  return bucket === meter.id ? '' : bucket;
+}
+
 /**
- * The windows a card draws: the first 5h outside and the first weekly inside.
- * Model-scoped windows stay in the tooltip. A provider with neither draws its
- * first meter as one ring.
+ * The windows a card draws: 5h outside and weekly inside, both from one quota
+ * bucket, preferring a bucket that has both. Model-scoped and other windows stay
+ * in the tooltip. A provider with neither window draws its first meter as one ring.
  */
 export function ringMeters(meters: Meter[]): Meter[] {
-  const windows = ['5h', '7d']
-    .map(name => meters.find(meter => meterWindow(meter) === name))
-    .filter((meter): meter is Meter => !!meter);
-  return windows.length > 0 ? windows : meters.slice(0, 1);
+  const candidates = [...new Set(meters.map(quotaBucket))].map(bucket => (['5h', '7d'] as const)
+    .map(name => meters.find(meter => quotaBucket(meter) === bucket && meterWindow(meter) === name))
+    .filter((meter): meter is Meter => !!meter));
+  return candidates.find(windows => windows.length === 2)
+    ?? candidates.find(windows => windows.length === 1)
+    ?? meters.slice(0, 1);
 }
 
 /** Full tooltip fragment for one window, including its reset. */
@@ -175,10 +183,13 @@ function buildCell(group: UsageProviderGroup, drawn: Meter[], onLog: () => void)
 /** Renders connected meters and returns the number of provider cards. */
 export function renderUsageRings(list: HTMLElement, meters: Meter[], onLog: () => void, nowSeconds = Date.now() / 1000): number {
   const groups = groupUsageProviders(meters);
+  const hadFocus = list.contains(document.activeElement);
+  const focusedKey = [...cells].find(([, cell]) => cell.root.contains(document.activeElement))?.[0];
   if (groups.length === 0) {
     cells.clear();
     list.replaceChildren();
     list.classList.remove('dense');
+    if (hadFocus) list.closest<HTMLElement>('[role="tabpanel"]')?.focus({ preventScroll: true });
     return 0;
   }
   // Two rows of two fit the section at full size; a fifth card needs a third column
@@ -201,7 +212,7 @@ export function renderUsageRings(list: HTMLElement, meters: Meter[], onLog: () =
     if (cell.glyphKey !== key) { cell.glyph.innerHTML = markup; cell.glyphKey = key; }
     drawn.forEach((meter, meterIndex) => {
       rings[meterIndex].set(meter.usedPct, usageTone(meter.usedPct));
-      setIfChanged(lines[meterIndex].window, meterWindow(meter) || sourceWord(meter));
+      setIfChanged(lines[meterIndex].window, meterWindow(meter));
       setIfChanged(lines[meterIndex].value, valueText(meter));
     });
 
@@ -214,12 +225,18 @@ export function renderUsageRings(list: HTMLElement, meters: Meter[], onLog: () =
       ...drawn.map(meter => meterDetails(meter, nowSeconds)),
       ...others.map(meter => meterDetails(meter, nowSeconds, meter.label)),
     ].join('. ');
-    root.title = details;
-    cell.face.setAttribute('aria-label', group.meters.some(meter => meter.id === 'chatgpt') ? `Log a ChatGPT message. ${details}` : details);
+    if (root.title !== details) {
+      root.title = details;
+      cell.face.setAttribute('aria-label', group.meters.some(meter => meter.id === 'chatgpt') ? `Log a ChatGPT message. ${details}` : details);
+    }
   });
 
   for (const [key, cell] of cells) {
     if (!seen.has(key)) { cell.root.remove(); cells.delete(key); }
+  }
+  // A rebuilt or removed card must not drop keyboard focus out of the island
+  if (hadFocus && !list.contains(document.activeElement)) {
+    (cells.get(focusedKey ?? '') ?? cells.values().next().value)?.face.focus({ preventScroll: true });
   }
   return groups.length;
 }

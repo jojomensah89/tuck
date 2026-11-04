@@ -131,7 +131,7 @@ export function mergeMeters(nativeMeters: Meter[]): Meter[] {
   return merged;
 }
 
-/** Native sources mark absent keys/clients as unconfigured; those are not UI providers. */
+/** Native emits only connected sources; this keeps an unconfigured reading off the island regardless. */
 export function connectedUsageMeters(meters: Meter[]): Meter[] {
   return meters.filter(meter => meter.status !== 'unconfigured');
 }

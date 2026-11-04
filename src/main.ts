@@ -23,7 +23,7 @@ import { batteryGlyph, SVG_ICONS } from './icons.js';
 import { activitiesManager } from './activities.js';
 import { renderUsageRings } from './usage-rings.js';
 import { activityProgress, batteryTone, createRing, formatSpan } from './rings.js';
-import { compactShellWidth, selectCompactActivity, type CompactActivityCandidate } from './compact-slots.js';
+import { compactScrollMs, compactShellWidth, selectCompactActivity, type CompactActivityCandidate } from './compact-slots.js';
 import { formatClockTime } from './time-format.js';
 import {
   AnnouncementQueue,
@@ -66,8 +66,8 @@ const SIZES: Record<IslandState, [number, number]> = {
 /** The width the idle pill last asked for; it changes with what owns the slots */
 let idleWidth = SIZES.idle[0];
 
-/** The strip of the open island that keeps acting like the idle pill */
-const PILL_STRIP = { width: SIZES.idle[0], height: SIZES.idle[1] };
+/** The strip of the open island that keeps acting like the pill it would close to */
+let pillStrip = { width: SIZES.idle[0], height: SIZES.idle[1] };
 
 let livePreferences = readPreferences();
 
@@ -78,8 +78,9 @@ function $(id: string): HTMLElement {
 }
 
 const isl = $('isl');
-isl.style.setProperty('--pill-w', `${PILL_STRIP.width}px`);
-isl.style.setProperty('--pill-h', `${PILL_STRIP.height}px`);
+isl.style.setProperty('--pill-w', `${pillStrip.width}px`);
+isl.style.setProperty('--pill-h', `${pillStrip.height}px`);
+const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
 // Set once the live pages mount; renderCompact can run before that during startup
 let compactLyric: () => string = () => '';
 // The compact title is measured mid-morph on state changes; refit once the shell settles
@@ -400,6 +401,10 @@ let mediaState: MediaState = {
   durationMs: 0,
 };
 let mediaReceivedAt = 0;
+/** How long a paused track keeps the pill, so a pause between two tracks does not resize it */
+const PAUSE_HOLD_MS = 1000;
+let pauseHold = false;
+let pauseHoldTimer = 0;
 let currentArtwork: string | null = null;
 
 function formatMs(ms: number): string {
@@ -496,8 +501,23 @@ function syncTransportButtons(): void {
   playBtn.setAttribute('aria-label', mediaState.playing ? 'Pause' : 'Play');
 }
 
+function syncPauseHold(wasPlaying: boolean, next: Pick<MediaState, 'active' | 'playing'>): void {
+  if (next.playing || !next.active) {
+    window.clearTimeout(pauseHoldTimer);
+    pauseHold = false;
+  } else if (wasPlaying) {
+    window.clearTimeout(pauseHoldTimer);
+    pauseHold = true;
+    pauseHoldTimer = window.setTimeout(() => {
+      pauseHold = false;
+      renderCompact();
+    }, PAUSE_HOLD_MS);
+  }
+}
+
 function onMediaUpdate(payload: MediaState): void {
   const { artwork, ...rest } = payload;
+  syncPauseHold(mediaState.playing, rest);
   const trackChanged = rest.trackId !== mediaState.trackId || rest.active !== mediaState.active;
 
   mediaState = { ...rest };
@@ -612,15 +632,34 @@ function setLabel(el: Element, label: string): void {
   if (el.getAttribute('aria-label') !== label) el.setAttribute('aria-label', label);
 }
 
+/** The collapsed line that already had its one scroll; only a new line re-arms it */
+let scrolledCompactLine = '';
+
 function fitCompactTitle(): void {
   requestAnimationFrame(() => {
     // The leaving layer is still in the DOM during the cross-fade; measure the current one
     const title = document.querySelector<HTMLElement>('#cc .compact-slot.current .compact-title');
     const track = title?.querySelector<HTMLElement>('.compact-title-track');
-    if (!title || !track) return;
-    const overflow = Math.max(0, track.scrollWidth - title.clientWidth);
-    title.classList.toggle('scroll', overflow > 2);
+    if (!title || !track || state === 'open') return;
+    // Mid-morph the column is the wrong width; transitionend refits once the shell settles
+    if (Math.abs(isl.offsetWidth - parseFloat(isl.style.width)) > 1) return;
+    const line = track.textContent ?? '';
+    const overflow = Math.max(0, track.offsetWidth - title.clientWidth);
+    const overflows = overflow > 2 && !reducedMotion.matches;
+    title.classList.toggle('scroll', overflows && state === 'peek');
+    if (!overflows || state === 'peek') {
+      title.classList.remove('scroll-once');
+      title.style.setProperty('--compact-shift', `-${overflow}px`);
+      return;
+    }
+    // Idle stops after one pass, on the ellipsis, so nothing runs for the rest of the track
+    if (line === scrolledCompactLine) return;
+    scrolledCompactLine = line;
+    const lyric = livePreferences.compactContent === 'lyrics' && compactLyric() === line;
     title.style.setProperty('--compact-shift', `-${overflow}px`);
+    title.style.setProperty('--compact-scroll', `${compactScrollMs(overflow, lyric)}ms`);
+    title.classList.add('scroll-once');
+    track.addEventListener('animationend', () => title.classList.remove('scroll-once'), { once: true });
   });
 }
 
@@ -661,9 +700,9 @@ function compactCandidates(): CompactActivityCandidate[] {
       kind: 'media',
       title: mediaState.title || 'Media',
       // Playing media outranks timers and downloads; paused media yields to everything running
-      priority: mediaState.playing ? 85 : 40,
+      priority: mediaState.playing || pauseHold ? 85 : 40,
       // A paused track gives the idle pill back to time and battery; a peek can still name it
-      active: mediaState.active && (mediaState.playing || state === 'peek'),
+      active: mediaState.active && (mediaState.playing || pauseHold || state === 'peek'),
       running: mediaState.playing,
     },
     ...activitiesManager.getAll().filter(activity => activity.active).map(activity => ({
@@ -717,7 +756,12 @@ function renderCompact(): void {
 
   const mediaText = primary?.kind === 'media' && livePreferences.compactContent !== 'artwork';
   isl.toggleAttribute('data-compact-text', mediaText);
-  if (state === 'idle') syncIdleWidth(compactShellWidth(primary, livePreferences.compactContent));
+  const closedWidth = compactShellWidth(primary, livePreferences.compactContent);
+  if (state === 'idle') syncIdleWidth(closedWidth);
+  if (closedWidth !== pillStrip.width) {
+    pillStrip = { ...pillStrip, width: closedWidth };
+    isl.style.setProperty('--pill-w', `${closedWidth}px`);
+  }
 
   if (!primary) {
     const time = formatClockTime();
@@ -1188,7 +1232,7 @@ function applyVolume(command: 'volume_step' | 'volume_toggle_mute', args?: Recor
 }
 
 function overLevelInput(event: MouseEvent): boolean {
-  return levelInputApplies(state, isl.getBoundingClientRect(), PILL_STRIP, event.clientX, event.clientY);
+  return levelInputApplies(state, isl.getBoundingClientRect(), pillStrip, event.clientX, event.clientY);
 }
 
 // The pill-sized strip always means volume, in every state. These listeners capture, so

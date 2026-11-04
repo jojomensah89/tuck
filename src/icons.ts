@@ -55,6 +55,7 @@ export const SVG_ICONS = {
   close: ico('<path d="m5.25 5.25 9.5 9.5M14.75 5.25l-9.5 9.5"/>'),
   trash: ico('<path d="M3.75 5.75h12.5M8 5.75v-2h4v2M5.5 5.75l.75 10.5a1.5 1.5 0 0 0 1.5 1.25h4.5a1.5 1.5 0 0 0 1.5-1.25l.75-10.5"/><path d="M8.5 8.75v5.5M11.5 8.75v5.5"/>'),
   plus: ico('<path d="M10 4.25v11.5M4.25 10h11.5"/>'),
+  minus: ico('<path d="M4.25 10h11.5"/>'),
   folder: ico('<path d="M2.75 6.25v-1a1.5 1.5 0 0 1 1.5-1.5h3.5l2 2h6a1.5 1.5 0 0 1 1.5 1.5v7.5a1.5 1.5 0 0 1-1.5 1.5H4.25a1.5 1.5 0 0 1-1.5-1.5z"/><path d="M2.75 8.25h14.5"/>'),
   grip: ico('<circle class="f" cx="7.5" cy="5" r=".75"/><circle class="f" cx="12.5" cy="5" r=".75"/><circle class="f" cx="7.5" cy="10" r=".75"/><circle class="f" cx="12.5" cy="10" r=".75"/><circle class="f" cx="7.5" cy="15" r=".75"/><circle class="f" cx="12.5" cy="15" r=".75"/>'),
   video: ico('<rect x="2.75" y="5.25" width="10.5" height="9.5" rx="2"/><path d="m13.25 9 4-2.5v7l-4-2.5"/>'),

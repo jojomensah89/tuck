@@ -1,7 +1,7 @@
 import { listenToEvent, mediaSeek, isTauri } from './ipc.js';
 import { SVG_ICONS } from './icons.js';
 import { nativeAction, nativeService, normalizeClipboard, normalizeDictation, normalizeTelemetry, type ClipboardSnapshot, type DictationSnapshot, type LyricsSnapshot, type MediaSession, type TelemetrySnapshot } from './live-services.js';
-import { historyPath, lyricIndex, matchesLyricRequest, measuredPercent, newRequestId, parseLrc, readPreferences, TelemetryGate, type LyricLine } from './live-state.js';
+import { historyPath, lyricIndex, lyricOffsetFor, matchesLyricRequest, MAX_LYRIC_OFFSET_MS, measuredPercent, newRequestId, parseLrc, readPreferences, TelemetryGate, withLyricOffset, writePreferences, type LyricLine } from './live-state.js';
 import { formatClockTime } from './time-format.js';
 import { createRing, usageTone, type Ring } from './rings.js';
 import type { MediaState } from './types.js';
@@ -44,7 +44,9 @@ export function mountLivePages(onLayout: () => void): {
   const message = node('p', 'live-note'); message.setAttribute('role', 'status');
   const lyricsPane = node('div', 'lyrics-pane'); lyricsPane.setAttribute('aria-label', 'Lyrics');
   const lyricList = node('div', 'lyric-lines');
+  const lyricsHeader = node('div', 'lyrics-header');
   const lyricsStatus = node('p', 'lyrics-status', 'Enable online lyrics in Settings');
+  const offsetControls = node('div', 'lyrics-offset-controls'); offsetControls.setAttribute('role', 'group'); offsetControls.setAttribute('aria-label', 'Lyrics timing');
   const lyricToggle = node('button', 'lyrics-toggle-btn');
   lyricToggle.type = 'button';
   lyricToggle.setAttribute('aria-label', 'Toggle lyrics');
@@ -59,13 +61,14 @@ export function mountLivePages(onLayout: () => void): {
   toolbar.append(lyricToggle);
   ctl.prepend(toolbar);
   mediaPage.append(lyricsPane, message);
-  lyricsPane.append(lyricsStatus, lyricList);
+  lyricsHeader.append(lyricsStatus, offsetControls);
+  lyricsPane.append(lyricsHeader, lyricList);
   mediaPage.classList.toggle('with-lyrics', readPreferences().lyricsOpen);
   lyricToggle.setAttribute('aria-pressed', String(readPreferences().lyricsOpen));
-  let currentTrack = '', generation = 0, lines: LyricLine[] = [], activeLine = -2;
+  let currentTrack = '', generation = 0, baseLines: LyricLine[] = [], lines: LyricLine[] = [], activeLine = -2;
   let currentRequestId = '';
   let latestMedia: MediaState | null = null;
-  let currentLyric = '', lastPosition = 0, manualScrollUntil = 0;
+  let currentLyric = '', lastPosition = 0, manualScrollUntil = 0, userOffsetMs = 0;
   // Manual scrolling pauses auto-follow; the tab rail decides whether the wheel scrolls or switches tabs
   lyricList.addEventListener('wheel', () => { manualScrollUntil = Date.now() + 4000; }, { passive: true });
   async function sessions(): Promise<void> {
@@ -75,7 +78,8 @@ export function mountLivePages(onLayout: () => void): {
   }
   const updatePosition = (position: number) => {
     lastPosition = position;
-    const index = lyricIndex(lines, position);
+    const pastLyrics = lines.length > 0 && position > lines[lines.length - 1].atMs + 20000;
+    const index = pastLyrics ? -1 : lyricIndex(lines, position);
     currentLyric = index >= 0 ? lines[index].text : '';
     if (index === activeLine) return;
     activeLine = index;
@@ -88,28 +92,65 @@ export function mountLivePages(onLayout: () => void): {
       lyricList.scrollTop = Math.max(0, target.offsetTop - lyricList.offsetTop - lyricList.clientHeight / 2 + target.offsetHeight / 2);
     }
   };
+  const offsetValue = node('span', 'lyrics-offset-value');
+  /** Shifts the existing lines by a constant; a different edit moves lyrics by that, not by a ratio. */
+  function retimeLyrics(): void {
+    lines = baseLines.map(line => ({ ...line, atMs: Math.max(0, line.atMs + userOffsetMs) }));
+    const sign = userOffsetMs > 0 ? '+' : userOffsetMs < 0 ? '−' : '';
+    offsetValue.textContent = `${sign}${(Math.abs(userOffsetMs) / 1000).toFixed(1)} s`;
+    activeLine = -2; updatePosition(lastPosition);
+  }
   function applyLyrics(snapshot: LyricsSnapshot): void {
     if (!snapshot || !matchesLyricRequest({ trackId: currentTrack, requestId: currentRequestId }, snapshot)) return;
-    lines = snapshot.lines || parseLrc(snapshot.syncedLyrics || ''); activeLine = -2; currentLyric = ''; lyricList.replaceChildren();
+    baseLines = snapshot.lines || parseLrc(snapshot.syncedLyrics || '');
+    userOffsetMs = baseLines.length ? lyricOffsetFor(readPreferences(), currentTrack) : 0;
+    currentLyric = ''; lyricList.replaceChildren();
     const statuses: Record<LyricsSnapshot['status'], string> = {
-      disabled: 'Enable online lyrics in Settings', loading: 'Finding lyrics\u2026', synced: '', plain: 'Lyrics \u00b7 not synchronized',
+      disabled: 'Enable online lyrics in Settings', loading: 'Finding lyrics…', synced: '', plain: 'Lyrics · not synchronized',
       instrumental: 'Instrumental', unavailable: 'No lyrics for this track', error: 'Lyrics unavailable, check your connection',
     };
-    lyricsStatus.textContent = statuses[snapshot.status] ?? 'Lyrics unavailable';
-    if (lines.length) {
-      for (const line of lines) {
-        const b = button(line.text || '\u266a', () => { void act(mediaSeek(line.atMs), message); });
+    const approximate = !!snapshot.approximate && (snapshot.status === 'synced' || snapshot.status === 'plain');
+    lyricsStatus.textContent = approximate ? (snapshot.status === 'plain' ? 'Approximate · not synchronized' : 'Approximate') : statuses[snapshot.status] ?? 'Lyrics unavailable';
+    lyricsStatus.title = approximate ? 'Closest lyrics found, the timing may be off' : '';
+    // Timing only needs correcting on a looser match, or where the user already corrected it
+    offsetControls.hidden = !(baseLines.length && (approximate || userOffsetMs !== 0));
+    if (baseLines.length) {
+      baseLines.forEach((line, index) => {
+        const b = button(line.text || '♪', () => { void act(mediaSeek(lines[index].atMs), message); });
         b.className = 'lyric-line'; b.title = 'Seek to this line'; lyricList.append(b);
-      }
+      });
     } else if (snapshot.plainLyrics) {
       const plain = node('p', 'plain-lyrics', snapshot.plainLyrics.slice(0, 250000)); lyricList.append(plain);
     }
-    updatePosition(lastPosition);
+    retimeLyrics();
   }
+  function adjustLyrics(deltaMs: number): void {
+    if (!baseLines.length) return;
+    userOffsetMs = Math.max(-MAX_LYRIC_OFFSET_MS, Math.min(MAX_LYRIC_OFFSET_MS, userOffsetMs + deltaMs));
+    writePreferences({ lyricsOffsets: withLyricOffset(readPreferences(), currentTrack, userOffsetMs) });
+    retimeLyrics();
+  }
+  /** One press is 100 ms; holding repeats, because a different edit is often seconds out. */
+  function offsetStepper(label: string, icon: string, deltaMs: number): HTMLButtonElement {
+    let timer = 0, repeated = false;
+    const stop = () => window.clearTimeout(timer);
+    const b = iconButton(label, icon, () => { if (!repeated) adjustLyrics(deltaMs); repeated = false; }, 'lyrics-offset-btn');
+    const tick = () => { repeated = true; adjustLyrics(deltaMs); timer = window.setTimeout(tick, 60); };
+    b.onpointerdown = () => { stop(); repeated = false; timer = window.setTimeout(tick, 400); };
+    b.onpointerup = stop;
+    // No click follows these, so the next keyboard press must still count
+    b.onpointercancel = b.onpointerleave = () => { stop(); repeated = false; };
+    return b;
+  }
+  offsetControls.append(
+    offsetStepper('Show lyrics 0.1 s earlier, hold to repeat', SVG_ICONS.minus, -100), offsetValue,
+    offsetStepper('Show lyrics 0.1 s later, hold to repeat', SVG_ICONS.plus, 100),
+  );
+  offsetControls.hidden = true;
   async function requestLyrics(state: MediaState): Promise<void> {
     const request = ++generation;
     const requestId = newRequestId(); currentRequestId = state.active ? requestId : '';
-    lines = []; currentLyric = ''; activeLine = -2; lyricList.replaceChildren();
+    baseLines = []; lines = []; currentLyric = ''; activeLine = -2; lyricList.replaceChildren(); offsetControls.hidden = true;
     lyricsStatus.textContent = state.active ? 'Finding lyrics\u2026' : 'Play music to see lyrics';
     if (!state.active) return;
     try {
@@ -322,7 +363,7 @@ export function mountLivePages(onLayout: () => void): {
     window.dispatchEvent(new CustomEvent('tuck-activity', { detail: { id: 'dictation', type: 'dictation', phase: 'recording', active: true, title: 'Dictation', text: data.text.slice(-65), priority: 99 } }));
   }).then(unlisten => unlisteners.push(unlisten));
   void listenToEvent<{ enabled: boolean }>('lyrics-settings', data => {
-    if (!data.enabled) { generation++; currentRequestId = ''; lines = []; currentLyric = ''; lyricList.replaceChildren(); lyricsStatus.textContent = 'Enable online lyrics in Settings'; }
+    if (!data.enabled) { generation++; currentRequestId = ''; baseLines = []; lines = []; currentLyric = ''; lyricList.replaceChildren(); offsetControls.hidden = true; lyricsStatus.textContent = 'Enable online lyrics in Settings'; }
     else if (latestMedia?.active) void requestLyrics(latestMedia);
   }).then(unlisten => unlisteners.push(unlisten));
   void listenToEvent<string>('visualizer-error', () => { audioStatus.textContent = 'Playback analysis unavailable, check the output device'; }).then(unlisten => unlisteners.push(unlisten));

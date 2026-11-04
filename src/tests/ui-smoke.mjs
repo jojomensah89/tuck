@@ -374,6 +374,24 @@ try {
     assert.equal(geometry.titleClear && geometry.togglePresent && geometry.toggleClear && geometry.controlsFit, true, `Media regions must fit at ${width}px`);
     await native.screenshot({path:path.join(root,'artifacts',`island-unslop-${width}.png`)});
   }
+  // An exact match stays quiet; only an approximate match offers timing, and the correction sticks to the track.
+  const lyricEvent=extra=>native.evaluate(extra=>window.__emitNative('lyrics',{trackId:'fixture-track',requestId:window.__calls.findLast(call=>call.command==='lyrics_get').args.requestId,syncedLyrics:'[00:01]Previous fixture line\n[00:03]Current fixture line\n[00:05]Next fixture line',...extra}),extra);
+  assert.equal(await native.locator('.lyrics-offset-controls').isVisible(),false,'An exact match shows no timing control');
+  assert.equal(await native.locator('.lyrics-header').isVisible(),false,'An exact match leaves no empty header above the lyrics');
+  await lyricEvent({status:'synced',approximate:true});
+  assert.equal(await native.locator('.lyrics-status').textContent(),'Approximate');
+  assert.equal(await native.locator('.lyrics-offset-value').textContent(),'0.0 s');
+  for(let step=0;step<3;step++) await native.getByRole('button',{name:'Show lyrics 0.1 s later, hold to repeat'}).click();
+  assert.equal(await native.locator('.lyrics-offset-value').textContent(),'+0.3 s');
+  await native.locator('.lyric-line').last().click();
+  assert.equal(await native.evaluate(()=>window.__calls.findLast(call=>call.command==='media_seek').args.ms),5300,'Seeking follows the corrected timing');
+  assert.deepEqual(await native.evaluate(()=>JSON.parse(localStorage.getItem('tuck.live.v2')).lyricsOffsets),[{key:'fixture-track',offsetMs:300}]);
+  await lyricEvent({status:'synced'});
+  assert.equal(await native.locator('.lyrics-offset-value').textContent(),'+0.3 s','A saved correction stays reachable on an exact match');
+  await lyricEvent({status:'plain',approximate:true,syncedLyrics:'',plainLyrics:'Fixture words'});
+  assert.equal(await native.locator('.lyrics-offset-controls').isVisible(),false,'Plain lyrics have no timing to correct');
+  assert.equal(await native.locator('.lyrics-status').textContent(),'Approximate · not synchronized');
+  await native.evaluate(()=>{const key='tuck.live.v2';localStorage.setItem(key,JSON.stringify({...JSON.parse(localStorage.getItem(key)),lyricsOffsets:[]}));});
   await native.evaluate(()=>{
     const oldId=window.__calls.findLast(call=>call.command==='lyrics_get').args.requestId;
     const track={active:true,artist:'Fixture',playing:false,positionMs:3000,durationMs:120000};

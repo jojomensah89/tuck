@@ -87,10 +87,53 @@
   flex-direction: column;
 }
 
+.lyrics-header {
+  display: flex;
+  align-items: center;
+  margin-bottom: var(--s-2);
+}
+
+.lyrics-header:has(.lyrics-status:empty):has(.lyrics-offset-controls[hidden]) {
+  display: none;
+}
+
 .lyrics-status {
   color: var(--ink-2);
   font-size: var(--t-xs);
-  margin: 0 0 var(--s-2);
+  margin: 0;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lyrics-offset-controls {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.lyrics-offset-controls[hidden] {
+  display: none;
+}
+
+.lyrics-offset-value {
+  min-width: 36px;
+  text-align: center;
+  color: var(--ink-2);
+  font-size: var(--t-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.lyrics-offset-btn.icon-btn {
+  width: var(--hit-sm);
+  height: var(--hit-sm);
+}
+
+.lyrics-offset-btn svg {
+  width: var(--i-sm);
+  height: var(--i-sm);
 }
 
 .lyric-lines {

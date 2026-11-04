@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { historyPath, lyricIndex, matchesLyricRequest, measuredPercent, normalizePreferences, parseLrc, TelemetryGate } from '../live-state';
+import { historyPath, lyricIndex, lyricOffsetFor, matchesLyricRequest, MAX_LYRIC_OFFSETS, measuredPercent, normalizePreferences, parseLrc, TelemetryGate, withLyricOffset } from '../live-state';
 
 describe('live island state', () => {
   test('bounds saved geometry and delays while retaining explicit choices', () => {
@@ -33,12 +33,21 @@ describe('live island state', () => {
     expect(normalizePreferences({ closeDelayMs: 1500 }).closeDelayMs).toBe(1500);
   });
   test('parses repeated LRC timestamps, decimals, offsets and invalid seconds', () => {
-    expect(parseLrc('[offset:-500]\n[00:01.5][00:03.25]Line\n[01:99]bad')).toEqual([{ atMs: 1000, text: 'Line' }, { atMs: 2750, text: 'Line' }]);
+    expect(parseLrc('[offset:+500]\n[00:01.5][00:03.25]Line\n[01:99]bad')).toEqual([{ atMs: 1000, text: 'Line' }, { atMs: 2750, text: 'Line' }]);
   });
   test('timing responds to backward seeks and prelude without invented timing', () => {
     const lines = parseLrc('[00:02]One\n[00:05]Two');
     expect(lyricIndex(lines, 1000)).toBe(-1); expect(lyricIndex(lines, 6000)).toBe(1); expect(lyricIndex(lines, 2000)).toBe(0);
     expect(parseLrc('Plain lyrics have no fabricated timestamps')).toEqual([]);
+  });
+  test('bounds and normalizes per-track lyric offsets', () => {
+    let prefs = normalizePreferences({ lyricsOffsets: Array.from({ length: 160 }, (_, i) => ({ key: `track-${i}`, offsetMs: i * 137 })) });
+    expect(prefs.lyricsOffsets).toHaveLength(MAX_LYRIC_OFFSETS);
+    expect(prefs.lyricsOffsets.every(entry => entry.offsetMs % 100 === 0 && Math.abs(entry.offsetMs) <= 15000)).toBe(true);
+    prefs = normalizePreferences({ ...prefs, lyricsOffsets: withLyricOffset(prefs, 'reported-track', -800) });
+    expect(lyricOffsetFor(prefs, 'reported-track')).toBe(-800);
+    prefs = normalizePreferences({ ...prefs, lyricsOffsets: withLyricOffset(prefs, 'reported-track', 0) });
+    expect(lyricOffsetFor(prefs, 'reported-track')).toBe(0);
   });
   test('unknown metrics stay unknown and histories have gaps', () => {
     expect(measuredPercent(null)).toBeNull(); expect(measuredPercent(NaN)).toBeNull(); expect(measuredPercent(140)).toBeNull();

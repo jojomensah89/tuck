@@ -562,8 +562,8 @@ try {
   assert.equal(await native.locator('#uList .u-ring-inner').count(),2);
   await native.waitForTimeout(100);
   assert.deepEqual(await native.locator('#uList .ring').evaluateAll(n=>n.map(x=>x.dataset.tone)),['ok','ok','caution','ok']);
-  assert.deepEqual(await native.locator('#uList .u-provider').first().locator('.u-value-line').evaluateAll(n=>n.map(x=>x.textContent)),['5h42%','7d18%']);
-  assert.match(await native.locator('#uList .u-face').first().getAttribute('aria-label'),/Claude\. 5h, 42% used.*7d, 18% used/);
+  assert.deepEqual(await native.locator('#uList .u-provider').first().locator('.u-value-line').evaluateAll(n=>n.map(x=>x.textContent)),['5h58% left','7d82% left']);
+  assert.match(await native.locator('#uList .u-face').first().getAttribute('aria-label'),/Claude\. 5h, 58% left.*7d, 82% left/);
   assert.equal(await native.locator('#uList .u-provider').nth(1).getAttribute('data-stale'),'true','A stale configured provider remains and dims');
   assert.equal(await native.locator('#uList .u-provider').nth(1).locator('.u-state').textContent(),'Stale','A stale provider says so');
   assert.equal(await native.locator('#uList .u-provider').first().locator('.u-state').isHidden(),true,'A fresh provider has no state word');
@@ -605,7 +605,7 @@ try {
     // The ChatGPT estimate is logged by pressing its ring
     const logButton = native.getByRole('button',{name:/^Log a ChatGPT message/});
     await logButton.click();
-    assert.equal(await native.locator('#uList .u-provider').last().locator('.u-val').textContent(),'1/10');
+    assert.equal(await native.locator('#uList .u-provider').last().locator('.u-val').textContent(),'9 left');
     assert.equal(await logButton.evaluate(n=>document.activeElement===n),true,'Logging keeps focus on the ring');
     await native.evaluate(()=>{localStorage.removeItem('notch.chatgpt');localStorage.removeItem('notch.chatgpt.log');});
     await native.evaluate(meters=>window.__emitNative('usage',meters),fiveProviders(Math.round(Date.now()/1000)).slice(0,4));

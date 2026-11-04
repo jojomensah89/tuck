@@ -97,6 +97,6 @@ describe('card state', () => {
 
   it('states the window, value and reset in the details', () => {
     const details = meterDetails({ ...meter('a', 'claude', 'Claude 5 h'), usedPct: 42, resetsAt: 1000 + 8130 }, 1000);
-    expect(details).toBe('5h, 42% used, resets in 2h 15m, official');
+    expect(details).toBe('5h, 58% left, resets in 2h 15m, official');
   });
 });

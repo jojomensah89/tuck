@@ -1,11 +1,10 @@
-use super::{DictationService, EVENT_PARTIAL};
+use super::DictationService;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{SampleFormat, Stream, StreamConfig};
 use crossbeam_channel::{bounded, Receiver, Sender};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tauri::{AppHandle, Emitter};
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
 use zeroize::{Zeroize, Zeroizing};
 
@@ -21,20 +20,18 @@ use audio_math::{release_audio_frames, resample_to_16k, try_reserve_audio_frames
 
 pub(super) fn record_and_transcribe(
     service: &DictationService,
-    app: &AppHandle,
     model_path: &std::path::Path,
     stop: Arc<AtomicBool>,
     cancel: Arc<AtomicBool>,
 ) -> Result<String, String> {
     service.model_busy.store(true, Ordering::Release);
-    let result = record_and_transcribe_inner(service, app, model_path, stop, cancel);
+    let result = record_and_transcribe_inner(service, model_path, stop, cancel);
     service.model_busy.store(false, Ordering::Release);
     result
 }
 
 fn record_and_transcribe_inner(
     service: &DictationService,
-    app: &AppHandle,
     model_path: &std::path::Path,
     stop: Arc<AtomicBool>,
     cancel: Arc<AtomicBool>,
@@ -100,6 +97,13 @@ fn record_and_transcribe_inner(
                 return Err("Microphone capture ended unexpectedly".into());
             }
         }
+        // Do not begin another costly preview after release or the capture cap.
+        if stop.load(Ordering::Acquire)
+            || started.elapsed() >= Duration::from_secs(MAX_SECONDS as u64)
+        {
+            stop.store(true, Ordering::Release);
+            break;
+        }
         if preview && started.elapsed() >= next_preview && samples.len() >= sample_rate as usize * 2
         {
             let start = samples.len().saturating_sub(sample_rate as usize * 15);
@@ -107,18 +111,12 @@ fn record_and_transcribe_inner(
             if !cancel.load(Ordering::Acquire) {
                 if let Ok(mut partial_text) = transcribe(&context, &preview_audio, cancel.clone()) {
                     let text = partial_text.trim();
-                    if !text.is_empty() {
-                        let _ = app.emit(
-                            EVENT_PARTIAL,
-                            PartialTranscript {
-                                text: text.to_owned(),
-                            },
-                        );
-                    }
+                    service.publish_preview(text);
                     partial_text.zeroize();
                 }
             }
-            next_preview += PREVIEW_INTERVAL;
+            // Schedule from completion; slow inference never creates catch-up jobs.
+            next_preview = started.elapsed() + PREVIEW_INTERVAL;
         }
         if stop.load(Ordering::Acquire) {
             break;
@@ -158,18 +156,6 @@ fn zeroize_pending_audio(receiver: &Receiver<Vec<f32>>, queued_frames: &AtomicUs
     while let Ok(mut block) = receiver.try_recv() {
         release_audio_frames(queued_frames, block.len());
         block.zeroize();
-    }
-}
-
-#[derive(Clone, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-struct PartialTranscript {
-    text: String,
-}
-
-impl Drop for PartialTranscript {
-    fn drop(&mut self) {
-        self.text.zeroize();
     }
 }
 

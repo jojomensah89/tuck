@@ -8,7 +8,10 @@ This packet implements the native dictation and clipboard-history services. It p
 - Model: multilingual `ggml-tiny.bin`, about 77.7 MB. It is fetched only after `dictation_model_download` is invoked. The native downloader accepts no caller URL or path, requires HTTPS, streams at most 100 MiB to a temporary file, verifies SHA-256 `be07e048e1e599ad46341c8d2a135645097a538221678b7acdd1b1919c6e1b21`, then installs it under `<appDataDir>/dictation/`. Cancellation removes the temporary file. The pinned URL, size and digest correspond to the [Hugging Face model file](https://huggingface.co/ggerganov/whisper.cpp/blob/main/ggml-tiny.bin) and upstream [model list](https://github.com/ggml-org/whisper.cpp/blob/master/models/README.md).
 - Each dictation checks the installed model size and digest before opening the microphone. Startup only reads bounded settings and registers shortcuts; it does not open the microphone, load the inference model or download model bytes.
 - Audio is captured only after the explicit toggle or hold-to-talk command/shortcut. Capture is capped at 120 seconds, callback blocks at one second and queued audio at ten seconds. Overflow stops capture with an error. Audio buffers are zeroized after use/cancellation and are never written to disk. Whisper's abort callback receives cancellation during inference.
-- Partial preview is optional and enabled by default. It re-runs local transcription on up to the latest 15 seconds every three seconds; it is not token-by-token streaming. No audio or transcript is sent to a cloud service.
+- Partial preview is optional and enabled by default. It re-runs local transcription on up to the latest 15 seconds, waiting three seconds between completed attempts; it is not token-by-token streaming. Slow inference skips missed deadlines rather than catching up. Release is checked before beginning another preview. No audio or transcript is sent to a cloud service.
+- While recording, the collapsed island reserves a stable 300px pill for the microphone, a trailing excerpt of provisional words, and the recording indicator. Before the first preview it shows “Listening…”. Preview updates do not expand the island, transfer focus, or start a marquee. Words may change, and overlapping windows are replaced rather than concatenated.
+- The last provisional preview remains visible during final transcription. Authoritative text replaces it during review; insertion success, cancellation, errors, and a new recording clear it. Previews remain in memory only and are zeroized when replaced or cleared.
+- State and preview payloads carry a session ID and globally increasing revision. The renderer uses one ordering gate for events and its initial snapshot, rejecting stale/duplicate responses. The full snapshot in a preview event makes reordered delivery self-contained.
 - Model removal is explicit through `dictation_model_remove` and is rejected while recording, reviewing, inserting, downloading or running inference.
 
 The OpenBot voice design likewise documents explicit local-model lifecycle and local recognition as distinct from optional cloud transcription. Tuck uses only local recognition; see [OpenBot privacy](https://github.com/nightly-labs/openbot/blob/main/PRIVACY.md) and [release notes](https://github.com/nightly-labs/openbot/blob/main/docs/RELEASING.md).
@@ -50,7 +53,7 @@ All serialized DTO fields use camelCase.
 ### Dictation events
 
 - `dictation_state`: `DictationSnapshot`.
-- `dictation_partial`: `{ text }`, only when partial preview is enabled.
+- `dictation_partial`: a full `DictationSnapshot` with provisional `preview`, `sessionId`, and `revision`, only when partial preview is enabled. `transcript` remains reserved for the authoritative result. `dictation_state` and `dictation_get_state` carry the same additional fields.
 - `dictation_transcript`: `{ text, inserted, requiresReview, reason }` once per completed result.
 - `dictation_error`: error string for worker, download or capture failures.
 

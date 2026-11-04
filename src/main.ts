@@ -640,7 +640,7 @@ function fitCompactTitle(): void {
     // The leaving layer is still in the DOM during the cross-fade; measure the current one
     const title = document.querySelector<HTMLElement>('#cc .compact-slot.current .compact-title');
     const track = title?.querySelector<HTMLElement>('.compact-title-track');
-    if (!title || !track || state === 'open') return;
+    if (!title || !track || state === 'open' || title.classList.contains('dictation-preview')) return;
     // Mid-morph the column is the wrong width; transitionend refits once the shell settles
     if (Math.abs(isl.offsetWidth - parseFloat(isl.style.width)) > 1) return;
     const line = track.textContent ?? '';
@@ -756,7 +756,7 @@ function renderCompact(): void {
   const primary = selection.primary;
 
   const mediaText = primary?.kind === 'media' && livePreferences.compactContent !== 'artwork';
-  isl.toggleAttribute('data-compact-text', mediaText);
+  isl.toggleAttribute('data-compact-text', mediaText || primary?.kind === 'dictation');
   const closedWidth = compactShellWidth(primary, livePreferences.compactContent);
   if (state === 'idle') syncIdleWidth(closedWidth);
   if (closedWidth !== pillStrip.width) {
@@ -789,7 +789,9 @@ function renderCompact(): void {
   // Media can show the current lyric line instead of the track title (Settings > Collapsed content)
   const lyric = primary.kind === 'media' && livePreferences.compactContent === 'lyrics' ? compactLyric() : '';
   const title = lyric || primary.title;
-  if (state === 'peek' || mediaText) {
+  if (primary.kind === 'dictation') {
+    // Its center is rendered below from provisional text rather than the activity title.
+  } else if (state === 'peek' || mediaText) {
     const changed = setCompactSlot(cc, `${primary.id}:title`, title, () => compactTitle(title));
     if (changed) fitCompactTitle();
   } else {
@@ -849,6 +851,14 @@ function renderCompact(): void {
   const external = externalActivities.get(externalId)!;
   if (primary.kind === 'dictation') {
     const recording = external.phase === 'recording';
+    const phaseLabel = recording ? 'Dictation recording' : external.phase === 'transcribing' ? 'Transcribing' : 'Review transcript';
+    const line = external.text || (recording ? 'Listening\u2026' : external.phase === 'transcribing' ? 'Transcribing\u2026' : 'Review transcript');
+    // Revised previews use a stable width and no marquee.
+    setCompactSlot(cc, 'dictation:preview', line, () => {
+      const preview = compactTitle(line);
+      preview.classList.add('dictation-preview');
+      return preview;
+    });
     setCompactSlot(cl, 'dictation:leading', 'mic', () => compactMarkup(SVG_ICONS.mic));
     setCompactSlot(
       cr,
@@ -860,7 +870,7 @@ function renderCompact(): void {
         selection.hasBackgroundActivity,
       ),
     );
-    setLabel(compact, recording ? 'Dictation recording' : 'Dictation active');
+    setLabel(compact, external.text ? `${phaseLabel}: ${external.text}` : phaseLabel);
     return;
   }
 

@@ -63,6 +63,9 @@ impl Default for DictationSettings {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct DictationSnapshot {
+    pub session_id: u64,
+    pub revision: u64,
+    pub preview: Option<String>,
     pub status: String,
     pub model_installed: bool,
     pub model_downloaded_bytes: u64,
@@ -74,6 +77,9 @@ pub struct DictationSnapshot {
 
 impl Drop for DictationSnapshot {
     fn drop(&mut self) {
+        if let Some(preview) = self.preview.as_mut() {
+            preview.zeroize();
+        }
         if let Some(transcript) = self.transcript.as_mut() {
             transcript.zeroize();
         }
@@ -108,6 +114,9 @@ struct ActiveSession {
 }
 
 struct Runtime {
+    session_id: u64,
+    revision: u64,
+    preview: Option<String>,
     status: String,
     message: Option<String>,
     transcript: Option<String>,
@@ -121,6 +130,9 @@ struct Runtime {
 
 impl Drop for Runtime {
     fn drop(&mut self) {
+        if let Some(preview) = self.preview.as_mut() {
+            preview.zeroize();
+        }
         if let Some(transcript) = self.transcript.as_mut() {
             transcript.zeroize();
         }
@@ -150,6 +162,9 @@ impl DictationService {
             app: RwLock::new(None),
             settings: RwLock::new(DictationSettings::default()),
             runtime: Mutex::new(Runtime {
+                session_id: 0,
+                revision: 0,
+                preview: None,
                 status: "idle".into(),
                 message: None,
                 transcript: None,
@@ -178,7 +193,16 @@ impl DictationService {
 
     fn snapshot(&self) -> DictationSnapshot {
         let settings = self.settings.read().map(|s| s.clone()).unwrap_or_default();
-        let (status, model_downloaded_bytes, can_insert, transcript, message) = self
+        let (
+            status,
+            model_downloaded_bytes,
+            can_insert,
+            transcript,
+            message,
+            session_id,
+            revision,
+            preview,
+        ) = self
             .runtime
             .lock()
             .map(|runtime| {
@@ -188,11 +212,17 @@ impl DictationService {
                     runtime.status == "review" && runtime.review_target.is_some(),
                     runtime.transcript.clone(),
                     runtime.message.clone(),
+                    runtime.session_id,
+                    runtime.revision,
+                    runtime.preview.clone(),
                 )
             })
-            .unwrap_or_else(|_| ("error".into(), 0, false, None, None));
+            .unwrap_or_else(|_| ("error".into(), 0, false, None, None, 0, 0, None));
         let path = self.model_path().ok();
         DictationSnapshot {
+            session_id,
+            revision,
+            preview,
             status,
             model_installed: path.as_deref().is_some_and(Path::is_file),
             model_downloaded_bytes,
@@ -204,6 +234,14 @@ impl DictationService {
     }
 
     fn emit_state(&self) {
+        if let Ok(mut runtime) = self.runtime.lock() {
+            runtime.revision += 1;
+            if !matches!(runtime.status.as_str(), "recording" | "transcribing") {
+                if let Some(mut preview) = runtime.preview.take() {
+                    preview.zeroize();
+                }
+            }
+        }
         let app = self.app.read().ok().and_then(|slot| slot.clone());
         if let Some(app) = app {
             let _ = app.emit(EVENT_STATE, self.snapshot());
@@ -216,6 +254,33 @@ impl DictationService {
             runtime.message = message;
         }
         self.emit_state();
+    }
+
+    /// Preview is display-only. Publish a complete versioned snapshot so a late
+    /// initial response or event cannot resurrect an earlier recording's text.
+    fn publish_preview(&self, text: &str) {
+        if !self.settings().partial_preview {
+            return;
+        }
+        if let Ok(mut runtime) = self.runtime.lock() {
+            let eligible = runtime.status == "recording"
+                && runtime.active.as_ref().is_some_and(|active| {
+                    !active.cancel.load(Ordering::Acquire) && !active.stop.load(Ordering::Acquire)
+                });
+            if !eligible || text.is_empty() {
+                return;
+            }
+            if let Some(mut previous) = runtime.preview.take() {
+                previous.zeroize();
+            }
+            runtime.preview = Some(text.to_owned());
+            runtime.revision += 1;
+        } else {
+            return;
+        }
+        if let Ok(app) = self.app() {
+            let _ = app.emit(EVENT_PARTIAL, self.snapshot());
+        }
     }
 
     fn app(&self) -> Result<AppHandle, String> {
@@ -231,7 +296,7 @@ impl DictationService {
     }
 
     fn begin(self: &Arc<Self>, mode: RecordingMode) -> Result<(), String> {
-        let app = self.app()?;
+        self.app()?;
         let model_path = self.model_path()?;
         if !model_path.is_file() {
             self.set_status(
@@ -279,6 +344,7 @@ impl DictationService {
                 cancel: cancel.clone(),
                 mode: mode.clone(),
             });
+            runtime.session_id += 1;
             runtime.status = "starting".into();
         }
         self.emit_state();
@@ -298,7 +364,7 @@ impl DictationService {
             .name("tuck-dictation".into())
             .spawn(move || {
                 let result =
-                    audio::record_and_transcribe(&service, &app, &model_path, stop, cancel.clone());
+                    audio::record_and_transcribe(&service, &model_path, stop, cancel.clone());
                 if cancel.load(Ordering::Acquire) {
                     if let Ok(mut text) = result {
                         text.zeroize();
@@ -327,6 +393,10 @@ impl DictationService {
     fn finish_transcript(&self, text: String, original_target: Option<target::ForegroundTarget>) {
         let source = Zeroizing::new(text);
         let text = Zeroizing::new(source.trim().to_owned());
+        if self.session_cancelled() {
+            self.finish_cancelled();
+            return;
+        }
         if text.is_empty() {
             self.clear_active();
             self.set_status("idle", Some("No speech was recognized.".into()));
@@ -344,6 +414,10 @@ impl DictationService {
         let mut inserted = false;
         let mut partial_insertion = false;
         let mut reason = safety.err();
+        if self.session_cancelled() {
+            self.finish_cancelled();
+            return;
+        }
         if !settings.review_before_insert && reason.is_none() {
             if let Some(target) = original_target.as_ref() {
                 match target::insert_unicode(target, text.as_str()) {
@@ -388,6 +462,15 @@ impl DictationService {
         if let Ok(app) = self.app() {
             let _ = app.emit(EVENT_ERROR, error);
         }
+    }
+
+    fn session_cancelled(&self) -> bool {
+        self.runtime.lock().map_or(true, |runtime| {
+            runtime
+                .active
+                .as_ref()
+                .is_none_or(|active| active.cancel.load(Ordering::Acquire))
+        })
     }
 
     fn finish_cancelled(&self) {
@@ -977,6 +1060,69 @@ pub fn dictation_model_download_cancel(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn recording_service() -> DictationService {
+        let service = DictationService::new();
+        {
+            let mut runtime = service.runtime.lock().unwrap();
+            runtime.session_id = 1;
+            runtime.status = "recording".into();
+            runtime.active = Some(ActiveSession {
+                stop: Arc::new(AtomicBool::new(false)),
+                cancel: Arc::new(AtomicBool::new(false)),
+                mode: RecordingMode::Toggle,
+            });
+        }
+        service
+    }
+
+    #[test]
+    fn preview_survives_finalization_and_is_cleared_on_cancel() {
+        let service = recording_service();
+        service.publish_preview("provisional words");
+        let first = service.snapshot();
+        assert_eq!(first.preview.as_deref(), Some("provisional words"));
+        assert!(first.transcript.is_none());
+        service.set_status("transcribing", None);
+        let processing = service.snapshot();
+        assert_eq!(processing.preview, first.preview);
+        assert!(processing.revision > first.revision);
+        service.cancel().unwrap();
+        assert!(service.snapshot().preview.is_none());
+        service.publish_preview("late words");
+        assert!(service.snapshot().preview.is_none());
+    }
+
+    #[test]
+    fn disabled_or_stopped_recordings_do_not_publish_previews() {
+        let service = recording_service();
+        service.settings.write().unwrap().partial_preview = false;
+        service.publish_preview("disabled");
+        assert!(service.snapshot().preview.is_none());
+        service.settings.write().unwrap().partial_preview = true;
+        service
+            .runtime
+            .lock()
+            .unwrap()
+            .active
+            .as_ref()
+            .unwrap()
+            .stop
+            .store(true, Ordering::Release);
+        service.publish_preview("stopped");
+        assert!(service.snapshot().preview.is_none());
+    }
+
+    #[test]
+    fn cancelled_finalization_does_not_keep_text_for_review() {
+        let service = recording_service();
+        service.cancel().unwrap();
+        service.finish_transcript("discard me".into(), None);
+        let snapshot = service.snapshot();
+        assert_eq!(snapshot.status, "idle");
+        assert!(snapshot.transcript.is_none());
+        assert!(snapshot.preview.is_none());
+    }
 
     #[test]
     fn settings_default_to_explicit_hotkeys_and_immediate_insert() {

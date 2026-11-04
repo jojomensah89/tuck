@@ -43,9 +43,21 @@ export interface TelemetrySnapshot {
   stale?: boolean;
 }
 export interface DictationSnapshot {
-  status: 'disabled' | 'idle' | 'recording' | 'transcribing' | 'review' | 'error';
+  status: 'disabled' | 'idle' | 'starting' | 'recording' | 'transcribing' | 'review' | 'error' | 'cancelling' | 'inserting' | 'modelMissing' | 'downloadingModel';
   transcript: string; error?: string | null; modelReady?: boolean;
+  preview?: string | null; sessionId?: number; revision?: number;
   canInsert?: boolean;
+}
+
+/** Native events and the initial IPC response share one monotonic ordering. */
+export class DictationUpdates {
+  private revision = -1;
+  accept(data: DictationSnapshot): boolean {
+    if (data.revision === undefined) return this.revision === -1;
+    if (!Number.isSafeInteger(data.revision) || data.revision <= this.revision) return false;
+    this.revision = data.revision;
+    return true;
+  }
 }
 export interface ClipboardItem { id: string; text: string; pinned: boolean; createdAt: number }
 export interface ClipboardSnapshot { enabled: boolean; items: ClipboardItem[] }

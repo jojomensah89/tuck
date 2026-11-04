@@ -1211,7 +1211,7 @@ let lastBlurCloseTime = 0;
 
 window.addEventListener('blur', () => {
   keyboardMode = false;
-  if (state === 'open') {
+  if (state === 'open' && !livePreferences.pinned && !nativeDragActive) {
     lastBlurCloseTime = Date.now();
     window.clearTimeout(closeTimer);
     setState('idle');
@@ -1240,16 +1240,6 @@ void listenToEvent<null>('tray-toggle-island', () => {
     setState('idle');
   } else {
     // Open via native command which focuses the window and removes WS_EX_NOACTIVATE
-    void invokeCommand('open_island_cmd').catch(() => {});
-  }
-});
-
-void listenToEvent<null>('toggle-island', () => {
-  if (state === 'open') {
-    keyboardMode = false;
-    window.clearTimeout(closeTimer);
-    setState('idle');
-  } else {
     void invokeCommand('open_island_cmd').catch(() => {});
   }
 });

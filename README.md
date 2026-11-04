@@ -38,7 +38,7 @@ Packaged installers and updates are published automatically on GitHub Releases.
 > [!NOTE]
 > **Windows SmartScreen Notice:** Tuck is an open-source project and is not signed with a paid Microsoft Authenticode certificate. On first install, Windows SmartScreen will display an *"Unknown Publisher"* warning. Click **More info** &rarr; **Run anyway** to proceed.
 
-Tuck checks for updates automatically every 6 hours and allows one-click update installation from Settings or the system tray menu. See [Releasing Guide](docs/releasing.md) for full details on release automation and signing.
+Tuck checks for updates at startup and every 6 hours, shows **Update available** in Settings and the tray menu, and downloads only when you click. See [Releasing Guide](docs/releasing.md) for full details on release automation and signing.
 
 ## Scope and setup
 

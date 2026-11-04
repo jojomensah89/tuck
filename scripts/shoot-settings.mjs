@@ -39,29 +39,46 @@ await context.route('http://tuck.test/**', async (route) => {
   }
 });
 
+// A minimal native bridge, so the screenshot comes from the real update code path
+await context.addInitScript(() => {
+  let serial = 0;
+  const callbacks = new Map();
+  const listeners = new Map();
+  window.isTauri = true;
+  window.__emitNative = (event, payload) => {
+    for (const id of listeners.get(event) || []) callbacks.get(id)?.({ event, id, payload });
+  };
+  window.__TAURI_INTERNALS__ = {
+    metadata: { currentWindow: { label: 'settings' }, currentWebview: { label: 'settings' } },
+    transformCallback(callback) {
+      const id = ++serial;
+      callbacks.set(id, callback);
+      return id;
+    },
+    async invoke(command, args = {}) {
+      if (command === 'plugin:event|listen') {
+        listeners.set(args.event, [...(listeners.get(args.event) || []), args.handler]);
+        return ++serial;
+      }
+      return null;
+    },
+  };
+});
+
 const page = await context.newPage();
 await page.goto('http://tuck.test/settings.html#about');
 await page.waitForTimeout(400);
 
 await page.evaluate(() => {
-  const row = document.getElementById('row-update-available');
-  if (row) {
-    row.hidden = false;
-    const badge = document.getElementById('updateVersionBadge');
-    if (badge) badge.textContent = 'v0.2.0';
-    const notes = document.getElementById('updateNotes');
-    if (notes) {
-      notes.textContent =
-        'Features:\n- Automated release pipeline with NSIS installer and updater artifacts\n- Full 8-item tray menu with left-click toggle and autostart synchronization\n- In-app updater with quiet background polling and manual check/install';
-    }
-  }
-  const status = document.getElementById('updateStatusText');
-  if (status) status.textContent = 'Update to v0.2.0 is available.';
+  window.__emitNative('pending-update-changed', {
+    version: '0.2.0',
+    currentVersion: '0.1.0',
+    body: '### Added\n- Release pipeline, in-app updater and full tray menu\n\n### Fixed\n- Example fix shown only in this screenshot',
+  });
 });
 
 await page.waitForTimeout(300);
 await page.screenshot({ path: path.join(out, 'settings-updates.png') });
-await page.screenshot({ path: path.join(root, 'artifacts', 'settings-update-available.png') });
-console.log('Saved screenshots to docs/screens/settings-updates.png and artifacts/settings-update-available.png');
+console.log('Saved docs/screens/settings-updates.png');
 await browser.close();
 

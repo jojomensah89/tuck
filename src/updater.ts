@@ -8,138 +8,131 @@ export interface UpdateInfo {
   date?: string;
 }
 
+const SIX_HOURS_MS = 6 * 60 * 60 * 1000;
+
 let cachedUpdate: Update | null = null;
-let updateCheckInProgress = false;
+let downloadedUpdate: Update | null = null;
+let installInProgress = false;
+let checkInFlight: Promise<UpdateInfo | null> | null = null;
 
-/**
- * Check for updates.
- * If manual is true, errors are thrown so the UI can report them.
- * If manual is false (background), errors are logged quietly.
- */
-export async function checkForUpdates(manual = false): Promise<UpdateInfo | null> {
-  if (!isTauri()) return null;
-  if (updateCheckInProgress) return null;
-  updateCheckInProgress = true;
-
-  try {
-    const update = await check();
-    if (update?.available) {
-      cachedUpdate = update;
-      const info: UpdateInfo = {
-        version: update.version,
-        currentVersion: update.currentVersion,
-        body: update.body ?? '',
-        date: update.date ?? '',
-      };
-      try {
-        await invokeCommand('set_pending_update', { update: info });
-      } catch (e) {
-        console.warn('[updater] Failed to update pending update in Rust:', e);
-      }
-      return info;
-    } else {
-      cachedUpdate = null;
-      try {
-        await invokeCommand('set_pending_update', { update: null });
-      } catch (e) {
-        console.warn('[updater] Failed to reset pending update in Rust:', e);
-      }
-      return null;
-    }
-  } catch (err) {
-    if (manual) {
-      throw err;
-    }
-    console.debug('[updater] Background check skipped/offline:', err);
-    return null;
-  } finally {
-    updateCheckInProgress = false;
-  }
+/** Each check holds a native resource with the update's data, so the previous one must be closed. */
+async function replaceCachedUpdate(update: Update | null): Promise<void> {
+  const previous = cachedUpdate;
+  cachedUpdate = update;
+  if (previous && previous !== update) await previous.close().catch(() => {});
 }
 
-/**
- * Get the cached available update info if one was previously detected.
- */
-export function getCachedUpdate(): UpdateInfo | null {
-  if (!cachedUpdate || !cachedUpdate.available) return null;
+function describeUpdate(update: Update): UpdateInfo {
   return {
-    version: cachedUpdate.version,
-    currentVersion: cachedUpdate.currentVersion,
-    body: cachedUpdate.body ?? '',
-    date: cachedUpdate.date ?? '',
+    version: update.version,
+    currentVersion: update.currentVersion,
+    body: update.body ?? '',
+    date: update.date ?? '',
   };
 }
 
-/**
- * Download and install the available update with progress tracking.
- * Splits execution into download, Rust shutdown preparation, and install.
- * Never downloads without an explicit user action.
- */
-export async function downloadAndInstallUpdate(
-  onProgress: (downloaded: number, total: number | null) => void
-): Promise<void> {
-  if (!isTauri()) throw new Error('Not running in Tauri desktop environment');
-
-  if (!cachedUpdate) {
-    const update = await check();
-    if (update?.available) {
-      cachedUpdate = update;
-    } else {
-      throw new Error('No update available to install');
-    }
-  }
-
-  let downloaded = 0;
-  let totalLength: number | null = null;
-
-  await cachedUpdate.download((event) => {
-    switch (event.event) {
-      case 'Started':
-        totalLength = event.data.contentLength ?? null;
-        onProgress(0, totalLength);
-        break;
-      case 'Progress':
-        downloaded += event.data.chunkLength;
-        onProgress(downloaded, totalLength);
-        break;
-      case 'Finished':
-        onProgress(downloaded, downloaded);
-        break;
-    }
+async function runCheck(): Promise<UpdateInfo | null> {
+  const update = await check();
+  await replaceCachedUpdate(update);
+  const info = update ? describeUpdate(update) : null;
+  await invokeCommand('set_pending_update', { update: info }).catch((e) => {
+    console.warn('[updater] Failed to store pending update in Rust:', e);
   });
-
-  // Verify safe exit and run shutdown cleanup in Rust before installation terminates process
-  await invokeCommand('prepare_update_install');
-
-  // Proceed with installer launch and process exit
-  await cachedUpdate.install();
+  return info;
 }
 
 /**
- * Starts the 6-hour background update scheduler with a one-shot setTimeout.
- * Does zero work between checks.
+ * Check for updates. Callers during a running check share its result. A manual check
+ * reports errors to its caller; a background check stays quiet when offline.
+ */
+export async function checkForUpdates(manual = false): Promise<UpdateInfo | null> {
+  if (!isTauri()) return null;
+  // The update being installed must not be replaced under the download
+  if (installInProgress) return cachedUpdate ? describeUpdate(cachedUpdate) : null;
+
+  checkInFlight ??= runCheck().finally(() => {
+    checkInFlight = null;
+  });
+
+  try {
+    return await checkInFlight;
+  } catch (err) {
+    if (manual) throw err;
+    console.debug('[updater] Background check skipped/offline:', err);
+    return null;
+  }
+}
+
+/**
+ * Download and install the available update. Runs only from an explicit click.
+ * The app exits inside `install()` when it succeeds, so `onInstalling` is the last
+ * chance to tell the person what is happening.
+ */
+export async function downloadAndInstallUpdate(
+  onProgress: (downloaded: number, total: number | null) => void,
+  onInstalling: () => void,
+): Promise<void> {
+  if (!isTauri()) throw new Error('Not running in Tauri desktop environment');
+  await invokeCommand('check_update_allowed');
+
+  installInProgress = true;
+  try {
+    if (!cachedUpdate) {
+      const found = await check();
+      if (!found) throw new Error('No update available to install');
+      await replaceCachedUpdate(found);
+    }
+    const update = cachedUpdate!;
+
+    // A retry after dictation blocked the install does not download again
+    if (downloadedUpdate !== update) {
+      let downloaded = 0;
+      let totalLength: number | null = null;
+      await update.download((event) => {
+        switch (event.event) {
+          case 'Started':
+            totalLength = event.data.contentLength ?? null;
+            onProgress(0, totalLength);
+            break;
+          case 'Progress':
+            downloaded += event.data.chunkLength;
+            onProgress(downloaded, totalLength);
+            break;
+          case 'Finished':
+            onProgress(downloaded, downloaded);
+            break;
+        }
+      });
+      downloadedUpdate = update;
+    }
+
+    onInstalling();
+    // Refuses while dictation is busy. Otherwise this stops every background service.
+    await invokeCommand('prepare_update_install');
+    try {
+      await update.install();
+    } catch (err) {
+      console.error('[updater] Install failed, restarting to bring services back:', err);
+      await invokeCommand('restart_after_failed_update');
+      throw err;
+    }
+  } finally {
+    installInProgress = false;
+  }
+}
+
+/**
+ * Checks shortly after startup and then every six hours, with a one-shot timer rescheduled
+ * after each check. Does no work in between.
  */
 export function startBackgroundUpdateScheduler(initialDelayMs = 20_000): void {
   if (!isTauri()) return;
 
-  const SIX_HOURS_MS = 6 * 60 * 60 * 1000;
-
-  function scheduleNext(): void {
-    window.setTimeout(() => {
-      checkForUpdates(false)
-        .catch(() => {})
-        .finally(() => {
-          scheduleNext();
-        });
-    }, SIX_HOURS_MS);
+  function checkThenSchedule(): void {
+    void checkForUpdates(false).finally(() => {
+      window.setTimeout(checkThenSchedule, SIX_HOURS_MS);
+    });
   }
 
-  // Initial check after startup delay
-  window.setTimeout(() => {
-    checkForUpdates(false)
-      .catch(() => {})
-      .finally(() => {
-        scheduleNext();
-      });
-  }, initialDelayMs);
+  window.setTimeout(checkThenSchedule, initialDelayMs);
 }

@@ -5,7 +5,6 @@
   "windows": ["settings"],
   "permissions": [
     "updater:allow-download",
-    "updater:allow-install",
-    "updater:allow-download-and-install"
+    "updater:allow-install"
   ]
 }

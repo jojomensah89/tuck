@@ -176,7 +176,7 @@ impl DictationService {
         model::model_path(app)
     }
 
-    fn snapshot(&self) -> DictationSnapshot {
+    pub(crate) fn snapshot(&self) -> DictationSnapshot {
         let settings = self.settings.read().map(|s| s.clone()).unwrap_or_default();
         let (status, model_downloaded_bytes, can_insert, transcript, message) = self
             .runtime

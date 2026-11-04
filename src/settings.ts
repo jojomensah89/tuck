@@ -3,9 +3,10 @@ import { mountExtensionSettings } from './extensions.js';
 import { mountLiveSettings } from './live-settings.js';
 import { isTauri, setSecret, invokeCommand, listenToEvent } from './ipc.js';
 import { STORAGE_KEYS, getJson, saveJson } from './usage.js';
-import { describeResult, filterSettings, navTarget, type SearchEntry } from './settings-search.js';
+import { describeResult, filterSettings, isRowHidden, navTarget, type SearchEntry } from './settings-search.js';
 import { clearSaved, confirmThen, markSaved, onCommit, setStatus } from './settings-ui.js';
-import { checkForUpdates, getCachedUpdate, downloadAndInstallUpdate, type UpdateInfo } from './updater.js';
+import { checkForUpdates, downloadAndInstallUpdate, type UpdateInfo } from './updater.js';
+import { parseReleaseNotes } from './update-notes.js';
 import type { ShapeStyle, ChatGPTConfig } from './types.js';
 import pkg from '../package.json';
 
@@ -53,36 +54,28 @@ function buildSearchIndex(): SearchEntry[] {
   return entries;
 }
 
-let updateAvailableState = false;
+const UPDATE_ROW = 'row-update-available';
+let updateAvailable = false;
 
-export function setUpdateAvailableState(available: boolean): void {
-  updateAvailableState = available;
-  const row = document.getElementById('row-update-available');
-  if (row) {
-    const searching = document.body.classList.contains('searching');
-    if (!searching) {
-      row.hidden = !available;
-    }
-  }
+/** Rows that exist in the document but have nothing to show right now. */
+function unavailableRows(): ReadonlySet<string> {
+  return new Set(updateAvailable ? [] : [UPDATE_ROW]);
 }
 
-export function isUpdateAvailable(): boolean {
-  return updateAvailableState;
+function setUpdateAvailable(available: boolean): void {
+  updateAvailable = available;
+  applySearch($<HTMLInputElement>('settingsSearch')?.value ?? '');
 }
 
-export function applySearch(query: string): void {
+function applySearch(query: string): void {
   const searching = query.trim() !== '';
   document.body.classList.toggle('searching', searching);
-  const result = filterSettings(searchIndex, query);
+  const unavailable = unavailableRows();
+  const result = filterSettings(searchIndex, query, unavailable);
   const matched = new Set(result.ids);
   for (const entry of searchIndex) {
     const row = document.getElementById(entry.id);
-    if (!row) continue;
-    if (entry.id === 'row-update-available') {
-      row.hidden = !updateAvailableState || (searching && !matched.has(entry.id));
-    } else {
-      row.hidden = searching && !matched.has(entry.id);
-    }
+    if (row) row.hidden = isRowHidden(entry.id, searching, matched, unavailable);
   }
   for (const group of document.querySelectorAll<HTMLElement>('.group')) {
     group.hidden = searching && !group.querySelector('.set-row:not([hidden])');
@@ -96,13 +89,10 @@ export function applySearch(query: string): void {
     if (searching && !result.views.has(link.dataset.view!)) link.dataset.empty = '';
     else delete link.dataset.empty;
   }
-  const empty = $('searchEmpty');
-  if (empty) empty.hidden = !searching || result.ids.length > 0;
-  const summary = $('searchSummary');
-  if (summary) summary.textContent = describeResult(result, query);
+  $('searchEmpty')!.hidden = !searching || result.ids.length > 0;
+  $('searchSummary')!.textContent = describeResult(result, query);
   if (!searching) showView(currentView());
 }
-
 
 function firstVisibleControl(): HTMLElement | null {
   const selector = '.view:not([hidden]) .set-row:not([hidden]) :is(input:not([disabled]), button:not([disabled]), a[href])';
@@ -355,11 +345,6 @@ function initNativeToggles(): void {
       location.hash = `#${view}`;
     }
   });
-  void listenToEvent('check-for-updates-requested', () => {
-    showView('about');
-    location.hash = '#about';
-    $<HTMLButtonElement>('btnCheckUpdates')?.click();
-  });
 
   void invokeCommand<boolean>('installed_usage_enabled').then(value => { installed.checked = value; refreshPrivacy(); })
     .catch(() => setStatus('installedUsageStatus', 'Could not read usage preference.', 'error'));
@@ -379,124 +364,114 @@ function initNativeToggles(): void {
   });
 }
 
-function initUpdates(): void {
-  const btnCheck = $<HTMLButtonElement>('btnCheckUpdates');
-  const btnInstall = $<HTMLButtonElement>('btnInstallUpdate');
-  const statusText = $('updateStatusText');
-  const versionBadge = $('updateVersionBadge');
-  const updateNotes = $('updateNotes');
-  const progressWrap = $('updateProgressWrap');
-  const progressBar = $<HTMLElement>('updateProgressBar');
-  const progressLabel = $('updateProgressLabel');
+function renderReleaseNotes(container: HTMLElement, body: string | undefined): void {
+  container.replaceChildren();
+  let list: HTMLUListElement | null = null;
+  for (const block of parseReleaseNotes(body ?? '')) {
+    if (block.kind === 'item') {
+      if (!list) list = container.appendChild(document.createElement('ul'));
+      list.appendChild(document.createElement('li')).textContent = block.text;
+      continue;
+    }
+    list = null;
+    container.appendChild(document.createElement(block.kind === 'heading' ? 'h3' : 'p')).textContent = block.text;
+  }
+  if (!container.hasChildNodes()) container.appendChild(document.createElement('p')).textContent = 'No release notes provided.';
+}
 
-  if (!btnCheck) return;
+function initUpdates(): void {
+  const btnCheck = $<HTMLButtonElement>('btnCheckUpdates')!;
+  const btnInstall = $<HTMLButtonElement>('btnInstallUpdate')!;
+  const statusText = $('updateStatusText')!;
+  const versionBadge = $('updateVersionBadge')!;
+  const updateNotes = $('updateNotes')!;
+  const progressWrap = $('updateProgressWrap')!;
+  const progressBar = $<HTMLElement>('updateProgressBar')!;
+  const progressLabel = $('updateProgressLabel')!;
+
+  let installing = false;
+
+  function showPendingUpdate(info: UpdateInfo | null): void {
+    if (installing) return;
+    if (info) {
+      statusText.textContent = `Update available: v${info.version}.`;
+      versionBadge.textContent = `v${info.version}`;
+      renderReleaseNotes(updateNotes, info.body);
+    } else if (updateAvailable) {
+      statusText.textContent = 'Check for updates.';
+    }
+    setUpdateAvailable(info !== null);
+  }
 
   if (!isTauri()) {
     btnCheck.disabled = true;
-    if (statusText) statusText.textContent = 'Updates are available in the desktop app.';
+    statusText.textContent = 'Updates are available in the desktop app.';
     return;
   }
 
-  function showUpdateAvailable(info: UpdateInfo): void {
-    setUpdateAvailableState(true);
-    if (statusText) statusText.textContent = `Update to v${info.version} is available.`;
-    if (versionBadge) versionBadge.textContent = `v${info.version}`;
-    if (updateNotes) {
-      updateNotes.textContent = info.body || 'No release notes provided.';
-    }
-  }
-
-
-  function clearUpdateAvailable(): void {
-    setUpdateAvailableState(false);
-  }
-
-  // Check cached update from in-memory module
-  const cached = getCachedUpdate();
-  if (cached) {
-    showUpdateAvailable(cached);
-  }
-
-  // Check Rust central state for updates found by the background scheduler
-  invokeCommand<UpdateInfo | null>('get_pending_update')
-    .then((pending) => {
-      if (pending) {
-        showUpdateAvailable(pending);
-      }
-    })
-    .catch(() => {});
-
+  // The background check runs in the island window and reports through Rust
+  void listenToEvent<UpdateInfo | null>('pending-update-changed', showPendingUpdate);
+  invokeCommand<UpdateInfo | null>('get_pending_update').then(showPendingUpdate).catch(() => {});
 
   btnCheck.addEventListener('click', async () => {
     btnCheck.disabled = true;
     const originalText = btnCheck.textContent;
     btnCheck.textContent = 'Checking...';
-    if (statusText) statusText.textContent = 'Checking for updates...';
+    statusText.textContent = 'Checking for updates...';
 
     try {
       const update = await checkForUpdates(true);
-      if (update) {
-        showUpdateAvailable(update);
-        markSaved(btnCheck);
-      } else {
-        clearUpdateAvailable();
-        if (statusText) statusText.textContent = `Tuck v${pkg.version} is up to date.`;
-        markSaved(btnCheck);
-      }
+      showPendingUpdate(update);
+      if (!update) statusText.textContent = `Tuck v${pkg.version} is up to date.`;
+      markSaved(btnCheck);
     } catch (err) {
       console.warn('[updater] Manual check failed:', err);
-      if (statusText) statusText.textContent = 'Could not reach update server. Check your connection.';
+      statusText.textContent = 'Could not reach update server. Check your connection.';
     } finally {
       btnCheck.disabled = false;
       btnCheck.textContent = originalText;
     }
   });
 
-  // Listen for native request from tray
+  // The tray item opens or focuses this window and asks for a fresh check
   void listenToEvent<null>('check-for-updates-requested', () => {
+    showView('about');
+    location.hash = '#about';
     btnCheck.click();
   });
+  if (new URLSearchParams(window.location.search).get('check') === '1') btnCheck.click();
 
-  // If opened via URL containing check=1 or hash containing check=1, run check immediately
-  const params = new URLSearchParams(window.location.search);
-  const shouldAutoCheck = params.get('check') === '1' || window.location.hash.includes('check=1');
-  if (shouldAutoCheck) {
-    btnCheck.click();
-  }
+  btnInstall.addEventListener('click', async () => {
+    installing = true;
+    btnInstall.disabled = true;
+    btnInstall.textContent = 'Downloading...';
+    progressWrap.hidden = false;
+    progressLabel.textContent = 'Downloading...';
+    progressBar.style.width = '0%';
 
-  if (btnInstall) {
-    btnInstall.addEventListener('click', async () => {
-      btnInstall.disabled = true;
-      btnInstall.textContent = 'Downloading...';
-      if (progressWrap) progressWrap.hidden = false;
-
-      try {
-        await downloadAndInstallUpdate((downloaded, total) => {
-          if (total && total > 0) {
-            const pct = Math.min(100, Math.round((downloaded / total) * 100));
-            if (progressBar) progressBar.style.width = `${pct}%`;
-            if (progressLabel) {
-              const mbDl = (downloaded / (1024 * 1024)).toFixed(1);
-              const mbTot = (total / (1024 * 1024)).toFixed(1);
-              progressLabel.textContent = `Downloading... ${pct}% (${mbDl} / ${mbTot} MB)`;
-            }
-          } else {
-            const mbDl = (downloaded / (1024 * 1024)).toFixed(1);
-            if (progressLabel) progressLabel.textContent = `Downloading... ${mbDl} MB`;
-          }
-        });
-        if (progressLabel) progressLabel.textContent = 'Installing update... Tuck will restart.';
-      } catch (err) {
-        console.error('[updater] Download/install error:', err);
-        btnInstall.disabled = false;
-        btnInstall.textContent = 'Download and install';
-        const msg = typeof err === 'string' ? err : (err instanceof Error ? err.message : 'Installation failed. Please try again.');
-        if (progressLabel) progressLabel.textContent = msg;
-      }
-    });
-  }
+    try {
+      await downloadAndInstallUpdate((downloaded, total) => {
+        const mbDl = (downloaded / (1024 * 1024)).toFixed(1);
+        if (total && total > 0) {
+          const pct = Math.min(100, Math.round((downloaded / total) * 100));
+          progressBar.style.width = `${pct}%`;
+          progressLabel.textContent = `Downloading... ${pct}% (${mbDl} / ${(total / (1024 * 1024)).toFixed(1)} MB)`;
+        } else {
+          progressLabel.textContent = `Downloading... ${mbDl} MB`;
+        }
+      }, () => {
+        btnInstall.textContent = 'Installing...';
+        progressLabel.textContent = 'Installing update. Tuck will restart.';
+      });
+    } catch (err) {
+      console.error('[updater] Download/install error:', err);
+      installing = false;
+      btnInstall.disabled = false;
+      btnInstall.textContent = 'Download and install';
+      progressLabel.textContent = typeof err === 'string' ? err : (err instanceof Error ? err.message : 'Installation failed. Please try again.');
+    }
+  });
 }
-
 
 /* ================= Boot ================= */
 

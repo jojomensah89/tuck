@@ -67,11 +67,11 @@ pub fn run() {
         .manage(system::PendingUpdateState::default())
         .invoke_handler(tauri::generate_handler![
             set_hit,
-            system::set_tray_update_title,
             system::get_pending_update,
             system::set_pending_update,
-            system::close_island_cmd,
+            system::check_update_allowed,
             system::prepare_update_install,
+            system::restart_after_failed_update,
             dictation::dictation_get_state,
             dictation::dictation_set_settings,
             dictation::dictation_model_download,
@@ -155,7 +155,7 @@ pub fn run() {
             // 2. Settings...
             // 3. Separator
             // 4. Launch at sign-in (checkable, synchronized with autostart)
-            // 5. Check for updates (reads 'Update to vX.Y.Z' when one is available)
+            // 5. Check for updates (reads 'Update available (vX.Y.Z)' when one is found)
             // 6. Separator
             // 7. About Tuck (shows the version)
             // 8. Quit Tuck

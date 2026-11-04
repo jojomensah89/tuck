@@ -1,11 +1,20 @@
-import { describe, expect, it } from 'bun:test';
+import { describe, expect, it, setDefaultTimeout } from 'bun:test';
+import { execFileSync } from 'node:child_process';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import {
   calculateNextVersion,
   cleanCommitSubject,
   determineBumpType,
-  formatUserFacingSubject,
+  dropRevertedCommits,
+  evaluateRelease,
   generateChangelogSection,
+  getCommitsSinceTag,
+  hasBreakingFooter,
   parseCommit,
+  releaseNotesBody,
+  resolveCommitTitle,
   updateChangelogContent,
   type ParsedCommit,
 } from '../scripts/release-metadata';
@@ -79,6 +88,72 @@ describe('release metadata & conventional commit parser', () => {
     );
     expect(lowercaseInline.isBreaking).toBe(false);
     expect(determineBumpType([lowercaseInline], '0.1.0')).toBe('none');
+  });
+
+  it('only reads BREAKING CHANGE from the footer section', () => {
+    expect(hasBreakingFooter('BREAKING CHANGE: the format changed')).toBe(true);
+    expect(hasBreakingFooter('Why we did this.\n\nBREAKING CHANGE: the format changed')).toBe(true);
+    expect(hasBreakingFooter('Why.\n\nRefs #12\nBREAKING-CHANGE: the format changed')).toBe(true);
+    // Not the last paragraph
+    expect(hasBreakingFooter('BREAKING CHANGE: was considered and dropped.\n\nCo-authored-by: A <a@b.c>')).toBe(false);
+    // The paragraph is prose, not footers
+    expect(hasBreakingFooter('We looked at this and\nBREAKING CHANGE: is not needed here')).toBe(false);
+    expect(hasBreakingFooter('breaking change: lowercase')).toBe(false);
+    expect(hasBreakingFooter('')).toBe(false);
+  });
+
+  it('anchors revert detection to the start of the title', () => {
+    expect(cleanCommitSubject('fix: Revert "feat: x" handling in the parser').type).toBe('fix');
+    expect(cleanCommitSubject('feat: revert button for clipboard').type).toBe('feat');
+    expect(cleanCommitSubject('revert the header colour').type).toBe('chore');
+    expect(cleanCommitSubject('revert: feat: add x').type).toBe('revert');
+    expect(cleanCommitSubject('revert(tray): feat: add x').type).toBe('revert');
+    expect(cleanCommitSubject('Revert "feat: add x" (#31)').type).toBe('revert');
+  });
+
+  it('drops a feature reverted in the same range from the bump and the notes', () => {
+    const newestFirst = [
+      parseCommit('c3', 'Revert "feat: experimental thing" (#3)'),
+      parseCommit('b2', 'fix: keep this fix (#2)'),
+      parseCommit('a1', 'feat: experimental thing (#1)'),
+    ];
+    const kept = dropRevertedCommits(newestFirst);
+    expect(determineBumpType(kept, '0.1.0')).toBe('patch');
+    const section = generateChangelogSection('0.1.1', kept, '2026-11-04');
+    expect(section).toContain('Keep this fix');
+    expect(section).not.toContain('Experimental thing');
+  });
+
+  it('matches reverts by reverted hash and by merge-commit subject', () => {
+    const byHash = [
+      parseCommit('c3', 'revert: undo the thing', 'This reverts commit abc1234.'),
+      parseCommit('abc1234def', 'feat: the thing'),
+    ];
+    expect(determineBumpType(dropRevertedCommits(byHash), '0.1.0')).toBe('none');
+
+    const merged: ParsedCommit = { ...parseCommit('a1', 'feat: from a PR'), gitSubject: 'Merge pull request #7 from me/x' };
+    const byMerge = [parseCommit('c3', 'Revert "Merge pull request #7 from me/x"'), merged];
+    expect(determineBumpType(dropRevertedCommits(byMerge), '0.1.0')).toBe('none');
+  });
+
+  it('reverting a revert brings the feature back', () => {
+    const kept = dropRevertedCommits([
+      parseCommit('c3', 'Revert "Revert "feat: thing""'),
+      parseCommit('b2', 'Revert "feat: thing"'),
+      parseCommit('a1', 'feat: thing'),
+    ]);
+    expect(determineBumpType(kept, '0.1.0')).toBe('minor');
+    expect(generateChangelogSection('0.2.0', kept, '2026-11-04')).toContain('- Thing');
+  });
+
+  it('keeps a feature when the revert targets something else', () => {
+    const kept = dropRevertedCommits([parseCommit('b', 'Revert "feat: older shipped thing"'), parseCommit('a', 'feat: new thing')]);
+    expect(determineBumpType(kept, '0.1.0')).toBe('minor');
+  });
+
+  it('removes the version heading from release notes', () => {
+    const section = generateChangelogSection('0.2.0', [parseCommit('a', 'feat: thing')], '2026-11-04');
+    expect(releaseNotesBody(section)).toBe('### Added\n- Thing');
   });
 
   it('skips chore(release) commits from triggering bumps and changelogs', () => {
@@ -199,5 +274,88 @@ describe('release metadata & conventional commit parser', () => {
     const section2 = '## [0.3.0] - 2026-11-10\n\n### Added\n- Feature B';
     const updated2 = updateChangelogContent(updated1, section2);
     expect(updated2.indexOf('## [0.3.0]')).toBeLessThan(updated2.indexOf('## [0.2.0]'));
+  });
+});
+
+// These start real git processes, which is slow on Windows
+setDefaultTimeout(60_000);
+
+describe('release metadata from real git history', () => {
+  function run(cwd: string, ...args: string[]): string {
+    return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+  }
+
+  function makeRepo(): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tuck-release-'));
+    run(dir, 'init', '-b', 'main');
+    run(dir, 'config', 'user.name', 'Test');
+    run(dir, 'config', 'user.email', 'test@example.com');
+    run(dir, 'config', 'commit.gpgsign', 'false');
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ version: '0.1.0' }));
+    run(dir, 'add', '.');
+    run(dir, 'commit', '-m', 'chore: start');
+    run(dir, 'tag', 'v0.1.0');
+    return dir;
+  }
+
+  /** The shape GitHub writes for this repository: MERGE_MESSAGE subject, PR_TITLE body. */
+  function mergePr(dir: string, number: number, title: string): string {
+    const branch = `pr-${number}`;
+    run(dir, 'checkout', '-q', '-b', branch);
+    run(dir, 'commit', '-q', '--allow-empty', '-m', 'wip: branch work');
+    run(dir, 'checkout', '-q', 'main');
+    const message = title ? ['-m', `Merge pull request #${number} from me/${branch}`, '-m', title] : ['-m', `Merge pull request #${number} from me/${branch}`];
+    run(dir, 'merge', '-q', '--no-ff', branch, ...message);
+    return run(dir, 'rev-parse', 'HEAD');
+  }
+
+  it('reads the PR title from the merge commit body, with no gh and no network', () => {
+    const dir = makeRepo();
+    mergePr(dir, 22, 'feat: release pipeline, in-app updater and full tray menu');
+    const decision = evaluateRelease(dir);
+    expect(decision.shouldRelease).toBe(true);
+    expect(decision.nextVersion).toBe('0.2.0');
+    expect(decision.commits).toHaveLength(1);
+    expect(decision.changelogSection).toContain('- Release pipeline, in-app updater and full tray menu');
+    expect(decision.changelogSection).not.toContain('Wip');
+  });
+
+  it('stops on a PR merge commit whose body has no title', () => {
+    const dir = makeRepo();
+    mergePr(dir, 23, '');
+    expect(() => evaluateRelease(dir)).toThrow(/has no PR title/);
+    expect(() => resolveCommitTitle('abc', 'Merge pull request #9 from me/x', '   ')).toThrow(/PR #9/);
+  });
+
+  it('uses the subject of a squash commit', () => {
+    const dir = makeRepo();
+    run(dir, 'commit', '-q', '--allow-empty', '-m', 'fix: a real bug (#24)', '-m', '* fix: part one\n* fix: part two');
+    const decision = evaluateRelease(dir);
+    expect(decision.nextVersion).toBe('0.1.1');
+    expect(decision.changelogSection).toContain('- A real bug');
+  });
+
+  it('does not release docs-only merges and warns about unconventional titles', () => {
+    const dir = makeRepo();
+    mergePr(dir, 25, 'docs: explain things');
+    mergePr(dir, 26, 'Harden the thing');
+    const decision = evaluateRelease(dir);
+    expect(decision.shouldRelease).toBe(false);
+    expect(decision.warnings).toEqual(['Harden the thing']);
+  });
+
+  it('stops instead of reading a git failure as nothing to release', () => {
+    const dir = makeRepo();
+    expect(() => getCommitsSinceTag(dir, 'v9.9.9')).toThrow();
+  });
+
+  it('stops when no baseline tag exists or the tag disagrees with package.json', () => {
+    const untagged = makeRepo();
+    run(untagged, 'tag', '-d', 'v0.1.0');
+    expect(() => evaluateRelease(untagged)).toThrow(/No vX.Y.Z tag/);
+
+    const mismatched = makeRepo();
+    run(mismatched, 'tag', 'v0.5.0');
+    expect(() => evaluateRelease(mismatched)).toThrow(/does not match/);
   });
 });

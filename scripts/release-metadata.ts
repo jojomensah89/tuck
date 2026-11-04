@@ -1,4 +1,4 @@
-import { execFileSync, execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
@@ -10,7 +10,10 @@ export interface ParsedCommit {
   scope?: string;
   isBreaking: boolean;
   subject: string;
+  /** The conventional-commit line: the PR title for a merge commit, otherwise the subject. */
   rawSubject: string;
+  /** The subject as stored in git, which a `git revert` of a merge commit quotes. */
+  gitSubject?: string;
   body?: string;
 }
 
@@ -23,14 +26,20 @@ export interface ReleaseDecision {
   tagName: string;
   commits: ParsedCommit[];
   changelogSection: string;
+  /** Titles that do not follow Conventional Commits, so they can never trigger a release. */
+  warnings: string[];
 }
 
 const CONVENTIONAL_REGEX =
   /^(?<type>[a-z]+)(?:\((?<scope>[^)]+)\))?(?<breaking>!)?:\s*(?<subject>.+)$/i;
 const PR_SUFFIX_REGEX = /\s*\([#\d\s,]+\)$/;
 const MERGE_PR_REGEX = /^Merge pull request #(?<prNumber>\d+)/i;
-const REVERT_REGEX = /^revert(?:\s+|:\s*)"?|Revert\s+"[^"]+"/i;
-const BREAKING_FOOTER_REGEX = /^BREAKING[- ]CHANGE:\s*(?<desc>.+)$/m;
+const REVERT_REGEX = /^revert(?:\([^)]*\))?!?:\s*|^revert\s+"/i;
+const REVERT_TARGET_REGEX = /^revert(?:\([^)]*\))?!?:\s*(?<plain>.+)$|^revert\s+"(?<quoted>.+)"(?:\s*\([#\d\s,]+\))?$/i;
+const REVERTED_HASH_REGEX = /This reverts commit (?<hash>[0-9a-f]{7,40})/i;
+const FOOTER_START_REGEX = /^(?:BREAKING[- ]CHANGE|[A-Za-z][A-Za-z0-9-]*)(?:: | #)/;
+const BREAKING_FOOTER_REGEX = /^BREAKING[- ]CHANGE: \S/;
+const VERSION_TAG_REGEX = /^v\d+\.\d+\.\d+$/;
 
 /**
  * Format a string to sentence case and strip any trailing periods.
@@ -44,7 +53,6 @@ export function formatUserFacingSubject(raw: string): string {
   }
   return cleaned;
 }
-
 
 /**
  * Clean up a conventional commit subject into human-readable user-facing text.
@@ -80,12 +88,23 @@ export function cleanCommitSubject(rawSubject: string): { type: string; scope?: 
 }
 
 /**
+ * True when the body ends in a footer section containing BREAKING CHANGE. Footers are the
+ * last paragraph, and that paragraph must start with a footer token. A prose line that
+ * happens to begin with the words does not count.
+ */
+export function hasBreakingFooter(body: string): boolean {
+  const paragraphs = body.trim().split(/\n\s*\n/);
+  const lines = (paragraphs[paragraphs.length - 1] ?? '').split('\n');
+  if (!FOOTER_START_REGEX.test(lines[0] ?? '')) return false;
+  return lines.some(line => BREAKING_FOOTER_REGEX.test(line));
+}
+
+/**
  * Parse raw git commit lines into structured commit metadata.
  */
 export function parseCommit(hash: string, rawSubject: string, body = ''): ParsedCommit {
   const { type, scope, isBreaking, subject } = cleanCommitSubject(rawSubject);
-  // Conventional Commits specification: BREAKING CHANGE: in uppercase at start of line in footer/body
-  const bodyHasBreaking = BREAKING_FOOTER_REGEX.test(body);
+  const bodyHasBreaking = hasBreakingFooter(body);
 
   return {
     hash,
@@ -96,6 +115,47 @@ export function parseCommit(hash: string, rawSubject: string, body = ''): Parsed
     rawSubject,
     body,
   };
+}
+
+function stripPrSuffix(subject: string): string {
+  return subject.replace(PR_SUFFIX_REGEX, '').trim();
+}
+
+function revertsCommit(revert: ParsedCommit, candidate: ParsedCommit): boolean {
+  const revertedHash = REVERTED_HASH_REGEX.exec(revert.body ?? '')?.groups?.hash;
+  if (revertedHash && candidate.hash.startsWith(revertedHash)) return true;
+  const groups = REVERT_TARGET_REGEX.exec(stripPrSuffix(revert.rawSubject))?.groups;
+  const target = groups?.quoted ?? groups?.plain;
+  if (!target) return false;
+  return [candidate.rawSubject, candidate.gitSubject].some(
+    subject => subject !== undefined && stripPrSuffix(subject) === target,
+  );
+}
+
+/**
+ * Removes commits undone by a revert in the same range, so a feature that never shipped
+ * neither bumps the version nor appears in the notes. Reverting a revert brings the
+ * original back. Takes and returns commits newest first, as `git log` gives them.
+ */
+export function dropRevertedCommits(commits: readonly ParsedCommit[]): ParsedCommit[] {
+  const cancelled = new Set<ParsedCommit>();
+  const undoneBy = new Map<ParsedCommit, ParsedCommit>();
+  const seen: ParsedCommit[] = [];
+
+  for (const commit of [...commits].reverse()) {
+    if (commit.type === 'revert') {
+      const target = seen.findLast(candidate => !cancelled.has(candidate) && revertsCommit(commit, candidate));
+      if (target) {
+        cancelled.add(target);
+        const original = undoneBy.get(target);
+        if (original) cancelled.delete(original);
+        else undoneBy.set(commit, target);
+      }
+    }
+    seen.push(commit);
+  }
+
+  return commits.filter(commit => !cancelled.has(commit));
 }
 
 /**
@@ -256,90 +316,53 @@ export function readCurrentVersion(projectRoot: string): string {
   return pkg.version;
 }
 
+function git(repoDir: string, args: readonly string[]): string {
+  return execFileSync('git', args, { cwd: repoDir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+}
+
 /**
- * Get the latest git tag matching `v*`. Returns null if none exist.
+ * The newest `vX.Y.Z` tag reachable from HEAD, or null if there is none.
+ * A failing git command throws, so it can never read as "no tags".
  */
 export function getLatestTag(repoDir: string): string | null {
-  try {
-    const stdout = execSync('git describe --tags --abbrev=0 --match "v*"', {
-      cwd: repoDir,
-      encoding: 'utf8',
-      stdio: ['pipe', 'pipe', 'ignore'],
-    }).trim();
-    return stdout || null;
-  } catch {
-    return null;
-  }
+  const tags = git(repoDir, ['tag', '--list', 'v*', '--merged', 'HEAD', '--sort=-v:refname']);
+  return tags.split(/\r?\n/).find(tag => VERSION_TAG_REGEX.test(tag.trim()))?.trim() ?? null;
 }
 
-const prTitleCache = new Map<number, string | null>();
-
 /**
- * Fetch a PR title safely via GitHub CLI. Treated strictly as data, never interpolated into shell.
+ * The conventional-commit title of a first-parent commit. This repository's merge commits
+ * carry the PR title in the body (merge_commit_message = PR_TITLE). Squash commits carry it
+ * in the subject. A PR merge without a title stops the release rather than skipping it.
  */
-export function fetchPrTitle(prNumber: number, repoDir: string): string | null {
-  if (prTitleCache.has(prNumber)) {
-    return prTitleCache.get(prNumber)!;
-  }
+export function resolveCommitTitle(hash: string, subject: string, body: string): { title: string; body: string } {
+  const merge = MERGE_PR_REGEX.exec(subject);
+  if (!merge) return { title: subject, body };
 
-  try {
-    const ghCmd = process.platform === 'win32' ? 'gh.exe' : 'gh';
-    const stdout = execFileSync(ghCmd, ['pr', 'view', String(prNumber), '--json', 'title'], {
-      cwd: repoDir,
-      encoding: 'utf8',
-      stdio: ['pipe', 'pipe', 'ignore'],
-    });
-    const parsed = JSON.parse(stdout);
-    const title = typeof parsed?.title === 'string' ? parsed.title : null;
-    prTitleCache.set(prNumber, title);
-    return title;
-  } catch {
-    prTitleCache.set(prNumber, null);
-    return null;
+  const [title = '', ...rest] = body.trim().split('\n');
+  if (!title.trim()) {
+    throw new Error(
+      `Merge commit ${hash} for PR #${merge.groups?.prNumber} has no PR title in its body, ` +
+        'so its release type is unknown. See "Recovery" in docs/releasing.md.',
+    );
   }
+  return { title: title.trim(), body: rest.join('\n').trim() };
 }
 
-
 /**
- * Get first-parent commit list since the given tag (or all commits if tag is null).
- * Resolves PR titles for merge commits via `gh pr view N --json title`.
+ * Get first-parent commits since the given tag, newest first. Throws if git fails, because
+ * an empty answer would read as "nothing to release".
  */
-export function getCommitsSinceTag(repoDir: string, tag: string | null): ParsedCommit[] {
-  const range = tag ? `${tag}..HEAD` : 'HEAD';
-  let stdout = '';
-  try {
-    // Generate entries and semver bump from first-parent history
-    stdout = execSync(`git log ${range} --first-parent --format="%H%x1f%s%x1f%b%x1e"`, {
-      cwd: repoDir,
-      encoding: 'utf8',
-    });
-  } catch (e) {
-    console.error(`Failed to get git log for range ${range}:`, e);
-    return [];
-  }
-
-  const rawCommits = stdout.split('\x1e').filter(c => c.trim().length > 0);
+export function getCommitsSinceTag(repoDir: string, tag: string): ParsedCommit[] {
+  const stdout = git(repoDir, ['log', `${tag}..HEAD`, '--first-parent', '--format=%H%x1f%s%x1f%b%x1e']);
   const parsed: ParsedCommit[] = [];
 
-  for (const raw of rawCommits) {
-    const parts = raw.split('\x1f');
-    if (parts.length >= 2) {
-      const [hash, subject, body = ''] = parts;
-      const trimmedSubject = subject.trim();
-      let effectiveSubject = trimmedSubject;
-
-      // Check if merge commit
-      const mergeMatch = MERGE_PR_REGEX.exec(trimmedSubject);
-      if (mergeMatch && mergeMatch.groups?.prNumber) {
-        const prNum = Number.parseInt(mergeMatch.groups.prNumber, 10);
-        const prTitle = fetchPrTitle(prNum, repoDir);
-        if (prTitle) {
-          effectiveSubject = prTitle;
-        }
-      }
-
-      parsed.push(parseCommit(hash.trim(), effectiveSubject, body.trim()));
-    }
+  for (const raw of stdout.split('\x1e')) {
+    if (!raw.trim()) continue;
+    const [hash, subject, rawBody = ''] = raw.split('\x1f');
+    if (subject === undefined) throw new Error(`Unexpected git log record: ${raw}`);
+    const gitSubject = subject.trim();
+    const { title, body } = resolveCommitTitle(hash.trim(), gitSubject, rawBody.trim());
+    parsed.push({ ...parseCommit(hash.trim(), title, body), gitSubject });
   }
 
   return parsed;
@@ -377,7 +400,17 @@ export function syncVersionFiles(projectRoot: string, newVersion: string): void 
 export function evaluateRelease(projectRoot: string): ReleaseDecision {
   const currentVersion = readCurrentVersion(projectRoot);
   const latestTag = getLatestTag(projectRoot);
-  const commits = getCommitsSinceTag(projectRoot, latestTag);
+  if (!latestTag) {
+    throw new Error('No vX.Y.Z tag is reachable from HEAD. Push the baseline tag first: see "First release" in docs/releasing.md.');
+  }
+  if (latestTag !== `v${currentVersion}`) {
+    throw new Error(`Latest tag ${latestTag} does not match package.json version ${currentVersion}. See "Recovery" in docs/releasing.md.`);
+  }
+  const allCommits = getCommitsSinceTag(projectRoot, latestTag);
+  const warnings = allCommits
+    .filter(commit => !CONVENTIONAL_REGEX.test(commit.rawSubject) && !REVERT_REGEX.test(commit.rawSubject))
+    .map(commit => commit.rawSubject);
+  const commits = dropRevertedCommits(allCommits);
   const bumpType = determineBumpType(commits, currentVersion);
   const shouldRelease = bumpType !== 'none';
   const nextVersion = calculateNextVersion(currentVersion, bumpType);
@@ -393,7 +426,13 @@ export function evaluateRelease(projectRoot: string): ReleaseDecision {
     tagName,
     commits,
     changelogSection,
+    warnings,
   };
+}
+
+/** The notes shown on the release page and in Settings: the section without its version heading. */
+export function releaseNotesBody(changelogSection: string): string {
+  return changelogSection.replace(/^## .*\r?\n?/, '').trim();
 }
 
 // CLI execution
@@ -402,52 +441,45 @@ if (import.meta.main) {
   const projectRoot = path.resolve(import.meta.dir, '..');
   const decision = evaluateRelease(projectRoot);
 
+  for (const title of decision.warnings) {
+    console.log(`::warning::Not a Conventional Commit, so it cannot trigger a release: ${title}`);
+  }
+
   if (args.includes('--json')) {
     console.log(JSON.stringify(decision, null, 2));
     process.exit(0);
   }
 
-  const outputBodyIdx = args.indexOf('--output-body');
-  if (outputBodyIdx !== -1 && args[outputBodyIdx + 1]) {
-    const targetFile = path.resolve(args[outputBodyIdx + 1]);
-    fs.writeFileSync(targetFile, decision.changelogSection, 'utf8');
-  }
-
   if (args.includes('--apply')) {
+    const output = process.env.GITHUB_OUTPUT;
     if (!decision.shouldRelease) {
       console.log(`[release-metadata] ${decision.reason}. No release needed.`);
-      if (process.env.GITHUB_OUTPUT) {
-        fs.appendFileSync(process.env.GITHUB_OUTPUT, 'should_release=false\n');
-      }
+      if (output) fs.appendFileSync(output, 'should_release=false\n');
       process.exit(0);
     }
+
+    const notesIdx = args.indexOf('--notes-file');
+    const notesFile = notesIdx === -1 ? undefined : args[notesIdx + 1];
+    if (!notesFile) throw new Error('--apply needs --notes-file <path>');
+    const notes = releaseNotesBody(decision.changelogSection);
+    if (!notes) throw new Error(`No user-facing notes for ${decision.tagName}. See "Recovery" in docs/releasing.md.`);
 
     console.log(`[release-metadata] Bumping version ${decision.currentVersion} -> ${decision.nextVersion} (${decision.tagName})`);
     syncVersionFiles(projectRoot, decision.nextVersion);
 
-    // Update CHANGELOG.md
     const changelogPath = path.join(projectRoot, 'CHANGELOG.md');
     const existing = fs.existsSync(changelogPath) ? fs.readFileSync(changelogPath, 'utf8') : '';
-    const updated = updateChangelogContent(existing, decision.changelogSection);
-    fs.writeFileSync(changelogPath, updated, 'utf8');
+    fs.writeFileSync(changelogPath, updateChangelogContent(existing, decision.changelogSection), 'utf8');
 
-    // Update Cargo.lock cleanly without compilation
-    try {
-      execSync('cargo update -p tuck --manifest-path src-tauri/Cargo.toml', {
-        cwd: projectRoot,
-        stdio: 'inherit',
-      });
-    } catch (e) {
-      console.warn('[release-metadata] Note: cargo update -p tuck encountered an issue:', e);
-    }
+    // A lockfile that disagrees with the version would make the release commit wrong, so this must stop
+    execFileSync('cargo', ['update', '-p', 'tuck', '--manifest-path', 'src-tauri/Cargo.toml'], {
+      cwd: projectRoot,
+      stdio: 'inherit',
+    });
 
-    // Write multi-line output to GITHUB_OUTPUT using a random delimiter
-    if (process.env.GITHUB_OUTPUT) {
-      const delimiter = `DELIM_${Date.now()}_${Math.random().toString(36).slice(2)}`;
-      fs.appendFileSync(process.env.GITHUB_OUTPUT, `release_body<<${delimiter}\n${decision.changelogSection}\n${delimiter}\n`, 'utf8');
-      fs.appendFileSync(process.env.GITHUB_OUTPUT, `should_release=true\n`, 'utf8');
-      fs.appendFileSync(process.env.GITHUB_OUTPUT, `version=${decision.nextVersion}\n`, 'utf8');
-      fs.appendFileSync(process.env.GITHUB_OUTPUT, `tag_name=${decision.tagName}\n`, 'utf8');
+    fs.writeFileSync(path.resolve(notesFile), `${notes}\n`, 'utf8');
+    if (output) {
+      fs.appendFileSync(output, `should_release=true\nversion=${decision.nextVersion}\n`, 'utf8');
     }
   } else {
     console.log(`Current version: ${decision.currentVersion}`);

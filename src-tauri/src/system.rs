@@ -446,19 +446,6 @@ pub fn open_island(win: &WebviewWindow) -> Result<(), Box<dyn std::error::Error>
     Ok(())
 }
 
-/// Toggles keyboard navigation/expansion for the island:
-/// Emits `toggle-island` to the main window.
-pub fn toggle_island(win: &WebviewWindow) -> Result<(), Box<dyn std::error::Error>> {
-    #[cfg(windows)]
-    if let Ok(hwnd) = win.hwnd() {
-        set_island_focusable(HWND(hwnd.0 as _), true);
-    }
-    let _ = win.set_ignore_cursor_events(false);
-    let _ = win.show();
-    let _ = win.emit("toggle-island", ());
-    Ok(())
-}
-
 /// Tauri command to trigger island keyboard entry route.
 #[tauri::command]
 pub(crate) async fn open_island_cmd(app: AppHandle) -> Result<(), String> {
@@ -707,20 +694,6 @@ pub(crate) async fn open_settings_cmd(app: AppHandle) -> Result<(), String> {
     open_settings(&app)
 }
 
-/// Restores WS_EX_NOACTIVATE style on the island window upon collapse/close.
-#[tauri::command]
-pub(crate) async fn close_island_cmd(app: AppHandle) -> Result<(), String> {
-    if let Some(win) = app.get_webview_window("main") {
-        #[cfg(windows)]
-        if let Ok(hwnd) = win.hwnd() {
-            set_island_focusable(HWND(hwnd.0 as _), false);
-        }
-        Ok(())
-    } else {
-        Err("main window not found".into())
-    }
-}
-
 /// Autostart status check.
 #[tauri::command]
 pub(crate) async fn get_autostart(app: AppHandle) -> Result<bool, String> {
@@ -777,7 +750,7 @@ pub(crate) fn get_pending_update(
     state.0.lock().ok()?.clone()
 }
 
-/// Updates the pending update state in Rust and synchronizes the tray item title.
+/// Stores the update found by a check, relabels the tray item and tells an open Settings window.
 #[tauri::command]
 pub(crate) fn set_pending_update(
     app: AppHandle,
@@ -787,35 +760,76 @@ pub(crate) fn set_pending_update(
     if let Ok(mut lock) = state.0.lock() {
         *lock = update.clone();
     }
-    let version_opt = update.as_ref().map(|u| u.version.clone());
-    set_tray_update_title(app, version_opt);
+    set_tray_update_title(&app, update.as_ref().map(|u| u.version.as_str()));
+    let _ = app.emit_to("settings", "pending-update-changed", update);
     Ok(())
 }
 
-/// Updates the tray menu item title for updates (e.g. "Update to v0.2.0" or "Check for updates").
-#[tauri::command]
-pub(crate) fn set_tray_update_title(app: AppHandle, version: Option<String>) {
+fn set_tray_update_title(app: &AppHandle, version: Option<&str>) {
     if let Some(tray) = app.try_state::<TrayItems>() {
         let text = match version {
-            Some(v) => format!("Update to v{}", v),
+            Some(v) => format!("Update available (v{v})"),
             None => "Check for updates".to_string(),
         };
         let _ = tray.check_updates.set_text(text);
     }
 }
 
-/// Prepares for update installation: refuses if dictation is in progress, otherwise runs shutdown cleanup.
-#[tauri::command]
-pub(crate) fn prepare_update_install(app: AppHandle) -> Result<(), String> {
+/// Only an idle or failed dictation may be interrupted by an update.
+fn update_allowed_during(dictation_status: &str) -> bool {
+    matches!(dictation_status, "idle" | "error")
+}
+
+fn ensure_update_allowed(app: &AppHandle) -> Result<(), String> {
     if let Some(dictation) = app.try_state::<Arc<crate::dictation::DictationService>>() {
-        let status = dictation.snapshot().status;
-        if matches!(
-            status.as_str(),
-            "recording" | "starting" | "transcribing" | "review"
-        ) {
-            return Err("Cannot install update while dictation is in progress. Please finish or cancel dictation first.".into());
+        if !update_allowed_during(&dictation.snapshot().status) {
+            return Err("Finish or cancel dictation before installing the update.".into());
         }
     }
+    Ok(())
+}
+
+/// Refuses to start downloading an update while dictation is busy.
+#[tauri::command]
+pub(crate) fn check_update_allowed(app: AppHandle) -> Result<(), String> {
+    ensure_update_allowed(&app)
+}
+
+/// Last check before the installer takes over: stops every service, so a later failure
+/// must call `restart_after_failed_update`.
+#[tauri::command]
+pub(crate) fn prepare_update_install(app: AppHandle) -> Result<(), String> {
+    ensure_update_allowed(&app)?;
     crate::run_shutdown_cleanup(&app);
     Ok(())
+}
+
+/// `prepare_update_install` stopped the services and the installer did not run. A restart
+/// brings them all back.
+#[tauri::command]
+pub(crate) fn restart_after_failed_update(app: AppHandle) {
+    app.restart();
+}
+
+#[cfg(test)]
+mod update_guard_tests {
+    use super::update_allowed_during;
+
+    #[test]
+    fn only_idle_and_error_allow_an_update() {
+        assert!(update_allowed_during("idle"));
+        assert!(update_allowed_during("error"));
+        for busy in [
+            "starting",
+            "recording",
+            "transcribing",
+            "review",
+            "inserting",
+            "cancelling",
+            "downloadingModel",
+            "removingModel",
+        ] {
+            assert!(!update_allowed_during(busy), "{busy} must block an update");
+        }
+    }
 }

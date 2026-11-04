@@ -588,12 +588,29 @@ mark { background: none; color: inherit; text-decoration: underline; text-decora
 }
 
 .update-notes {
-  margin: 0;
-  font-family: inherit;
   font-size: var(--t-sm);
   color: var(--ink-2);
-  white-space: pre-wrap;
   line-height: 18px;
+}
+
+.update-notes h3 {
+  margin: var(--s-2) 0 2px;
+  font-size: inherit;
+  font-weight: var(--w-strong);
+  color: var(--ink);
+}
+
+.update-notes h3:first-child {
+  margin-top: 0;
+}
+
+.update-notes p {
+  margin: 0;
+}
+
+.update-notes ul {
+  margin: 0;
+  padding-left: var(--s-4);
 }
 
 .update-action-row {
@@ -613,7 +630,6 @@ mark { background: none; color: inherit; text-decoration: underline; text-decora
 .update-progress-wrap[hidden] {
   display: none;
 }
-
 
 .update-progress-bar-bg {
   width: 100%;

@@ -17,7 +17,38 @@ pub(super) fn model_path(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(root.join("dictation").join(MODEL_FILE))
 }
 
-pub(super) fn download(
+pub(super) fn verify_installed(path: &std::path::Path) -> Result<(), String> {
+    let file = std::fs::File::open(path)
+        .map_err(|e| format!("Could not open the offline dictation model: {e}"))?;
+    let size = file
+        .metadata()
+        .map_err(|e| format!("Could not inspect the offline dictation model: {e}"))?
+        .len();
+    if size == 0 || size > MODEL_MAX_BYTES {
+        return Err(
+            "The installed offline model has an invalid size. Remove it and download it again."
+                .into(),
+        );
+    }
+    let mut reader = file;
+    let mut hash = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let count = reader
+            .read(&mut buffer)
+            .map_err(|e| format!("Could not verify the offline dictation model: {e}"))?;
+        if count == 0 {
+            break;
+        }
+        hash.update(&buffer[..count]);
+    }
+    if !matches_expected_digest(&hex_digest(&hash.finalize())) {
+        return Err("The installed offline model failed its SHA-256 integrity check. Remove it and download it again.".into());
+    }
+    Ok(())
+}
+
+pub(super) async fn download(
     app: &AppHandle,
     cancel: &AtomicBool,
     mut progress: impl FnMut(u64),
@@ -30,17 +61,24 @@ pub(super) fn download(
     std::fs::create_dir_all(parent)
         .map_err(|e| format!("Could not create model directory: {e}"))?;
     let temporary = parent.join(format!("{MODEL_FILE}.part"));
-    let response = reqwest::blocking::Client::builder()
+    let _cleanup = TemporaryModelFile(temporary.clone());
+    let client = reqwest::Client::builder()
         .https_only(true)
         .connect_timeout(std::time::Duration::from_secs(15))
         .timeout(std::time::Duration::from_secs(600))
+        .redirect(reqwest::redirect::Policy::limited(5))
         .build()
-        .map_err(|e| format!("Could not initialize model download: {e}"))?
-        .get(MODEL_URL)
-        .send()
-        .map_err(|e| format!("Model download failed: {e}"))?
-        .error_for_status()
-        .map_err(|e| format!("Model download failed: {e}"))?;
+        .map_err(|e| format!("Could not initialize model download: {e}"))?;
+    let response = tokio::select! {
+        _ = wait_until_cancelled(cancel) => return Err("Model download cancelled".into()),
+        result = client.get(MODEL_URL).send() => result
+            .map_err(|e| format!("Model download failed: {e}"))?
+            .error_for_status()
+            .map_err(|e| format!("Model download failed: {e}"))?,
+    };
+    if response.url().scheme() != "https" {
+        return Err("Model download redirected to a non-HTTPS URL".into());
+    }
     if response
         .content_length()
         .is_some_and(|size| size > MODEL_MAX_BYTES)
@@ -48,35 +86,33 @@ pub(super) fn download(
         return Err("The model server reported a file larger than the 100 MiB limit".into());
     }
     let mut reader = response;
-    let cleanup = TemporaryModelFile(temporary.clone());
     let mut output = std::fs::File::create(&temporary)
         .map_err(|e| format!("Could not create temporary model file: {e}"))?;
     let mut hash = Sha256::new();
     let mut received = 0u64;
-    let mut buffer = [0u8; 64 * 1024];
     loop {
         if cancel.load(Ordering::Acquire) {
             drop(output);
             let _ = std::fs::remove_file(&temporary);
             return Err("Model download cancelled".into());
         }
-        let count = reader
-            .read(&mut buffer)
-            .map_err(|e| format!("Could not read model response: {e}"))?;
-        if count == 0 {
+        let chunk = tokio::select! {
+            _ = wait_until_cancelled(cancel) => return Err("Model download cancelled".into()),
+            result = reader.chunk() => result
+                .map_err(|e| format!("Could not read model response: {e}"))?,
+        };
+        let Some(chunk) = chunk else {
             break;
-        }
+        };
         received = received
-            .checked_add(count as u64)
+            .checked_add(chunk.len() as u64)
             .ok_or("Model size overflow")?;
         if received > MODEL_MAX_BYTES {
-            drop(output);
-            let _ = std::fs::remove_file(&temporary);
             return Err("Model download exceeded the 100 MiB limit".into());
         }
-        hash.update(&buffer[..count]);
+        hash.update(&chunk);
         output
-            .write_all(&buffer[..count])
+            .write_all(&chunk)
             .map_err(|e| format!("Could not write model file: {e}"))?;
         progress(received);
     }
@@ -88,18 +124,25 @@ pub(super) fn download(
         .map_err(|e| format!("Could not sync model file: {e}"))?;
     drop(output);
     if cancel.load(Ordering::Acquire) {
-        let _ = std::fs::remove_file(&temporary);
         return Err("Model download cancelled".into());
     }
-    let actual = hex_digest(hash.finalize().as_slice());
-    if actual != MODEL_SHA256 {
-        let _ = std::fs::remove_file(&temporary);
+    let digest = hash.finalize();
+    let actual = hex_digest(&digest);
+    if !matches_expected_digest(&actual) {
         return Err("Downloaded model failed its SHA-256 integrity check".into());
+    }
+    if cancel.load(Ordering::Acquire) {
+        return Err("Model download cancelled".into());
     }
     std::fs::rename(&temporary, &path)
         .map_err(|e| format!("Could not install verified model: {e}"))?;
-    drop(cleanup);
     Ok(())
+}
+
+async fn wait_until_cancelled(cancel: &AtomicBool) {
+    while !cancel.load(Ordering::Acquire) {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
 }
 
 struct TemporaryModelFile(PathBuf);
@@ -120,6 +163,10 @@ fn hex_digest(bytes: &[u8]) -> String {
     output
 }
 
+fn matches_expected_digest(actual: &str) -> bool {
+    actual == MODEL_SHA256
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -133,5 +180,32 @@ mod tests {
     #[test]
     fn digest_encoding_is_lowercase_hex() {
         assert_eq!(hex_digest(&[0x00, 0xab, 0xff]), "00abff");
+    }
+
+    #[test]
+    fn expected_model_digest_is_required_for_inference() {
+        assert!(matches_expected_digest(MODEL_SHA256));
+        assert!(!matches_expected_digest(&"0".repeat(64)));
+    }
+
+    #[test]
+    fn temporary_model_file_guard_removes_partial_downloads() {
+        let path = std::env::temp_dir().join(format!("tuck-model-{}.part", uuid::Uuid::new_v4()));
+        std::fs::write(&path, b"partial").unwrap();
+        {
+            let _cleanup = TemporaryModelFile(path.clone());
+            assert!(path.exists());
+        }
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn cancelled_download_waiter_resolves_without_network_or_model_data() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+        let cancel = AtomicBool::new(true);
+        runtime.block_on(wait_until_cancelled(&cancel));
     }
 }

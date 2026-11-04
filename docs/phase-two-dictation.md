@@ -1,93 +1,84 @@
 # Phase two dictation and clipboard native contracts
 
-This document describes the native implementation packet. `lib.rs` is coordinator-owned and is deliberately unchanged in this PR.
+This packet implements the native dictation and clipboard-history services. It preserves the existing v1 flows. The coordinator-owned `src-tauri/src/lib.rs` already registers both services, commands, global shortcuts, startup and shutdown; this patch leaves `lib.rs` and capabilities unchanged.
 
-## Dictation engine and model
+## Offline dictation
 
-- Engine: `whisper-rs` 0.16.0, which exposes a Rust interface to `whisper.cpp`. Windows docs and examples use the same `WhisperContext` / `FullParams` flow as this implementation: [crate API](https://docs.rs/whisper-rs/0.16.0/whisper_rs/), [Windows build notes](https://codeberg.org/tazz4843/whisper-rs/src/branch/master/BUILDING.md).
-- Model: multilingual `ggml-tiny.bin`, 77.7 MB. Model bytes are downloaded only after `dictation_model_download` is invoked. Download is HTTPS-only to the pinned Hugging Face model URL, limited to 100 MiB, streamed to a `.part` file, checked against SHA-256 `be07e048e1e599ad46341c8d2a135645097a538221678b7acdd1b1919c6e1b21`, then atomically renamed under the app data directory. Failed or cancelled files are removed. The model is based on the upstream `whisper.cpp` converted OpenAI weights; the URL, size and hash are exposed by the [model file page](https://huggingface.co/ggerganov/whisper.cpp/blob/main/ggml-tiny.bin) and the upstream [model list](https://github.com/ggml-org/whisper.cpp/blob/master/models/README.md).
-- Tuck keeps model data in `<appDataDir>/dictation/ggml-tiny.bin`; model removal is explicit through `dictation_model_remove`.
-- OpenBot's current voice design confirms the value of explicit model selection/download, per-file SHA-256 checks, local storage and local-only processing for local recognizers. The public docs distinguish local recognition from optional cloud transcription; Tuck's implementation is local-only. See [OpenBot voice privacy](https://github.com/nightly-labs/openbot/blob/main/PRIVACY.md) and [voice runtime release notes](https://github.com/nightly-labs/openbot/blob/main/docs/RELEASING.md).
+- Engine: `whisper-rs` 0.16.0 over `whisper.cpp`, using its CPU inference path with at most four threads. It does not require a CUDA or DirectML runtime. Current Windows build guidance and API are in the [whisper-rs crate docs](https://docs.rs/whisper-rs/0.16.0/whisper_rs/) and [Windows build notes](https://codeberg.org/tazz4843/whisper-rs/src/branch/master/BUILDING.md).
+- Model: multilingual `ggml-tiny.bin`, about 77.7 MB. It is fetched only after `dictation_model_download` is invoked. The native downloader accepts no caller URL or path, requires HTTPS, streams at most 100 MiB to a temporary file, verifies SHA-256 `be07e048e1e599ad46341c8d2a135645097a538221678b7acdd1b1919c6e1b21`, then installs it under `<appDataDir>/dictation/`. Cancellation removes the temporary file. The pinned URL, size and digest correspond to the [Hugging Face model file](https://huggingface.co/ggerganov/whisper.cpp/blob/main/ggml-tiny.bin) and upstream [model list](https://github.com/ggml-org/whisper.cpp/blob/master/models/README.md).
+- Each dictation checks the installed model size and digest before opening the microphone. Startup only reads bounded settings and registers shortcuts; it does not open the microphone, load the inference model or download model bytes.
+- Audio is captured only after the explicit toggle or hold-to-talk command/shortcut. Capture is capped at 120 seconds, callback blocks at one second and queued audio at ten seconds. Overflow stops capture with an error. Audio buffers are zeroized after use/cancellation and are never written to disk. Whisper's abort callback receives cancellation during inference.
+- Partial preview is optional and enabled by default. It re-runs local transcription on up to the latest 15 seconds every three seconds; it is not token-by-token streaming. No audio or transcript is sent to a cloud service.
+- Model removal is explicit through `dictation_model_remove` and is rejected while recording, reviewing, inserting, downloading or running inference.
 
-## Dictation module wiring
+The OpenBot voice design likewise documents explicit local-model lifecycle and local recognition as distinct from optional cloud transcription. Tuck uses only local recognition; see [OpenBot privacy](https://github.com/nightly-labs/openbot/blob/main/PRIVACY.md) and [release notes](https://github.com/nightly-labs/openbot/blob/main/docs/RELEASING.md).
 
-Coordinator setup should:
+## Existing coordinator wiring
 
-1. Add `pub mod dictation;` and `pub mod clipboard_history;` in `lib.rs`.
-2. Construct `let dictation = Arc::new(dictation::DictationService::new());` and `let clipboard_history = Arc::new(clipboard_history::ClipboardHistoryService::new());`, then `.manage(dictation.clone()).manage(clipboard_history.clone())` before commands execute.
-3. Install the plugin once on the Tauri builder:
+The latest `main` baseline already contains the wiring below, so this feature patch does not edit `lib.rs`:
 
-   ```rust
-   .plugin(tauri_plugin_global_shortcut::Builder::new()
-       .with_handler(|app, shortcut, event| dictation::handle_shortcut(app, shortcut, event))
-       .build())
-   ```
+1. `lib.rs` declares `pub mod dictation;` and `pub mod clipboard_history;`, constructs and manages `Arc<DictationService>` and `Arc<ClipboardHistoryService>`.
+2. The Tauri builder installs `tauri_plugin_global_shortcut` once and calls `.with_handler(dictation::handle_shortcut)`.
+3. `.setup` calls `dictation::start(handle.clone(), &dictation_setup)` and `clipboard_history::start(handle.clone(), &clipboard_setup)`.
+4. `generate_handler!` registers every command in the tables below.
+5. On `RunEvent::Exit`, `dictation.shutdown()` signals cancellation and `clipboard_history::stop(...)` stops its polling worker.
 
-   The plugin is Windows-supported and provides press/release events through its Rust API: [Tauri plugin docs](https://docs.rs/tauri-plugin-global-shortcut/2.4.1/tauri_plugin_global_shortcut/).
-4. Register the commands listed below in `generate_handler!`.
-5. In `.setup`, call `dictation::start(app.handle().clone(), &dictation)` and `clipboard_history::start(app.handle().clone(), &clipboard_history)`. Both functions return `Result<(), String>`. `dictation::start` only reads settings and registers shortcuts. It does not open the microphone, load the model or download it. `clipboard_history::start` loads opted-in local settings/history and starts a watcher that does not read clipboard contents unless `enabled` is true.
-6. In the app exit path call `clipboard_history::stop(&clipboard_history)` (or set a stop event on `ClipboardHistoryService`) so the polling worker exits cleanly. With `persistOnExit: false`, no clipboard item file is written; with persistence enabled, each update is saved atomically to app data.
+The global-shortcut dependency is `tauri-plugin-global-shortcut = "2.4"`. Existing native dependencies include `whisper-rs`, `cpal`, `crossbeam-channel`, `sha2` and `zeroize`. This patch enables Reqwest streaming and adds direct Tokio `macros`, `net`, `rt` and `time` support for cancellable model downloads, plus Windows `Storage_FileSystem` and `UI_Input` features for atomic file replacement and Unicode input.
 
-The dependency is `tauri-plugin-global-shortcut = "2.4"`; Cargo.lock pins the resolved crate. This module registers only its two shortcuts and does not unregister unrelated application shortcuts.
+### Dictation commands and DTOs
 
-### Commands
-
-All DTO fields use camelCase.
+All serialized DTO fields use camelCase.
 
 | Command | Parameters | Result |
 | --- | --- | --- |
 | `dictation_get_state` | none | `DictationSnapshot` |
-| `dictation_set_settings` | `settings: DictationSettings` | updated `DictationSnapshot` |
-| `dictation_model_download` | none | starts bounded explicit download; returns immediately |
-| `dictation_model_download_cancel` | none | cancels current download |
+| `dictation_set_settings` | `settings: DictationSettings` | updated snapshot |
+| `dictation_model_download` | none | starts explicit bounded download; returns immediately |
+| `dictation_model_download_cancel` | none | cancels active model download |
 | `dictation_model_remove` | none | removes installed model when idle |
-| `dictation_toggle` | none | toggles a recording from an explicit command |
-| `dictation_hold_start` | none | starts on explicit press command |
-| `dictation_hold_stop` | none | stops on explicit release command |
-| `dictation_cancel` | none | cancels capture/inference and drops audio, or cancels model download |
-| `dictation_review_insert` | none | inserts a review transcript only if original foreground/edit target still matches |
+| `dictation_toggle` | none | toggles recording from an explicit command |
+| `dictation_hold_start` | none | starts recording from an explicit press command |
+| `dictation_hold_stop` | none | stops hold-to-talk on release |
+| `dictation_cancel` | none | cancels recording/inference/download, or discards a review transcript |
+| `dictation_review_insert` | none | inserts the review transcript only if the original target still matches |
 | `dictation_review_discard` | none | discards the in-memory review transcript |
 
-`DictationSettings` has `toggleShortcut`, `holdToTalkShortcut`, `reviewBeforeInsert`, and `partialPreview`. Defaults are `Ctrl+Shift+Space`, `Ctrl+Alt+Space`, immediate insertion, and partial preview. Shortcut settings are syntax-validated, capped at 64 bytes, must differ, and are stored as bounded JSON in app config. Hotkey registration is global; it does not depend on window focus.
+`DictationSettings` contains `toggleShortcut`, `holdToTalkShortcut`, `reviewBeforeInsert` and `partialPreview`. Defaults are `Ctrl+Shift+Space`, `Ctrl+Alt+Space`, immediate insertion and partial preview. Shortcuts are validated, capped at 64 bytes, must differ, and are saved as bounded JSON in the app config directory.
 
-`DictationSnapshot` has `status`, `modelInstalled`, `modelDownloadedBytes`, `transcript`, `message`, and `settings`. Status is `idle`, `starting`, `recording`, `transcribing`, `downloadingModel`, `cancelling`, `review`, `modelMissing`, or `error`.
+`DictationSnapshot` contains `status`, `modelInstalled`, `modelDownloadedBytes`, `transcript`, `message`, `settings` and `canInsert`. Status values are `idle`, `starting`, `recording`, `transcribing`, `downloadingModel`, `removingModel`, `cancelling`, `review`, `modelMissing` and `error`.
 
-### Events
+### Dictation events
 
 - `dictation_state`: `DictationSnapshot`.
-- `dictation_partial`: `{ text }`, emitted only when partial preview is enabled.
-- `dictation_transcript`: `{ text, inserted, requiresReview, reason }` for a completed result.
-- `dictation_error`: string for worker/download/capture errors.
+- `dictation_partial`: `{ text }`, only when partial preview is enabled.
+- `dictation_transcript`: `{ text, inserted, requiresReview, reason }` once per completed result.
+- `dictation_error`: error string for worker, download or capture failures.
 
-The app emits the final transcript once and retains it in memory only when review is required. Audio buffers are capped at 120 seconds, cleared after inference/cancel, and never written to disk. There is no cloud transcription path. The microphone is opened only from one of the explicit toggle/hold commands or their configured global shortcuts.
+The native service retains transcript text only while review is pending. Insertion uses Unicode keyboard input and does not modify the clipboard or submit the target. It captures the original foreground window and focused control, rechecks focus and identity before each bounded input batch, and aborts if the target changes. It accepts standard Windows `Edit`/`RichEdit*` controls and UI Automation Edit controls with a writable Value pattern. It rejects its own process, read-only/password controls and unsupported targets. A partial SendInput failure disables automatic retry and removes the review insertion target because some text may already have been typed.
 
-## Insertion safety and limitations
+Target insertion can still fail for elevated/protected apps or controls that do not expose reliable focus and edit information. Review insertion requires the captured target to remain the same; no focus is taken from the notch. The implementation does not claim universal editability or universal detection of password fields.
 
-Tuck captures the foreground window and focused child at invocation. It automatically types into a still-foreground standard Windows `Edit`/`RichEdit*` control or an accessible UI Automation Edit control with a writable Value pattern. It rejects the app's own process, read-only/password controls and moved input identities, and rechecks foreground/focus before each bounded batch. It sends UTF-16 with Windows `SendInput` using Unicode input flags. This avoids modifying the clipboard, so clipboard contents set concurrently by the user are never restored over. It never sends Enter or otherwise submits the target.
+## Clipboard history
 
-Many applications expose browser, Electron, accessibility, terminal, password and custom editor controls through nonstandard window classes. Accessible editable browser/Electron controls are now checked through UI Automation; other unsupported controls return a review reason; Windows input injection can also fail against elevated or protected applications. The current implementation does not detect every password field and does not claim universal editability. Protected/elevated applications and custom controls still require live verification; there is no claim of universal input support. Manual user action remains required to re-focus a supported edit control before review insertion.
-
-## Clipboard history commands
-
-Clipboard history is text-only, disabled by default, limited to 40 entries and 32 KiB per entry (about 1.25 MiB total), and stores nothing while disabled. It polls the Windows clipboard sequence every 350 ms only while enabled. Image, file and other non-text formats are not retained.
+Clipboard history is text-only, disabled by default and keeps at most 40 entries of 32 KiB each. The watcher polls every 350 ms only while enabled; it does not retain images, files or other formats. With `persistOnExit: false` (the default), entries remain only in process memory and the item file is removed on startup when there is no valid persistence opt-in. With persistence explicitly enabled, bounded schema-versioned plaintext JSON is stored under `<appDataDir>/clipboard-history/`; item file reads are capped at 2 MiB. Clear removes the saved item file.
 
 | Command | Parameters | Result |
 | --- | --- | --- |
 | `clipboard_get_state` | none | `ClipboardHistorySnapshot` |
+| `clipboard_configure` | `enabled: bool`, `persistOnExit: bool` | atomically updates both preferences and returns snapshot |
 | `clipboard_set_enabled` | `enabled: bool` | updated snapshot |
 | `clipboard_set_persistence` | `persistOnExit: bool` | updated snapshot |
 | `clipboard_delete` | `id: string` | updated snapshot |
 | `clipboard_clear` | none | updated snapshot |
 | `clipboard_pin` | `id: string`, `pinned: bool` | updated snapshot |
+| `clipboard_copy` | `id: string` | copies that item to the Windows clipboard on explicit request |
 
-`ClipboardHistoryItem` contains `id`, `text`, `createdAtMs`, and `pinned`. The snapshot includes `enabled`, `persistOnExit`, and `items`. `clipboard_history_changed` carries a snapshot. `clipboard_history_error` carries a string.
+`ClipboardHistoryItem` contains `id`, `text`, `createdAtMs` and `pinned`. `ClipboardHistorySnapshot` contains `enabled`, `persistOnExit` and `items`. `clipboard_history_changed` carries a snapshot; `clipboard_history_error` carries an error string.
 
-When persistence is off, item text exists only in process memory and is not written to disk. When enabled, strict schema-versioned JSON is stored under `<appDataDir>/clipboard-history/`, with bounded input, item count and byte size. Clear removes the local item file. Pinning only affects eviction order. A malformed, oversized or unknown-schema file is ignored.
+The watcher skips Windows clipboard entries marked `ExcludeClipboardContentFromMonitorProcessing`, `CanIncludeInClipboardHistory=0`, `PasswordProtected`, or Tuck's `TuckDictationTransient` format. It also skips its own clipboard writes. These markers are cooperative: some password managers do not mark their clipboard contents, so password exclusion cannot be guaranteed. Automatic dictation insertion never touches the clipboard; only the explicit `clipboard_copy` command does.
 
-The watcher excludes clipboard entries marked with Windows `ExcludeClipboardContentFromMonitorProcessing`, `CanIncludeInClipboardHistory=0`, or the `PasswordProtected` format, and skips the `TuckDictationTransient` format. Automatic text insertion does not use the clipboard at all. These Windows markers are cooperative signals: password managers and applications do not all mark their formats, so Tuck cannot detect every sensitive value. Users should not treat this history as a complete password exclusion system.
+Clipboard reads happen without holding the history state mutex. The watcher compares clipboard sequence numbers around each read and rejects stale snapshots; a generation check also rejects reads captured before a disable/re-enable transition. File updates use unique temporary files and atomic replacement. No extra Tauri capability or clipboard plugin is needed.
 
-No additional Tauri capabilities are required by these native Rust commands; the default capability set already supplies core event/invoke access. No clipboard-manager plugin is used.
+## Test coverage and live limits
 
-## Evidence and remaining live checks
-
-The native unit tests cover shortcut/settings validation, resampling, explicit defaults, private-store bounds and history eviction. Compile and run them on Windows after the coordinator registers modules. Live microphone capture, model download/integrity, actual transcription on representative hardware, actual Windows foreground-control input, elevated-target rejection behavior and Windows clipboard marker behavior still need a real Windows run. Development never downloaded the model or activated the microphone.
+Native tests cover shortcut/settings validation, UTF-8 truncation, atomic settings replacement, model digest/partial-file cleanup, bounded and cancellable audio reservations, resampling, insertion partial-failure handling, clipboard privacy markers, stale-read races, schema validation and bounded storage reads. Build and runtime evidence for the current Windows toolchain is recorded with the PR. Development did not download the model, activate the microphone, or exercise real microphone capture, transcription performance, Windows clipboard contents, or target insertion on elevated applications.

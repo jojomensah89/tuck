@@ -659,6 +659,8 @@ impl DictationService {
             runtime.model_error = None;
         }
         self.emit_state();
+        let active_before = self.resolve_model().active.map(|active| active.entry.id);
+        let selection_before = self.settings().active_model;
         let service = self.clone();
         let spawned = std::thread::Builder::new()
             .name("tuck-model-download".into())
@@ -693,10 +695,17 @@ impl DictationService {
                     runtime.downloaded_bytes = 0;
                     runtime.model_error = reported.clone();
                 }
-                // Never replaces the model in use; only fills the gap when there is none.
-                if error.is_none() && service.resolve_model().active.is_none() {
-                    if let Err(error) = service.commit_selection(Some(entry.id.to_owned()), None) {
-                        service.set_model_error(error);
+                // Only when the owner did not choose a model during the download.
+                if error.is_none() && service.settings().active_model == selection_before {
+                    let selection = selection_after_download(
+                        active_before,
+                        selection_before.is_some(),
+                        entry.id,
+                    );
+                    if let Some(id) = selection {
+                        if let Err(error) = service.commit_selection(Some(id.to_owned()), None) {
+                            service.set_model_error(error);
+                        }
                     }
                 }
                 service.clear_missing_status();
@@ -936,6 +945,21 @@ impl DictationService {
 
     pub fn is_shutdown(&self) -> bool {
         self.is_shutdown.load(Ordering::Acquire)
+    }
+}
+
+/// What to store after a download so it never changes the model in use. With no stored
+/// selection the active model is only "first installed", which a new file could displace,
+/// so it is pinned. Returns `None` when the stored selection should stay as it is.
+fn selection_after_download(
+    active_before: Option<&'static str>,
+    has_selection: bool,
+    downloaded: &'static str,
+) -> Option<&'static str> {
+    match active_before {
+        None => Some(downloaded),
+        Some(active) if !has_selection => Some(active),
+        Some(_) => None,
     }
 }
 
@@ -1519,6 +1543,30 @@ mod tests {
         assert!(
             service.download_model("ggml-base.bin").is_err(),
             "detect-only entries are not offered for download"
+        );
+    }
+
+    #[test]
+    fn a_download_never_changes_the_model_in_use() {
+        assert_eq!(
+            selection_after_download(None, false, "ggml-small-q5_1.bin"),
+            Some("ggml-small-q5_1.bin"),
+            "nothing active: the new model fills the gap"
+        );
+        assert_eq!(
+            selection_after_download(None, true, "ggml-small-q5_1.bin"),
+            Some("ggml-small-q5_1.bin"),
+            "the selected file is gone and nothing else is installed"
+        );
+        assert_eq!(
+            selection_after_download(Some("ggml-small-q5_1.bin"), false, "ggml-base-q5_1.bin"),
+            Some("ggml-small-q5_1.bin"),
+            "active only by fallback: pinned, or Base would displace Small"
+        );
+        assert_eq!(
+            selection_after_download(Some("ggml-tiny.bin"), true, "ggml-base-q5_1.bin"),
+            None,
+            "an explicit selection stays as it is"
         );
     }
 

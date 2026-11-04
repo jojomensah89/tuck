@@ -459,6 +459,65 @@ try {
     assert.equal(geometry.titleClear && geometry.togglePresent && geometry.toggleClear && geometry.controlsFit, true, `Media regions must fit at ${width}px`);
     await native.screenshot({path:path.join(root,'artifacts',`island-unslop-${width}.png`)});
   }
+  // An exact match stays quiet; only an approximate match offers timing, and the correction sticks to the track.
+  const lyricEvent=extra=>native.evaluate(extra=>window.__emitNative('lyrics',{trackId:'fixture-track',requestId:window.__calls.findLast(call=>call.command==='lyrics_get').args.requestId,syncedLyrics:'[00:01]Previous fixture line\n[00:03]Current fixture line\n[00:05]Next fixture line',...extra}),extra);
+  const lyricTrackEvent=trackId=>native.evaluate(trackId=>window.__emitNative('lyrics',{trackId,requestId:window.__calls.findLast(call=>call.command==='lyrics_get').args.requestId,status:'synced',approximate:true,syncedLyrics:'[00:01]Fixture line'}),trackId);
+  await lyricEvent({status:'synced'});
+  assert.equal(await native.locator('.lyrics-offset-controls').isVisible(),false,'An exact match shows no timing control');
+  assert.equal(await native.locator('.lyrics-header').isVisible(),false,'An exact match leaves no empty header above the lyrics');
+  await lyricEvent({status:'synced',approximate:true});
+  assert.equal(await native.locator('.lyrics-status').textContent(),'Approximate');
+  assert.equal(await native.locator('.lyrics-offset-value').textContent(),'0.0 s');
+  assert.match(await native.locator('.lyrics-note').textContent(),/another edit/i,'An approximate match says why');
+  assert.equal(await native.locator('.lyrics-offset-value').getAttribute('aria-live'),'polite');
+  for(let step=0;step<3;step++) await native.getByRole('button',{name:'Show lyrics 0.1 s later, hold to repeat'}).click();
+  assert.equal(await native.locator('.lyrics-offset-value').textContent(),'+0.3 s');
+  await native.locator('.lyric-line').last().click();
+  assert.equal(await native.evaluate(()=>window.__calls.findLast(call=>call.command==='media_seek').args.ms),5300,'Seeking follows the corrected timing');
+  assert.deepEqual(await native.evaluate(()=>JSON.parse(localStorage.getItem('tuck.live.v2')).lyricsOffsets),[{key:'fixture-track',offsetMs:300}]);
+  await lyricEvent({status:'synced'});
+  assert.equal(await native.locator('.lyrics-offset-value').textContent(),'+0.3 s','A saved correction stays reachable on an exact match');
+  assert.equal(await native.locator('.lyrics-note').isVisible(),false,'A saved correction alone is no timing warning');
+  await lyricEvent({status:'plain',approximate:true,syncedLyrics:'',plainLyrics:'Fixture words'});
+  assert.equal(await native.locator('.lyrics-offset-controls').isVisible(),false,'Plain lyrics have no timing to correct');
+  assert.equal(await native.locator('.lyrics-status').textContent(),'Approximate · not synchronized');
+  await native.evaluate(()=>{const key='tuck.live.v2';localStorage.setItem(key,JSON.stringify({...JSON.parse(localStorage.getItem(key)),lyricsOffsets:[]}));});
+  // A different credit is no reason to doubt the timing.
+  await lyricEvent({status:'synced',creditDiffers:true});
+  assert.equal(await native.locator('.lyrics-header').isVisible(),false,'A credit difference shows no label or stepper');
+  assert.equal(await native.locator('.lyrics-note').isVisible(),false,'A credit difference shows no timing warning');
+  assert.match(await native.locator('.lyrics-pane').getAttribute('title'),/credit/);
+  // Auto-scroll centres the current line, whatever sits above the list.
+  await lyricEvent({status:'synced',approximate:true,syncedLyrics:Array.from({length:40},(_,i)=>`[${String(Math.floor(i*5/60)).padStart(2,'0')}:${String(i*5%60).padStart(2,'0')}]Line ${i}`).join('\n')});
+  await native.evaluate(()=>window.__emitNative('media',{active:true,trackId:'fixture-track',title:'Artwork color fixture',artist:'Synthetic test data',playing:false,positionMs:62000,durationMs:300000}));
+  const centerError=await native.evaluate(()=>{const list=document.querySelector('.lyric-lines').getBoundingClientRect(),line=document.querySelector('.lyric-line.current').getBoundingClientRect();return Math.abs(line.top+line.height/2-(list.top+list.height/2));});
+  assert.ok(centerError<=2,`Current lyric sits ${centerError}px off centre`);
+  await native.evaluate(()=>window.__emitNative('media',{active:true,trackId:'fixture-track',title:'Artwork color fixture',artist:'Synthetic test data',playing:false,positionMs:3000,durationMs:300000}));
+  // Holding repeats; other buttons and a track change during the hold must not move anything.
+  const fixtureMedia=trackId=>native.evaluate(trackId=>window.__emitNative('media',{active:true,trackId,title:'Artwork color fixture',artist:'Synthetic test data',playing:false,positionMs:3000,durationMs:120000}),trackId);
+  const later=native.getByRole('button',{name:'Show lyrics 0.1 s later, hold to repeat'});
+  const offsetValue=()=>native.locator('.lyrics-offset-value').textContent();
+  await lyricEvent({status:'synced',approximate:true});
+  await later.hover();
+  await native.mouse.down(); await native.waitForTimeout(600); await native.mouse.up();
+  const held=await offsetValue();
+  assert.notEqual(held,'0.0 s','Holding a stepper repeats');
+  await native.waitForTimeout(200);
+  assert.equal(await offsetValue(),held,'Releasing stops the repeat, and its click adds nothing');
+  await native.mouse.down({button:'right'}); await native.waitForTimeout(600); await native.mouse.up({button:'right'});
+  assert.equal(await offsetValue(),held,'Only the main button repeats');
+  await later.focus(); await native.keyboard.press('Enter');
+  assert.notEqual(await offsetValue(),held,'A right-button hold does not swallow the next key press');
+  await native.locator('.lyrics-toggle-btn').hover();
+  await fixtureMedia('hold-track'); await lyricTrackEvent('hold-track');
+  await later.hover(); await native.mouse.down();
+  await fixtureMedia('hold-track-2'); await lyricTrackEvent('hold-track-2');
+  await native.waitForTimeout(600); await native.mouse.up();
+  assert.equal(await offsetValue(),'0.0 s','A hold that spans a track change saves nothing on the new track');
+  await later.focus();
+  await fixtureMedia('fixture-track');
+  assert.equal(await native.evaluate(()=>document.activeElement?.className),'lyrics-toggle-btn','Focus stays near when the timing controls hide');
+  await native.evaluate(()=>{const key='tuck.live.v2';localStorage.setItem(key,JSON.stringify({...JSON.parse(localStorage.getItem(key)),lyricsOffsets:[]}));});
   await native.evaluate(()=>{
     const oldId=window.__calls.findLast(call=>call.command==='lyrics_get').args.requestId;
     const track={active:true,artist:'Fixture',playing:false,positionMs:3000,durationMs:120000};
@@ -469,16 +528,20 @@ try {
   assert.equal(await native.locator('.lyric-line').count(),0,'Old events cannot restore stale lyrics after returning to the same track');
   await native.getByRole('tab',{name:'Usage',exact:true}).click();
   await native.locator('.page.stats').scrollIntoViewIfNeeded();
-  await native.evaluate(()=>window.__emitNative('telemetry',{sampledAt:Date.now(),cpuPct:43,ramUsedBytes:8589934592,ramTotalBytes:17179869184,gpus:[{id:'gpu0',name:'Fixture GPU',usedPct:null}]}));
-  assert.match(await native.locator('.page.stats').textContent(),/43%/);
-  assert.equal(await native.locator('.page.stats .stat-face').count(),3,'One ring each for CPU, memory and the GPU');
-  assert.equal(await native.locator('.page.stats .stat-face').nth(1).getAttribute('aria-label'),'Memory 50%, 8.0 of 16.0 GB');
-  assert.equal(await native.locator('.page.stats .stat-face').nth(2).getAttribute('aria-label'),'Fixture GPU unavailable');
-  await native.evaluate(()=>window.__emitNative('telemetry',{sampledAt:Date.now()-5000,cpuPct:99,ramUsedBytes:null,ramTotalBytes:null,gpus:[]}));
-  assert.match(await native.locator('.page.stats').textContent(),/43%/,'An older snapshot cannot replace newer metrics');
+  // Emit and read in one evaluate, so the page's one-second poll cannot land in between.
+  const statsRead=()=>({text:document.querySelector('.page.stats').textContent,faces:[...document.querySelectorAll('.page.stats .stat-face')].map(face=>face.getAttribute('aria-label'))});
+  const measured=await native.evaluate(read=>{window.__emitNative('telemetry',{sampledAt:Date.now(),cpuPct:43,ramUsedBytes:8589934592,ramTotalBytes:17179869184,gpus:[{id:'gpu0',name:'Fixture GPU',usedPct:null}]});return new Function(`return (${read})()`)();},statsRead.toString());
+  assert.match(measured.text,/43%/);
+  assert.equal(measured.faces.length,3,'One ring each for CPU, memory and the GPU');
+  assert.equal(measured.faces[1],'Memory 50%, 8.0 of 16.0 GB');
+  assert.equal(measured.faces[2],'Fixture GPU unavailable');
+  const afterOlder=await native.evaluate(read=>{window.__emitNative('telemetry',{sampledAt:Date.now()-5000,cpuPct:99,ramUsedBytes:null,ramTotalBytes:null,gpus:[]});return new Function(`return (${read})()`)();},statsRead.toString());
+  assert.match(afterOlder.text,/43%/,'An older snapshot cannot replace newer metrics');
+  // The mock's poll keeps failing: one failure keeps the value, a run of them clears it.
   await native.waitForTimeout(1200);
-  assert.match(await native.locator('.stat-face').first().getAttribute('aria-label'),/unavailable/,'Polling failures clear prior measurements');
-  assert.equal(await native.locator('.stat-value').first().textContent(),'\u2013');
+  assert.match(await native.locator('.page.stats').textContent(),/43%/,'One failed poll does not blank a valid metric');
+  await native.waitForFunction(()=>/unavailable/.test(document.querySelector('.stat-face').getAttribute('aria-label')),null,{timeout:6000});
+  assert.equal(await native.locator('.stat-value').first().textContent(),'\u2013','Repeated polling failures clear prior measurements');
   await native.evaluate(()=>window.__emitNative('media',{active:true,trackId:'other',title:'Other fixture',artist:'Test',playing:true,positionMs:0,durationMs:10000}));
   assert.equal(await native.locator('.tab-panel.on').getAttribute('data-tab'),'usage','Track changes must not steal a selected tool');
   // AI usage: one provider card, double rings for 5h + 7d, official marks, no unconnected cards

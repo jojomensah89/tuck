@@ -1,19 +1,30 @@
+use crate::lyrics_match::{resolve_match, Candidate, LrclibRecord, Track};
 use serde::{Deserialize, Serialize};
+use std::cell::Cell;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{Emitter, Manager};
 
 const MAX_CACHE_ENTRIES: usize = 128;
+const NEGATIVE_CACHE_TTL: Duration = Duration::from_secs(12 * 60 * 60);
 const DEFAULT_USER_AGENT: &str = "Tuck/0.1.0 (https://github.com/jojomensah89/tuck)";
-const LRCLIB_ENDPOINT: &str = "https://lrclib.net/api/get";
+const LRCLIB_GET_ENDPOINT: &str = "https://lrclib.net/api/get";
+const LRCLIB_SEARCH_ENDPOINT: &str = "https://lrclib.net/api/search";
+/// LRCLIB asks for 200-500 ms between sequential requests.
+const REQUEST_GAP: Duration = Duration::from_millis(250);
+/// LRCLIB sheds load with brief 503s, so one failed request gets a second try after this long.
+const RETRY_DELAY: Duration = Duration::from_secs(3);
+const MAX_RECORD_BYTES: u64 = 512 * 1024;
+const MAX_SEARCH_BYTES: u64 = 2 * 1024 * 1024;
 
 static CONFIG: Mutex<LyricsConfig> = Mutex::new(LyricsConfig { enabled: false });
-static CACHE: Mutex<Option<VecDeque<(String, LyricsResponse)>>> = Mutex::new(None);
+static CACHE: Mutex<Option<VecDeque<CacheEntry>>> = Mutex::new(None);
 static RATE_LIMIT_UNTIL: Mutex<Option<Instant>> = Mutex::new(None);
 static REQUEST_SEQ: AtomicU64 = AtomicU64::new(1);
 static LATEST_TRACK_REQUEST: Mutex<Option<String>> = Mutex::new(None);
+static HTTP_CLIENT: OnceLock<Result<reqwest::blocking::Client, String>> = OnceLock::new();
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -40,16 +51,17 @@ pub struct LyricsResponse {
     pub synced_lyrics: Option<Vec<LyricLine>>,
     pub error_message: Option<String>,
     pub request_seq: u64,
+    /// The timing could not be confirmed: the record's length differs or is unknown.
+    pub approximate: bool,
+    /// Same song and timing, but the credit or a subtitle differs. Needs no timing warning.
+    pub credit_differs: bool,
 }
 
-#[derive(Deserialize)]
-struct LrclibResponse {
-    #[serde(default)]
-    instrumental: bool,
-    #[serde(default, rename = "plainLyrics")]
-    plain_lyrics: Option<String>,
-    #[serde(default, rename = "syncedLyrics")]
-    synced_lyrics: Option<String>,
+#[derive(Clone)]
+struct CacheEntry {
+    key: String,
+    response: LyricsResponse,
+    stored_at: Instant,
 }
 
 /// Parses LRC timestamp tag [mm:ss.xx] or [mm:ss.xxx] into milliseconds.
@@ -89,8 +101,20 @@ pub fn parse_lrc_timestamp(tag: &str) -> Option<i64> {
 }
 
 /// Parses standard LRC formatted text into structured, sorted `LyricLine` vector.
+/// A positive `[offset:]` makes lyrics appear sooner, per the format's definition.
 pub fn parse_lrc(lrc_content: &str) -> Vec<LyricLine> {
     let mut lines = Vec::new();
+    let offset_ms = lrc_content
+        .lines()
+        .find_map(|line| {
+            line.trim()
+                .strip_prefix("[offset:")?
+                .strip_suffix(']')?
+                .trim()
+                .parse::<i64>()
+                .ok()
+        })
+        .unwrap_or(0);
 
     for raw_line in lrc_content.lines() {
         let trimmed = raw_line.trim();
@@ -132,7 +156,7 @@ pub fn parse_lrc(lrc_content: &str) -> Vec<LyricLine> {
         let lyric_text = cursor.trim().to_string();
         for ts in timestamps {
             lines.push(LyricLine {
-                time_ms: ts,
+                time_ms: (ts - offset_ms).max(0),
                 text: lyric_text.clone(),
             });
         }
@@ -140,20 +164,6 @@ pub fn parse_lrc(lrc_content: &str) -> Vec<LyricLine> {
 
     lines.sort_by_key(|l| l.time_ms);
     lines
-}
-
-fn cache_key(artist: &str, title: &str, duration_ms: i64) -> String {
-    let dur_sec = if duration_ms > 0 {
-        duration_ms / 1000
-    } else {
-        0
-    };
-    format!(
-        "{}:{}:{}",
-        artist.trim().to_lowercase(),
-        title.trim().to_lowercase(),
-        dur_sec
-    )
 }
 
 fn check_authorized_window(window: Option<&tauri::Window>) -> Result<(), String> {
@@ -206,6 +216,330 @@ pub fn lyrics_clear_cache(window: tauri::Window) -> Result<(), String> {
     Ok(())
 }
 
+fn http_client() -> Result<&'static reqwest::blocking::Client, String> {
+    HTTP_CLIENT
+        .get_or_init(|| {
+            reqwest::blocking::Client::builder()
+                .timeout(Duration::from_secs(5))
+                .user_agent(DEFAULT_USER_AGENT)
+                .build()
+                .map_err(|error| format!("HTTP client build failed: {error}"))
+        })
+        .as_ref()
+        .map_err(Clone::clone)
+}
+
+fn request_is_current(track_id: Option<&str>) -> bool {
+    let Some(track_id) = track_id else {
+        return true;
+    };
+    LATEST_TRACK_REQUEST
+        .lock()
+        .map(|latest| latest.as_deref() == Some(track_id))
+        .unwrap_or(false)
+}
+
+/// Must pass immediately before every network request: the user can opt out, change track or
+/// hit the rate limit while an earlier request of the same lookup is in flight.
+fn preflight_request(track_id: Option<&str>) -> Result<(), String> {
+    if !CONFIG
+        .lock()
+        .map_err(|_| "Lyrics settings unavailable")?
+        .enabled
+    {
+        return Err("Lyrics lookup was disabled".into());
+    }
+    if !request_is_current(track_id) {
+        return Err("Lyrics request was superseded by another track".into());
+    }
+    if RATE_LIMIT_UNTIL
+        .lock()
+        .ok()
+        .and_then(|value| *value)
+        .is_some_and(|until| Instant::now() < until)
+    {
+        return Err("Rate limited: backing off before next request".into());
+    }
+    Ok(())
+}
+
+/// LRCLIB asks clients to honour `Retry-After` and add up to about 30% jitter.
+fn rate_limit_backoff(retry_after_secs: u64, entropy: u32) -> Duration {
+    let base_ms = retry_after_secs.clamp(2, 3600) * 1000;
+    Duration::from_millis(base_ms + base_ms * u64::from(entropy % 301) / 1000)
+}
+
+fn clock_entropy() -> u32 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.subsec_nanos())
+}
+
+fn remember_rate_limit(response: &reqwest::blocking::Response) {
+    let retry_after_secs = response
+        .headers()
+        .get("Retry-After")
+        .and_then(|header| header.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(5);
+    if let Ok(mut until) = RATE_LIMIT_UNTIL.lock() {
+        *until = Some(Instant::now() + rate_limit_backoff(retry_after_secs, clock_entropy()));
+    }
+}
+
+/// A failed request, and whether it could clear by itself in a moment.
+#[derive(Debug)]
+struct FetchError {
+    message: String,
+    transient: bool,
+}
+
+impl FetchError {
+    fn lasting(message: impl Into<String>) -> Self {
+        FetchError {
+            message: message.into(),
+            transient: false,
+        }
+    }
+
+    fn transient(message: impl Into<String>) -> Self {
+        FetchError {
+            message: message.into(),
+            transient: true,
+        }
+    }
+}
+
+/// One LRCLIB request. `Ok(None)` is its "not found"; anything else unexpected is an `Err`.
+fn send_json<T: serde::de::DeserializeOwned>(
+    url: &str,
+    query: &[(&str, String)],
+    max_bytes: u64,
+) -> Result<Option<T>, FetchError> {
+    use std::io::Read;
+    let response = http_client()
+        .map_err(FetchError::lasting)?
+        .get(url)
+        .query(query)
+        .send()
+        .map_err(|error| FetchError::transient(format!("Request failed: {error}")))?;
+    let status = response.status();
+    if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        remember_rate_limit(&response);
+        return Err(FetchError::lasting("LRCLIB rate limit reached (HTTP 429)"));
+    }
+    if status == reqwest::StatusCode::NOT_FOUND {
+        return Ok(None);
+    }
+    if status == reqwest::StatusCode::SERVICE_UNAVAILABLE {
+        return Err(FetchError::transient("LRCLIB is overloaded (HTTP 503)"));
+    }
+    if !status.is_success() {
+        return Err(FetchError::lasting(format!(
+            "HTTP error {}",
+            status.as_u16()
+        )));
+    }
+    let mut bytes = Vec::new();
+    response
+        .take(max_bytes + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| FetchError::transient("Could not read lyrics response"))?;
+    if bytes.len() as u64 > max_bytes {
+        return Err(FetchError::lasting(
+            "Lyrics response exceeded its size limit",
+        ));
+    }
+    serde_json::from_slice(&bytes)
+        .map(Some)
+        .map_err(|error| FetchError::lasting(format!("Failed to parse response JSON: {error}")))
+}
+
+/// Runs a request, with one more try after a transient failure if the track's single retry is
+/// unused. `preflight` runs before every attempt, so a track change or opt-out during the delay
+/// sends nothing. A failure that remains is returned, and the caller does not cache it.
+fn with_retry<T>(
+    retry_available: &Cell<bool>,
+    preflight: &impl Fn() -> Result<(), String>,
+    wait: &impl Fn(),
+    request: impl Fn() -> Result<T, FetchError>,
+) -> Result<T, String> {
+    preflight()?;
+    match request() {
+        Err(error) if error.transient && retry_available.replace(false) => {
+            wait();
+            preflight()?;
+            request().map_err(|error| error.message)
+        }
+        outcome => outcome.map_err(|error| error.message),
+    }
+}
+
+/// Parameters for `/api/get`, whose `duration` must be at least 1 s when sent.
+fn exact_query(title: &str, artist: &str, duration_s: Option<f64>) -> Vec<(&'static str, String)> {
+    let mut query = vec![
+        ("track_name", title.to_string()),
+        ("artist_name", artist.to_string()),
+    ];
+    if let Some(duration) = duration_s {
+        query.push(("duration", (duration.round() as i64).to_string()));
+    }
+    query
+}
+
+fn fetch_exact(
+    title: &str,
+    artist: &str,
+    duration_s: Option<f64>,
+) -> Result<Option<LrclibRecord>, FetchError> {
+    send_json(
+        LRCLIB_GET_ENDPOINT,
+        &exact_query(title, artist, duration_s),
+        MAX_RECORD_BYTES,
+    )
+}
+
+/// `/api/search` results, skipping any record that does not parse rather than losing them all.
+fn fetch_search(wanted: &Track) -> Result<Option<Vec<LrclibRecord>>, FetchError> {
+    let records: Option<Vec<serde_json::Value>> = send_json(
+        LRCLIB_SEARCH_ENDPOINT,
+        &wanted.search_query(),
+        MAX_SEARCH_BYTES,
+    )?;
+    Ok(records.map(|records| {
+        records
+            .into_iter()
+            .filter_map(|record| serde_json::from_value(record).ok())
+            .collect()
+    }))
+}
+
+/// At most `/api/get`, `/api/search` and one retry of either after a transient failure.
+fn lookup(
+    title: &str,
+    artist: &str,
+    duration_s: Option<f64>,
+    preflight: impl Fn() -> Result<(), String>,
+) -> Result<Option<Candidate>, String> {
+    let wanted = Track::parse(title, artist);
+    let retry_available = Cell::new(true);
+    let wait = || {
+        let jitter_ms = u64::from(clock_entropy() % 600);
+        std::thread::sleep(RETRY_DELAY + Duration::from_millis(jitter_ms));
+    };
+    resolve_match(
+        &wanted,
+        duration_s,
+        || {
+            with_retry(&retry_available, &preflight, &wait, || {
+                fetch_exact(title, artist, duration_s)
+            })
+        },
+        || {
+            std::thread::sleep(REQUEST_GAP);
+            with_retry(&retry_available, &preflight, &wait, || {
+                fetch_search(&wanted)
+            })
+        },
+    )
+}
+
+fn response_without_lyrics(
+    status: &str,
+    track_id: Option<String>,
+    title: String,
+    artist: String,
+    seq: u64,
+    error_message: Option<String>,
+) -> LyricsResponse {
+    LyricsResponse {
+        status: status.into(),
+        track_id,
+        title,
+        artist,
+        instrumental: false,
+        plain_lyrics: None,
+        synced_lyrics: None,
+        error_message,
+        request_seq: seq,
+        approximate: false,
+        credit_differs: false,
+    }
+}
+
+fn response_from_candidate(
+    candidate: Candidate,
+    track_id: Option<String>,
+    title: String,
+    artist: String,
+    seq: u64,
+) -> LyricsResponse {
+    let record = candidate.record;
+    let synced = (!record.instrumental && !candidate.lines.is_empty()).then_some(candidate.lines);
+    let plain = record
+        .plain_lyrics
+        .filter(|plain| !record.instrumental && !plain.trim().is_empty());
+    let status = if record.instrumental {
+        "instrumental"
+    } else if synced.is_some() {
+        "synced"
+    } else {
+        "plain"
+    };
+    LyricsResponse {
+        status: status.into(),
+        track_id,
+        title,
+        artist,
+        instrumental: record.instrumental,
+        plain_lyrics: plain,
+        synced_lyrics: synced,
+        error_message: None,
+        request_seq: seq,
+        approximate: candidate.approximate,
+        credit_differs: candidate.credit_differs,
+    }
+}
+
+fn cached_response(key: &str) -> Option<LyricsResponse> {
+    let mut guard = CACHE.lock().ok()?;
+    let entries = guard.as_mut()?;
+    entries.retain(|entry| {
+        entry.response.status != "not_found" || entry.stored_at.elapsed() < NEGATIVE_CACHE_TTL
+    });
+    entries
+        .iter()
+        .find(|entry| entry.key == key)
+        .map(|entry| entry.response.clone())
+}
+
+/// Remembers a real answer. A miss without a duration is not one: search cannot accept anything
+/// without a length to check, and the player may simply not have reported it yet.
+fn store_response(key: String, response: &LyricsResponse, duration_s: Option<f64>) {
+    if response.status == "not_found" && duration_s.is_none() {
+        return;
+    }
+    if let Ok(mut guard) = CACHE.lock() {
+        let entries = guard.get_or_insert_with(VecDeque::new);
+        if entries.len() >= MAX_CACHE_ENTRIES {
+            entries.pop_front();
+        }
+        entries.push_back(CacheEntry {
+            key,
+            response: response.clone(),
+            stored_at: Instant::now(),
+        });
+    }
+}
+
+fn can_look_up(title: &str, artist: &str, duration_ms: i64) -> bool {
+    !title.trim().is_empty()
+        && !artist.trim().is_empty()
+        && title.len() <= 2048
+        && artist.len() <= 2048
+        && duration_ms <= 3_600_000
+}
+
 /// Fetches lyrics from LRCLIB for the given track.
 /// Respects opt-in configuration, caching, rate-limit backoff, and stale request detection.
 #[tauri::command]
@@ -215,13 +549,6 @@ pub async fn lyrics_get(
     duration_ms: i64,
     track_id: Option<String>,
 ) -> Result<LyricsResponse, String> {
-    if title.trim().is_empty()
-        || title.len() > 2048
-        || artist.len() > 2048
-        || duration_ms > 3_600_000
-    {
-        return Err("Track metadata is unavailable or outside lyrics lookup limits".into());
-    }
     let seq = REQUEST_SEQ.fetch_add(1, Ordering::SeqCst);
 
     if let Some(ref tid) = track_id {
@@ -230,252 +557,75 @@ pub async fn lyrics_get(
         }
     }
 
-    // 1. Check if opt-in enabled
     let is_enabled = {
         let cfg = CONFIG.lock().map_err(|_| "Failed to lock lyrics config")?;
         cfg.enabled
     };
-
     if !is_enabled {
-        return Ok(LyricsResponse {
-            status: "disabled".into(),
+        return Ok(response_without_lyrics(
+            "disabled",
             track_id,
             title,
             artist,
-            instrumental: false,
-            plain_lyrics: None,
-            synced_lyrics: None,
-            error_message: Some("Lyrics lookup is disabled in settings".into()),
-            request_seq: seq,
-        });
+            seq,
+            Some("Lyrics lookup is disabled in settings".into()),
+        ));
+    }
+    if !can_look_up(&title, &artist, duration_ms) {
+        // Nothing to search for, which is not a failure and not worth remembering.
+        return Ok(response_without_lyrics(
+            "not_found",
+            track_id,
+            title,
+            artist,
+            seq,
+            None,
+        ));
     }
 
-    let key = cache_key(&artist, &title, duration_ms);
-
-    // 2. Check cache
-    {
-        if let Ok(cache_guard) = CACHE.lock() {
-            if let Some(ref deque) = *cache_guard {
-                if let Some((_, cached)) = deque.iter().find(|(k, _)| k == &key) {
-                    let mut resp = cached.clone();
-                    resp.track_id = track_id;
-                    resp.request_seq = seq;
-                    return Ok(resp);
-                }
-            }
-        }
+    let duration_s = (duration_ms >= 1000).then_some(duration_ms as f64 / 1000.0);
+    let key = Track::parse(&title, &artist).cache_key(duration_s);
+    if let Some(mut cached) = cached_response(&key) {
+        cached.track_id = track_id;
+        cached.request_seq = seq;
+        return Ok(cached);
     }
 
-    // 3. Check rate-limit cooldown
-    {
-        if let Ok(rl_guard) = RATE_LIMIT_UNTIL.lock() {
-            if let Some(until) = *rl_guard {
-                if Instant::now() < until {
-                    return Ok(LyricsResponse {
-                        status: "error".into(),
-                        track_id,
-                        title,
-                        artist,
-                        instrumental: false,
-                        plain_lyrics: None,
-                        synced_lyrics: None,
-                        error_message: Some("Rate limited: backing off before next request".into()),
-                        request_seq: seq,
-                    });
-                }
-            }
-        }
-    }
-
-    // 4. Fetch asynchronously via reqwest blocking client in spawn_blocking
-    let title_clone = title.clone();
-    let artist_clone = artist.clone();
-    let track_id_clone = track_id.clone();
-
-    let result = tauri::async_runtime::spawn_blocking(move || -> Result<LyricsResponse, String> {
-        let client = reqwest::blocking::Client::builder()
-            .timeout(Duration::from_secs(5))
-            .user_agent(DEFAULT_USER_AGENT)
-            .build()
-            .map_err(|e| format!("HTTP client build failed: {e}"))?;
-
-        let mut req = client.get(LRCLIB_ENDPOINT);
-        req = req.query(&[("track_name", &title_clone), ("artist_name", &artist_clone)]);
-        if duration_ms > 0 {
-            let dur_sec = duration_ms / 1000;
-            req = req.query(&[("duration", &dur_sec.to_string())]);
-        }
-
-        // A queued worker must recheck opt-in immediately before network dispatch.
-        if !CONFIG
-            .lock()
-            .map_err(|_| "Lyrics settings unavailable")?
-            .enabled
-        {
-            return Err("Lyrics lookup was disabled".into());
-        }
-        let response = match req.send() {
-            Ok(resp) => resp,
-            Err(e) => {
-                return Ok(LyricsResponse {
-                    status: "error".into(),
-                    track_id: track_id_clone,
-                    title: title_clone,
-                    artist: artist_clone,
-                    instrumental: false,
-                    plain_lyrics: None,
-                    synced_lyrics: None,
-                    error_message: Some(format!("Request failed: {e}")),
-                    request_seq: seq,
-                });
-            }
-        };
-
-        let status_code = response.status();
-        if status_code == reqwest::StatusCode::TOO_MANY_REQUESTS {
-            let retry_after_secs = response
-                .headers()
-                .get("Retry-After")
-                .and_then(|h| h.to_str().ok())
-                .and_then(|s| s.parse::<u64>().ok())
-                .unwrap_or(5);
-
-            if let Ok(mut rl) = RATE_LIMIT_UNTIL.lock() {
-                *rl = Some(Instant::now() + Duration::from_secs(retry_after_secs.clamp(2, 3600)));
-            }
-
-            return Ok(LyricsResponse {
-                status: "error".into(),
-                track_id: track_id_clone,
-                title: title_clone,
-                artist: artist_clone,
-                instrumental: false,
-                plain_lyrics: None,
-                synced_lyrics: None,
-                error_message: Some("LRCLIB rate limit reached (HTTP 429)".into()),
-                request_seq: seq,
-            });
-        }
-
-        if status_code == reqwest::StatusCode::NOT_FOUND {
-            return Ok(LyricsResponse {
-                status: "not_found".into(),
-                track_id: track_id_clone,
-                title: title_clone,
-                artist: artist_clone,
-                instrumental: false,
-                plain_lyrics: None,
-                synced_lyrics: None,
-                error_message: None,
-                request_seq: seq,
-            });
-        }
-
-        if !status_code.is_success() {
-            return Ok(LyricsResponse {
-                status: "error".into(),
-                track_id: track_id_clone,
-                title: title_clone,
-                artist: artist_clone,
-                instrumental: false,
-                plain_lyrics: None,
-                synced_lyrics: None,
-                error_message: Some(format!("HTTP error {}", status_code.as_u16())),
-                request_seq: seq,
-            });
-        }
-
-        use std::io::Read;
-        let mut bytes = Vec::new();
-        response
-            .take(512 * 1024 + 1)
-            .read_to_end(&mut bytes)
-            .map_err(|_| "Could not read lyrics response")?;
-        if bytes.len() > 512 * 1024 {
-            return Err("Lyrics response exceeded its size limit".into());
-        }
-        let data: LrclibResponse = match serde_json::from_slice(&bytes) {
-            Ok(d) => d,
-            Err(e) => {
-                return Ok(LyricsResponse {
-                    status: "error".into(),
-                    track_id: track_id_clone,
-                    title: title_clone,
-                    artist: artist_clone,
-                    instrumental: false,
-                    plain_lyrics: None,
-                    synced_lyrics: None,
-                    error_message: Some(format!("Failed to parse response JSON: {e}")),
-                    request_seq: seq,
-                });
-            }
-        };
-
-        if data.instrumental {
-            return Ok(LyricsResponse {
-                status: "instrumental".into(),
-                track_id: track_id_clone,
-                title: title_clone,
-                artist: artist_clone,
-                instrumental: true,
-                plain_lyrics: None,
-                synced_lyrics: None,
-                error_message: None,
-                request_seq: seq,
-            });
-        }
-
-        let (status, synced) = if let Some(ref lrc) = data.synced_lyrics {
-            let parsed = parse_lrc(lrc);
-            if !parsed.is_empty() {
-                ("synced".to_string(), Some(parsed))
-            } else if data.plain_lyrics.is_some() {
-                ("plain".to_string(), None)
-            } else {
-                ("not_found".to_string(), None)
-            }
-        } else if data.plain_lyrics.is_some() {
-            ("plain".to_string(), None)
-        } else {
-            ("not_found".to_string(), None)
-        };
-
-        Ok(LyricsResponse {
-            status,
-            track_id: track_id_clone,
-            title: title_clone,
-            artist: artist_clone,
-            instrumental: false,
-            plain_lyrics: data.plain_lyrics,
-            synced_lyrics: synced,
-            error_message: None,
-            request_seq: seq,
+    let (lookup_title, lookup_artist, lookup_track) =
+        (title.clone(), artist.clone(), track_id.clone());
+    let outcome = tauri::async_runtime::spawn_blocking(move || {
+        lookup(&lookup_title, &lookup_artist, duration_s, || {
+            preflight_request(lookup_track.as_deref())
         })
     })
     .await
-    .map_err(|e| format!("Lyrics worker thread error: {e}"))??;
+    .map_err(|e| format!("Lyrics worker thread error: {e}"))?;
 
-    // 5. Store successful response in bounded cache
-    if result.status == "synced"
-        || result.status == "plain"
-        || result.status == "instrumental"
-        || result.status == "not_found"
-    {
-        if let Ok(mut cache_guard) = CACHE.lock() {
-            let deque = cache_guard.get_or_insert_with(VecDeque::new);
-            if deque.len() >= MAX_CACHE_ENTRIES {
-                deque.pop_front();
-            }
-            deque.push_back((key, result.clone()));
+    // Failures can clear on their own, so only real answers are remembered.
+    Ok(match outcome {
+        Ok(found) => {
+            let response = match found {
+                Some(candidate) => response_from_candidate(candidate, track_id, title, artist, seq),
+                None => response_without_lyrics("not_found", track_id, title, artist, seq, None),
+            };
+            store_response(key, &response, duration_s);
+            response
         }
-    }
-
-    Ok(result)
+        Err(error) => response_without_lyrics("error", track_id, title, artist, seq, Some(error)),
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The cache is shared and bounded, so tests that fill it must not run alongside those that
+    /// read it back.
+    static CACHE_TESTS: Mutex<()> = Mutex::new(());
+
+    fn answer(status: &str) -> LyricsResponse {
+        response_without_lyrics(status, None, String::new(), String::new(), 1, None)
+    }
 
     #[test]
     fn test_parse_lrc_timestamp() {
@@ -512,14 +662,279 @@ mod tests {
     }
 
     #[test]
-    fn test_lyrics_opt_in_default() {
-        assert!(!lyrics_status().enabled);
+    fn test_parse_lrc_honors_offset_tag() {
+        let lines = parse_lrc("[offset:+250]\n[00:01.00]Sooner\n[00:02.00]Later");
+        assert_eq!(lines[0].time_ms, 750, "a positive offset means sooner");
+        assert_eq!(lines[1].time_ms, 1_750);
+        assert_eq!(
+            parse_lrc("[offset: -250]\n[00:01.00]Later")[0].time_ms,
+            1_250
+        );
     }
 
     #[test]
-    fn test_cache_key_normalization() {
-        let k1 = cache_key(" Coldplay ", "Yellow", 269000);
-        let k2 = cache_key("coldplay", "yellow", 269500);
-        assert_eq!(k1, k2);
+    fn test_lyrics_opt_in_default() {
+        assert!(!lyrics_status().enabled);
+        assert!(
+            preflight_request(None).is_err(),
+            "no network request may start while lyrics are off"
+        );
+    }
+
+    #[test]
+    fn rate_limit_backoff_honours_retry_after_with_bounded_jitter() {
+        assert_eq!(rate_limit_backoff(10, 0), Duration::from_secs(10));
+        assert_eq!(rate_limit_backoff(10, 300), Duration::from_secs(13));
+        assert_eq!(rate_limit_backoff(0, 0), Duration::from_secs(2));
+        assert!(rate_limit_backoff(u64::MAX, u32::MAX) <= Duration::from_secs(3600 * 13 / 10));
+    }
+
+    #[test]
+    fn a_transient_failure_gets_one_delayed_retry_per_track() {
+        use std::cell::RefCell;
+        let open = || -> Result<(), String> { Ok(()) };
+        let waits = Cell::new(0);
+        let wait = || waits.set(waits.get() + 1);
+        let attempt = |outcomes: Vec<Result<u8, FetchError>>, budget: &Cell<bool>| {
+            let outcomes = RefCell::new(outcomes);
+            let calls = Cell::new(0);
+            let result = with_retry(budget, &open, &wait, || {
+                calls.set(calls.get() + 1);
+                outcomes.borrow_mut().remove(0)
+            });
+            (result, calls.get())
+        };
+
+        let budget = Cell::new(true);
+        let recovered = attempt(vec![Err(FetchError::transient("503")), Ok(1)], &budget);
+        assert_eq!(recovered, (Ok(1), 2));
+        assert_eq!(waits.get(), 1, "the retry waits first");
+        let spent = attempt(vec![Err(FetchError::transient("503"))], &budget);
+        assert_eq!(
+            spent,
+            (Err("503".to_string()), 1),
+            "only one extra per track"
+        );
+
+        let lasting = attempt(vec![Err(FetchError::lasting("429"))], &Cell::new(true));
+        assert_eq!(
+            lasting,
+            (Err("429".to_string()), 1),
+            "a rate limit is not retried"
+        );
+        let twice = attempt(
+            vec![
+                Err(FetchError::transient("503")),
+                Err(FetchError::transient("again")),
+            ],
+            &Cell::new(true),
+        );
+        assert_eq!(twice, (Err("again".to_string()), 2));
+    }
+
+    #[test]
+    fn a_retry_rechecks_opt_in_and_the_track_after_its_delay() {
+        let checks = Cell::new(0);
+        let calls = Cell::new(0);
+        let preflight = || {
+            checks.set(checks.get() + 1);
+            if checks.get() > 1 {
+                Err("superseded".to_string())
+            } else {
+                Ok(())
+            }
+        };
+        let result: Result<u8, String> = with_retry(&Cell::new(true), &preflight, &|| {}, || {
+            calls.set(calls.get() + 1);
+            Err(FetchError::transient("503"))
+        });
+        assert_eq!(result, Err("superseded".to_string()));
+        assert_eq!(calls.get(), 1, "nothing is sent after the track changed");
+    }
+
+    #[test]
+    fn an_answer_always_has_a_lyrics_status() {
+        let record = |synced: Option<&str>, plain: Option<&str>, instrumental| LrclibRecord {
+            track_name: "Long Song Title".into(),
+            artist_name: "Aster".into(),
+            duration: Some(200.0),
+            instrumental,
+            plain_lyrics: plain.map(String::from),
+            synced_lyrics: synced.map(String::from),
+        };
+        let status = |record| {
+            let wanted = Track::parse("Long Song Title", "Aster");
+            let candidate = crate::lyrics_match::score_candidate(&wanted, record, Some(200.0))
+                .expect("eligible record");
+            response_from_candidate(candidate, None, String::new(), String::new(), 1).status
+        };
+        let lrc = Some("[00:01.00]Line");
+        assert_eq!(status(record(lrc, Some("Line"), false)), "synced");
+        assert_eq!(status(record(None, Some("Line"), false)), "plain");
+        assert_eq!(status(record(None, None, true)), "instrumental");
+    }
+
+    #[test]
+    fn tracks_without_metadata_are_a_miss_and_not_a_failure() {
+        assert!(can_look_up("Song", "Aster", 180_000));
+        assert!(
+            can_look_up("Song", "Aster", 0),
+            "the duration can be unknown"
+        );
+        assert!(!can_look_up("Song", "  ", 180_000));
+        assert!(!can_look_up("  ", "Aster", 180_000));
+        assert!(!can_look_up("Song", "Aster", 3_600_001));
+    }
+
+    #[test]
+    fn a_miss_without_a_duration_does_not_hide_the_track_once_it_is_known() {
+        let _guard = CACHE_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let track = Track::parse("Late Duration Song", "Babyboy AV");
+        store_response(track.cache_key(None), &answer("not_found"), None);
+        assert!(
+            cached_response(&track.cache_key(None)).is_none(),
+            "the player may just not have reported the duration yet"
+        );
+        assert!(cached_response(&track.cache_key(Some(171.0))).is_none());
+
+        // A miss that had a duration to check is real, but only for that length.
+        store_response(
+            track.cache_key(Some(171.0)),
+            &answer("not_found"),
+            Some(171.0),
+        );
+        assert!(cached_response(&track.cache_key(Some(171.0))).is_some());
+        assert!(cached_response(&track.cache_key(Some(200.0))).is_none());
+    }
+
+    #[test]
+    fn same_titled_tracks_by_one_artist_do_not_share_an_answer() {
+        let _guard = CACHE_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let track = Track::parse("Cached Intro", "Drake");
+        store_response(track.cache_key(Some(52.0)), &answer("synced"), Some(52.0));
+        assert_eq!(
+            cached_response(&track.cache_key(Some(52.0))).map(|found| found.status),
+            Some("synced".to_string())
+        );
+        assert!(cached_response(&track.cache_key(Some(25.0))).is_none());
+        assert!(cached_response(&track.cache_key(None)).is_none());
+    }
+
+    #[test]
+    fn misses_are_cached_until_their_ttl_and_the_cache_stays_bounded() {
+        let _guard = CACHE_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let miss = |key: &str| store_response(key.into(), &answer("not_found"), Some(180.0));
+        miss("cached miss");
+        assert_eq!(
+            cached_response("cached miss").map(|response| response.status),
+            Some("not_found".to_string()),
+            "a failed track must not query LRCLIB again"
+        );
+        if let Some(entry) = CACHE
+            .lock()
+            .unwrap()
+            .as_mut()
+            .and_then(|entries| entries.iter_mut().find(|entry| entry.key == "cached miss"))
+        {
+            entry.stored_at = Instant::now() - NEGATIVE_CACHE_TTL;
+        }
+        assert!(
+            cached_response("cached miss").is_none(),
+            "LRCLIB can gain the track later"
+        );
+
+        for index in 0..MAX_CACHE_ENTRIES + 5 {
+            miss(&format!("bounded {index}"));
+        }
+        assert_eq!(
+            CACHE.lock().unwrap().as_ref().unwrap().len(),
+            MAX_CACHE_ENTRIES
+        );
+        assert!(
+            cached_response("bounded 0").is_none(),
+            "oldest entries leave first"
+        );
+    }
+
+    /// Run with `cargo test live_lrclib -- --ignored --nocapture --test-threads=1`. These go
+    /// through the same lookup as the app, at most 23 requests, spaced out for an overloaded server.
+    fn live_lookup(title: &str, artist: &str, seconds: f64) -> Option<Candidate> {
+        let found = lookup(title, artist, Some(seconds), || Ok(())).expect("LRCLIB reachable");
+        println!(
+            "{title} / {artist} at {seconds} s: {:?}",
+            found.as_ref().map(|found| (
+                &found.record.track_name,
+                &found.record.artist_name,
+                found.record.duration,
+                found.lines.len(),
+                format!(
+                    "score {} approximate {} credit_differs {}",
+                    found.score, found.approximate, found.credit_differs
+                ),
+            ))
+        );
+        std::thread::sleep(Duration::from_secs(5));
+        found
+    }
+
+    #[test]
+    #[ignore = "calls the real LRCLIB service"]
+    fn live_lrclib_reported_track_uses_search_fallback() {
+        let (title, artist) = ("Big Thug Boys", "Babyboy AV");
+        let exact = with_retry(
+            &Cell::new(true),
+            &|| Ok(()),
+            &|| std::thread::sleep(RETRY_DELAY),
+            || fetch_exact(title, artist, Some(171.0)),
+        );
+        assert!(
+            matches!(exact, Ok(None)),
+            "this track is only reachable through search: {exact:?}"
+        );
+        std::thread::sleep(Duration::from_secs(5));
+        let best = live_lookup(title, artist, 171.0).expect("accepted match");
+        assert_eq!(best.score, 83);
+        assert!(best.approximate);
+        assert!(!best.lines.is_empty());
+    }
+
+    /// One artist, one title, several songs: each length must get its own record.
+    #[test]
+    #[ignore = "calls the real LRCLIB service"]
+    fn live_lrclib_same_title_at_different_durations() {
+        let mut lengths = Vec::new();
+        for seconds in [52.0, 25.0] {
+            let best = live_lookup("Intro", "Drake", seconds).expect("a record at this length");
+            let length = best.record.duration.expect("a duration");
+            assert!((length - seconds).abs() <= 3.0);
+            lengths.push(length);
+        }
+        assert_ne!(lengths[0], lengths[1]);
+    }
+
+    #[test]
+    #[ignore = "calls the real LRCLIB service"]
+    fn live_lrclib_other_tracks() {
+        for (title, artist, seconds) in [
+            (
+                "Let It Go - From \"Frozen\"/Soundtrack Version",
+                "Idina Menzel",
+                225.0,
+            ),
+            ("STAY (with Justin Bieber)", "The Kid LAROI", 142.0),
+            ("Calm Down (with Selena Gomez)", "Rema", 239.0),
+            ("Essence", "Wizkid", 248.0),
+            ("Love Nwantiti", "CKay", 145.0),
+            ("love nwantiti (ah ah ah)", "CKay", 145.0),
+            ("봄날", "방탄소년단", 274.0),
+        ] {
+            let best = live_lookup(title, artist, seconds);
+            assert!(best.is_some(), "{title} / {artist}");
+            assert!(
+                !best.unwrap().approximate,
+                "{title} / {artist}: timing agrees"
+            );
+        }
+        assert!(live_lookup("Big Thug Boys", "Someone Else Entirely", 171.0).is_none());
     }
 }

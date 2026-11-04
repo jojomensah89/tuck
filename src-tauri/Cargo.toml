@@ -22,6 +22,7 @@ base64 = "0.22"
 chrono = "0.4"
 keyring = { version = "3", features = ["windows-native"] }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls", "stream"] }
+unicode-normalization = "0.1"
 tokio = { version = "1", features = ["macros", "net", "rt", "time"] }
 url = "2.5.8"
 uuid = { version = "1.29.0", features = ["v4"] }

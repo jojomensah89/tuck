@@ -26,7 +26,7 @@ async function open(prefs) {
         if (command === 'plugin:event|listen') { const ids = listeners.get(args.event) || []; ids.push(args.handler); listeners.set(args.event, ids); return ++serial; }
         if (command === 'media_now') return { active: false, trackId: '', title: '', artist: '', playing: false, positionMs: 0, durationMs: 0, artwork: null };
         if (command === 'usage_now') return [];
-        if (command === 'telemetry_snapshot') return { sampledAt: Date.now(), cpuPct: 23, ramUsedBytes: 11.6 * 1073741824, ramTotalBytes: 16 * 1073741824, gpus: [{ id: 'gpu0', name: 'Fixture GPU', usedPct: 41 }] };
+        if (command === 'telemetry_now') return { sampledAt: Date.now(), cpuPct: 23, ramUsedBytes: 11.6 * 1073741824, ramTotalBytes: 16 * 1073741824, gpus: [{ id: 'gpu0', name: 'Fixture GPU', usedPct: 41 }] };
         if (command === 'fullscreen_now') return false;
         if (command === 'extension_snapshot') return { settings: {}, downloads: [], call: null, calendar: [], shelf: [], radios: [], notificationStatus: 'Disabled', errors: [] };
         if (command === 'clipboard_get_state') return { enabled: false, persistOnExit: false, items: [] };
@@ -76,7 +76,7 @@ const art = () => {
   await setPref({ compactContent: 'artwork' }); await page.waitForTimeout(300);
   await page.screenshot({ path: path.join(out, 'collapsed-artwork.png') });
   await page.evaluate(t => window.__emitNative('media', { ...t, playing: false, positionMs: 3000 }), track);
-  await setPref({ compactContent: 'lyrics' }); await page.waitForTimeout(300);
+  await setPref({ compactContent: 'lyrics' }); await page.waitForTimeout(1300);
   await page.screenshot({ path: path.join(out, 'collapsed-paused.png') });
   await context.close();
 }

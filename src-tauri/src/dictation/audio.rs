@@ -298,6 +298,11 @@ where
     ).map_err(|e| format!("Could not open microphone: {e}. Check microphone permissions and close applications holding exclusive access."))
 }
 
+unsafe extern "C" fn abort_requested(flag: *mut std::ffi::c_void) -> bool {
+    // Safety: `transcribe` passes a pointer to an AtomicBool that outlives the call.
+    unsafe { &*(flag as *const AtomicBool) }.load(Ordering::Acquire)
+}
+
 fn transcribe(
     context: &WhisperContext,
     audio: &[f32],
@@ -312,10 +317,16 @@ fn transcribe(
     params.set_print_realtime(false);
     params.set_print_timestamps(false);
     params.set_n_threads(std::thread::available_parallelism().map_or(2, |n| n.get().min(4)) as i32);
-    params.set_abort_callback_safe({
-        let cancel = cancel.clone();
-        move || cancel.load(Ordering::Acquire)
-    });
+    // Not `set_abort_callback_safe`: whisper-rs 0.16 double-boxes the closure, then its
+    // trampoline casts the pointer straight to the closure type. The closure then reads
+    // unrelated heap memory, so transcription can abort at random (whisper error -6) and
+    // cancel may do nothing.
+    // Safety: `cancel` is an Arc owned by this function and outlives `state.full`, and
+    // `abort_requested` only reads the AtomicBool it points to.
+    unsafe {
+        params.set_abort_callback(Some(abort_requested));
+        params.set_abort_callback_user_data(Arc::as_ptr(&cancel).cast_mut().cast());
+    }
     state.full(params, audio).map_err(|e| {
         if cancel.load(Ordering::Acquire) {
             "Dictation cancelled".into()
@@ -356,6 +367,42 @@ mod tests {
         let output = resample_to_16k(&input, 48_000);
         assert_eq!(output.len(), 16_000);
         assert!(output.iter().all(|sample| (*sample - 0.25).abs() < 0.0001));
+    }
+
+    #[test]
+    fn abort_callback_reads_the_flag_it_was_given() {
+        let flag = Arc::new(AtomicBool::new(false));
+        let pointer = Arc::as_ptr(&flag).cast_mut().cast();
+        assert!(!unsafe { abort_requested(pointer) });
+        flag.store(true, Ordering::Release);
+        assert!(unsafe { abort_requested(pointer) });
+    }
+
+    /// Set `TUCK_TEST_MODEL` to a ggml file and `TUCK_TEST_WAV` to 16 kHz mono 16-bit PCM.
+    #[test]
+    #[ignore = "needs a real model and a recording"]
+    fn real_transcription_with_a_catalog_model() {
+        let model = std::env::var("TUCK_TEST_MODEL").unwrap();
+        let wav = std::fs::read(std::env::var("TUCK_TEST_WAV").unwrap()).unwrap();
+        let data = wav.windows(4).position(|w| w == b"data").unwrap() + 8;
+        let audio: Vec<f32> = wav[data..]
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|b| f32::from(i16::from_le_bytes(*b)) / 32768.0)
+            .collect();
+        let load = Instant::now();
+        let context =
+            WhisperContext::new_with_params(&model, WhisperContextParameters::default()).unwrap();
+        let loaded = load.elapsed();
+        let run = Instant::now();
+        let text = transcribe(&context, &audio, Arc::new(AtomicBool::new(false))).unwrap();
+        println!(
+            "load {loaded:?}, transcribe {:?} for {:.1}s of audio: {text}",
+            run.elapsed(),
+            audio.len() as f32 / 16_000.0
+        );
+        assert!(!text.trim().is_empty());
     }
 
     #[test]

@@ -10,7 +10,7 @@ mod target;
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutEvent, ShortcutState};
@@ -23,6 +23,8 @@ const EVENT_ERROR: &str = "dictation_error";
 const DEFAULT_TOGGLE: &str = "Ctrl+Shift+Space";
 const DEFAULT_HOLD: &str = "Shift+Shift";
 const MAX_TRANSCRIPT_BYTES: usize = 64 * 1024;
+const MAX_SETTINGS_BYTES: usize = 64 * 1024;
+const SHORTCUT_PAUSE_LIMIT: std::time::Duration = std::time::Duration::from_secs(30);
 
 pub fn is_dual_shift_shortcut(shortcut: &str) -> bool {
     let s = shortcut.trim().to_lowercase().replace(' ', "");
@@ -41,12 +43,18 @@ pub fn is_dual_shift_shortcut(shortcut: &str) -> bool {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", default)]
 pub struct DictationSettings {
     pub toggle_shortcut: String,
     pub hold_to_talk_shortcut: String,
     pub review_before_insert: bool,
     pub partial_preview: bool,
+    /// Catalog id of the chosen model. Absent in files written before the picker.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active_model: Option<String>,
+    /// Another app's file used in place. Set only by the backend, from its own scan.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active_model_path: Option<PathBuf>,
 }
 
 impl Default for DictationSettings {
@@ -56,8 +64,18 @@ impl Default for DictationSettings {
             hold_to_talk_shortcut: DEFAULT_HOLD.to_owned(),
             review_before_insert: false,
             partial_preview: true,
+            active_model: None,
+            active_model_path: None,
         }
     }
+}
+
+/// Per-shortcut reasons, shown next to the field they belong to.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ShortcutProblems {
+    pub toggle: Option<String>,
+    pub hold: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -70,6 +88,15 @@ pub struct DictationSnapshot {
     pub message: Option<String>,
     pub settings: DictationSettings,
     pub can_insert: bool,
+    pub models: Vec<model::ModelRow>,
+    pub active_model_id: Option<String>,
+    pub active_model_label: Option<String>,
+    /// Why the chosen model is not the one in use, or why a model action failed.
+    pub model_notice: Option<String>,
+    pub scanning_models: bool,
+    pub shortcut_problems: ShortcutProblems,
+    /// Set when `dictation.json` could not be used as written.
+    pub settings_notice: Option<String>,
 }
 
 impl Drop for DictationSnapshot {
@@ -114,9 +141,15 @@ struct Runtime {
     review_target: Option<target::ForegroundTarget>,
     active: Option<ActiveSession>,
     downloaded_bytes: u64,
-    downloading: bool,
+    downloading_model: Option<&'static str>,
     removing_model: bool,
     download_cancel: Option<Arc<AtomicBool>>,
+    checking_models: Vec<String>,
+    scanning_models: bool,
+    found_models: Vec<model::Found>,
+    model_error: Option<String>,
+    shortcut_problems: ShortcutProblems,
+    settings_notice: Option<String>,
 }
 
 impl Drop for Runtime {
@@ -136,6 +169,10 @@ pub struct DictationService {
     registered_shortcuts: Mutex<Vec<Shortcut>>,
     settings_operation: Mutex<()>,
     is_shutdown: AtomicBool,
+    verified: Mutex<model::VerifyCache>,
+    locations: Vec<model::Location>,
+    shortcuts_paused: AtomicBool,
+    pause_generation: AtomicU64,
 }
 
 impl Default for DictationService {
@@ -156,50 +193,120 @@ impl DictationService {
                 review_target: None,
                 active: None,
                 downloaded_bytes: 0,
-                downloading: false,
+                downloading_model: None,
                 removing_model: false,
                 download_cancel: None,
+                checking_models: Vec::new(),
+                scanning_models: false,
+                found_models: Vec::new(),
+                model_error: None,
+                shortcut_problems: ShortcutProblems::default(),
+                settings_notice: None,
             }),
             model_busy: AtomicBool::new(false),
             registered_shortcuts: Mutex::new(Vec::new()),
             settings_operation: Mutex::new(()),
             is_shutdown: AtomicBool::new(false),
+            verified: Mutex::new(model::VerifyCache::empty()),
+            locations: model::system_locations(),
+            shortcuts_paused: AtomicBool::new(false),
+            pause_generation: AtomicU64::new(0),
         }
     }
 
-    fn model_path(&self) -> Result<PathBuf, String> {
+    fn models_dir(&self) -> Result<PathBuf, String> {
         let app = self
             .app
             .read()
             .map_err(|_| "Dictation service unavailable")?;
         let app = app.as_ref().ok_or("Dictation has not been initialized")?;
-        model::model_path(app)
+        Ok(app
+            .path()
+            .app_data_dir()
+            .map_err(|e| format!("Could not resolve model directory: {e}"))?
+            .join("dictation"))
+    }
+
+    fn resolve_model(&self) -> model::Resolution {
+        let Ok(dir) = self.models_dir() else {
+            return model::Resolution::default();
+        };
+        let settings = self.settings();
+        model::resolve_active(
+            settings.active_model.as_deref(),
+            settings.active_model_path.as_deref(),
+            &dir,
+            Path::is_file,
+        )
     }
 
     fn snapshot(&self) -> DictationSnapshot {
         let settings = self.settings.read().map(|s| s.clone()).unwrap_or_default();
-        let (status, model_downloaded_bytes, can_insert, transcript, message) = self
-            .runtime
-            .lock()
-            .map(|runtime| {
-                (
+        let resolution = self.resolve_model();
+        let dir = self.models_dir().ok();
+        let locked = self.runtime.lock();
+        let (status, downloaded, can_insert, transcript, message, models, notice, scanning) =
+            match locked.as_ref() {
+                Ok(runtime) => (
                     runtime.status.clone(),
                     runtime.downloaded_bytes,
                     runtime.status == "review" && runtime.review_target.is_some(),
                     runtime.transcript.clone(),
                     runtime.message.clone(),
+                    model::build_rows(
+                        &model::RowInputs {
+                            models_dir: dir.as_deref(),
+                            active: resolution.active.as_ref(),
+                            found: &runtime.found_models,
+                            downloading: runtime.downloading_model,
+                            checking: &runtime.checking_models,
+                            locations: &self.locations,
+                        },
+                        Path::is_file,
+                    ),
+                    runtime
+                        .model_error
+                        .clone()
+                        .or_else(|| resolution.notice.clone()),
+                    runtime.scanning_models,
+                ),
+                Err(_) => (
+                    "error".into(),
+                    0,
+                    false,
+                    None,
+                    None,
+                    Vec::new(),
+                    None,
+                    false,
+                ),
+            };
+        let (problems, settings_notice) = locked
+            .as_ref()
+            .map(|runtime| {
+                (
+                    runtime.shortcut_problems.clone(),
+                    runtime.settings_notice.clone(),
                 )
             })
-            .unwrap_or_else(|_| ("error".into(), 0, false, None, None));
-        let path = self.model_path().ok();
+            .unwrap_or_default();
+        drop(locked);
+        let active = resolution.active.as_ref();
         DictationSnapshot {
             status,
-            model_installed: path.as_deref().is_some_and(Path::is_file),
-            model_downloaded_bytes,
+            model_installed: active.is_some(),
+            model_downloaded_bytes: downloaded,
             can_insert,
             transcript,
             message,
             settings,
+            models,
+            active_model_id: active.map(|active| active.entry.id.to_owned()),
+            active_model_label: active.map(|active| active.entry.label.to_owned()),
+            model_notice: notice,
+            scanning_models: scanning,
+            shortcut_problems: problems,
+            settings_notice,
         }
     }
 
@@ -232,25 +339,25 @@ impl DictationService {
 
     fn begin(self: &Arc<Self>, mode: RecordingMode) -> Result<(), String> {
         let app = self.app()?;
-        let model_path = self.model_path()?;
-        if !model_path.is_file() {
+        let resolution = self.resolve_model();
+        let Some(active) = resolution.active else {
             self.set_status(
                 "modelMissing",
-                Some("Download the offline speech model in Settings before recording.".into()),
+                Some(
+                    resolution
+                        .notice
+                        .unwrap_or_else(|| "Choose a speech model in Settings.".into()),
+                ),
             );
-            return Err("The offline dictation model is not installed".into());
-        }
+            return Err("No speech model is ready".into());
+        };
         {
             let mut runtime = self
                 .runtime
                 .lock()
                 .map_err(|_| "Dictation service unavailable")?;
-            if runtime.active.is_some()
-                || runtime.downloading
-                || runtime.removing_model
-                || runtime.status == "inserting"
-            {
-                return Err("Dictation is already recording, transcribing, or downloading".into());
+            if runtime.active.is_some() || runtime.removing_model || runtime.status == "inserting" {
+                return Err("Dictation is already recording or transcribing".into());
             }
             if let Some(mut text) = runtime.transcript.take() {
                 text.zeroize();
@@ -267,11 +374,7 @@ impl DictationService {
                 .runtime
                 .lock()
                 .map_err(|_| "Dictation service unavailable")?;
-            if runtime.active.is_some()
-                || runtime.downloading
-                || runtime.removing_model
-                || runtime.status == "inserting"
-            {
+            if runtime.active.is_some() || runtime.removing_model || runtime.status == "inserting" {
                 return Err("Dictation is already active".into());
             }
             runtime.active = Some(ActiveSession {
@@ -283,22 +386,28 @@ impl DictationService {
         }
         self.emit_state();
 
-        if let Err(error) = model::verify_installed(&model_path) {
-            self.clear_active();
-            self.set_status("error", Some(error.clone()));
-            return Err(error);
-        }
-        if stop.load(Ordering::Acquire) || cancel.load(Ordering::Acquire) {
-            self.finish_cancelled();
-            return Ok(());
-        }
-
         let service = self.clone();
         std::thread::Builder::new()
             .name("tuck-dictation".into())
             .spawn(move || {
-                let result =
-                    audio::record_and_transcribe(&service, &app, &model_path, stop, cancel.clone());
+                // Off the caller's thread: hashing a model not yet verified can take seconds.
+                if let Err(error) =
+                    model::verify(&active.path, active.entry, &service.verified, false)
+                {
+                    service.finish_error(error);
+                    return;
+                }
+                if stop.load(Ordering::Acquire) || cancel.load(Ordering::Acquire) {
+                    service.finish_cancelled();
+                    return;
+                }
+                let result = audio::record_and_transcribe(
+                    &service,
+                    &app,
+                    &active.path,
+                    stop,
+                    cancel.clone(),
+                );
                 if cancel.load(Ordering::Acquire) {
                     if let Ok(mut text) = result {
                         text.zeroize();
@@ -446,14 +555,21 @@ impl DictationService {
             self.emit_state();
             return Ok(());
         }
-        if let Some(cancel) = runtime.download_cancel.as_ref() {
-            cancel.store(true, Ordering::Release);
-            runtime.message = Some("Cancelling model download…".into());
-            drop(runtime);
-            self.emit_state();
-            return Ok(());
-        }
-        Err("There is no recording, inference, or model download to cancel".into())
+        Err("There is no recording or transcription to cancel".into())
+    }
+
+    /// Separate from `cancel`, so cancelling a download never ends a recording.
+    fn cancel_download(&self) -> Result<(), String> {
+        let runtime = self
+            .runtime
+            .lock()
+            .map_err(|_| "Dictation service unavailable")?;
+        let cancel = runtime
+            .download_cancel
+            .as_ref()
+            .ok_or("There is no model download to cancel")?;
+        cancel.store(true, Ordering::Release);
+        Ok(())
     }
 
     fn finish_review(self: &Arc<Self>) -> Result<(), String> {
@@ -520,87 +636,198 @@ impl DictationService {
         Ok(())
     }
 
-    fn download_model(self: &Arc<Self>) -> Result<(), String> {
-        let app = self.app()?;
+    fn download_model(self: &Arc<Self>, id: &str) -> Result<(), String> {
+        let entry = model::entry(id)
+            .filter(|entry| entry.offered)
+            .ok_or("That model is not available to download")?;
+        let dir = self.models_dir()?;
         let cancel = Arc::new(AtomicBool::new(false));
         {
             let mut runtime = self
                 .runtime
                 .lock()
                 .map_err(|_| "Dictation service unavailable")?;
-            if runtime.active.is_some()
-                || runtime.downloading
-                || runtime.removing_model
-                || runtime.status == "review"
-                || runtime.status == "inserting"
-            {
-                return Err("Stop dictation before changing the model".into());
+            if runtime.downloading_model.is_some() {
+                return Err("Another model is downloading. Wait for it or cancel it.".into());
             }
-            runtime.downloading = true;
+            if runtime.removing_model {
+                return Err("A model is being removed. Try again in a moment.".into());
+            }
+            runtime.downloading_model = Some(entry.id);
             runtime.download_cancel = Some(cancel.clone());
-            runtime.status = "downloadingModel".into();
             runtime.downloaded_bytes = 0;
-            runtime.message = None;
+            runtime.model_error = None;
         }
         self.emit_state();
         let service = self.clone();
-        std::thread::Builder::new()
+        let spawned = std::thread::Builder::new()
             .name("tuck-model-download".into())
             .spawn(move || {
-                let mut last_progress_event = std::time::Instant::now()
-                    .checked_sub(std::time::Duration::from_secs(1))
-                    .unwrap_or_else(std::time::Instant::now);
+                let mut last_event = std::time::Instant::now();
                 let result = match tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
                 {
-                    Ok(runtime) => runtime.block_on(model::download(&app, &cancel, |received| {
-                        if let Ok(mut runtime) = service.runtime.lock() {
-                            runtime.downloaded_bytes = received;
-                        }
-                        if last_progress_event.elapsed() >= std::time::Duration::from_millis(250) {
-                            last_progress_event = std::time::Instant::now();
-                            service.emit_state();
-                        }
-                    })),
+                    Ok(runtime) => runtime.block_on(model::download(
+                        &dir,
+                        entry,
+                        &service.verified,
+                        &cancel,
+                        |received| {
+                            if let Ok(mut runtime) = service.runtime.lock() {
+                                runtime.downloaded_bytes = received;
+                            }
+                            if last_event.elapsed() >= std::time::Duration::from_millis(250) {
+                                last_event = std::time::Instant::now();
+                                service.emit_state();
+                            }
+                        },
+                    )),
                     Err(error) => Err(format!("Could not start model download runtime: {error}")),
                 };
-                let cancelled = cancel.load(Ordering::Acquire);
-                let error = result.err().filter(|_| !cancelled);
+                let error = result.as_ref().err().cloned();
+                let reported = error.clone().filter(|_| !cancel.load(Ordering::Acquire));
                 if let Ok(mut runtime) = service.runtime.lock() {
-                    runtime.downloading = false;
+                    runtime.downloading_model = None;
                     runtime.download_cancel = None;
-                    runtime.status = if error.is_none() { "idle" } else { "error" }.into();
-                    runtime.message = error.clone();
+                    runtime.downloaded_bytes = 0;
+                    runtime.model_error = reported.clone();
                 }
+                // Never replaces the model in use; only fills the gap when there is none.
+                if error.is_none() && service.resolve_model().active.is_none() {
+                    if let Err(error) = service.commit_selection(Some(entry.id.to_owned()), None) {
+                        service.set_model_error(error);
+                    }
+                }
+                service.clear_missing_status();
                 service.emit_state();
-                if let Some(error) = error {
+                if let Some(error) = reported {
                     if let Ok(app) = service.app() {
                         let _ = app.emit(EVENT_ERROR, error);
                     }
                 }
-            })
-            .map_err(|e| {
-                if let Ok(mut runtime) = self.runtime.lock() {
-                    runtime.downloading = false;
-                    runtime.download_cancel = None;
-                    runtime.status = "error".into();
-                    runtime.message = Some(format!("Could not start model download: {e}"));
-                }
-                self.emit_state();
-                format!("Could not start model download: {e}")
-            })?;
+            });
+        if let Err(error) = spawned {
+            let message = format!("Could not start model download: {error}");
+            if let Ok(mut runtime) = self.runtime.lock() {
+                runtime.downloading_model = None;
+                runtime.download_cancel = None;
+                runtime.model_error = Some(message.clone());
+            }
+            self.emit_state();
+            return Err(message);
+        }
         Ok(())
     }
 
-    fn remove_model(&self) -> Result<(), String> {
+    fn set_model_error(&self, error: String) {
+        if let Ok(mut runtime) = self.runtime.lock() {
+            runtime.model_error = Some(error);
+        }
+    }
+
+    /// A model just became usable, so stop saying one is missing.
+    fn clear_missing_status(&self) {
+        if self.resolve_model().active.is_none() {
+            return;
+        }
+        if let Ok(mut runtime) = self.runtime.lock() {
+            if runtime.status == "modelMissing" {
+                runtime.status = "idle".into();
+                runtime.message = None;
+            }
+        }
+    }
+
+    /// Stores the selection in `dictation.json`, undoing it if the file cannot be written.
+    fn commit_selection(&self, id: Option<String>, path: Option<PathBuf>) -> Result<(), String> {
+        let app = self.app()?;
+        let _operation = self
+            .settings_operation
+            .lock()
+            .map_err(|_| "Dictation settings unavailable")?;
+        let mut next = self.settings();
+        next.active_model = id;
+        next.active_model_path = path;
+        persist_settings(&app, &next)?;
+        *self
+            .settings
+            .write()
+            .map_err(|_| "Dictation settings unavailable")? = next;
+        Ok(())
+    }
+
+    /// Verifies off the UI thread, then selects. Other apps' files are used where they are.
+    fn use_model(self: &Arc<Self>, id: &str) -> Result<(), String> {
+        let entry = model::entry(id).ok_or("That model is not in Tuck's catalog")?;
+        let own = self.models_dir()?.join(entry.id);
+        let external = {
+            let mut runtime = self
+                .runtime
+                .lock()
+                .map_err(|_| "Dictation service unavailable")?;
+            if runtime.active.is_some() {
+                return Err("Stop dictation before changing the model".into());
+            }
+            let external = runtime
+                .found_models
+                .iter()
+                .find(|found| found.id == entry.id)
+                .map(|found| found.path.clone());
+            if !own.is_file() && external.is_none() {
+                return Err(format!(
+                    "{} is not on this computer. Download it first.",
+                    entry.label
+                ));
+            }
+            runtime.checking_models.push(entry.id.to_owned());
+            runtime.model_error = None;
+            external
+        };
+        self.emit_state();
+        let service = self.clone();
+        let spawned = std::thread::Builder::new()
+            .name("tuck-model-check".into())
+            .spawn(move || {
+                let own_installed = own.is_file();
+                let path = if own_installed {
+                    own
+                } else {
+                    external.clone().unwrap_or(own)
+                };
+                let result = model::verify(&path, entry, &service.verified, true).and_then(|_| {
+                    service.commit_selection(
+                        Some(entry.id.to_owned()),
+                        (!own_installed).then_some(path),
+                    )
+                });
+                if let Ok(mut runtime) = service.runtime.lock() {
+                    runtime.checking_models.retain(|item| item != entry.id);
+                    runtime.model_error = result.err();
+                }
+                service.clear_missing_status();
+                service.emit_state();
+            });
+        if let Err(error) = spawned {
+            if let Ok(mut runtime) = self.runtime.lock() {
+                runtime.checking_models.retain(|item| item != entry.id);
+            }
+            self.emit_state();
+            return Err(format!("Could not check the model: {error}"));
+        }
+        Ok(())
+    }
+
+    /// Deletes a model Tuck downloaded. For another app's file it only stops using it.
+    fn remove_model(&self, id: &str) -> Result<(), String> {
+        let entry = model::entry(id).ok_or("That model is not in Tuck's catalog")?;
         {
             let mut runtime = self
                 .runtime
                 .lock()
                 .map_err(|_| "Dictation service unavailable")?;
             if runtime.active.is_some()
-                || runtime.downloading
+                || runtime.downloading_model == Some(entry.id)
                 || runtime.removing_model
                 || runtime.status == "review"
                 || runtime.status == "inserting"
@@ -609,39 +836,96 @@ impl DictationService {
                 return Err("The model is in use; stop dictation before removing it".into());
             }
             runtime.removing_model = true;
-            runtime.status = "removingModel".into();
-            runtime.message = None;
+            runtime.model_error = None;
         }
-        self.emit_state();
-        let path = match self.model_path() {
-            Ok(path) => path,
-            Err(error) => {
-                if let Ok(mut runtime) = self.runtime.lock() {
-                    runtime.removing_model = false;
-                    runtime.status = "error".into();
-                    runtime.message = Some(error.clone());
-                }
-                self.emit_state();
-                return Err(error);
-            }
-        };
-        let result = if path.exists() {
-            std::fs::remove_file(path).map_err(|e| format!("Could not remove the model: {e}"))
-        } else {
-            Ok(())
-        };
+        let result = self.remove_model_files(entry);
         if let Ok(mut runtime) = self.runtime.lock() {
             runtime.removing_model = false;
-            runtime.status = if result.is_ok() {
-                "modelMissing"
-            } else {
-                "error"
-            }
-            .into();
-            runtime.message = result.as_ref().err().cloned();
+            runtime.model_error = result.as_ref().err().cloned();
         }
         self.emit_state();
         result
+    }
+
+    fn remove_model_files(&self, entry: &'static model::CatalogEntry) -> Result<(), String> {
+        let settings = self.settings();
+        let selected = settings.active_model.as_deref() == Some(entry.id);
+        if selected && settings.active_model_path.is_some() {
+            return self.commit_selection(None, None);
+        }
+        // The path comes from the catalog id inside Tuck's own folder, so this can only
+        // ever delete a file Tuck put there.
+        let path = self.models_dir()?.join(entry.id);
+        if path.exists() {
+            std::fs::remove_file(&path).map_err(|e| format!("Could not remove the model: {e}"))?;
+        }
+        model::forget(&path, &self.verified);
+        if selected {
+            self.commit_selection(None, None)?;
+        }
+        Ok(())
+    }
+
+    /// On demand only. Lists by name and size, then hashes only what could be a match,
+    /// on a low-priority thread, skipping models Tuck already has.
+    fn scan_models(self: &Arc<Self>) -> Result<(), String> {
+        let dir = self.models_dir()?;
+        {
+            let mut runtime = self
+                .runtime
+                .lock()
+                .map_err(|_| "Dictation service unavailable")?;
+            if runtime.scanning_models {
+                return Ok(());
+            }
+            runtime.scanning_models = true;
+        }
+        self.emit_state();
+        let service = self.clone();
+        let spawned = std::thread::Builder::new()
+            .name("tuck-model-scan".into())
+            .spawn(move || {
+                let mut found: Vec<model::Found> = Vec::new();
+                for candidate in model::find_candidates(&service.locations) {
+                    let id = candidate.entry.id;
+                    if service.is_shutdown()
+                        || dir.join(id).is_file()
+                        || found.iter().any(|item| item.id == id)
+                    {
+                        continue;
+                    }
+                    if let Ok(mut runtime) = service.runtime.lock() {
+                        runtime.checking_models.push(id.to_owned());
+                    }
+                    service.emit_state();
+                    let matched =
+                        model::verify(&candidate.path, candidate.entry, &service.verified, true)
+                            .is_ok();
+                    if matched {
+                        found.push(model::Found {
+                            id,
+                            path: candidate.path,
+                            app: candidate.app,
+                        });
+                    }
+                    if let Ok(mut runtime) = service.runtime.lock() {
+                        runtime.checking_models.retain(|item| item != id);
+                        runtime.found_models = found.clone();
+                    }
+                }
+                if let Ok(mut runtime) = service.runtime.lock() {
+                    runtime.found_models = found;
+                    runtime.scanning_models = false;
+                }
+                service.emit_state();
+            });
+        if let Err(error) = spawned {
+            if let Ok(mut runtime) = self.runtime.lock() {
+                runtime.scanning_models = false;
+            }
+            return Err(format!("Could not look for models: {error}"));
+        }
+        Ok(())
     }
 
     pub fn shutdown(&self) {
@@ -657,7 +941,8 @@ impl DictationService {
 
 /// Arms the dual-Shift monitor only while it is the configured hold shortcut.
 fn sync_dual_shift(service: &Arc<DictationService>) {
-    let enabled = is_dual_shift_shortcut(&service.settings().hold_to_talk_shortcut);
+    let enabled = is_dual_shift_shortcut(&service.settings().hold_to_talk_shortcut)
+        && !service.shortcuts_paused.load(Ordering::Acquire);
     let service = service.clone();
     dual_shift::set_enabled(enabled, move || {
         Box::new(move |change| {
@@ -683,12 +968,22 @@ pub fn start(app: AppHandle, service: &Arc<DictationService>) -> Result<(), Stri
     if let Ok(mut slot) = service.app.write() {
         *slot = Some(app.clone());
     }
-    if let Ok(settings) = load_settings(&app) {
-        if let Ok(mut current) = service.settings.write() {
-            *current = settings;
+    if let Ok(dir) = service.models_dir() {
+        if let Ok(mut verified) = service.verified.lock() {
+            *verified = model::VerifyCache::load(&dir);
         }
     }
-    if let Err(error) = register_shortcuts(&app, service) {
+    // A settings file that cannot be used must not take dictation down with it, but the
+    // owner has to be told, or the settings page looks like it ignored their choices.
+    let (settings, notice) = load_settings(&app);
+    if let Ok(mut current) = service.settings.write() {
+        *current = settings.clone();
+    }
+    if let Ok(mut runtime) = service.runtime.lock() {
+        runtime.settings_notice = notice;
+    }
+    // Failures here are recorded per shortcut and shown beside the field.
+    if let Err(error) = register_shortcuts(&app, service, &settings) {
         eprintln!("Dictation shortcut registration warning: {error}");
     }
     sync_dual_shift(service);
@@ -696,17 +991,45 @@ pub fn start(app: AppHandle, service: &Arc<DictationService>) -> Result<(), Stri
     Ok(())
 }
 
-pub fn register_shortcuts(app: &AppHandle, service: &Arc<DictationService>) -> Result<(), String> {
+fn shortcut_taken_message(shortcut: &str, error: &str) -> String {
+    if error.contains("already registered") {
+        format!("{shortcut} is already used by another app. Record a different shortcut.")
+    } else {
+        format!("Windows would not register {shortcut}. Record a different shortcut.")
+    }
+}
+
+fn invalid_shortcut_message(shortcut: &str) -> String {
+    format!("\"{shortcut}\" is not a shortcut Tuck can use. Press a modifier and a key, like Ctrl+Alt+Space.")
+}
+
+/// A shortcut the owner just changed must work, or the save is refused. One that did not
+/// change is recorded as a problem instead: if another app holds Ctrl+Shift+Space, that
+/// must not stop the owner flipping "Review before inserting" or fixing the other shortcut.
+fn registration_outcome(changed: bool, failure: Option<String>) -> Result<Option<String>, String> {
+    match failure {
+        Some(reason) if changed => Err(reason),
+        other => Ok(other),
+    }
+}
+
+/// `prior` is what the settings were before this change. At startup it is the settings
+/// themselves, so nothing counts as changed and nothing can fail hard.
+pub fn register_shortcuts(
+    app: &AppHandle,
+    service: &Arc<DictationService>,
+    prior: &DictationSettings,
+) -> Result<(), String> {
     let settings = service.settings();
     let shortcuts = app.global_shortcut();
     let toggle = Shortcut::try_from(settings.toggle_shortcut.as_str())
-        .map_err(|e| format!("Invalid toggle shortcut: {e}"))?;
+        .map_err(|_| invalid_shortcut_message(&settings.toggle_shortcut))?;
     let hold = if is_dual_shift_shortcut(&settings.hold_to_talk_shortcut) {
         None
     } else {
         Some(
             Shortcut::try_from(settings.hold_to_talk_shortcut.as_str())
-                .map_err(|e| format!("Invalid hold-to-talk shortcut: {e}"))?,
+                .map_err(|_| invalid_shortcut_message(&settings.hold_to_talk_shortcut))?,
         )
     };
     let previous = service
@@ -717,27 +1040,85 @@ pub fn register_shortcuts(app: &AppHandle, service: &Arc<DictationService>) -> R
     for shortcut in &previous {
         let _ = shortcuts.unregister(*shortcut);
     }
-    if let Err(error) = shortcuts.register(toggle) {
-        for prior in &previous {
-            let _ = shortcuts.register(*prior);
-        }
-        return Err(format!("Could not register toggle shortcut: {error}"));
-    }
-    if let Some(hold_shortcut) = hold {
-        if let Err(error) = shortcuts.register(hold_shortcut) {
-            let _ = shortcuts.unregister(toggle);
-            for prior in &previous {
-                let _ = shortcuts.register(*prior);
+    let mut registered = Vec::new();
+    let mut attempt =
+        |shortcut: Shortcut, text: &str, changed: bool| match shortcuts.register(shortcut) {
+            Ok(()) => {
+                registered.push(shortcut);
+                Ok(None)
             }
-            return Err(format!("Could not register hold-to-talk shortcut: {error}"));
+            Err(error) => registration_outcome(
+                changed,
+                Some(shortcut_taken_message(text, &error.to_string())),
+            ),
+        };
+    let toggle_result = attempt(
+        toggle,
+        &settings.toggle_shortcut,
+        settings.toggle_shortcut != prior.toggle_shortcut,
+    );
+    let hold_result = match hold {
+        Some(hold) if toggle_result.is_ok() => attempt(
+            hold,
+            &settings.hold_to_talk_shortcut,
+            settings.hold_to_talk_shortcut != prior.hold_to_talk_shortcut,
+        ),
+        _ => Ok(None),
+    };
+    let problems =
+        toggle_result.and_then(|toggle| hold_result.map(|hold| ShortcutProblems { toggle, hold }));
+    match problems {
+        Ok(problems) => {
+            if let Ok(mut slot) = service.registered_shortcuts.lock() {
+                *slot = registered;
+            }
+            if let Ok(mut runtime) = service.runtime.lock() {
+                runtime.shortcut_problems = problems;
+            }
+            Ok(())
         }
-        if let Ok(mut registered) = service.registered_shortcuts.lock() {
-            *registered = vec![toggle, hold_shortcut];
+        Err(error) => {
+            for shortcut in &registered {
+                let _ = shortcuts.unregister(*shortcut);
+            }
+            for shortcut in &previous {
+                let _ = shortcuts.register(*shortcut);
+            }
+            Err(error)
         }
-    } else if let Ok(mut registered) = service.registered_shortcuts.lock() {
-        *registered = vec![toggle];
     }
-    Ok(())
+}
+
+/// While the recorder listens, Tuck's own shortcuts must not fire or swallow the keys.
+/// A timer ends the pause in case the settings window goes away mid-recording.
+fn pause_shortcuts(app: &AppHandle, service: &Arc<DictationService>, paused: bool) {
+    let generation = service.pause_generation.fetch_add(1, Ordering::AcqRel) + 1;
+    service.shortcuts_paused.store(paused, Ordering::Release);
+    if paused {
+        let shortcuts = app.global_shortcut();
+        if let Ok(mut registered) = service.registered_shortcuts.lock() {
+            for shortcut in registered.drain(..) {
+                let _ = shortcuts.unregister(shortcut);
+            }
+        }
+        let app = app.clone();
+        let service = service.clone();
+        let _ = std::thread::Builder::new()
+            .name("tuck-shortcut-pause".into())
+            .spawn(move || {
+                std::thread::sleep(SHORTCUT_PAUSE_LIMIT);
+                if service.pause_generation.load(Ordering::Acquire) == generation {
+                    pause_shortcuts(&app, &service, false);
+                    service.emit_state();
+                }
+            });
+    } else {
+        let current = service.settings();
+        if let Err(error) = register_shortcuts(app, service, &current) {
+            eprintln!("Dictation shortcut registration warning: {error}");
+        }
+    }
+    sync_dual_shift(service);
 }
 
 /// Pass this from the coordinator's global-shortcut plugin handler.
@@ -752,7 +1133,7 @@ pub fn handle_shortcut(app: &AppHandle, shortcut: &Shortcut, event: ShortcutEven
         let status = service.snapshot().status.clone();
         if status == "recording" || status == "starting" {
             let _ = service.stop();
-        } else if status == "idle" || status == "review" || status == "error" {
+        } else if ["idle", "review", "error", "modelMissing"].contains(&status.as_str()) {
             let _ = service.begin(RecordingMode::Toggle);
         }
     } else if hold.as_ref() == Some(shortcut) {
@@ -767,17 +1148,20 @@ pub fn handle_shortcut(app: &AppHandle, shortcut: &Shortcut, event: ShortcutEven
 
 fn validate_settings(settings: &DictationSettings) -> Result<(), String> {
     if settings.toggle_shortcut.len() > 64 || settings.hold_to_talk_shortcut.len() > 64 {
-        return Err("Shortcut strings must be at most 64 bytes".into());
+        return Err("Shortcuts must be at most 64 characters".into());
+    }
+    if is_dual_shift_shortcut(&settings.toggle_shortcut) {
+        return Err("Both Shift keys only work for Hold to talk.".into());
     }
     let toggle = Shortcut::try_from(settings.toggle_shortcut.as_str())
-        .map_err(|e| format!("Invalid toggle shortcut: {e}"))?;
+        .map_err(|_| invalid_shortcut_message(&settings.toggle_shortcut))?;
     if is_dual_shift_shortcut(&settings.hold_to_talk_shortcut) {
         return Ok(());
     }
     let hold = Shortcut::try_from(settings.hold_to_talk_shortcut.as_str())
-        .map_err(|e| format!("Invalid hold-to-talk shortcut: {e}"))?;
+        .map_err(|_| invalid_shortcut_message(&settings.hold_to_talk_shortcut))?;
     if toggle == hold {
-        return Err("Toggle and hold-to-talk shortcuts must be different".into());
+        return Err("Start and stop and Hold to talk must be different shortcuts.".into());
     }
     Ok(())
 }
@@ -791,23 +1175,60 @@ fn settings_path(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(path)
 }
 
-fn load_settings(app: &AppHandle) -> Result<DictationSettings, String> {
-    let path = settings_path(app)?;
-    let bytes = match std::fs::read(path) {
-        Ok(b) if b.len() <= 4096 => b,
-        Ok(_) => return Err("Dictation settings file exceeds the size limit".into()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(DictationSettings::default())
+/// Keeps every usable value. A bad shortcut resets only that shortcut, so one unreadable
+/// value (a file from a newer or older build) does not throw away the rest.
+fn parse_settings(bytes: &[u8]) -> (DictationSettings, Option<String>) {
+    let mut settings: DictationSettings = match serde_json::from_slice(bytes) {
+        Ok(settings) => settings,
+        Err(error) => {
+            return (
+                DictationSettings::default(),
+                Some(format!(
+                    "The saved dictation settings could not be read ({error}). Using the defaults until you change something."
+                )),
+            )
         }
-        Err(e) => return Err(format!("Could not read dictation settings: {e}")),
     };
-    let mut settings: DictationSettings = serde_json::from_slice(&bytes)
-        .map_err(|e| format!("Dictation settings are invalid: {e}"))?;
     if settings.hold_to_talk_shortcut == "Ctrl+Alt+Space" {
         settings.hold_to_talk_shortcut = DEFAULT_HOLD.to_owned();
     }
-    validate_settings(&settings)?;
-    Ok(settings)
+    let mut resets = Vec::new();
+    if is_dual_shift_shortcut(&settings.toggle_shortcut)
+        || Shortcut::try_from(settings.toggle_shortcut.as_str()).is_err()
+    {
+        resets.push(format!(
+            "Start and stop was \"{}\", now {DEFAULT_TOGGLE}",
+            settings.toggle_shortcut
+        ));
+        settings.toggle_shortcut = DEFAULT_TOGGLE.to_owned();
+    }
+    if validate_settings(&settings).is_err() {
+        resets.push(format!(
+            "Hold to talk was \"{}\", now both Shift keys",
+            settings.hold_to_talk_shortcut
+        ));
+        settings.hold_to_talk_shortcut = DEFAULT_HOLD.to_owned();
+    }
+    let notice = (!resets.is_empty())
+        .then(|| format!("A saved shortcut could not be used. {}.", resets.join(". ")));
+    (settings, notice)
+}
+
+fn load_settings(app: &AppHandle) -> (DictationSettings, Option<String>) {
+    let failed = |reason: String| (DictationSettings::default(), Some(reason));
+    let path = match settings_path(app) {
+        Ok(path) => path,
+        Err(error) => return failed(error),
+    };
+    match std::fs::read(path) {
+        // Room for a selection with a long path to another app's folder.
+        Ok(bytes) if bytes.len() <= MAX_SETTINGS_BYTES => parse_settings(&bytes),
+        Ok(_) => failed("The saved dictation settings are too large. Using the defaults.".into()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            (DictationSettings::default(), None)
+        }
+        Err(error) => failed(format!("Could not read the dictation settings: {error}")),
+    }
 }
 
 fn persist_settings(app: &AppHandle, settings: &DictationSettings) -> Result<(), String> {
@@ -817,7 +1238,7 @@ fn persist_settings(app: &AppHandle, settings: &DictationSettings) -> Result<(),
         .map_err(|e| format!("Could not create settings directory: {e}"))?;
     let bytes =
         serde_json::to_vec(settings).map_err(|e| format!("Could not serialize settings: {e}"))?;
-    if bytes.len() > 4096 {
+    if bytes.len() > MAX_SETTINGS_BYTES {
         return Err("Dictation settings exceed the size limit".into());
     }
     let file_name = path
@@ -900,19 +1321,43 @@ pub fn dictation_set_settings(
         .map_err(|_| "Dictation settings unavailable")?;
     validate_settings(&settings)?;
     let previous = service.settings();
+    // The model is chosen only through its own commands, which use backend-verified paths.
+    // A page can never point the recorder at a file by sending settings.
+    let settings = DictationSettings {
+        active_model: previous.active_model.clone(),
+        active_model_path: previous.active_model_path.clone(),
+        ..settings
+    };
+    let shortcuts_changed = settings.toggle_shortcut != previous.toggle_shortcut
+        || settings.hold_to_talk_shortcut != previous.hold_to_talk_shortcut;
+    let had_problems = service
+        .runtime
+        .lock()
+        .is_ok_and(|runtime| runtime.shortcut_problems != ShortcutProblems::default());
+    let resumed = service.shortcuts_paused.swap(false, Ordering::AcqRel);
+    if resumed {
+        service.pause_generation.fetch_add(1, Ordering::AcqRel);
+    }
     *service
         .settings
         .write()
         .map_err(|_| "Dictation settings unavailable")? = settings.clone();
-    if let Err(error) =
-        register_shortcuts(&app, &service).and_then(|_| persist_settings(&app, &settings))
-    {
+    let registered = if shortcuts_changed || had_problems || resumed {
+        register_shortcuts(&app, &service, &previous)
+    } else {
+        Ok(())
+    };
+    if let Err(error) = registered.and_then(|_| persist_settings(&app, &settings)) {
         *service
             .settings
             .write()
-            .map_err(|_| "Dictation settings unavailable")? = previous;
-        let _ = register_shortcuts(&app, &service);
+            .map_err(|_| "Dictation settings unavailable")? = previous.clone();
+        let _ = register_shortcuts(&app, &service, &previous);
+        sync_dual_shift(&service);
         return Err(error);
+    }
+    if let Ok(mut runtime) = service.runtime.lock() {
+        runtime.settings_notice = None;
     }
     sync_dual_shift(&service);
     service.emit_state();
@@ -920,13 +1365,41 @@ pub fn dictation_set_settings(
 }
 
 #[tauri::command]
-pub fn dictation_model_download(service: State<'_, Arc<DictationService>>) -> Result<(), String> {
-    service.download_model()
+pub fn dictation_shortcuts_pause(
+    app: AppHandle,
+    service: State<'_, Arc<DictationService>>,
+    paused: bool,
+) {
+    pause_shortcuts(&app, &service, paused);
 }
 
 #[tauri::command]
-pub fn dictation_model_remove(service: State<'_, Arc<DictationService>>) -> Result<(), String> {
-    service.remove_model()
+pub fn dictation_model_download(
+    service: State<'_, Arc<DictationService>>,
+    id: String,
+) -> Result<(), String> {
+    service.download_model(&id)
+}
+
+#[tauri::command]
+pub fn dictation_model_remove(
+    service: State<'_, Arc<DictationService>>,
+    id: String,
+) -> Result<(), String> {
+    service.remove_model(&id)
+}
+
+#[tauri::command]
+pub fn dictation_model_use(
+    service: State<'_, Arc<DictationService>>,
+    id: String,
+) -> Result<(), String> {
+    service.use_model(&id)
+}
+
+#[tauri::command]
+pub fn dictation_models_scan(service: State<'_, Arc<DictationService>>) -> Result<(), String> {
+    service.scan_models()
 }
 
 #[tauri::command]
@@ -971,7 +1444,7 @@ pub fn dictation_review_discard(service: State<'_, Arc<DictationService>>) -> Re
 pub fn dictation_model_download_cancel(
     service: State<'_, Arc<DictationService>>,
 ) -> Result<(), String> {
-    service.cancel()
+    service.cancel_download()
 }
 
 #[cfg(test)]
@@ -1010,13 +1483,19 @@ mod tests {
     #[test]
     fn model_removal_is_rejected_during_startup_and_download() {
         let service = DictationService::new();
-        service.runtime.lock().unwrap().downloading = true;
-        assert!(service.remove_model().unwrap_err().contains("in use"));
+        service.runtime.lock().unwrap().downloading_model = Some("ggml-tiny.bin");
+        assert!(service
+            .remove_model("ggml-tiny.bin")
+            .unwrap_err()
+            .contains("in use"));
         let mut runtime = service.runtime.lock().unwrap();
-        runtime.downloading = false;
+        runtime.downloading_model = None;
         runtime.removing_model = true;
         drop(runtime);
-        assert!(service.remove_model().unwrap_err().contains("in use"));
+        assert!(service
+            .remove_model("ggml-tiny.bin")
+            .unwrap_err()
+            .contains("in use"));
         let mut runtime = service.runtime.lock().unwrap();
         runtime.removing_model = false;
         runtime.active = Some(ActiveSession {
@@ -1025,7 +1504,171 @@ mod tests {
             mode: RecordingMode::Toggle,
         });
         drop(runtime);
-        assert!(service.remove_model().unwrap_err().contains("in use"));
+        assert!(service
+            .remove_model("ggml-tiny.bin")
+            .unwrap_err()
+            .contains("in use"));
+    }
+
+    #[test]
+    fn model_commands_only_accept_catalog_ids() {
+        let service = Arc::new(DictationService::new());
+        assert!(service.remove_model("../../secrets.bin").is_err());
+        assert!(service.use_model("../../secrets.bin").is_err());
+        assert!(service.download_model("../../secrets.bin").is_err());
+        assert!(
+            service.download_model("ggml-base.bin").is_err(),
+            "detect-only entries are not offered for download"
+        );
+    }
+
+    #[test]
+    fn cancelling_a_download_does_not_touch_a_recording() {
+        let service = DictationService::new();
+        let stop = Arc::new(AtomicBool::new(false));
+        let cancel_download = Arc::new(AtomicBool::new(false));
+        {
+            let mut runtime = service.runtime.lock().unwrap();
+            runtime.active = Some(ActiveSession {
+                stop: stop.clone(),
+                cancel: Arc::new(AtomicBool::new(false)),
+                mode: RecordingMode::Toggle,
+            });
+            runtime.download_cancel = Some(cancel_download.clone());
+        }
+        service.cancel_download().unwrap();
+        assert!(cancel_download.load(Ordering::Acquire));
+        assert!(!stop.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn old_settings_files_load_without_the_model_fields() {
+        let (settings, notice) = parse_settings(
+            br#"{"toggleShortcut":"Ctrl+Shift+Space","holdToTalkShortcut":"Shift+Shift","reviewBeforeInsert":true,"partialPreview":true}"#,
+        );
+        assert_eq!(notice, None);
+        assert_eq!(settings.active_model, None);
+        assert_eq!(settings.active_model_path, None);
+        assert!(settings.review_before_insert);
+        assert_eq!(settings.hold_to_talk_shortcut, "Shift+Shift");
+    }
+
+    #[test]
+    fn selection_round_trips_and_old_defaults_stay_out_of_the_file() {
+        let plain = serde_json::to_string(&DictationSettings::default()).unwrap();
+        assert!(!plain.contains("activeModel"));
+        let settings = DictationSettings {
+            active_model: Some("ggml-base.bin".into()),
+            active_model_path: Some(PathBuf::from("C:/x/ggml-base.bin")),
+            ..DictationSettings::default()
+        };
+        let bytes = serde_json::to_vec(&settings).unwrap();
+        assert_eq!(parse_settings(&bytes), (settings, None));
+    }
+
+    #[test]
+    fn legacy_hold_shortcut_still_migrates() {
+        let (settings, notice) = parse_settings(
+            br#"{"toggleShortcut":"Ctrl+Shift+Space","holdToTalkShortcut":"Ctrl+Alt+Space","reviewBeforeInsert":false,"partialPreview":true}"#,
+        );
+        assert_eq!(settings.hold_to_talk_shortcut, DEFAULT_HOLD);
+        assert_eq!(notice, None, "this migration is silent, as it always was");
+    }
+
+    #[test]
+    fn a_bad_saved_shortcut_keeps_the_other_settings_and_says_so() {
+        let (settings, notice) = parse_settings(
+            br#"{"toggleShortcut":"Ctrl+Shift+Space","holdToTalkShortcut":"not a key","reviewBeforeInsert":true,"partialPreview":false}"#,
+        );
+        assert_eq!(settings.hold_to_talk_shortcut, DEFAULT_HOLD);
+        assert!(settings.review_before_insert, "unrelated values survive");
+        assert!(!settings.partial_preview);
+        assert!(notice.unwrap().contains("not a key"));
+
+        let (toggle, notice) = parse_settings(
+            br#"{"toggleShortcut":"Shift+Shift","holdToTalkShortcut":"Ctrl+Alt+F9"}"#,
+        );
+        assert_eq!(toggle.toggle_shortcut, DEFAULT_TOGGLE);
+        assert_eq!(toggle.hold_to_talk_shortcut, "Ctrl+Alt+F9");
+        assert!(notice.is_some());
+    }
+
+    #[test]
+    fn an_unreadable_settings_file_reports_why() {
+        let (settings, notice) = parse_settings(b"{ not json");
+        assert_eq!(settings, DictationSettings::default());
+        assert!(notice.unwrap().contains("could not be read"));
+    }
+
+    /// This is why a build without dual-shift support rejected the owner's file: the
+    /// shortcut parser alone cannot read Shift+Shift.
+    #[test]
+    fn the_shortcut_parser_alone_rejects_shift_shift() {
+        assert!(Shortcut::try_from("Shift+Shift").is_err());
+    }
+
+    #[test]
+    fn validation_refusals_explain_themselves() {
+        let dual_toggle = DictationSettings {
+            toggle_shortcut: "Shift+Shift".into(),
+            ..DictationSettings::default()
+        };
+        assert!(validate_settings(&dual_toggle)
+            .unwrap_err()
+            .contains("Hold to talk"));
+        let bad_hold = DictationSettings {
+            hold_to_talk_shortcut: "nonsense+".into(),
+            ..DictationSettings::default()
+        };
+        let reason = validate_settings(&bad_hold).unwrap_err();
+        assert!(reason.contains("nonsense+"));
+        assert!(!reason.contains("report this"), "no parser internals");
+    }
+
+    /// The reproduced bug: another process holds the toggle shortcut, so before this fix
+    /// every save failed, even flipping an unrelated switch.
+    #[test]
+    fn a_taken_shortcut_only_blocks_the_save_that_changes_it() {
+        let taken = "Ctrl+Shift+Space is already used".to_owned();
+        assert_eq!(
+            registration_outcome(false, Some(taken.clone())),
+            Ok(Some(taken.clone())),
+            "unchanged: recorded as a problem, save continues"
+        );
+        assert_eq!(
+            registration_outcome(true, Some(taken.clone())),
+            Err(taken),
+            "changed: refused with the reason"
+        );
+        assert_eq!(registration_outcome(true, None), Ok(None));
+    }
+
+    #[test]
+    fn taken_shortcut_message_is_plain_language() {
+        let message = shortcut_taken_message(
+            "Ctrl+Shift+Space",
+            "HotKey already registered: HotKey { mods: Modifiers(CONTROL | SHIFT) }",
+        );
+        assert!(message.contains("Ctrl+Shift+Space is already used by another app"));
+        assert!(!message.contains("Modifiers"));
+    }
+
+    /// Everything the recorder in `src/shortcut-recorder.ts` can produce must parse.
+    #[test]
+    fn recorded_shortcut_forms_parse() {
+        for shortcut in [
+            "Ctrl+Shift+Space",
+            "Ctrl+Alt+A",
+            "Super+Shift+1",
+            "Alt+F9",
+            "F13",
+            "Ctrl+Alt+ArrowUp",
+            "Ctrl+Alt+Enter",
+            "Ctrl+Alt+Backquote",
+            "Ctrl+Alt+Numpad0",
+        ] {
+            assert!(Shortcut::try_from(shortcut).is_ok(), "{shortcut}");
+        }
     }
 
     #[test]
@@ -1036,7 +1679,10 @@ mod tests {
             runtime.status = "review".into();
             runtime.transcript = Some("pending transcript".into());
         }
-        assert!(service.remove_model().unwrap_err().contains("in use"));
+        assert!(service
+            .remove_model("ggml-tiny.bin")
+            .unwrap_err()
+            .contains("in use"));
         {
             let runtime = service.runtime.lock().unwrap();
             assert_eq!(runtime.status, "review");

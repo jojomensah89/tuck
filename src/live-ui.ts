@@ -1,5 +1,6 @@
 import { listenToEvent, mediaSeek, isTauri } from './ipc.js';
 import { SVG_ICONS } from './icons.js';
+import { islandModelLine } from './dictation-models.js';
 import { nativeAction, nativeService, normalizeClipboard, normalizeDictation, normalizeTelemetry, type ClipboardSnapshot, type DictationSnapshot, type LyricsSnapshot, type MediaSession, type TelemetrySnapshot } from './live-services.js';
 import { historyPath, lyricIndex, matchesLyricRequest, measuredPercent, newRequestId, parseLrc, readPreferences, TelemetryGate, type LyricLine } from './live-state.js';
 import { formatClockTime } from './time-format.js';
@@ -197,6 +198,7 @@ export function mountLivePages(onLayout: () => void): {
   const speechDot = statusDot(); speechDot.set('off', 'Offline, set up a model in Settings');
   speechTitleRow.append(node('h2', '', 'Dictation'), speechDot.el);
   const speechStatus = node('p', 'live-note');
+  const speechModel = node('p', 'live-note', islandModelLine(null));
   const transcript = node('div', 'transcript placeholder', 'Your transcript appears here'); transcript.setAttribute('role', 'status');
   const speechActions = node('div', 'live-actions');
   let dictationPhase = 'disabled';
@@ -206,18 +208,19 @@ export function mountLivePages(onLayout: () => void): {
   const cancel = iconButton('Cancel', SVG_ICONS.close, () => { void act(nativeAction('dictation_cancel'), speechStatus); });
   const insert = iconButton('Insert', SVG_ICONS.insert, () => { void act(nativeAction('dictation_insert'), speechStatus); }); insert.disabled = true;
   speechActions.append(record, cancel, insert); speechHead.append(speechTitleRow, speechActions);
-  speech.append(speechHead, transcript, speechStatus);
+  speech.append(speechHead, transcript, speechModel, speechStatus);
   function dictation(data: DictationSnapshot): void {
     if (!data || typeof data.status !== 'string') return;
     dictationPhase = data.status;
     // Visible text only for an error; the state itself is the dot
-    speechStatus.textContent = data.error || '';
+    speechStatus.textContent = data.error || data.modelNotice || '';
+    speechModel.textContent = islandModelLine(data.activeModelLabel);
     const dotState = data.error || data.status === 'error' ? 'warn' : data.status === 'recording' ? 'live' : ['transcribing', 'review'].includes(data.status) ? 'idle' : 'off';
     speechDot.set(dotState, `Offline, ${data.status}`);
     transcript.textContent = data.transcript?.slice(0, 32000) || (data.status === 'recording' ? 'Listening\u2026' : 'Your transcript appears here');
     transcript.classList.toggle('placeholder', !data.transcript);
     insert.disabled = data.status !== 'review' || data.canInsert === false;
-    cancel.disabled = !['starting', 'downloadingModel', 'recording', 'transcribing', 'review'].includes(data.status);
+    cancel.disabled = !['starting', 'recording', 'transcribing', 'review'].includes(data.status);
     record.disabled = !['idle', 'recording', 'review', 'error'].includes(data.status) || data.modelReady === false;
     if (data.status === 'recording') setIconLabel(record, 'Finish recording', SVG_ICONS.stop);
     else setIconLabel(record, 'Record', SVG_ICONS.mic);

@@ -5,11 +5,12 @@ This packet implements the native dictation and clipboard-history services. It p
 ## Offline dictation
 
 - Engine: `whisper-rs` 0.16.0 over `whisper.cpp`, using its CPU inference path with at most four threads. It does not require a CUDA or DirectML runtime. Current Windows build guidance and API are in the [whisper-rs crate docs](https://docs.rs/whisper-rs/0.16.0/whisper_rs/) and [Windows build notes](https://codeberg.org/tazz4843/whisper-rs/src/branch/master/BUILDING.md).
-- Model: multilingual `ggml-tiny.bin`, about 77.7 MB. It is fetched only after `dictation_model_download` is invoked. The native downloader accepts no caller URL or path, requires HTTPS, streams at most 100 MiB to a temporary file, verifies SHA-256 `be07e048e1e599ad46341c8d2a135645097a538221678b7acdd1b1919c6e1b21`, then installs it under `<appDataDir>/dictation/`. Cancellation removes the temporary file. The pinned URL, size and digest correspond to the [Hugging Face model file](https://huggingface.co/ggerganov/whisper.cpp/blob/main/ggml-tiny.bin) and upstream [model list](https://github.com/ggml-org/whisper.cpp/blob/master/models/README.md).
+- Model: chosen in Settings from the compile-time catalog in `dictation/model.rs` (Tiny, Base, Small, Medium, Large v3 Turbo; files pinned to one Hugging Face commit). Files are fetched only after `dictation_model_download` is invoked. The downloader accepts a catalog id, never a URL or path, requires HTTPS, limits redirects, enforces that entry's exact size, verifies its SHA-256 before install, and fails after 60 s without data rather than after a fixed total time. A file is hashed once; the result is kept in `dictation/verified-models.json`, keyed by path, size and modified time. The model is loaded when recording starts and unloaded after transcribing.
+- Detection runs only when the picker is on screen or on "Look for models". It lists known folders of other apps (section 3.6 of `docs/research/resources-lyrics-models.md`) by name and size, then hashes matches once on a low-priority thread. Only exact catalog matches are offered. They are used in place and read-only; "Stop using" never touches the file. No other file of those apps is opened.
 - Each dictation checks the installed model size and digest before opening the microphone. Startup only reads bounded settings and registers shortcuts; it does not open the microphone, load the inference model or download model bytes.
 - Audio is captured only after the explicit toggle or hold-to-talk command/shortcut. Capture is capped at 120 seconds, callback blocks at one second and queued audio at ten seconds. Overflow stops capture with an error. Audio buffers are zeroized after use/cancellation and are never written to disk. Whisper's abort callback receives cancellation during inference.
 - Partial preview is optional and enabled by default. It re-runs local transcription on up to the latest 15 seconds every three seconds; it is not token-by-token streaming. No audio or transcript is sent to a cloud service.
-- Model removal is explicit through `dictation_model_remove` and is rejected while recording, reviewing, inserting, downloading or running inference.
+- Model removal is explicit through `dictation_model_remove` and is rejected while recording, reviewing, inserting, running inference or downloading that model. It deletes only files in Tuck's own folder.
 
 The OpenBot voice design likewise documents explicit local-model lifecycle and local recognition as distinct from optional cloud transcription. Tuck uses only local recognition; see [OpenBot privacy](https://github.com/nightly-labs/openbot/blob/main/PRIVACY.md) and [release notes](https://github.com/nightly-labs/openbot/blob/main/docs/RELEASING.md).
 
@@ -33,19 +34,22 @@ All serialized DTO fields use camelCase.
 | --- | --- | --- |
 | `dictation_get_state` | none | `DictationSnapshot` |
 | `dictation_set_settings` | `settings: DictationSettings` | updated snapshot |
-| `dictation_model_download` | none | starts explicit bounded download; returns immediately |
+| `dictation_model_download` | `{ id }` | starts explicit bounded download of a catalog model; returns immediately; never replaces the active model unless there is none |
 | `dictation_model_download_cancel` | none | cancels active model download |
-| `dictation_model_remove` | none | removes installed model when idle |
+| `dictation_model_remove` | `{ id }` | deletes a model Tuck downloaded, or stops using another app's file |
+| `dictation_model_use` | `{ id }` | verifies off the UI thread, then selects a catalog model |
+| `dictation_models_scan` | none | looks for catalog models in other apps' folders, on demand |
+| `dictation_shortcuts_pause` | `{ paused }` | suspends Tuck's shortcuts while the key recorder listens; ends by itself after 30 s |
 | `dictation_toggle` | none | toggles recording from an explicit command |
 | `dictation_hold_start` | none | starts recording from an explicit press command |
 | `dictation_hold_stop` | none | stops hold-to-talk on release |
-| `dictation_cancel` | none | cancels recording/inference/download, or discards a review transcript |
+| `dictation_cancel` | none | cancels recording/inference, or discards a review transcript |
 | `dictation_review_insert` | none | inserts the review transcript only if the original target still matches |
 | `dictation_review_discard` | none | discards the in-memory review transcript |
 
-`DictationSettings` contains `toggleShortcut`, `holdToTalkShortcut`, `reviewBeforeInsert` and `partialPreview`. Defaults are `Ctrl+Shift+Space`, `Shift+Shift` (holding Left + Right Shift simultaneously), immediate insertion and partial preview. Shortcuts are validated, capped at 64 bytes, must differ, and are saved as bounded JSON in the app config directory.
+`DictationSettings` contains `toggleShortcut`, `holdToTalkShortcut`, `reviewBeforeInsert`, `partialPreview`, and optional `activeModel` and `activeModelPath`, which only the model commands can change. A file without them uses `ggml-tiny.bin` if installed. A saved shortcut that cannot be used resets alone, with a notice, and keeps the other values. A shortcut that an app holds is reported beside its field and blocks only a save that changes that shortcut. Defaults are `Ctrl+Shift+Space`, `Shift+Shift` (holding Left + Right Shift simultaneously), immediate insertion and partial preview. Shortcuts are validated, capped at 64 bytes, must differ, and are saved as bounded JSON in the app config directory.
 
-`DictationSnapshot` contains `status`, `modelInstalled`, `modelDownloadedBytes`, `transcript`, `message`, `settings` and `canInsert`. Status values are `idle`, `starting`, `recording`, `transcribing`, `downloadingModel`, `removingModel`, `cancelling`, `review`, `modelMissing` and `error`.
+`DictationSnapshot` contains `status`, `modelInstalled`, `modelDownloadedBytes`, `transcript`, `message`, `settings`, `canInsert`, `models`, `activeModelId`, `activeModelLabel`, `modelNotice`, `scanningModels`, `shortcutProblems` and `settingsNotice`. Status values are `idle`, `starting`, `recording`, `transcribing`, `cancelling`, `inserting`, `review`, `modelMissing` and `error`. A download no longer changes `status`, so the model in use keeps working during it.
 
 ### Dictation events
 

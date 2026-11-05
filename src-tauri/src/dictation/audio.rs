@@ -1453,6 +1453,20 @@ mod meter_tests {
     }
 
     #[test]
+    fn parakeet_routing_accepts_discoverable_extension_casing() {
+        for name in [
+            "parakeet-unified-en-0.6b-Q8_0.gguf",
+            "parakeet-unified-en-0.6b-Q8_0.GGUF",
+            "parakeet-unified-en-0.6b-Q8_0.GgUf",
+        ] {
+            assert!(super::is_parakeet_path(std::path::Path::new(name)));
+        }
+        assert!(!super::is_parakeet_path(std::path::Path::new(
+            "ggml-tiny.bin"
+        )));
+    }
+
+    #[test]
     fn rms_is_real_and_bounded() {
         assert_eq!(super::audio_level(&[]), 0.0);
         assert_eq!(super::audio_level(&[0.0; 8]), 0.0);
@@ -1468,7 +1482,7 @@ enum LocalEngine {
 }
 impl LocalEngine {
     fn load(path: &std::path::Path) -> Result<Self, String> {
-        if path.extension().is_some_and(|s| s == "gguf") {
+        if is_parakeet_path(path) {
             initialize_cpu_backend()?;
             let model = transcribe_cpp::Model::load_with(
                 path,
@@ -1483,6 +1497,11 @@ impl LocalEngine {
             WhisperEngine::load(path).map(Self::Whisper)
         }
     }
+}
+fn is_parakeet_path(path: &std::path::Path) -> bool {
+    path.extension()
+        .and_then(|s| s.to_str())
+        .is_some_and(|s| s.eq_ignore_ascii_case("gguf"))
 }
 fn initialize_cpu_backend() -> Result<(), String> {
     transcribe_cpp::init_backends_with(

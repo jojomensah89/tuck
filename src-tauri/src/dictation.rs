@@ -159,6 +159,7 @@ struct Runtime {
     focus_changed: bool,
     previews_paused: bool,
     selection_generation: u64,
+    repair_attempt: Option<(String, u64)>,
     status: String,
     message: Option<String>,
     transcript: Option<String>,
@@ -232,6 +233,7 @@ impl DictationService {
                 focus_changed: false,
                 previews_paused: false,
                 selection_generation: 0,
+                repair_attempt: None,
                 status: "idle".into(),
                 message: None,
                 transcript: None,
@@ -280,6 +282,14 @@ impl DictationService {
             return model::Resolution::default();
         };
         let settings = self.settings();
+        if let (Some(id), Some(path)) = (
+            settings.active_model.as_deref(),
+            settings.active_model_path.as_deref(),
+        ) {
+            if !model::local_model_exists(path) {
+                return model::Resolution { active: None, notice: Some(format!("{} is missing; restoration may be running. Open Settings for progress or Download to retry.", model::entry(id).map_or(id, |e| e.label))) };
+            }
+        }
         model::resolve_active(
             settings.active_model.as_deref(),
             settings.active_model_path.as_deref(),
@@ -293,6 +303,40 @@ impl DictationService {
                     && model::local_model_exists(path)
             },
         )
+    }
+
+    // One automatic attempt per selection generation and process. Cancel/failure
+    // stays suppressed until explicit Download or a new launch.
+    fn repair_missing(self: &Arc<Self>) -> Result<(), String> {
+        let settings = self.settings();
+        let Some(id) = settings.active_model.as_deref() else {
+            return Ok(());
+        };
+        let Some(path) = settings.active_model_path.as_deref() else {
+            return Ok(());
+        };
+        if model::local_model_exists(path)
+            || !model::path_is_known(path, &self.locations)
+            || settings.stopped_models.iter().any(|stopped| stopped == id)
+        {
+            return Ok(());
+        }
+        {
+            let mut runtime = self.runtime.lock().map_err(|_| "Dictation unavailable")?;
+            let key = (id.to_owned(), runtime.selection_generation);
+            if runtime.repair_attempt.as_ref() == Some(&key)
+                || runtime.downloading_model.is_some()
+                || runtime.removing_model
+                || runtime.active.is_some()
+                || runtime.status == "review"
+                || runtime.status == "inserting"
+                || self.is_shutdown()
+            {
+                return Ok(());
+            }
+            runtime.repair_attempt = Some(key);
+        }
+        self.start_model_download(id, true)
     }
 
     fn snapshot(&self) -> DictationSnapshot {
@@ -548,6 +592,14 @@ impl DictationService {
 
     fn begin(self: &Arc<Self>, mode: RecordingMode) -> Result<(), String> {
         self.app()?;
+        if self
+            .runtime
+            .lock()
+            .is_ok_and(|r| r.status == "review" || r.status == "inserting")
+        {
+            return Err("Finish or discard the transcript before starting dictation".into());
+        }
+        self.repair_missing()?;
         let operation = self
             .settings_operation
             .lock()
@@ -973,8 +1025,12 @@ impl DictationService {
     }
 
     fn download_model(self: &Arc<Self>, id: &str) -> Result<(), String> {
+        self.start_model_download(id, false)
+    }
+
+    fn start_model_download(self: &Arc<Self>, id: &str, restoring: bool) -> Result<(), String> {
         let entry = model::entry(id)
-            .filter(|entry| entry.offered)
+            .filter(|entry| entry.offered || restoring)
             .ok_or("That model is not available to download")?;
         let dir = self.models_dir()?;
         let cancel = Arc::new(AtomicBool::new(false));
@@ -989,6 +1045,32 @@ impl DictationService {
             if runtime.removing_model {
                 return Err("A model is being removed. Try again in a moment.".into());
             }
+            if self.is_shutdown() {
+                return Err("Tuck is shutting down".into());
+            }
+            if restoring {
+                let desired = self.settings();
+                if desired.active_model.as_deref() != Some(entry.id)
+                    || desired
+                        .active_model_path
+                        .as_deref()
+                        .is_none_or(model::local_model_exists)
+                    || runtime.repair_attempt.as_ref()
+                        != Some(&(entry.id.to_owned(), runtime.selection_generation))
+                {
+                    return Ok(());
+                }
+            }
+
+            runtime.settings_notice = Some(format!(
+                "{} {}\u{2026}",
+                if restoring {
+                    "Restoring"
+                } else {
+                    "Checking existing copies of"
+                },
+                entry.label
+            ));
             runtime.downloading_model = Some(entry.id);
             runtime.download_cancel = Some(cancel.clone());
             runtime.downloaded_bytes = 0;
@@ -1004,50 +1086,75 @@ impl DictationService {
             .name("tuck-model-download".into())
             .spawn(move || {
                 let mut last_event = std::time::Instant::now();
+                let existing = model::verified_existing(
+                    &dir,
+                    entry,
+                    &service.locations,
+                    &service.verified,
+                    &cancel,
+                );
+                let reused_path = existing.as_ref().ok().and_then(|p| p.clone());
                 let result = match tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
                 {
-                    Ok(runtime) => runtime.block_on(model::download(
-                        &dir,
-                        entry,
-                        &service.verified,
-                        &cancel,
-                        |received| {
-                            if let Ok(mut runtime) = service.runtime.lock() {
-                                runtime.downloaded_bytes = received;
+                    Ok(runtime) => runtime
+                        .block_on(model::acquire(existing, || async {
+                            if service.is_shutdown()
+                                || cancel.load(Ordering::Acquire)
+                                || service
+                                    .runtime
+                                    .lock()
+                                    .map_or(true, |r| r.selection_generation != generation)
+                            {
+                                Err("Model operation cancelled".into())
+                            } else {
+                                model::download(
+                                    &dir,
+                                    entry,
+                                    &service.verified,
+                                    &cancel,
+                                    |received| {
+                                        if let Ok(mut runtime) = service.runtime.lock() {
+                                            runtime.downloaded_bytes = received;
+                                        }
+                                        if last_event.elapsed()
+                                            >= std::time::Duration::from_millis(250)
+                                        {
+                                            last_event = std::time::Instant::now();
+                                            service.emit_state();
+                                        }
+                                    },
+                                )
+                                .await
                             }
-                            if last_event.elapsed() >= std::time::Duration::from_millis(250) {
-                                last_event = std::time::Instant::now();
-                                service.emit_state();
-                            }
-                        },
-                    )),
-                    Err(error) => Err(format!("Could not start model download runtime: {error}")),
+                        }))
+                        .map(|_| ()),
+                    Err(error) => Err(format!("Could not start acquisition runtime: {error}")),
                 };
                 let error = result.as_ref().err().cloned();
                 let reported = error.clone().filter(|_| !cancel.load(Ordering::Acquire));
-                if let Ok(mut runtime) = service.runtime.lock() {
-                    runtime.downloading_model = None;
-                    runtime.download_cancel = None;
-                    runtime.downloaded_bytes = 0;
-                    runtime.model_error = reported.clone();
-                }
                 // Only when the owner did not choose a model during the download.
-                if error.is_none() {
+                if error.is_none() && !cancel.load(Ordering::Acquire) && !service.is_shutdown() {
                     // A fallback model removed during the download is not worth pinning.
                     let still_there = selection_before.is_some()
                         || active_before
                             .is_some_and(|id| model::local_model_exists(&dir_for_pin.join(id)));
-                    let selection = selection_after_download(
-                        active_before.filter(|_| still_there),
-                        selection_before.is_some(),
-                        entry.id,
-                    );
+                    let selection = if restoring {
+                        Some(entry.id)
+                    } else {
+                        selection_after_download(
+                            active_before.filter(|_| still_there),
+                            selection_before.is_some(),
+                            entry.id,
+                        )
+                    };
                     if let Some(id) = selection {
                         if let Err(error) = service.commit_selection_inner(
                             Some(id.to_owned()),
-                            None,
+                            reused_path
+                                .clone()
+                                .filter(|path| id == entry.id && path != &dir.join(entry.id)),
                             Some(generation),
                             None,
                             true,
@@ -1055,6 +1162,25 @@ impl DictationService {
                             service.set_model_error(error);
                         }
                     }
+                }
+                if let Ok(mut runtime) = service.runtime.lock() {
+                    runtime.downloading_model = None;
+                    runtime.download_cancel = None;
+                    runtime.downloaded_bytes = 0;
+                    runtime.model_error = reported.clone();
+                    runtime.settings_notice = Some(if cancel.load(Ordering::Acquire) {
+                        "Model restoration cancelled; use Download to retry, or restart Tuck".into()
+                    } else if let Some(path) = reused_path {
+                        format!(
+                            "Using existing {} from {}",
+                            entry.label,
+                            model::app_for(&path, &service.locations).unwrap_or("Tuck")
+                        )
+                    } else if error.is_none() {
+                        format!("{} is ready", entry.label)
+                    } else {
+                        "Model restoration failed; use Download to retry, or restart Tuck".into()
+                    });
                 }
                 service.clear_missing_status();
                 service.emit_state();
@@ -1179,6 +1305,13 @@ impl DictationService {
                 ));
             }
             runtime.selection_generation = runtime.selection_generation.wrapping_add(1);
+            if let Some(cancel) = &runtime.download_cancel {
+                cancel.store(true, Ordering::Release);
+            }
+            let current_generation = runtime.selection_generation;
+            if let Some((_, attempted_generation)) = &mut runtime.repair_attempt {
+                *attempted_generation = current_generation;
+            }
             runtime.checking_models.push(entry.id.to_owned());
             runtime.model_error = None;
             (external, runtime.selection_generation)
@@ -1224,13 +1357,16 @@ impl DictationService {
     /// Deletes a model Tuck downloaded. For another app's file it only stops using it.
     fn remove_model(&self, id: &str) -> Result<(), String> {
         let entry = model::entry(id).ok_or("That model is not in Tuck's catalog")?;
+        let settings = self.settings();
+        let borrowed =
+            settings.active_model.as_deref() == Some(id) && settings.active_model_path.is_some();
         {
             let mut runtime = self
                 .runtime
                 .lock()
                 .map_err(|_| "Dictation service unavailable")?;
             if runtime.active.is_some()
-                || runtime.downloading_model == Some(entry.id)
+                || (runtime.downloading_model == Some(entry.id) && !borrowed)
                 || runtime.removing_model
                 || runtime.status == "review"
                 || runtime.status == "inserting"
@@ -1272,6 +1408,7 @@ impl DictationService {
     /// On demand only. Lists by name and size, then hashes only what could be a match,
     /// on a low-priority thread, skipping models Tuck already has.
     fn scan_models(self: &Arc<Self>) -> Result<(), String> {
+        self.repair_missing()?;
         let dir = self.models_dir()?;
         {
             let mut runtime = self
@@ -1364,12 +1501,22 @@ fn apply_selection_commit(
     commit: impl FnOnce() -> Result<(), String>,
 ) -> Result<bool, String> {
     if automatic
-        && (generation != Some(runtime.selection_generation) || !runtime.checking_models.is_empty())
+        && (generation != Some(runtime.selection_generation)
+            || !runtime.checking_models.is_empty()
+            || runtime
+                .download_cancel
+                .as_ref()
+                .is_some_and(|cancel| cancel.load(Ordering::Acquire)))
     {
         return Ok(false);
     }
     validate_selection_commit(runtime, generation)?;
     commit()?;
+    if !automatic {
+        if let Some(cancel) = &runtime.download_cancel {
+            cancel.store(true, Ordering::Release);
+        }
+    }
     runtime.selection_generation = runtime.selection_generation.wrapping_add(1);
     Ok(true)
 }
@@ -1426,8 +1573,8 @@ fn sync_dual_shift(service: &Arc<DictationService>) {
     });
 }
 
-/// Initialize settings and shortcuts only. This does not access the microphone
-/// or download/load a speech model.
+/// Initialize settings and shortcuts, and restore only a missing saved external model.
+/// Never accesses the microphone or loads a speech model.
 pub fn start(app: AppHandle, service: &Arc<DictationService>) -> Result<(), String> {
     if let Ok(mut slot) = service.app.write() {
         *slot = Some(app.clone());
@@ -1452,6 +1599,7 @@ pub fn start(app: AppHandle, service: &Arc<DictationService>) -> Result<(), Stri
         eprintln!("Dictation shortcut registration warning: {error}");
     }
     sync_dual_shift(service);
+    service.repair_missing()?;
     service.emit_state();
     Ok(())
 }
@@ -2107,6 +2255,69 @@ mod tests {
         service.publish_preview("same session");
         assert!(service.use_model("tiny").is_err());
         assert_eq!(service.runtime.lock().unwrap().selection_generation, 0);
+    }
+
+    #[test]
+    fn failed_restoration_is_single_attempt_per_launch_and_review_is_preserved() {
+        fn fixture() -> Arc<DictationService> {
+            let mut service = DictationService::new();
+            let root = std::env::temp_dir().join("tuck-missing-repair-fixture");
+            service.locations = vec![model::Location {
+                app: "Test",
+                root: root.clone(),
+                depth: 1,
+                huggingface: false,
+            }];
+            let mut settings = service.settings.write().unwrap();
+            settings.active_model = Some(model::PARAKEET.into());
+            settings.active_model_path = Some(root.join(model::PARAKEET));
+            drop(settings);
+            Arc::new(service)
+        }
+        let service = fixture();
+        // No initialized app: acquiring the managed directory fails before any HTTP.
+        assert!(service.repair_missing().is_err());
+        assert!(service.runtime.lock().unwrap().repair_attempt.is_some());
+        for _ in 0..3 {
+            service.repair_missing().unwrap();
+        }
+        let fresh_launch = fixture();
+        assert!(
+            fresh_launch.repair_missing().is_err(),
+            "restart permits one retry"
+        );
+        let review = fixture();
+        review.runtime.lock().unwrap().status = "review".into();
+        review.repair_missing().unwrap();
+        let runtime = review.runtime.lock().unwrap();
+        assert_eq!(runtime.status, "review");
+        assert!(runtime.repair_attempt.is_none());
+    }
+
+    #[test]
+    fn explicit_stop_or_new_choice_cancels_repair_and_prevents_stale_activation() {
+        for choice in ["stop", "different model"] {
+            let service = DictationService::new();
+            let mut runtime = service.runtime.lock().unwrap();
+            let cancel = Arc::new(AtomicBool::new(false));
+            runtime.download_cancel = Some(cancel.clone());
+            let generation = runtime.selection_generation;
+            let mut selected = "original external";
+            apply_selection_commit(&mut runtime, None, false, || {
+                selected = choice;
+                Ok(())
+            })
+            .unwrap();
+            assert!(cancel.load(Ordering::Acquire));
+            assert!(
+                !apply_selection_commit(&mut runtime, Some(generation), true, || {
+                    selected = "repaired";
+                    Ok(())
+                })
+                .unwrap()
+            );
+            assert_eq!(selected, choice);
+        }
     }
 
     #[test]

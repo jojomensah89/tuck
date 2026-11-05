@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 128 128">
+  <title>Tuck</title>
+  <rect x="4" y="4" width="120" height="120" rx="27" fill="#151918"/>
+  <path d="M27 29h74v19H75v32l-21 21V48H27z" fill="#f4f4f2"/>
+  <path d="M54 80h21l-21 21z" fill="#2dd4bf"/>
+</svg>

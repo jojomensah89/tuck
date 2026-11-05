@@ -32,6 +32,7 @@ crossbeam-channel = "0.5"
 zeroize = "1.8"
 cpal = "0.16"
 whisper-rs = "0.16"
+transcribe-cpp = { git = 'https://github.com/anomalyco/transcribe.cpp', rev = '2778ae4bf5ca5f394d129a39467f4ad9552dc34f' }
 tauri-plugin-global-shortcut = "2.4"
 tauri-plugin-single-instance = "2"
 
@@ -87,3 +88,6 @@ lto = true
 opt-level = 3
 panic = "abort"
 strip = true
+
+[patch.crates-io]
+transcribe-cpp-sys = { git = 'https://github.com/anomalyco/transcribe.cpp', rev = '2778ae4bf5ca5f394d129a39467f4ad9552dc34f' }

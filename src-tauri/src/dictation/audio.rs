@@ -41,10 +41,12 @@ use audio_math::{release_audio_frames, resample_to_16k, try_reserve_audio_frames
 /// What a session reports as it goes.
 trait SessionEvents: Sync {
     fn recording(&self);
+    fn meter(&self, _level: f32) {}
     fn processing(&self) {}
     fn previews_paused(&self) {}
     fn transcribing(&self);
     fn partial(&self, text: &str);
+    fn discard_partial(&self) {}
 }
 
 /// Stops one transcription. Previews also stop when the recording stops, or on their budget.
@@ -64,6 +66,15 @@ impl AbortSignal<'_> {
 
 /// The inference side of a session. Whisper in the app, a scripted stand-in in tests.
 trait Engine {
+    fn streaming(
+        &mut self,
+        _jobs: &Receiver<EngineJob>,
+        _events: &dyn SessionEvents,
+        _flags: &EngineFlags,
+        _cancel: &AtomicBool,
+    ) -> Option<Result<String, String>> {
+        None
+    }
     /// Runs once before previews. Its language hint is reused only by previews.
     /// This pass cannot be interrupted and is separate from the preview budget.
     fn prepare(&mut self, _audio: &[f32]) {}
@@ -95,12 +106,17 @@ fn next_preview_wait(interval: Duration, last_preview: Duration) -> Duration {
 }
 
 enum EngineJob {
+    Feed {
+        offset: usize,
+        audio: Zeroizing<Vec<f32>>,
+    },
     Preview(Zeroizing<Vec<f32>>),
     Finish(Zeroizing<Vec<f32>>),
 }
 
 /// Shared between the capture loop and the engine thread.
 struct EngineFlags {
+    streaming: AtomicBool,
     ready: AtomicBool,
     failed: AtomicBool,
     preview_busy: AtomicBool,
@@ -126,6 +142,19 @@ struct AppEvents<'a> {
 }
 
 impl SessionEvents for AppEvents<'_> {
+    fn discard_partial(&self) {
+        if let Ok(mut runtime) = self.service.runtime.lock() {
+            if let Some(mut text) = runtime.preview.take() {
+                text.zeroize();
+                runtime.revision += 1;
+            }
+        }
+        self.service.emit_state();
+    }
+
+    fn meter(&self, level: f32) {
+        self.service.publish_audio_level(level);
+    }
     fn recording(&self) {
         self.service.session_status("recording");
     }
@@ -169,7 +198,7 @@ fn record_and_transcribe_inner(
     run_session(
         move || {
             model::verify(&path, entry, &service.verified, false)?;
-            WhisperEngine::load(&path)
+            LocalEngine::load(&path)
         },
         &events,
         Capture {
@@ -205,6 +234,7 @@ fn run_session<E: Engine, S>(
     cancel: &AtomicBool,
 ) -> Result<String, String> {
     let flags = EngineFlags {
+        streaming: AtomicBool::new(false),
         ready: AtomicBool::new(false),
         failed: AtomicBool::new(false),
         preview_busy: AtomicBool::new(false),
@@ -232,7 +262,7 @@ fn run_session<E: Engine, S>(
             })
             .map_err(|e| format!("Could not start dictation engine: {e}"))?;
         events.recording();
-        let outcome = capture_loop(&mut capture, &job_tx, &flags, limits, stop, cancel);
+        let outcome = capture_loop(&mut capture, &job_tx, &flags, limits, stop, cancel, events);
         // Whatever happened, no preview may hold up what comes next.
         flags.preview_stop.store(true, Ordering::Release);
         let result = match outcome {
@@ -276,12 +306,15 @@ fn capture_loop<S>(
     limits: SessionLimits,
     stop: &AtomicBool,
     cancel: &AtomicBool,
+    events: &dyn SessionEvents,
 ) -> CaptureEnd {
     let sample_rate = capture.sample_rate as usize;
     let started = Instant::now();
     let cap = sample_rate.saturating_mul(limits.max_seconds);
     let mut samples = Zeroizing::new(Vec::<f32>::with_capacity(cap));
     let mut next_preview = limits.preview_interval;
+    let mut stream_sent = 0;
+    let mut last_meter = Instant::now();
     let fail = |capture: &mut Capture<S>, samples: &mut Zeroizing<Vec<f32>>, error: String| {
         capture.stream.take();
         zeroize_pending_audio(&capture.audio_rx, &capture.queued_frames);
@@ -306,6 +339,10 @@ fn capture_loop<S>(
                 if block.len() > remaining {
                     block.truncate(remaining);
                 }
+                if last_meter.elapsed() >= Duration::from_millis(100) {
+                    events.meter(audio_level(&block));
+                    last_meter = Instant::now();
+                }
                 samples.extend_from_slice(&block);
                 block.zeroize();
                 if samples.len() >= cap {
@@ -324,10 +361,31 @@ fn capture_loop<S>(
                 );
             }
         }
+        // Whole source seconds keep the box-filter phase aligned at every rate.
+        // A rejected job advances no cursor: retained audio is retried, never dropped.
+        if flags.streaming.load(Ordering::Acquire)
+            && samples.len() / sample_rate > stream_sent / sample_rate
+        {
+            let end = (samples.len() / sample_rate * sample_rate).min(stream_sent + sample_rate);
+            let audio = Zeroizing::new(resample_to_16k(
+                &samples[stream_sent..end],
+                capture.sample_rate,
+            ));
+            if job_tx
+                .try_send(EngineJob::Feed {
+                    offset: stream_sent / sample_rate * 16_000,
+                    audio,
+                })
+                .is_ok()
+            {
+                stream_sent = end;
+            }
+        }
         if !stop.load(Ordering::Acquire)
             && !cancel.load(Ordering::Acquire)
             && started.elapsed() >= next_preview
             && samples.len() >= sample_rate * PREVIEW_MIN_SECONDS
+            && !flags.streaming.load(Ordering::Acquire)
             && flags.ready.load(Ordering::Acquire)
             && !flags.previews_off.load(Ordering::Acquire)
             && !flags.preview_busy.load(Ordering::Acquire)
@@ -394,11 +452,15 @@ fn engine_thread<E: Engine>(
             return Err(error);
         }
     };
+    if let Some(result) = engine.streaming(&job_rx, events, flags, cancel) {
+        return result;
+    }
     flags.ready.store(true, Ordering::Release);
     let mut result = Err("Dictation stopped before transcription".to_owned());
     let mut prepared = false;
     while let Ok(job) = job_rx.recv() {
         match job {
+            EngineJob::Feed { .. } => {}
             EngineJob::Preview(mut audio) => {
                 if cancel.load(Ordering::Acquire) || flags.preview_stop.load(Ordering::Acquire) {
                     flags.preview_busy.store(false, Ordering::Release);
@@ -457,6 +519,9 @@ struct WhisperEngine {
 
 impl WhisperEngine {
     fn load(path: &std::path::Path) -> Result<Self, String> {
+        // Fix the shared ggml registry's CPU-only policy before Whisper can
+        // register a default mask; transcribe.cpp rejects changing it later.
+        initialize_cpu_backend()?;
         let context = WhisperContext::new_with_params(path, WhisperContextParameters::default())
             .map_err(|e| format!("Could not load the local dictation model: {e}"))?;
         let state = context
@@ -789,7 +854,7 @@ mod tests {
     }
 
     #[derive(Default)]
-    struct RecordedEvents {
+    pub(super) struct RecordedEvents {
         recording: AtomicUsize,
         transcribing: AtomicUsize,
         partials: AtomicUsize,
@@ -903,7 +968,7 @@ mod tests {
         })
     }
 
-    fn limits(interval_ms: u64, budget_ms: u64) -> SessionLimits {
+    pub(super) fn limits(interval_ms: u64, budget_ms: u64) -> SessionLimits {
         SessionLimits {
             preview_interval: Duration::from_millis(interval_ms),
             preview_budget: Duration::from_millis(budget_ms),
@@ -912,7 +977,7 @@ mod tests {
         }
     }
 
-    fn capture_with(
+    pub(super) fn capture_with(
         blocks: usize,
         block_every: Duration,
         stop: &Arc<AtomicBool>,
@@ -956,6 +1021,7 @@ mod tests {
         }
         for cancelled in [false, true] {
             let flags = EngineFlags {
+                streaming: AtomicBool::new(false),
                 ready: AtomicBool::new(false),
                 failed: AtomicBool::new(false),
                 preview_busy: AtomicBool::new(true),
@@ -1263,7 +1329,7 @@ mod tests {
         let result = run_session(
             || {
                 let load = Instant::now();
-                let engine = WhisperEngine::load(std::path::Path::new(&model));
+                let engine = LocalEngine::load(std::path::Path::new(&model));
                 *loaded_in.lock().unwrap() = Some(load.elapsed());
                 engine
             },
@@ -1300,6 +1366,12 @@ mod tests {
         println!("final: {text}");
         println!("peak-memory {}", peak_memory_report());
         assert!(!text.trim().is_empty());
+        if let Ok(expected) = std::env::var("TUCK_TEST_EXPECTED") {
+            assert!(
+                text.to_lowercase().contains(&expected.to_lowercase()),
+                "Expected phrase missing from real inference"
+            );
+        }
     }
 
     /// What one 15 s preview costs the old way (full window, language detected every time)
@@ -1369,4 +1441,902 @@ mod tests {
             .collect();
         assert_eq!(mono, vec![0.0, 0.25]);
     }
+}
+
+/// RMS is computed off the realtime callback; silence stays still.
+fn audio_level(samples: &[f32]) -> f32 {
+    if samples.is_empty() {
+        return 0.0;
+    }
+    let energy: f64 = samples
+        .iter()
+        .filter(|v| v.is_finite())
+        .map(|v| f64::from(*v).powi(2))
+        .sum();
+    ((energy / samples.len() as f64).sqrt() as f32 * 4.0).clamp(0.0, 1.0)
+}
+#[cfg(test)]
+mod meter_tests {
+    #[test]
+    #[ignore = "needs installed Parakeet and Whisper models plus a generated 16 kHz PCM WAV"]
+    fn real_backends_alternate_in_one_process() {
+        use super::*;
+        let wav = std::fs::read(std::env::var("TUCK_TEST_WAV").unwrap()).unwrap();
+        let data = wav.windows(4).position(|w| w == b"data").unwrap() + 8;
+        let audio = Zeroizing::new(
+            wav[data..]
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|b| f32::from(i16::from_le_bytes(*b)) / 32768.0)
+                .collect::<Vec<_>>(),
+        );
+        let whisper = std::env::var("TUCK_TEST_WHISPER").unwrap();
+        let parakeet = std::env::var("TUCK_TEST_MODEL").unwrap();
+        let expected = std::env::var("TUCK_TEST_EXPECTED").unwrap();
+        let cancel = AtomicBool::new(false);
+        let abort = AbortSignal {
+            cancel: &cancel,
+            stop: None,
+            deadline: None,
+        };
+        for path in [&whisper, &parakeet, &whisper] {
+            let mut engine = LocalEngine::load(std::path::Path::new(path)).unwrap();
+            if path == &parakeet {
+                let interrupted = AbortSignal {
+                    cancel: &cancel,
+                    stop: None,
+                    deadline: Some(Instant::now() + Duration::from_millis(10)),
+                };
+                assert!(
+                    engine.preview(&audio, &interrupted).is_err(),
+                    "Preview budget must cancel the real Parakeet computation"
+                );
+            }
+            let text = engine.finish(&audio, &abort).unwrap();
+            println!(
+                "{}: {text}",
+                std::path::Path::new(path)
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+            );
+            assert!(text.to_lowercase().contains(&expected.to_lowercase()));
+        }
+    }
+
+    #[test]
+    fn parakeet_routing_accepts_discoverable_extension_casing() {
+        for name in [
+            "parakeet-unified-en-0.6b-Q8_0.gguf",
+            "parakeet-unified-en-0.6b-Q8_0.GGUF",
+            "parakeet-unified-en-0.6b-Q8_0.GgUf",
+        ] {
+            assert!(super::is_parakeet_path(std::path::Path::new(name)));
+        }
+        assert!(!super::is_parakeet_path(std::path::Path::new(
+            "ggml-tiny.bin"
+        )));
+    }
+
+    #[test]
+    fn rms_is_real_and_bounded() {
+        assert_eq!(super::audio_level(&[]), 0.0);
+        assert_eq!(super::audio_level(&[0.0; 8]), 0.0);
+        assert_eq!(super::audio_level(&[0.125, -0.125]), 0.5);
+        assert_eq!(super::audio_level(&[1.0; 8]), 1.0);
+        assert_eq!(super::audio_level(&[f32::NAN]), 0.0);
+    }
+}
+
+enum LocalEngine {
+    Whisper(WhisperEngine),
+    Parakeet(transcribe_cpp::Session),
+}
+impl LocalEngine {
+    fn load(path: &std::path::Path) -> Result<Self, String> {
+        if is_parakeet_path(path) {
+            initialize_cpu_backend()?;
+            let model = transcribe_cpp::Model::load_with(
+                path,
+                &transcribe_cpp::ModelOptions {
+                    backend: transcribe_cpp::Backend::Cpu,
+                    ..Default::default()
+                },
+            )
+            .map_err(|e| e.to_string())?;
+            Ok(Self::Parakeet(model.session().map_err(|e| e.to_string())?))
+        } else {
+            WhisperEngine::load(path).map(Self::Whisper)
+        }
+    }
+}
+fn is_parakeet_path(path: &std::path::Path) -> bool {
+    path.extension()
+        .and_then(|s| s.to_str())
+        .is_some_and(|s| s.eq_ignore_ascii_case("gguf"))
+}
+fn initialize_cpu_backend() -> Result<(), String> {
+    transcribe_cpp::init_backends_with(
+        None::<&std::path::Path>,
+        transcribe_cpp::BackendMask::for_backend(transcribe_cpp::Backend::Cpu),
+    )
+    .map_err(|e| e.to_string())
+}
+impl Engine for LocalEngine {
+    fn streaming(
+        &mut self,
+        jobs: &Receiver<EngineJob>,
+        events: &dyn SessionEvents,
+        flags: &EngineFlags,
+        cancel: &AtomicBool,
+    ) -> Option<Result<String, String>> {
+        let Self::Parakeet(session) = self else {
+            return None;
+        };
+        flags.streaming.store(true, Ordering::Release);
+        flags.ready.store(true, Ordering::Release);
+        Some(buffered_session(session, jobs, events, flags, cancel))
+    }
+
+    fn prepare(&mut self, audio: &[f32]) {
+        if let Self::Whisper(e) = self {
+            e.prepare(audio);
+        }
+    }
+    fn preview(&mut self, audio: &[f32], abort: &AbortSignal<'_>) -> Result<String, String> {
+        match self {
+            Self::Whisper(e) => e.preview(audio, abort),
+            Self::Parakeet(s) => parakeet_run(s, audio, abort),
+        }
+    }
+    fn finish(&mut self, audio: &[f32], abort: &AbortSignal<'_>) -> Result<String, String> {
+        match self {
+            Self::Whisper(e) => e.finish(audio, abort),
+            Self::Parakeet(s) => parakeet_run(s, audio, abort),
+        }
+    }
+}
+fn parakeet_run(
+    session: &mut transcribe_cpp::Session,
+    audio: &[f32],
+    abort: &AbortSignal<'_>,
+) -> Result<String, String> {
+    if abort.requested() {
+        return Err("Dictation cancelled".into());
+    }
+    let token = transcribe_cpp::CancelToken::new();
+    session.set_cancel_token(&token);
+    let done = AtomicBool::new(false);
+    let result = std::thread::scope(|scope| {
+        scope.spawn(|| {
+            while !done.load(Ordering::Acquire) {
+                if abort.requested() {
+                    token.cancel();
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        });
+        let result = {
+            let _completion = CompleteOnDrop(&done);
+            session.run(
+                audio,
+                &transcribe_cpp::RunOptions {
+                    language: Some("en".into()),
+                    ..Default::default()
+                },
+            )
+        };
+        result
+    });
+    session.clear_cancel_token();
+    if abort.requested() {
+        return Err("Dictation cancelled".into());
+    }
+    result
+        .map(|r| r.text.trim().to_owned())
+        .map_err(|e| e.to_string())
+}
+
+/// Dropped before a scoped watcher is joined, including while unwinding.
+struct CompleteOnDrop<'a>(&'a AtomicBool);
+impl Drop for CompleteOnDrop<'_> {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Release);
+    }
+}
+
+// This private seam keeps the native borrowed lifetime while exercising the same
+// orchestration with deterministic streams and clocks in device-free tests.
+trait BufferedStream {
+    fn feed(&mut self, audio: &[f32]) -> Result<(), String>;
+    fn finalize(&mut self) -> Result<(), String>;
+    fn text(&self) -> transcribe_cpp::StreamText;
+    fn intervals(&self) -> Vec<(i64, i64)>;
+}
+impl BufferedStream for transcribe_cpp::Stream<'_> {
+    fn feed(&mut self, audio: &[f32]) -> Result<(), String> {
+        self.feed(audio).map(|_| ()).map_err(|e| e.to_string())
+    }
+    fn finalize(&mut self) -> Result<(), String> {
+        self.finalize().map(|_| ()).map_err(|e| e.to_string())
+    }
+    fn text(&self) -> transcribe_cpp::StreamText {
+        self.text()
+    }
+    fn intervals(&self) -> Vec<(i64, i64)> {
+        // Native Token timestamps are signed i64 milliseconds, not samples.
+        self.snapshot()
+            .tokens
+            .iter()
+            .filter(|t| t.text.chars().any(char::is_alphanumeric))
+            .map(|t| (t.t0_ms, t.t1_ms))
+            .collect()
+    }
+}
+trait BufferedBackend {
+    type Stream<'a>: BufferedStream
+    where
+        Self: 'a;
+    fn install(&mut self, token: &transcribe_cpp::CancelToken);
+    fn clear(&mut self);
+    fn stream(&mut self) -> Result<Self::Stream<'_>, String>;
+    fn invalid(&self) -> bool;
+    fn batch(&mut self, audio: &[f32], cancel: &AtomicBool) -> Result<String, String>;
+}
+impl BufferedBackend for transcribe_cpp::Session {
+    type Stream<'a> = transcribe_cpp::Stream<'a>;
+    fn install(&mut self, token: &transcribe_cpp::CancelToken) {
+        self.set_cancel_token(token);
+    }
+    fn clear(&mut self) {
+        self.clear_cancel_token();
+    }
+    fn stream(&mut self) -> Result<Self::Stream<'_>, String> {
+        self.stream(
+            &transcribe_cpp::RunOptions {
+                language: Some("en".into()),
+                ..Default::default()
+            },
+            &Default::default(),
+        )
+        .map_err(|e| e.to_string())
+    }
+    fn invalid(&self) -> bool {
+        self.was_truncated() || self.was_aborted()
+    }
+    fn batch(&mut self, audio: &[f32], cancel: &AtomicBool) -> Result<String, String> {
+        parakeet_run(
+            self,
+            audio,
+            &AbortSignal {
+                cancel,
+                stop: None,
+                deadline: None,
+            },
+        )
+    }
+}
+
+// A borrowed stream lives entirely on this worker; no self-referential ownership.
+fn buffered_session(
+    session: &mut transcribe_cpp::Session,
+    jobs: &Receiver<EngineJob>,
+    events: &dyn SessionEvents,
+    flags: &EngineFlags,
+    cancel: &AtomicBool,
+) -> Result<String, String> {
+    let clock = Instant::now();
+    buffered_driver(session, jobs, events, flags, cancel, &|| {
+        clock.elapsed().as_millis() as u64
+    })
+}
+
+fn buffered_driver<B: BufferedBackend>(
+    session: &mut B,
+    jobs: &Receiver<EngineJob>,
+    events: &dyn SessionEvents,
+    flags: &EngineFlags,
+    cancel: &AtomicBool,
+    now: &(impl Fn() -> u64 + Sync),
+) -> Result<String, String> {
+    let token = transcribe_cpp::CancelToken::new();
+    session.install(&token);
+    let done = AtomicBool::new(false);
+    let deadline_ms = AtomicU64::new(u64::MAX);
+    let result = std::thread::scope(|scope| {
+        scope.spawn(|| {
+            while !done.load(Ordering::Acquire) {
+                if cancel.load(Ordering::Acquire) {
+                    token.cancel();
+                    break;
+                }
+                if now() >= deadline_ms.load(Ordering::Acquire) {
+                    token.cancel();
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        });
+        let result = (|| {
+            let _completion = CompleteOnDrop(&done);
+            let mut stream = session.stream().ok();
+            let mut sent = 0;
+            let mut final_audio = None;
+            while let Ok(job) = jobs.recv() {
+                if cancel.load(Ordering::Acquire) {
+                    return Err("Dictation cancelled".into());
+                }
+                match job {
+                    EngineJob::Feed { offset, audio } => {
+                        if let Some(active) = stream.as_mut() {
+                            deadline_ms.store(now() + 8000, Ordering::Release);
+                            let failed = offset != sent || active.feed(&audio).is_err();
+                            deadline_ms.store(u64::MAX, Ordering::Release);
+                            if failed || token.is_cancelled() {
+                                stream = None;
+                                events.discard_partial();
+                            } else {
+                                sent += audio.len();
+                                if !flags.previews_off.load(Ordering::Acquire) {
+                                    let text = active.text();
+                                    events
+                                        .partial(&format!("{}{}", text.committed, text.tentative));
+                                }
+                            }
+                        }
+                    }
+                    EngineJob::Finish(audio) => {
+                        final_audio = Some(audio);
+                        break;
+                    }
+                    EngineJob::Preview(_) => {}
+                }
+            }
+            let audio = final_audio.ok_or("Dictation stopped before transcription")?;
+            let streamed = stream.as_mut().and_then(|active| {
+                deadline_ms.store(now() + 8000, Ordering::Release);
+                if sent > audio.len()
+                    || active.feed(&audio[sent..]).is_err()
+                    || active.finalize().is_err()
+                {
+                    return None;
+                }
+                let text = active.text().full.trim().to_owned();
+                let intervals = active.intervals();
+                stream_is_reliable(&audio, &text, &intervals).then_some(text)
+            });
+            deadline_ms.store(u64::MAX, Ordering::Release);
+            drop(stream);
+            if cancel.load(Ordering::Acquire) {
+                return Err("Dictation cancelled".into());
+            }
+            if let Some(text) = streamed.filter(|_| !session.invalid() && !token.is_cancelled()) {
+                #[cfg(test)]
+                eprintln!("buffered stream authoritative (no batch fallback)");
+                return Ok(text);
+            }
+            #[cfg(test)]
+            eprintln!("buffered stream rejected; whole-clip fallback");
+            events.discard_partial();
+            session.clear();
+            let result = session.batch(&audio, cancel);
+            if cancel.load(Ordering::Acquire) {
+                Err("Dictation cancelled".into())
+            } else {
+                result
+            }
+        })();
+        result
+    });
+    session.clear();
+    result
+}
+
+#[cfg(test)]
+mod buffered_tests {
+    use super::*;
+    struct FakeBackend<'a> {
+        failure: &'static str,
+        token: Option<transcribe_cpp::CancelToken>,
+        alive: Arc<AtomicBool>,
+        fed: Arc<std::sync::Mutex<Vec<f32>>>,
+        clock: &'a AtomicU64,
+        batches: Vec<Vec<f32>>,
+    }
+    struct FakeStream<'a> {
+        backend: &'a FakeBackend<'a>,
+    }
+    impl Drop for FakeStream<'_> {
+        fn drop(&mut self) {
+            self.backend.alive.store(false, Ordering::Release);
+        }
+    }
+    impl BufferedStream for FakeStream<'_> {
+        fn feed(&mut self, audio: &[f32]) -> Result<(), String> {
+            if self.backend.failure == "feed" {
+                return Err("feed".into());
+            }
+            self.backend.fed.lock().unwrap().extend_from_slice(audio);
+            if self.backend.failure == "deadline" {
+                self.backend.clock.store(9000, Ordering::Release);
+                let start = Instant::now();
+                while !self.backend.token.as_ref().unwrap().is_cancelled() {
+                    assert!(start.elapsed() < Duration::from_secs(2), "watcher failed");
+                    std::thread::yield_now();
+                }
+                return Err("deadline".into());
+            }
+            Ok(())
+        }
+        fn finalize(&mut self) -> Result<(), String> {
+            if self.backend.failure == "deadline-finalize" {
+                self.backend.clock.store(9000, Ordering::Release);
+                let start = Instant::now();
+                while !self.backend.token.as_ref().unwrap().is_cancelled() {
+                    assert!(start.elapsed() < Duration::from_secs(2));
+                    std::thread::yield_now();
+                }
+            }
+            if self.backend.failure == "finalize" {
+                Err("finalize".into())
+            } else {
+                Ok(())
+            }
+        }
+        fn text(&self) -> transcribe_cpp::StreamText {
+            transcribe_cpp::StreamText {
+                full: "words".into(),
+                committed: "words".into(),
+                tentative: String::new(),
+            }
+        }
+        fn intervals(&self) -> Vec<(i64, i64)> {
+            vec![(0, 1000)]
+        }
+    }
+    impl BufferedBackend for FakeBackend<'_> {
+        type Stream<'a>
+            = FakeStream<'a>
+        where
+            Self: 'a;
+        fn install(&mut self, token: &transcribe_cpp::CancelToken) {
+            assert!(
+                !token.is_cancelled(),
+                "new recording must get a fresh token"
+            );
+            self.token = Some(token.clone());
+        }
+        fn clear(&mut self) {
+            self.token = None;
+        }
+        fn stream(&mut self) -> Result<Self::Stream<'_>, String> {
+            if self.failure == "init" {
+                return Err("init".into());
+            }
+            self.alive.store(true, Ordering::Release);
+            Ok(FakeStream { backend: self })
+        }
+        fn invalid(&self) -> bool {
+            false
+        }
+        fn batch(&mut self, audio: &[f32], cancel: &AtomicBool) -> Result<String, String> {
+            assert!(
+                !self.alive.load(Ordering::Acquire),
+                "stream must drop before batch"
+            );
+            assert!(self.token.is_none(), "failed stream token must be detached");
+            self.batches.push(audio.to_vec());
+            if self.failure == "cancel" {
+                cancel.store(true, Ordering::Release);
+            }
+            Ok("batch".into())
+        }
+    }
+    fn driver_flags() -> EngineFlags {
+        EngineFlags {
+            streaming: AtomicBool::new(true),
+            ready: AtomicBool::new(true),
+            failed: AtomicBool::new(false),
+            preview_busy: AtomicBool::new(false),
+            previews_off: AtomicBool::new(false),
+            last_preview_ms: AtomicU64::new(0),
+            preview_stop: AtomicBool::new(false),
+        }
+    }
+    #[test]
+    fn production_driver_recovery_and_exact_audio() {
+        for failure in [
+            "init",
+            "feed",
+            "finalize",
+            "deadline",
+            "deadline-finalize",
+            "offset",
+            "none",
+        ] {
+            let clock = AtomicU64::new(0);
+            let mut backend = FakeBackend {
+                failure,
+                token: None,
+                alive: Arc::new(AtomicBool::new(false)),
+                fed: Arc::new(std::sync::Mutex::new(Vec::new())),
+                clock: &clock,
+                batches: Vec::new(),
+            };
+            let audio: Vec<f32> = (0..16000).map(|i| 0.01 + i as f32 / 32000.0).collect();
+            let cancel = AtomicBool::new(false);
+            let (tx, rx) = bounded(3);
+            tx.send(EngineJob::Feed {
+                offset: 0,
+                audio: Zeroizing::new(audio[..6000].to_vec()),
+            })
+            .unwrap();
+            tx.send(EngineJob::Feed {
+                offset: if failure == "offset" { 6001 } else { 6000 },
+                audio: Zeroizing::new(audio[6000..12000].to_vec()),
+            })
+            .unwrap();
+            tx.send(EngineJob::Finish(Zeroizing::new(audio.clone())))
+                .unwrap();
+            drop(tx);
+            let result = buffered_driver(
+                &mut backend,
+                &rx,
+                &super::tests::RecordedEvents::default(),
+                &driver_flags(),
+                &cancel,
+                &|| clock.load(Ordering::Acquire),
+            );
+            if failure == "none" {
+                assert_eq!(result.unwrap(), "words");
+                assert_eq!(
+                    *backend.fed.lock().unwrap(),
+                    audio,
+                    "each sample and final tail once"
+                );
+            } else {
+                assert_eq!(result.unwrap(), "batch", "{failure}");
+                assert_eq!(backend.batches, vec![audio]);
+            }
+            assert!(backend.token.is_none());
+            backend.failure = "none";
+            clock.store(0, Ordering::Release);
+            let (tx, rx) = bounded(1);
+            tx.send(EngineJob::Finish(Zeroizing::new(vec![0.1; 16000])))
+                .unwrap();
+            assert_eq!(
+                buffered_driver(
+                    &mut backend,
+                    &rx,
+                    &super::tests::RecordedEvents::default(),
+                    &driver_flags(),
+                    &cancel,
+                    &|| clock.load(Ordering::Acquire)
+                )
+                .unwrap(),
+                "words",
+                "reuse after {failure}"
+            );
+        }
+    }
+    #[test]
+    fn production_driver_cancel_during_fallback_suppresses_result() {
+        let clock = AtomicU64::new(0);
+        let mut backend = FakeBackend {
+            failure: "cancel",
+            token: None,
+            alive: Arc::new(AtomicBool::new(false)),
+            fed: Arc::new(std::sync::Mutex::new(Vec::new())),
+            clock: &clock,
+            batches: Vec::new(),
+        };
+        let (tx, rx) = bounded(1);
+        let audio = vec![0.1; 48000]; // timing ends at 1s: uncovered activity forces fallback
+        tx.send(EngineJob::Finish(Zeroizing::new(audio.clone())))
+            .unwrap();
+        let cancel = AtomicBool::new(false);
+        assert!(buffered_driver(
+            &mut backend,
+            &rx,
+            &super::tests::RecordedEvents::default(),
+            &driver_flags(),
+            &cancel,
+            &|| 0
+        )
+        .is_err());
+        assert_eq!(backend.batches, vec![audio]);
+    }
+    #[test]
+    fn production_driver_callback_panic_joins_watcher_without_cancel() {
+        struct PanicEvents;
+        impl SessionEvents for PanicEvents {
+            fn recording(&self) {}
+            fn transcribing(&self) {}
+            fn partial(&self, _: &str) {
+                panic!("callback");
+            }
+        }
+        let (done_tx, done_rx) = bounded(1);
+        std::thread::spawn(move || {
+            let clock = AtomicU64::new(0);
+            let mut backend = FakeBackend {
+                failure: "none",
+                token: None,
+                alive: Arc::new(AtomicBool::new(false)),
+                fed: Arc::new(std::sync::Mutex::new(Vec::new())),
+                clock: &clock,
+                batches: Vec::new(),
+            };
+            let (tx, rx) = bounded(1);
+            tx.send(EngineJob::Feed {
+                offset: 0,
+                audio: Zeroizing::new(vec![0.1; 16000]),
+            })
+            .unwrap();
+            let cancel = AtomicBool::new(false);
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                buffered_driver(
+                    &mut backend,
+                    &rx,
+                    &PanicEvents,
+                    &driver_flags(),
+                    &cancel,
+                    &|| 0,
+                )
+            }));
+            assert!(result.is_err());
+            assert!(!cancel.load(Ordering::Acquire));
+            assert!(!backend.alive.load(Ordering::Acquire));
+            backend.failure = "init";
+            let (tx, rx) = bounded(1);
+            tx.send(EngineJob::Finish(Zeroizing::new(vec![0.1; 16000])))
+                .unwrap();
+            assert_eq!(
+                buffered_driver(
+                    &mut backend,
+                    &rx,
+                    &super::tests::RecordedEvents::default(),
+                    &driver_flags(),
+                    &cancel,
+                    &|| 0
+                )
+                .unwrap(),
+                "batch"
+            );
+            done_tx.send(()).unwrap();
+        });
+        done_rx
+            .recv_timeout(Duration::from_secs(3))
+            .expect("unwind must join watcher without user cancel");
+    }
+    #[test]
+    #[ignore = "uses installed model and synthetic WAV; no devices"]
+    fn real_stream_cancel_and_reuse() {
+        let mut engine = LocalEngine::load(std::path::Path::new(
+            &std::env::var("TUCK_TEST_MODEL").unwrap(),
+        ))
+        .unwrap();
+        let LocalEngine::Parakeet(session) = &mut engine else {
+            panic!("Parakeet required")
+        };
+        let wav = std::fs::read(std::env::var("TUCK_TEST_WAV").unwrap()).unwrap();
+        let data = wav.windows(4).position(|w| w == b"data").unwrap() + 8;
+        let audio: Vec<f32> = wav[data..]
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|b| f32::from(i16::from_le_bytes(*b)) / 32768.0)
+            .collect();
+        let cancel = AtomicBool::new(false);
+        for during_feed in [true, false] {
+            cancel.store(false, Ordering::Release);
+            let flags = EngineFlags {
+                streaming: AtomicBool::new(true),
+                ready: AtomicBool::new(true),
+                failed: AtomicBool::new(false),
+                preview_busy: AtomicBool::new(false),
+                previews_off: AtomicBool::new(true),
+                last_preview_ms: AtomicU64::new(0),
+                preview_stop: AtomicBool::new(false),
+            };
+            let (tx, rx) = bounded(2);
+            if during_feed {
+                tx.send(EngineJob::Feed {
+                    offset: 0,
+                    audio: Zeroizing::new(audio.clone()),
+                })
+                .unwrap();
+            }
+            tx.send(EngineJob::Finish(Zeroizing::new(audio.clone())))
+                .unwrap();
+            drop(tx);
+            std::thread::scope(|scope| {
+                scope.spawn(|| {
+                    std::thread::sleep(Duration::from_millis(100));
+                    cancel.store(true, Ordering::Release);
+                });
+                assert!(buffered_session(
+                    session,
+                    &rx,
+                    &super::tests::RecordedEvents::default(),
+                    &flags,
+                    &cancel
+                )
+                .is_err());
+            });
+        }
+        cancel.store(false, Ordering::Release);
+        let text = parakeet_run(
+            session,
+            &audio,
+            &AbortSignal {
+                cancel: &cancel,
+                stop: None,
+                deadline: None,
+            },
+        )
+        .unwrap();
+        assert!(text.to_lowercase().contains("quick brown fox"));
+    }
+    #[test]
+    fn hidden_stream_jobs_are_contiguous_and_final_tail_is_authoritative() {
+        struct Streaming;
+        impl Engine for Streaming {
+            fn streaming(
+                &mut self,
+                jobs: &Receiver<EngineJob>,
+                _: &dyn SessionEvents,
+                flags: &EngineFlags,
+                _: &AtomicBool,
+            ) -> Option<Result<String, String>> {
+                flags.streaming.store(true, Ordering::Release);
+                let mut sent = Vec::new();
+                while let Ok(job) = jobs.recv() {
+                    match job {
+                        EngineJob::Feed { offset, audio } => {
+                            assert_eq!(offset, sent.len());
+                            sent.extend_from_slice(&audio);
+                        }
+                        EngineJob::Finish(audio) => {
+                            assert!(sent.len() >= 16000, "hidden presentation must still feed");
+                            assert_eq!(sent, audio[..sent.len()]);
+                            assert_eq!(audio.len(), 105 * 320);
+                            return Some(Ok("authoritative".into()));
+                        }
+                        _ => panic!("stream received rolling preview"),
+                    }
+                }
+                Some(Err("missing final".into()))
+            }
+            fn preview(&mut self, _: &[f32], _: &AbortSignal<'_>) -> Result<String, String> {
+                panic!("legacy preview")
+            }
+            fn finish(&mut self, _: &[f32], _: &AbortSignal<'_>) -> Result<String, String> {
+                panic!("legacy final")
+            }
+        }
+        let stop = Arc::new(AtomicBool::new(false));
+        let (capture, player) = super::tests::capture_with(105, Duration::from_millis(2), &stop);
+        let result = run_session(
+            || Ok(Streaming),
+            &super::tests::RecordedEvents::default(),
+            capture,
+            false,
+            super::tests::limits(1, 100),
+            &stop,
+            &AtomicBool::new(false),
+        );
+        player.join().unwrap();
+        assert_eq!(result.unwrap(), "authoritative");
+    }
+    #[test]
+    fn reliability_rejects_missing_timing_trailing_phrase_and_long_pause() {
+        assert!(!stream_is_reliable(&[0.1; 16000], "words", &[]));
+        assert!(!stream_is_reliable(&[0.1; 16000], "", &[(0, 1000)]));
+        assert!(!stream_is_reliable(&[0.1; 32000], "opening", &[(0, 1000)]));
+        assert!(stream_is_reliable(
+            &[0.002; 16000],
+            "quiet speech",
+            &[(0, 1000)]
+        ));
+        let mut clip = vec![0.1; 16000];
+        clip.extend(vec![0.0001; 96000]);
+        clip.extend(vec![0.002; 16000]);
+        assert!(!stream_is_reliable(
+            &clip,
+            "opening and resumed words",
+            &[(0, clip.len() as i64 / 16)]
+        ));
+        assert!(!stream_is_reliable(
+            &[0.1; 16000],
+            "invalid time",
+            &[(0, 6250)]
+        ));
+    }
+    #[test]
+    fn reliability_checks_opening_and_middle_not_only_last_word() {
+        let audio = [0.1; 64000];
+        assert!(!stream_is_reliable(
+            &audio,
+            "missing opening",
+            &[(1500, 4000)]
+        ));
+        assert!(!stream_is_reliable(
+            &audio,
+            "missing middle",
+            &[(0, 500), (3000, 4000)]
+        ));
+        assert!(!stream_is_reliable(&audio, "missing end", &[(0, 2000)]));
+        assert!(stream_is_reliable(
+            &audio,
+            "covered",
+            &[(0, 1000), (1100, 2200), (2300, 4000)]
+        ));
+        assert!(!stream_is_reliable(&audio, "invalid", &[(-1, 4000)]));
+    }
+    #[test]
+    fn aligned_source_seconds_match_whole_clip_resampling_including_tail() {
+        for rate in [8000, 16000, 22050, 44100, 48000, 192000] {
+            let input: Vec<f32> = (0..rate * 2 + 137)
+                .map(|i| (i as f32 * 0.013).sin())
+                .collect();
+            let whole = resample_to_16k(&input, rate as u32);
+            let mut parts = Vec::new();
+            for chunk in input.chunks(rate) {
+                parts.extend(resample_to_16k(chunk, rate as u32));
+            }
+            assert_eq!(parts.len(), whole.len());
+            assert!(parts
+                .iter()
+                .zip(whole)
+                .all(|(a, b)| (a - b).abs() < 0.00001));
+        }
+    }
+}
+
+fn stream_is_reliable(audio: &[f32], text: &str, intervals: &[(i64, i64)]) -> bool {
+    if text.is_empty() || intervals.is_empty() {
+        return false;
+    }
+    let mut ranges = Vec::with_capacity(intervals.len());
+    for &(start, end) in intervals {
+        let Some(start) = usize::try_from(start).ok().and_then(|v| v.checked_mul(16)) else {
+            return false;
+        };
+        let Some(end) = usize::try_from(end).ok().and_then(|v| v.checked_mul(16)) else {
+            return false;
+        };
+        if end <= start || end > audio.len().saturating_add(6400) {
+            return false;
+        }
+        ranges.push((
+            start.saturating_sub(6400).min(audio.len()),
+            end.saturating_add(6400).min(audio.len()),
+        ));
+    }
+    ranges.sort_unstable();
+    // Never cut quiet speech. Low-level long pauses require a full-clip decision.
+    let long_pause = audio
+        .chunks(320)
+        .scan(0usize, |quiet, frame| {
+            *quiet = if frame.iter().all(|v| v.abs() <= 0.001) {
+                *quiet + frame.len()
+            } else {
+                0
+            };
+            Some(*quiet > 89_600)
+        })
+        .any(|long| long);
+    let activity = |samples: &[f32]| samples.iter().filter(|v| v.abs() > 0.001).count();
+    let mut cursor = 0;
+    let mut uncovered = 0;
+    for (start, end) in ranges {
+        if start > cursor {
+            uncovered += activity(&audio[cursor..start]);
+        }
+        cursor = cursor.max(end);
+    }
+    uncovered += activity(&audio[cursor..]);
+    !long_pause && uncovered < 4800
 }

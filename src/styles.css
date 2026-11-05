@@ -590,22 +590,8 @@ body.fullscreen-hidden .island {
   transform: scaleY(0.3);
 }
 
-.dictation-level.recording i {
-  animation: dictation-level 0.8s infinite var(--ease-out);
-}
-
-.dictation-level.recording i:nth-child(2) {
-  animation-delay: var(--d-fast);
-}
-
-.dictation-level.recording i:nth-child(3) {
-  animation-delay: calc(var(--d-fast) * 2);
-}
-
-@keyframes dictation-level {
-  0%, 100% { transform: scaleY(0.25); }
-  50% { transform: scaleY(1); }
-}
+.dictation-waveform { display: flex; align-items: center; gap: var(--s-half); height: var(--i-sm); }
+.dictation-waveform i { display: block; width: var(--meter-bar); background: var(--ink); border-radius: var(--r-xs); }
 
 .act-compact-icon {
   display: inline-flex;
@@ -1661,3 +1647,17 @@ body.fullscreen-hidden .island {
 #isl:not([data-state="open"]) .full * {
   animation-play-state: paused !important;
 }
+
+.rail-settings { color: var(--ink-2); }
+.rail-settings:hover, .rail-settings:focus-visible { color: var(--ink); }
+.rail-settings svg.ico { width: var(--i-lg); height: var(--i-lg); }
+.usage-actions { position: absolute; top: 0; right: 0; display: flex; align-items: center; gap: var(--s-2); z-index: 1; }
+#usageRefreshStatus { color: var(--ink-2); font-size: var(--t-xs); }
+.page.usage { padding-top: var(--hit); }
+.open-announcement { position: absolute; top: var(--s-1); left: var(--s-12); right: var(--s-12); pointer-events: none; color: var(--ink-2); background: var(--surface); font-size: var(--t-xs); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.open-announcement:empty { display: none; }
+
+body:not(:has(#isl[data-state="open"])) .open-announcement { display: none; }
+
+.u-list.with-toolbar:not(.dense) .u-face { width: calc(var(--hit) + var(--s-5)); height: calc(var(--hit) + var(--s-5)); flex-basis: calc(var(--hit) + var(--s-5)); }
+.u-list.with-toolbar:not(.dense) .u-ring-outer { width: 100%; height: 100%; }

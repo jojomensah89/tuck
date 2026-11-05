@@ -215,8 +215,9 @@ fn focused_edit_identity() -> Result<Vec<i32>, String> {
             },
         },
         UI::Accessibility::{
-            CUIAutomation, IUIAutomation, IUIAutomationValuePattern, UIA_EditControlTypeId,
-            UIA_ValuePatternId,
+            CUIAutomation, IUIAutomation, IUIAutomationTextPattern, IUIAutomationValuePattern,
+            UIA_DocumentControlTypeId, UIA_EditControlTypeId, UIA_IsReadOnlyAttributeId,
+            UIA_TextPatternId, UIA_ValuePatternId,
         },
     };
     unsafe {
@@ -240,7 +241,16 @@ fn focused_edit_identity() -> Result<Vec<i32>, String> {
             let editable = value
                 .as_ref()
                 .is_some_and(|v| v.CurrentIsReadOnly().is_ok_and(|r| !r.as_bool()));
-            if !editable || focused.CurrentControlType().ok() != Some(UIA_EditControlTypeId) {
+            let text_editable = focused
+                .GetCurrentPatternAs::<IUIAutomationTextPattern>(UIA_TextPatternId)
+                .ok()
+                .and_then(|p| p.DocumentRange().ok())
+                .and_then(|r| r.GetAttributeValue(UIA_IsReadOnlyAttributeId).ok())
+                .is_some_and(|v| bool::try_from(&v).ok() == Some(false));
+            let kind = focused.CurrentControlType().ok();
+            if !(editable || text_editable)
+                || !(kind == Some(UIA_EditControlTypeId) || kind == Some(UIA_DocumentControlTypeId))
+            {
                 return Err("The focused control is not an editable text input".into());
             }
             let array = focused
@@ -306,6 +316,8 @@ pub(super) fn insert_unicode(
     if units.len() > 32 * 1024 {
         return Err(String::from("Transcript is too long to insert safely").into());
     }
+    let before = Zeroizing::new(focused_text().map_err(InsertionFailure::from)?);
+    let selection = focused_selection(&before).ok();
     send_batches(
         &units,
         || {
@@ -331,7 +343,164 @@ pub(super) fn insert_unicode(
                 inserted
             }
         },
-    )
+    )?;
+    // Event acceptance is not application acceptance. Never retry after uncertain delivery.
+    for _ in 0..20 {
+        if check_cancel(cancel).is_err() || verify_foreground_target(target).is_err() {
+            break;
+        }
+        if let Ok(after) = focused_text() {
+            let after = Zeroizing::new(after);
+            if confirms_replacement(&before, &after, text, selection) {
+                return Ok(());
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    Err(InsertionFailure { message: "Input was sent but the target did not confirm the text. Check it manually; automatic retry and copy are disabled.".into(), may_have_inserted: true })
+}
+
+fn confirms_insertion(before: &str, after: &str, text: &str) -> bool {
+    !text.is_empty()
+        && after.len() == before.len() + text.len()
+        && after
+            .match_indices(text)
+            .any(|(i, _)| before.strip_prefix(&after[..i]) == Some(&after[i + text.len()..]))
+}
+
+fn confirms_replacement(
+    before: &str,
+    after: &str,
+    text: &str,
+    selection: Option<(usize, usize)>,
+) -> bool {
+    if let Some((start, end)) = selection {
+        return !text.is_empty()
+            && start <= end
+            && before.is_char_boundary(start)
+            && before.is_char_boundary(end)
+            && end <= before.len()
+            && after.len() == before.len() - (end - start) + text.len()
+            && after
+                .strip_prefix(&before[..start])
+                .and_then(|s| s.strip_prefix(text))
+                == Some(&before[end..]);
+    }
+    // Without a supported selection, only an exact additive change is confirmed.
+    confirms_insertion(before, after, text)
+}
+
+#[cfg(windows)]
+fn focused_selection(before: &str) -> Result<(usize, usize), String> {
+    use windows::Win32::{
+        System::Com::{
+            CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER,
+            COINIT_MULTITHREADED,
+        },
+        UI::Accessibility::{
+            CUIAutomation, IUIAutomation, IUIAutomationTextPattern, TextPatternRangeEndpoint_End,
+            TextPatternRangeEndpoint_Start, UIA_TextPatternId,
+        },
+    };
+    unsafe {
+        let initialized = CoInitializeEx(None, COINIT_MULTITHREADED).is_ok();
+        let result = (|| -> windows::core::Result<(usize, usize)> {
+            let automation: IUIAutomation =
+                CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER)?;
+            let focused = automation.GetFocusedElement()?;
+            let pattern: IUIAutomationTextPattern =
+                focused.GetCurrentPatternAs(UIA_TextPatternId)?;
+            let document = Zeroizing::new(pattern.DocumentRange()?.GetText(65537)?.to_string());
+            if document.as_str() != before {
+                return Err(windows::core::Error::from_hresult(windows::core::HRESULT(
+                    0x80004005u32 as i32,
+                )));
+            }
+            let selections = pattern.GetSelection()?;
+            if selections.Length()? != 1 {
+                return Err(windows::core::Error::from_hresult(windows::core::HRESULT(
+                    0x80004005u32 as i32,
+                )));
+            }
+            let selected = selections.GetElement(0)?;
+            let prefix = pattern.DocumentRange()?;
+            prefix.MoveEndpointByRange(
+                TextPatternRangeEndpoint_End,
+                &selected,
+                TextPatternRangeEndpoint_Start,
+            )?;
+            let prefix = Zeroizing::new(prefix.GetText(65537)?.to_string());
+            let selected = Zeroizing::new(selected.GetText(65537)?.to_string());
+            if !before
+                .strip_prefix(prefix.as_str())
+                .is_some_and(|suffix| suffix.starts_with(selected.as_str()))
+            {
+                return Err(windows::core::Error::from_hresult(windows::core::HRESULT(
+                    0x80004005u32 as i32,
+                )));
+            }
+            Ok((prefix.len(), prefix.len() + selected.len()))
+        })()
+        .map_err(|e| e.to_string())
+        .and_then(|(start, end)| {
+            if start <= end
+                && end <= before.len()
+                && before.is_char_boundary(start)
+                && before.is_char_boundary(end)
+            {
+                Ok((start, end))
+            } else {
+                Err("Selection unavailable".into())
+            }
+        });
+        if initialized {
+            CoUninitialize();
+        }
+        result
+    }
+}
+
+#[cfg(windows)]
+fn focused_text() -> Result<String, String> {
+    use windows::Win32::{
+        System::Com::{
+            CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER,
+            COINIT_MULTITHREADED,
+        },
+        UI::Accessibility::{
+            CUIAutomation, IUIAutomation, IUIAutomationTextPattern, IUIAutomationValuePattern,
+            UIA_TextPatternId, UIA_ValuePatternId,
+        },
+    };
+    unsafe {
+        let initialized = CoInitializeEx(None, COINIT_MULTITHREADED).is_ok();
+        let result = (|| {
+            let automation: IUIAutomation =
+                CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER)
+                    .map_err(|e| e.to_string())?;
+            let focused = automation.GetFocusedElement().map_err(|e| e.to_string())?;
+            let value = if let Ok(p) =
+                focused.GetCurrentPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId)
+            {
+                p.CurrentValue().map_err(|e| e.to_string())?.to_string()
+            } else {
+                focused
+                    .GetCurrentPatternAs::<IUIAutomationTextPattern>(UIA_TextPatternId)
+                    .and_then(|p| p.DocumentRange())
+                    .and_then(|r| r.GetText(65537))
+                    .map_err(|e| e.to_string())?
+                    .to_string()
+            };
+            if value.len() > 65536 {
+                return Err("Target is too large to verify safely".into());
+            }
+            Ok(value)
+        })();
+        if initialized {
+            CoUninitialize();
+        }
+        result
+    }
 }
 
 #[cfg(windows)]
@@ -429,5 +598,110 @@ mod tests {
         )
         .unwrap_err();
         assert!(after_prefix.may_have_inserted);
+    }
+}
+
+#[cfg(windows)]
+pub(super) fn copy_final(
+    text: &str,
+    owner: windows::Win32::Foundation::HWND,
+) -> Result<(), String> {
+    #[cfg(windows)]
+    unsafe {
+        use windows::Win32::{
+            Foundation::{GlobalFree, HANDLE},
+            System::{
+                DataExchange::{CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData},
+                Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE},
+            },
+        };
+        let units = Zeroizing::new(
+            text.encode_utf16()
+                .chain(std::iter::once(0))
+                .collect::<Vec<_>>(),
+        );
+        let memory = GlobalAlloc(GMEM_MOVEABLE, units.len() * 2)
+            .map_err(|_| "Clipboard allocation failed")?;
+        let ptr = GlobalLock(memory) as *mut u16;
+        if ptr.is_null() {
+            let _ = GlobalFree(memory);
+            return Err("Clipboard allocation failed".into());
+        }
+        std::ptr::copy_nonoverlapping(units.as_ptr(), ptr, units.len());
+        let _ = GlobalUnlock(memory);
+        if OpenClipboard(windows::Win32::Foundation::HWND(owner.0 as _)).is_err() {
+            let _ = GlobalFree(memory);
+            return Err("Clipboard is busy".into());
+        }
+        let result =
+            EmptyClipboard().and_then(|_| SetClipboardData(13, HANDLE(memory.0)).map(|_| ()));
+        let _ = CloseClipboard();
+        if result.is_err() {
+            let _ = GlobalFree(memory);
+            return Err("Could not copy clipboard item".into());
+        }
+
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = text;
+        Err("Windows clipboard required".into())
+    }
+}
+
+#[cfg(not(windows))]
+pub(super) fn copy_final(_text: &str, _owner: ()) -> Result<(), String> {
+    Err("Windows clipboard required".into())
+}
+
+#[cfg(test)]
+mod confirmation_tests {
+    #[test]
+    fn confirms_full_and_partial_selection_replacement() {
+        assert!(super::confirms_replacement(
+            "old",
+            "new",
+            "new",
+            Some((0, 3))
+        ));
+        assert!(super::confirms_replacement(
+            "aoldz",
+            "anewz",
+            "new",
+            Some((1, 4))
+        ));
+        assert!(super::confirms_replacement(
+            "az",
+            "anewz",
+            "new",
+            Some((1, 1))
+        ));
+        assert!(!super::confirms_replacement(
+            "old",
+            "ne",
+            "new",
+            Some((0, 3))
+        ));
+        assert!(!super::confirms_replacement("old", "new", "new", None));
+        assert!(super::confirms_replacement(
+            "éold",
+            "é新",
+            "新",
+            Some((2, 5))
+        ));
+        assert!(!super::confirms_replacement(
+            "éold",
+            "é新",
+            "新",
+            Some((1, 5))
+        ));
+    }
+    #[test]
+    fn requires_observed_text_change() {
+        assert!(super::confirms_insertion("ab", "ahellob", "hello"));
+        assert!(!super::confirms_insertion("ab", "ab", "hello"));
+        assert!(!super::confirms_insertion("ab", "ahelb", "hello"));
+        assert!(super::confirms_insertion("?", "???", "??"));
     }
 }

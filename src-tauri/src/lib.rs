@@ -5,6 +5,7 @@ pub mod extensions;
 pub mod installed_usage;
 pub mod lifecycle;
 pub mod lyrics;
+mod lyrics_match;
 pub mod media;
 pub mod osd_flyout;
 mod service_preferences;
@@ -70,6 +71,10 @@ pub fn run() {
             dictation::dictation_model_download,
             dictation::dictation_model_download_cancel,
             dictation::dictation_model_remove,
+            dictation::dictation_model_use,
+            dictation::dictation_models_scan,
+            dictation::dictation_shortcuts_pause,
+            dictation::dictation_shortcuts_retry,
             dictation::dictation_toggle,
             dictation::dictation_hold_start,
             dictation::dictation_hold_stop,

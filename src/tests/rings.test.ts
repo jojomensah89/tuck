@@ -9,6 +9,7 @@ import {
   providerInitial,
   providerMark,
   ringDashOffset,
+  remainingPct,
   ringGeometry,
   usageTone,
 } from '../rings.js';
@@ -43,6 +44,20 @@ describe('ring geometry', () => {
     expect(clampPct(null)).toBeNull();
     expect(clampPct(undefined)).toBeNull();
     expect(clampPct(Infinity)).toBeNull();
+  });
+});
+
+describe('remaining quota', () => {
+  it('turns usage into what is left', () => {
+    expect(remainingPct(42)).toBe(58);
+    expect(remainingPct(0)).toBe(100);
+    expect(remainingPct(120)).toBe(0);
+    expect(remainingPct(99.6)).toBe(0);
+  });
+  it('keeps unknown usage unknown', () => {
+    expect(remainingPct(null)).toBeNull();
+    expect(remainingPct(undefined)).toBeNull();
+    expect(remainingPct(Number.NaN)).toBeNull();
   });
 });
 

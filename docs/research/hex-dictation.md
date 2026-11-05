@@ -43,11 +43,9 @@ copied into Tuck.
 
 ## Alternatives and next features
 
-1. **Recommended next: separate capture draining from inference.** The current
-   synchronous preview blocks the capture consumer while the bounded callback
-   queue fills. A single inference worker and one replaceable pending preview
-   would avoid a backlog. Inferred benefit: better release responsiveness and
-   less queue pressure. Requires slow-inference and cancellation barrier tests.
+1. **Capture and inference are now separate.** Main's PR 25 engine worker
+   owns inference while the session thread drains capture. This rebuild preserves
+   its one-preview limit, budget, typed abort signal and cancellation gate.
 2. **True streaming engine.** Hex demonstrates the architecture, but replacing
    Whisper or adding another backend requires separate model-size, Windows CPU,
    memory, accuracy, and language evaluation. Lowering the current preview
@@ -63,5 +61,5 @@ Automated checks can establish event ordering, safe text rendering, collapsed
 visibility without focus transfer, retention during processing, clearing on
 terminal states, and native publication guards. Actual microphone latency,
 recognition accuracy, insertion into real Windows apps, and Hex HUD behavior
-remain manual checks. The current rolling preview is not token-by-token streaming;
+remain manual checks. The rolling preview is not token-by-token streaming;
 first text still requires capture time plus local inference.

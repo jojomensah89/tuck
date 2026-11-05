@@ -694,7 +694,7 @@ function compactCandidates(): CompactActivityCandidate[] {
       title: activity.title,
       priority: activity.priority,
       active: true,
-      running: activity.type !== 'dictation' || activity.phase === 'recording',
+      running: activity.type !== 'dictation' || ['starting', 'recording', 'transcribing', 'processing', 'cancelling', 'inserting'].includes(activity.phase || ''),
     })),
     {
       id: 'media',
@@ -851,8 +851,8 @@ function renderCompact(): void {
   const external = externalActivities.get(externalId)!;
   if (primary.kind === 'dictation') {
     const recording = external.phase === 'recording';
-    const phaseLabel = recording ? 'Dictation recording' : external.phase === 'transcribing' ? 'Transcribing' : 'Review transcript';
-    const line = external.text || (recording ? 'Listening\u2026' : external.phase === 'transcribing' ? 'Transcribing\u2026' : 'Review transcript');
+    const phaseLabel = recording ? 'Dictation recording' : external.phase === 'transcribing' ? 'Transcribing' : external.phase === 'processing' ? 'Processing' : external.phase === 'cancelling' ? 'Cancelling' : external.phase === 'starting' ? 'Starting' : external.phase === 'inserting' ? 'Inserting' : 'Review transcript';
+    const line = external.text || (recording ? 'Listening\u2026' : `${phaseLabel}\u2026`);
     // Revised previews use a stable width and no marquee.
     setCompactSlot(cc, 'dictation:preview', line, () => {
       const preview = compactTitle(line);

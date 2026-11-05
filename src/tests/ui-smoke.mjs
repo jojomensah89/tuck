@@ -371,6 +371,7 @@ try {
   assert.equal(await native.locator('#isl').getAttribute('data-state'),'idle');
   assert.equal((await native.locator('#isl').boundingBox()).width,300,'Lyric mode reserves a stable wider closed pill');
   assert.equal((await native.locator('#cc .compact-title-track').textContent()).trim(),'Current fixture line');
+  assert.ok(await native.evaluate(()=>{const m=r=>r.left+r.width/2;return Math.abs(m(document.querySelector('#cc .compact-slot.current .compact-title-track').getBoundingClientRect())-m(document.querySelector('.island').getBoundingClientRect()))<=2;}),'Collapsed text is centred on the pill');
   await setLive({compactContent:'title'}); await native.waitForTimeout(50);
   assert.equal((await native.locator('#cc .compact-title-track').textContent()).trim(),'Artwork color fixture');
   assert.equal((await native.locator('#isl').boundingBox()).width,300,'Title mode keeps the same stable width');
@@ -460,6 +461,65 @@ try {
     assert.equal(geometry.titleClear && geometry.togglePresent && geometry.toggleClear && geometry.controlsFit, true, `Media regions must fit at ${width}px`);
     await native.screenshot({path:path.join(root,'artifacts',`island-unslop-${width}.png`)});
   }
+  // An exact match stays quiet; only an approximate match offers timing, and the correction sticks to the track.
+  const lyricEvent=extra=>native.evaluate(extra=>window.__emitNative('lyrics',{trackId:'fixture-track',requestId:window.__calls.findLast(call=>call.command==='lyrics_get').args.requestId,syncedLyrics:'[00:01]Previous fixture line\n[00:03]Current fixture line\n[00:05]Next fixture line',...extra}),extra);
+  const lyricTrackEvent=trackId=>native.evaluate(trackId=>window.__emitNative('lyrics',{trackId,requestId:window.__calls.findLast(call=>call.command==='lyrics_get').args.requestId,status:'synced',approximate:true,syncedLyrics:'[00:01]Fixture line'}),trackId);
+  await lyricEvent({status:'synced'});
+  assert.equal(await native.locator('.lyrics-offset-controls').isVisible(),false,'An exact match shows no timing control');
+  assert.equal(await native.locator('.lyrics-header').isVisible(),false,'An exact match leaves no empty header above the lyrics');
+  await lyricEvent({status:'synced',approximate:true});
+  assert.equal(await native.locator('.lyrics-status').textContent(),'Approximate');
+  assert.equal(await native.locator('.lyrics-offset-value').textContent(),'0.0 s');
+  assert.match(await native.locator('.lyrics-note').textContent(),/another edit/i,'An approximate match says why');
+  assert.equal(await native.locator('.lyrics-offset-value').getAttribute('aria-live'),'polite');
+  for(let step=0;step<3;step++) await native.getByRole('button',{name:'Show lyrics 0.1 s later, hold to repeat'}).click();
+  assert.equal(await native.locator('.lyrics-offset-value').textContent(),'+0.3 s');
+  await native.locator('.lyric-line').last().click();
+  assert.equal(await native.evaluate(()=>window.__calls.findLast(call=>call.command==='media_seek').args.ms),5300,'Seeking follows the corrected timing');
+  assert.deepEqual(await native.evaluate(()=>JSON.parse(localStorage.getItem('tuck.live.v2')).lyricsOffsets),[{key:'fixture-track',offsetMs:300}]);
+  await lyricEvent({status:'synced'});
+  assert.equal(await native.locator('.lyrics-offset-value').textContent(),'+0.3 s','A saved correction stays reachable on an exact match');
+  assert.equal(await native.locator('.lyrics-note').isVisible(),false,'A saved correction alone is no timing warning');
+  await lyricEvent({status:'plain',approximate:true,syncedLyrics:'',plainLyrics:'Fixture words'});
+  assert.equal(await native.locator('.lyrics-offset-controls').isVisible(),false,'Plain lyrics have no timing to correct');
+  assert.equal(await native.locator('.lyrics-status').textContent(),'Approximate · not synchronized');
+  await native.evaluate(()=>{const key='tuck.live.v2';localStorage.setItem(key,JSON.stringify({...JSON.parse(localStorage.getItem(key)),lyricsOffsets:[]}));});
+  // A different credit is no reason to doubt the timing.
+  await lyricEvent({status:'synced',creditDiffers:true});
+  assert.equal(await native.locator('.lyrics-header').isVisible(),false,'A credit difference shows no label or stepper');
+  assert.equal(await native.locator('.lyrics-note').isVisible(),false,'A credit difference shows no timing warning');
+  assert.match(await native.locator('.lyrics-pane').getAttribute('title'),/credit/);
+  // Auto-scroll centres the current line, whatever sits above the list.
+  await lyricEvent({status:'synced',approximate:true,syncedLyrics:Array.from({length:40},(_,i)=>`[${String(Math.floor(i*5/60)).padStart(2,'0')}:${String(i*5%60).padStart(2,'0')}]Line ${i}`).join('\n')});
+  await native.evaluate(()=>window.__emitNative('media',{active:true,trackId:'fixture-track',title:'Artwork color fixture',artist:'Synthetic test data',playing:false,positionMs:62000,durationMs:300000}));
+  const centerError=await native.evaluate(()=>{const list=document.querySelector('.lyric-lines').getBoundingClientRect(),line=document.querySelector('.lyric-line.current').getBoundingClientRect();return Math.abs(line.top+line.height/2-(list.top+list.height/2));});
+  assert.ok(centerError<=2,`Current lyric sits ${centerError}px off centre`);
+  await native.evaluate(()=>window.__emitNative('media',{active:true,trackId:'fixture-track',title:'Artwork color fixture',artist:'Synthetic test data',playing:false,positionMs:3000,durationMs:300000}));
+  // Holding repeats; other buttons and a track change during the hold must not move anything.
+  const fixtureMedia=trackId=>native.evaluate(trackId=>window.__emitNative('media',{active:true,trackId,title:'Artwork color fixture',artist:'Synthetic test data',playing:false,positionMs:3000,durationMs:120000}),trackId);
+  const later=native.getByRole('button',{name:'Show lyrics 0.1 s later, hold to repeat'});
+  const offsetValue=()=>native.locator('.lyrics-offset-value').textContent();
+  await lyricEvent({status:'synced',approximate:true});
+  await later.hover();
+  await native.mouse.down(); await native.waitForTimeout(600); await native.mouse.up();
+  const held=await offsetValue();
+  assert.notEqual(held,'0.0 s','Holding a stepper repeats');
+  await native.waitForTimeout(200);
+  assert.equal(await offsetValue(),held,'Releasing stops the repeat, and its click adds nothing');
+  await native.mouse.down({button:'right'}); await native.waitForTimeout(600); await native.mouse.up({button:'right'});
+  assert.equal(await offsetValue(),held,'Only the main button repeats');
+  await later.focus(); await native.keyboard.press('Enter');
+  assert.notEqual(await offsetValue(),held,'A right-button hold does not swallow the next key press');
+  await native.locator('.lyrics-toggle-btn').hover();
+  await fixtureMedia('hold-track'); await lyricTrackEvent('hold-track');
+  await later.hover(); await native.mouse.down();
+  await fixtureMedia('hold-track-2'); await lyricTrackEvent('hold-track-2');
+  await native.waitForTimeout(600); await native.mouse.up();
+  assert.equal(await offsetValue(),'0.0 s','A hold that spans a track change saves nothing on the new track');
+  await later.focus();
+  await fixtureMedia('fixture-track');
+  assert.equal(await native.evaluate(()=>document.activeElement?.className),'lyrics-toggle-btn','Focus stays near when the timing controls hide');
+  await native.evaluate(()=>{const key='tuck.live.v2';localStorage.setItem(key,JSON.stringify({...JSON.parse(localStorage.getItem(key)),lyricsOffsets:[]}));});
   await native.evaluate(()=>{
     const oldId=window.__calls.findLast(call=>call.command==='lyrics_get').args.requestId;
     const track={active:true,artist:'Fixture',playing:false,positionMs:3000,durationMs:120000};
@@ -470,16 +530,20 @@ try {
   assert.equal(await native.locator('.lyric-line').count(),0,'Old events cannot restore stale lyrics after returning to the same track');
   await native.getByRole('tab',{name:'Usage',exact:true}).click();
   await native.locator('.page.stats').scrollIntoViewIfNeeded();
-  await native.evaluate(()=>window.__emitNative('telemetry',{sampledAt:Date.now(),cpuPct:43,ramUsedBytes:8589934592,ramTotalBytes:17179869184,gpus:[{id:'gpu0',name:'Fixture GPU',usedPct:null}]}));
-  assert.match(await native.locator('.page.stats').textContent(),/43%/);
-  assert.equal(await native.locator('.page.stats .stat-face').count(),3,'One ring each for CPU, memory and the GPU');
-  assert.equal(await native.locator('.page.stats .stat-face').nth(1).getAttribute('aria-label'),'Memory 50%, 8.0 of 16.0 GB');
-  assert.equal(await native.locator('.page.stats .stat-face').nth(2).getAttribute('aria-label'),'Fixture GPU unavailable');
-  await native.evaluate(()=>window.__emitNative('telemetry',{sampledAt:Date.now()-5000,cpuPct:99,ramUsedBytes:null,ramTotalBytes:null,gpus:[]}));
-  assert.match(await native.locator('.page.stats').textContent(),/43%/,'An older snapshot cannot replace newer metrics');
+  // Emit and read in one evaluate, so the page's one-second poll cannot land in between.
+  const statsRead=()=>({text:document.querySelector('.page.stats').textContent,faces:[...document.querySelectorAll('.page.stats .stat-face')].map(face=>face.getAttribute('aria-label'))});
+  const measured=await native.evaluate(read=>{window.__emitNative('telemetry',{sampledAt:Date.now(),cpuPct:43,ramUsedBytes:8589934592,ramTotalBytes:17179869184,gpus:[{id:'gpu0',name:'Fixture GPU',usedPct:null}]});return new Function(`return (${read})()`)();},statsRead.toString());
+  assert.match(measured.text,/43%/);
+  assert.equal(measured.faces.length,3,'One ring each for CPU, memory and the GPU');
+  assert.equal(measured.faces[1],'Memory 50%, 8.0 of 16.0 GB');
+  assert.equal(measured.faces[2],'Fixture GPU unavailable');
+  const afterOlder=await native.evaluate(read=>{window.__emitNative('telemetry',{sampledAt:Date.now()-5000,cpuPct:99,ramUsedBytes:null,ramTotalBytes:null,gpus:[]});return new Function(`return (${read})()`)();},statsRead.toString());
+  assert.match(afterOlder.text,/43%/,'An older snapshot cannot replace newer metrics');
+  // The mock's poll keeps failing: one failure keeps the value, a run of them clears it.
   await native.waitForTimeout(1200);
-  assert.match(await native.locator('.stat-face').first().getAttribute('aria-label'),/unavailable/,'Polling failures clear prior measurements');
-  assert.equal(await native.locator('.stat-value').first().textContent(),'\u2013');
+  assert.match(await native.locator('.page.stats').textContent(),/43%/,'One failed poll does not blank a valid metric');
+  await native.waitForFunction(()=>/unavailable/.test(document.querySelector('.stat-face').getAttribute('aria-label')),null,{timeout:6000});
+  assert.equal(await native.locator('.stat-value').first().textContent(),'\u2013','Repeated polling failures clear prior measurements');
   await native.evaluate(()=>window.__emitNative('media',{active:true,trackId:'other',title:'Other fixture',artist:'Test',playing:true,positionMs:0,durationMs:10000}));
   assert.equal(await native.locator('.tab-panel.on').getAttribute('data-tab'),'usage','Track changes must not steal a selected tool');
   // AI usage: one provider card, double rings for 5h + 7d, official marks, no unconnected cards
@@ -500,8 +564,8 @@ try {
   assert.equal(await native.locator('#uList .u-ring-inner').count(),2);
   await native.waitForTimeout(100);
   assert.deepEqual(await native.locator('#uList .ring').evaluateAll(n=>n.map(x=>x.dataset.tone)),['ok','ok','caution','ok']);
-  assert.deepEqual(await native.locator('#uList .u-provider').first().locator('.u-value-line').evaluateAll(n=>n.map(x=>x.textContent)),['5h42%','7d18%']);
-  assert.match(await native.locator('#uList .u-face').first().getAttribute('aria-label'),/Claude\. 5h, 42% used.*7d, 18% used/);
+  assert.deepEqual(await native.locator('#uList .u-provider').first().locator('.u-value-line').evaluateAll(n=>n.map(x=>x.textContent)),['5h58% left','7d82% left']);
+  assert.match(await native.locator('#uList .u-face').first().getAttribute('aria-label'),/Claude\. 5h, 58% left.*7d, 82% left/);
   assert.equal(await native.locator('#uList .u-provider').nth(1).getAttribute('data-stale'),'true','A stale configured provider remains and dims');
   assert.equal(await native.locator('#uList .u-provider').nth(1).locator('.u-state').textContent(),'Stale','A stale provider says so');
   assert.equal(await native.locator('#uList .u-provider').first().locator('.u-state').isHidden(),true,'A fresh provider has no state word');
@@ -535,6 +599,12 @@ try {
     await native.waitForTimeout(50);
     assert.equal(await native.locator('#uList .u-provider').count(),4,'Each connected source is one card');
     assert.deepEqual(await usageFit(),{inside:true,clear:true,marksClear:true,fits:true},`Four provider cards fit at ${width}px`);
+    // A used-up quota has an empty ring, so its number warns; anything still left, or dollars spent, does not
+    const valueColours = await native.locator('#uList .u-val').evaluateAll(nodes=>nodes.map(n=>[n.textContent,n.dataset.out==='true',getComputedStyle(n).color]));
+    const warnColour = await native.locator('#uList').evaluate(n=>{const probe=document.createElement('span');probe.style.color='var(--warn)';n.append(probe);const colour=getComputedStyle(probe).color;probe.remove();return colour;});
+    assert.deepEqual(valueColours.filter(([,out])=>out).map(([text,,colour])=>[text,colour]),[['0% left',warnColour]],'Only the used-up quota reads as out, in the warning colour');
+    assert.equal(valueColours.filter(([,out])=>!out).some(([,,colour])=>colour===warnColour),false,'Other values keep their normal colour');
+    if (width===440) await native.locator('.page.usage').screenshot({path:path.join(root,'artifacts','usage-out.png')});
     await native.evaluate(()=>{localStorage.setItem('notch.chatgpt',JSON.stringify({label:'ChatGPT (estimate)',cap:10,hours:3}));localStorage.removeItem('notch.chatgpt.log');window.dispatchEvent(new StorageEvent('storage',{key:'notch.chatgpt'}));});
     await native.waitForTimeout(50);
     assert.equal(await native.locator('#uList .u-provider').count(),5);
@@ -543,7 +613,7 @@ try {
     // The ChatGPT estimate is logged by pressing its ring
     const logButton = native.getByRole('button',{name:/^Log a ChatGPT message/});
     await logButton.click();
-    assert.equal(await native.locator('#uList .u-provider').last().locator('.u-val').textContent(),'1/10');
+    assert.equal(await native.locator('#uList .u-provider').last().locator('.u-val').textContent(),'9 left');
     assert.equal(await logButton.evaluate(n=>document.activeElement===n),true,'Logging keeps focus on the ring');
     await native.evaluate(()=>{localStorage.removeItem('notch.chatgpt');localStorage.removeItem('notch.chatgpt.log');});
     await native.evaluate(meters=>window.__emitNative('usage',meters),fiveProviders(Math.round(Date.now()/1000)).slice(0,4));
@@ -646,6 +716,26 @@ try {
   await setLive({openWidth:500});
   await native.getByRole('tab',{name:'Tools',exact:true}).click();
   await native.locator('.page.dictation').scrollIntoViewIfNeeded();
+  await native.evaluate(()=>window.__emitNative('dictation_state',{status:'starting',modelReady:true}));
+  await native.evaluate(()=>window.__emitNative('dictation_state',{status:'recording',modelReady:true}));
+  await native.evaluate(()=>window.__emitNative('dictation_partial',{status:'recording',preview:'Provisional words',modelReady:true}));
+  await native.evaluate(()=>window.__emitNative('dictation_state',{status:'recording',modelReady:true,previewsPaused:true}));
+  assert.match(await native.locator('.page.dictation').textContent(),/Live transcript paused for this recording/);
+  await native.evaluate(()=>window.__emitNative('dictation_partial',{status:'recording',preview:'Late stale preview',previewsPaused:true,modelReady:true}));
+  assert.doesNotMatch(await native.locator('.transcript').textContent(),/Provisional words|Late stale preview/);
+  await native.evaluate(()=>window.__emitNative('dictation_state',{status:'transcribing',modelReady:true,previewsPaused:true}));
+  assert.doesNotMatch(await native.locator('.transcript').textContent(),/Provisional words|Late stale preview/);
+  assert.match(await native.locator('.page.dictation').textContent(),/Transcribing\u2026/);
+  await native.evaluate(()=>window.__emitNative('dictation_state',{status:'cancelling',modelReady:true}));
+  assert.match(await native.locator('.page.dictation').textContent(),/Cancelling\u2026/);
+  await mkdir(path.join(root,'docs/screens'),{recursive:true});
+  await native.locator('#isl').screenshot({path:path.join(root,'docs/screens/dictation-cancelling.png')});
+  assert.equal(await native.getByRole('button',{name:'Record',exact:true}).isDisabled(),true);
+  await native.evaluate(()=>window.__emitNative('dictation_state',{status:'processing',modelReady:true}));
+  assert.match(await native.locator('.page.dictation').textContent(),/Microphone closed/);
+  await native.locator('#isl').screenshot({path:path.join(root,'docs/screens/dictation-processing.png')});
+  await native.evaluate(()=>window.__emitNative('dictation_state',{status:'starting',modelReady:true,previewsPaused:false}));
+  assert.doesNotMatch(await native.locator('.page.dictation').textContent(),/Live transcript paused|Provisional words/);
   await native.evaluate(()=>window.__emitNative('dictation_state',{status:'review',transcript:'<b>Text, not markup</b>',modelReady:true}));
   assert.equal(await native.locator('.transcript').textContent(),'<b>Text, not markup</b>');
   assert.equal(await native.locator('.transcript b').count(),0);
@@ -707,8 +797,24 @@ try {
   await native.locator('#railSettings').click();
   assert.equal(await native.evaluate(()=>window.__calls.some(call=>call.command==='open_settings_cmd')),true,'The rail settings button opens the settings window');
   await native.goto('http://tuck.test/settings.html#tools');
-  await native.evaluate(()=>window.__emitNative('dictation_state',{status:'review',modelInstalled:true,modelDownloadedBytes:0}));
-  assert.equal(await native.locator('#removeModel').isDisabled(),true,'Review must be discarded before model removal');
+  await native.evaluate(()=>window.__emitNative('dictation_state',{status:'review',modelInstalled:true,modelDownloadedBytes:0,activeModelLabel:'Tiny',models:[{id:'ggml-tiny.bin',label:'Tiny',bytes:77691713,speed:'Fastest',accuracy:'Lower',note:null,state:'installed',foundIn:null,active:true},{id:'ggml-base.bin',label:'Base (full size)',bytes:147951465,speed:'Very fast',accuracy:'Good',note:null,state:'found',foundIn:'podcli',active:false}]}));
+  assert.equal(await native.locator('.model-row[data-id="ggml-tiny.bin"] button',{hasText:'Remove'}).isDisabled(),true,'Review must be discarded before model removal');
+  assert.match(await native.locator('#dictationSetupStatus').textContent(),/In use: Tiny/);
+  assert.match(await native.locator('.model-row[data-id="ggml-base.bin"]').textContent(),/Found in podcli/);
+  assert.equal(await native.locator('.model-row[data-id="ggml-base.bin"] button',{hasText:'Remove'}).count(),0,'Another app\'s model has no Remove button');
+  await native.evaluate(()=>{
+    const row={id:'ggml-tiny.bin',label:'Tiny',bytes:77691713,speed:'Fastest',accuracy:'Lower',note:null,state:'installed',foundIn:null,active:true,canRemove:true};
+    window.__emitNative('dictation_state',{status:'idle',modelInstalled:true,activeModelLabel:'Tiny',models:[row]});
+    window.__emitNative('dictation_state',{status:'idle',modelInstalled:true,activeModelLabel:'Tiny',models:[{...row,canRemove:false}]});
+  });
+  assert.equal(await native.locator('.model-row[data-id="ggml-tiny.bin"] button',{hasText:'Remove'}).count(),0,'Ownership loss removes the delete action even when phase and active model are unchanged');
+  assert.equal(await native.locator('.model-row[data-id="ggml-tiny.bin"] button',{hasText:'Stop using'}).isEnabled(),true);
+  await native.evaluate(()=>window.__emitNative('dictation_state',{status:'idle',modelInstalled:true,modelDownloadedBytes:0,activeModelLabel:'Tiny',modelNotice:'Base is no longer on this computer. Using Tiny instead.',shortcutProblems:{toggle:'Ctrl+Shift+Space is in use by another app right now. Try again once it is free, or record a different shortcut.',hold:null}}));
+  assert.match(await native.locator('#dictationModelNotice').textContent(),/no longer on this computer/);
+  assert.match(await native.locator('#dictationShortcutError').textContent(),/in use by another app/);
+  await native.evaluate(()=>window.__emitNative('dictation_state',{status:'idle',modelInstalled:true,modelDownloadedBytes:0,activeModelLabel:'Tiny',models:[]}));
+  assert.equal(await native.locator('#dictationModelNotice').isHidden(),true,'A cleared notice disappears');
+  assert.equal(await native.locator('#dictationShortcutError').isHidden(),true,'A fixed shortcut clears its reason');
   await native.locator('#clipboardEnabled').click();
   await native.getByText('Could not save clipboard settings. Current preferences restored below.',{exact:true}).waitFor();
   assert.equal(await native.locator('#clipboardEnabled').isChecked(),false);
@@ -741,12 +847,15 @@ try {
   const dictationEvent = (event, revision, status, preview = null, transcript = null, sessionId = 1) =>
     native.evaluate(({event, revision, status, preview, transcript, sessionId}) => window.__emitNative(event,{revision,sessionId,status,preview,transcript,modelInstalled:true}),{event,revision,status,preview,transcript,sessionId});
   await dictationEvent('dictation_state',10,'recording');
+  await native.waitForTimeout(450);
+  await native.locator('#isl').screenshot({path:path.join(root,'docs/screens/dictation-preview-listening.png')});
   const focusBeforePreview = await native.evaluate(()=>document.activeElement.id);
   await dictationEvent('dictation_partial',11,'recording','Live words <b>stay text</b>');
   assert.equal(await native.locator('#cc .compact-slot.current').textContent(),'Live words <b>stay text</b>');
   assert.equal(await native.locator('#cc b').count(),0);
   assert.equal(await native.locator('#isl').getAttribute('data-state'),'idle');
   assert.equal(await native.evaluate(()=>document.activeElement.id),focusBeforePreview,'Preview never takes focus');
+  await native.locator('#isl').screenshot({path:path.join(root,'docs/screens/dictation-preview-recording.png')});
   await dictationEvent('dictation_state',12,'transcribing','Live words <b>stay text</b>');
   assert.equal(await native.locator('.transcript').textContent(),'Live words <b>stay text</b>');
   await dictationEvent('dictation_partial',11,'recording','stale text');

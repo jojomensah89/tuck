@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { groupUsageProviders, meterDetails, ringMeters, usageStateWord } from '../usage-rings.js';
+import { groupUsageProviders, isOut, meterDetails, ringMeters, usageStateWord, valueText } from '../usage-rings.js';
 import type { Meter } from '../types.js';
 
 const meter = (id: string, provider: string, label: string): Meter => ({
@@ -95,8 +95,24 @@ describe('card state', () => {
     expect(usageStateWord([{ ...meter('a', 'codex', 'A'), stale: true, status: 'error', error: 'timed out' }])).toBe('Error');
   });
 
+  it('shows what is left of a quota and keeps spend in dollars', () => {
+    expect(valueText({ ...meter('a', 'claude', 'Claude 5 h'), usedPct: 100 })).toBe('0% left');
+    expect(valueText({ ...meter('a', 'claude', 'Claude 5 h'), usedPct: 36 })).toBe('64% left');
+    expect(valueText({ ...meter('a', 'anthropic-api', 'API'), usedPct: 25, spentUsd: 25 })).toBe('$25.00');
+    expect(valueText({ ...meter('a', 'anthropic-api', 'API'), usedPct: null, spentUsd: 12.4 })).toBe('$12.40');
+  });
+
+  it('marks a reading as out only when its value says nothing is left', () => {
+    expect(isOut({ ...meter('a', 'claude', 'Claude 5 h'), usedPct: 100 })).toBe(true);
+    expect(isOut({ ...meter('a', 'claude', 'Claude 5 h'), usedPct: 99 })).toBe(false);
+    expect(isOut({ ...meter('chatgpt', 'chatgpt', 'ChatGPT'), count: 40, cap: 40 })).toBe(true);
+    expect(isOut({ ...meter('chatgpt', 'chatgpt', 'ChatGPT'), count: 30, cap: 40 })).toBe(false);
+    expect(isOut({ ...meter('a', 'anthropic-api', 'API'), usedPct: 100, spentUsd: 25 })).toBe(false);
+    expect(isOut({ ...meter('a', 'claude', 'Claude 5 h'), usedPct: null })).toBe(false);
+  });
+
   it('states the window, value and reset in the details', () => {
     const details = meterDetails({ ...meter('a', 'claude', 'Claude 5 h'), usedPct: 42, resetsAt: 1000 + 8130 }, 1000);
-    expect(details).toBe('5h, 42% used, resets in 2h 15m, official');
+    expect(details).toBe('5h, 58% left, resets in 2h 15m, official');
   });
 });

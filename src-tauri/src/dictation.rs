@@ -725,7 +725,7 @@ impl DictationService {
             .ok_or("That model is not available to download")?;
         let dir = self.models_dir()?;
         let cancel = Arc::new(AtomicBool::new(false));
-        {
+        let generation = {
             let mut runtime = self
                 .runtime
                 .lock()
@@ -740,7 +740,8 @@ impl DictationService {
             runtime.download_cancel = Some(cancel.clone());
             runtime.downloaded_bytes = 0;
             runtime.model_error = None;
-        }
+            runtime.selection_generation
+        };
         self.emit_state();
         let active_before = self.resolve_model().active.map(|active| active.entry.id);
         let selection_before = self.settings().active_model;
@@ -780,7 +781,7 @@ impl DictationService {
                     runtime.model_error = reported.clone();
                 }
                 // Only when the owner did not choose a model during the download.
-                if error.is_none() && service.settings().active_model == selection_before {
+                if error.is_none() {
                     // A fallback model removed during the download is not worth pinning.
                     let still_there = selection_before.is_some()
                         || active_before
@@ -791,7 +792,13 @@ impl DictationService {
                         entry.id,
                     );
                     if let Some(id) = selection {
-                        if let Err(error) = service.commit_selection(Some(id.to_owned()), None) {
+                        if let Err(error) = service.commit_selection_inner(
+                            Some(id.to_owned()),
+                            None,
+                            Some(generation),
+                            None,
+                            true,
+                        ) {
                             service.set_model_error(error);
                         }
                     }
@@ -857,30 +864,41 @@ impl DictationService {
         generation: Option<u64>,
         stop: Option<&str>,
     ) -> Result<(), String> {
+        self.commit_selection_inner(id, path, generation, stop, false)
+    }
+    fn commit_selection_inner(
+        &self,
+        id: Option<String>,
+        path: Option<PathBuf>,
+        generation: Option<u64>,
+        stop: Option<&str>,
+        automatic: bool,
+    ) -> Result<(), String> {
         let app = self.app()?;
         let _operation = self
             .settings_operation
             .lock()
             .map_err(|_| "Dictation settings unavailable")?;
         let mut runtime = self.runtime.lock().map_err(|_| "Dictation unavailable")?;
-        validate_selection_commit(&runtime, generation)?;
-        let mut next = self.settings();
-        if let Some(id) = id.as_ref() {
-            next.stopped_models.retain(|item| item != id);
-        }
-        if let Some(id) = stop {
-            if !next.stopped_models.iter().any(|item| item == id) {
-                next.stopped_models.push(id.into());
+        apply_selection_commit(&mut runtime, generation, automatic, || {
+            let mut next = self.settings();
+            if let Some(id) = id.as_ref() {
+                next.stopped_models.retain(|item| item != id);
             }
-        }
-        next.active_model = id;
-        next.active_model_path = path;
-        persist_settings(&app, &next)?;
-        *self
-            .settings
-            .write()
-            .map_err(|_| "Dictation settings unavailable")? = next;
-        runtime.selection_generation = runtime.selection_generation.wrapping_add(1);
+            if let Some(id) = stop {
+                if !next.stopped_models.iter().any(|item| item == id) {
+                    next.stopped_models.push(id.into());
+                }
+            }
+            next.active_model = id;
+            next.active_model_path = path;
+            persist_settings(&app, &next)?;
+            *self
+                .settings
+                .write()
+                .map_err(|_| "Dictation settings unavailable")? = next;
+            Ok(())
+        })?;
         Ok(())
     }
 
@@ -1082,6 +1100,25 @@ impl DictationService {
     pub fn is_shutdown(&self) -> bool {
         self.is_shutdown.load(Ordering::Acquire)
     }
+}
+
+/// Called with the runtime and settings-operation locks held. A download is not a
+/// user selection: it must neither displace nor invalidate one requested while it ran.
+fn apply_selection_commit(
+    runtime: &mut Runtime,
+    generation: Option<u64>,
+    automatic: bool,
+    commit: impl FnOnce() -> Result<(), String>,
+) -> Result<bool, String> {
+    if automatic
+        && (generation != Some(runtime.selection_generation) || !runtime.checking_models.is_empty())
+    {
+        return Ok(false);
+    }
+    validate_selection_commit(runtime, generation)?;
+    commit()?;
+    runtime.selection_generation = runtime.selection_generation.wrapping_add(1);
+    Ok(true)
 }
 
 fn validate_selection_commit(runtime: &Runtime, generation: Option<u64>) -> Result<(), String> {
@@ -1731,6 +1768,54 @@ pub fn dictation_model_download_cancel(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn download_pinning_cannot_overwrite_a_committed_newer_selection() {
+        let service = DictationService::new();
+        let mut runtime = service.runtime.lock().unwrap();
+        let download_generation = runtime.selection_generation;
+        runtime.selection_generation += 1; // user request
+        let user_generation = runtime.selection_generation;
+        let mut selected = "old";
+        assert!(
+            apply_selection_commit(&mut runtime, Some(user_generation), false, || {
+                selected = "user";
+                Ok(())
+            })
+            .unwrap()
+        );
+        assert!(
+            !apply_selection_commit(&mut runtime, Some(download_generation), true, || {
+                selected = "download";
+                Ok(())
+            })
+            .unwrap()
+        );
+        assert_eq!(selected, "user");
+    }
+
+    #[test]
+    fn download_pinning_does_not_invalidate_in_progress_user_verification() {
+        let service = DictationService::new();
+        let mut runtime = service.runtime.lock().unwrap();
+        let download_generation = runtime.selection_generation;
+        runtime.selection_generation += 1; // newer user request still hashing
+        runtime.checking_models.push("ggml-base.bin".into());
+        let user_generation = runtime.selection_generation;
+        for token in [download_generation, user_generation] {
+            // Also protects a user verification already pending when download began.
+            assert!(
+                !apply_selection_commit(&mut runtime, Some(token), true, || panic!(
+                    "download displaced verification"
+                ))
+                .unwrap()
+            );
+            assert_eq!(runtime.selection_generation, user_generation);
+        }
+        assert!(
+            apply_selection_commit(&mut runtime, Some(user_generation), false, || Ok(())).unwrap()
+        );
+    }
 
     #[test]
     fn stopped_models_persist_and_are_excluded_from_fallback() {

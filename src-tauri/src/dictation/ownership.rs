@@ -3,6 +3,7 @@ use super::*;
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct Receipt {
+    format_version: u32,
     name: String,
     temporary: bool,
     identity: FileIdentity,
@@ -10,6 +11,7 @@ struct Receipt {
 
 pub(super) fn record(path: &Path, temporary: bool) -> Result<PathBuf, String> {
     let receipt = Receipt {
+        format_version: 2,
         name: path
             .file_name()
             .ok_or("Missing filename")?
@@ -83,6 +85,9 @@ fn receipts(dir: &Path) -> Vec<(PathBuf, Receipt)> {
                 return None;
             }
             let receipt: Receipt = serde_json::from_slice(&bytes).ok()?;
+            if receipt.format_version != 2 {
+                return None;
+            }
             if Path::new(&receipt.name).components().count() != 1
                 || receipt.name.contains(['/', '\\', ':'])
             {
@@ -112,30 +117,12 @@ pub(in crate::dictation) fn is_owned(path: &Path, entry: &CatalogEntry) -> bool 
     let Some(dir) = path.parent() else {
         return false;
     };
-    if receipts(dir).iter().any(|(_, r)| {
-        !r.temporary
-            && path.file_name().is_some_and(|n| n == r.name.as_str())
-            && matches(r, &identity)
-    }) {
-        return true;
-    }
-    // Explicit legacy migration: only digest-verified Tiny in Tuck's model directory.
-    if entry.id == "ggml-tiny.bin"
-        && path.file_name().is_some_and(|n| n == entry.id)
-        && identity.size == entry.bytes
-    {
-        let Ok(file) = protected_file(path) else {
-            return false;
-        };
-        if identity_from_file(&file).as_ref() != Ok(&identity) {
-            return false;
-        }
-        if !hash_file(path, true).is_ok_and(|hash| hash == entry.sha256) {
-            return false;
-        }
-        return record(path, false).is_ok();
-    }
-    false
+    path.file_name().is_some_and(|name| name == entry.id)
+        && receipts(dir).iter().any(|(_, r)| {
+            !r.temporary
+                && path.file_name().is_some_and(|n| n == r.name.as_str())
+                && matches(r, &identity)
+        })
 }
 
 // Hold a non-delete-sharing Windows handle from identity validation through deletion.
@@ -316,21 +303,68 @@ mod tests {
         assert!(!path.exists());
         std::fs::remove_dir_all(dir).unwrap();
     }
-    #[test]
-    fn legacy_tiny_requires_the_exact_digest_and_records_identity() {
+    fn tiny_fixture() -> (PathBuf, PathBuf, CatalogEntry) {
         let dir = temp_dir();
         let path = dir.join("ggml-tiny.bin");
-        std::fs::write(&path, b"legacy").unwrap();
-        let mut tiny = CatalogEntry {
+        std::fs::write(&path, b"matching tiny fixture").unwrap();
+        let tiny = CatalogEntry {
+            bytes: 21,
+            sha256: Box::leak(hash_file(&path, false).unwrap().into_boxed_str()),
             ..*entry("ggml-tiny.bin").unwrap()
         };
-        tiny.bytes = 6;
-        tiny.sha256 = "invalid";
-        assert!(!is_owned(&path, &tiny));
-        let digest = hash_file(&path, false).unwrap();
-        tiny.sha256 = Box::leak(digest.into_boxed_str());
+        (dir, path, tiny)
+    }
+    fn assert_preserved(path: &Path, tiny: &CatalogEntry) {
+        assert_eq!(hash_file(path, false).unwrap(), tiny.sha256);
+        assert!(!is_owned(path, tiny));
+        remove_owned(path, tiny).unwrap();
+        assert!(path.exists());
+    }
+    #[test]
+    fn untracked_matching_tiny_is_not_adopted() {
+        let (dir, path, tiny) = tiny_fixture();
+        assert_preserved(&path, &tiny);
+        assert!(receipts(&dir).is_empty());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn old_unversioned_adoption_receipts_do_not_establish_provenance() {
+        let (dir, path, tiny) = tiny_fixture();
+        let receipt = serde_json::json!({"name":"ggml-tiny.bin", "temporary":false, "identity":file_identity(&path).unwrap()});
+        std::fs::write(
+            dir.join(".tuck-download-old.json"),
+            serde_json::to_vec(&receipt).unwrap(),
+        )
+        .unwrap();
+        assert_preserved(&path, &tiny);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn matching_tiny_with_a_lost_receipt_is_not_removable() {
+        let (dir, path, tiny) = tiny_fixture();
+        let receipt = record(&path, false).unwrap();
         assert!(is_owned(&path, &tiny));
-        assert!(!receipts(&dir).is_empty());
+        std::fs::remove_file(receipt).unwrap();
+        assert_preserved(&path, &tiny);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn matching_tiny_with_a_corrupt_receipt_is_not_removable() {
+        let (dir, path, tiny) = tiny_fixture();
+        let receipt = record(&path, false).unwrap();
+        std::fs::write(receipt, b"not a receipt").unwrap();
+        assert_preserved(&path, &tiny);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn replacement_tiny_with_identical_content_is_not_removable() {
+        let (dir, path, tiny) = tiny_fixture();
+        record(&path, false).unwrap();
+        let content = std::fs::read(&path).unwrap();
+        std::fs::rename(&path, dir.join("original.bin")).unwrap();
+        std::fs::write(&path, content).unwrap();
+        assert_preserved(&path, &tiny);
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

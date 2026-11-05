@@ -1243,6 +1243,7 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
+    #[ignore = "NOT RUN by default locally: requires Windows symlink privilege; mandatory explicit CI step"]
     fn local_huggingface_links_work_and_network_links_are_rejected() {
         use std::os::windows::fs::symlink_file;
         let dir = temp_dir();
@@ -1250,11 +1251,7 @@ mod tests {
         std::fs::write(&blob, b"model").unwrap();
         let local = dir.join("ggml-local.bin");
         // Windows Developer Mode or symlink privilege is required for this filesystem test.
-        if let Err(error) = symlink_file(&blob, &local) {
-            eprintln!("Symlink test unavailable: {error}");
-            std::fs::remove_dir_all(dir).unwrap();
-            return;
-        }
+        symlink_file(&blob, &local).expect("NOT RUN: Windows symlink privilege is required; this mandatory CI test must exercise its assertions");
         assert!(resolved_local(&local).is_ok());
         assert_eq!(
             hash_file(&local, false).unwrap(),
@@ -1266,6 +1263,7 @@ mod tests {
         assert!(file_identity(&remote).is_err());
         assert!(hash_file(&remote, false).is_err());
         std::fs::remove_dir_all(dir).unwrap();
+        println!("SYMLINK_ASSERTIONS_EXERCISED: local link verified; UNC link rejected before metadata and hash reads");
     }
 
     #[test]

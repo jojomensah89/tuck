@@ -178,13 +178,19 @@ try {
   };
   await context.addInitScript(nativeBridge);
   const native=await context.newPage();const nativeErrors=[];native.on('pageerror',error=>nativeErrors.push(error.message));
-  await native.goto('http://tuck.test/');await native.waitForTimeout(100);
+  await native.goto('http://tuck.test/');
+  await native.waitForFunction(() => window.__calls?.some(call => call.command === 'plugin:event|listen' && call.args.event === 'open-island') && window.__calls.some(call => call.command === 'usage_now') && document.getElementById('isl')?.dataset.state === 'idle');
   assert.equal(await native.evaluate(() => window.__idleIntervals.size), 0, 'No intervals while collapsed without running activities');
   assert.equal(await native.locator('.page.todos').count(), 0, 'Todos feature must be completely removed');
   // A missed event is recovered by the pull on open; a racing newer event wins.
   const usageFixture = pct => [{id:'claude-5h',provider:'claude',label:'Claude session',usedPct:pct,spentUsd:null,resetsAt:null,source:'official',stale:false,status:'ok'}];
   await native.evaluate(meters => { window.__usageSnapshot = meters; window.__emitNative('open-island',null); }, usageFixture(31));
-  await native.waitForFunction(() => document.querySelector('#panel-usage')?.textContent.includes('31%'));
+  try {
+    await native.waitForFunction(() => document.querySelector('#panel-usage')?.textContent.includes('31%'));
+  } catch (error) {
+    console.error('Usage open diagnostics', await native.evaluate(() => ({state:document.getElementById('isl')?.dataset.state,calls:window.__calls,usage:document.querySelector('#panel-usage')?.textContent})), nativeErrors);
+    throw error;
+  }
   await native.keyboard.press('Escape');
   await native.evaluate(() => { window.__holdUsage = true; window.__emitNative('open-island',null); });
   await native.waitForFunction(() => typeof window.__resolveUsage === 'function');
@@ -830,7 +836,7 @@ try {
   await spectraContext.addInitScript(nativeBridge);
   const spectra = await spectraContext.newPage();
   await spectra.goto('http://tuck.test/');
-  await spectra.waitForTimeout(100);
+  await spectra.waitForFunction(() => window.__calls?.some(call => call.command === 'plugin:event|listen' && call.args.event === 'open-island') && document.getElementById('isl')?.dataset.state === 'idle');
   await spectra.evaluate(() => window.__emitNative('open-island',null));
   await spectra.getByRole('tab',{name:'Media',exact:true}).click();
   await spectra.getByRole('button',{name:'Go to now playing',exact:true}).click();
@@ -843,7 +849,7 @@ try {
   await spectra.evaluate(() => window.__emitNative('visualizer',{bins:[0.5,0.5],isSilent:false}));
   assert.equal(await spectra.locator('.wide-spectrum i').first().evaluate(el=>el.style.getPropertyValue('--level')),'0.5');
   await spectra.getByRole('tab',{name:'Usage',exact:true}).click();
-  await spectra.waitForTimeout(100);
+  await spectra.waitForFunction(() => window.__calls?.some(call => call.command === 'plugin:event|listen' && call.args.event === 'open-island') && document.getElementById('isl')?.dataset.state === 'idle');
   const hiddenLevels = await spectra.locator('.live-spectrum i, .wide-spectrum i').evaluateAll(nodes=>nodes.map(el=>el.style.getPropertyValue('--level')));
   await spectra.evaluate(() => window.__emitNative('visualizer',{bins:[0.3,0.3],isSilent:false}));
   assert.deepEqual(await spectra.locator('.live-spectrum i, .wide-spectrum i').evaluateAll(nodes=>nodes.map(el=>el.style.getPropertyValue('--level'))),hiddenLevels,'Inactive-tab groups are not updated');

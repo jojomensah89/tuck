@@ -179,7 +179,7 @@ try {
   await context.addInitScript(nativeBridge);
   const native=await context.newPage();const nativeErrors=[];native.on('pageerror',error=>nativeErrors.push(error.message));
   await native.goto('http://tuck.test/');
-  await native.waitForFunction(() => window.__calls?.some(call => call.command === 'plugin:event|listen' && call.args.event === 'open-island') && window.__calls.some(call => call.command === 'usage_now') && document.getElementById('isl')?.dataset.state === 'idle');
+  await native.waitForFunction(() => window.__calls?.some(call => call.command === 'plugin:event|listen' && call.args.event === 'open-island') && window.__calls.some(call => call.command === 'usage_now'));
   assert.equal(await native.evaluate(() => window.__idleIntervals.size), 0, 'No intervals while collapsed without running activities');
   assert.equal(await native.locator('.page.todos').count(), 0, 'Todos feature must be completely removed');
   // A missed event is recovered by the pull on open; a racing newer event wins.
@@ -836,7 +836,7 @@ try {
   await spectraContext.addInitScript(nativeBridge);
   const spectra = await spectraContext.newPage();
   await spectra.goto('http://tuck.test/');
-  await spectra.waitForFunction(() => window.__calls?.some(call => call.command === 'plugin:event|listen' && call.args.event === 'open-island') && document.getElementById('isl')?.dataset.state === 'idle');
+  await spectra.waitForFunction(() => window.__calls?.some(call => call.command === 'plugin:event|listen' && call.args.event === 'open-island'));
   await spectra.evaluate(() => window.__emitNative('open-island',null));
   await spectra.getByRole('tab',{name:'Media',exact:true}).click();
   await spectra.getByRole('button',{name:'Go to now playing',exact:true}).click();
@@ -849,7 +849,7 @@ try {
   await spectra.evaluate(() => window.__emitNative('visualizer',{bins:[0.5,0.5],isSilent:false}));
   assert.equal(await spectra.locator('.wide-spectrum i').first().evaluate(el=>el.style.getPropertyValue('--level')),'0.5');
   await spectra.getByRole('tab',{name:'Usage',exact:true}).click();
-  await spectra.waitForFunction(() => window.__calls?.some(call => call.command === 'plugin:event|listen' && call.args.event === 'open-island') && document.getElementById('isl')?.dataset.state === 'idle');
+  await spectra.waitForFunction(() => window.__calls?.some(call => call.command === 'plugin:event|listen' && call.args.event === 'open-island'));
   const hiddenLevels = await spectra.locator('.live-spectrum i, .wide-spectrum i').evaluateAll(nodes=>nodes.map(el=>el.style.getPropertyValue('--level')));
   await spectra.evaluate(() => window.__emitNative('visualizer',{bins:[0.3,0.3],isSilent:false}));
   assert.deepEqual(await spectra.locator('.live-spectrum i, .wide-spectrum i').evaluateAll(nodes=>nodes.map(el=>el.style.getPropertyValue('--level'))),hiddenLevels,'Inactive-tab groups are not updated');

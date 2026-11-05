@@ -1618,14 +1618,16 @@ fn parakeet_run(
                 std::thread::sleep(Duration::from_millis(10));
             }
         });
-        let result = session.run(
-            audio,
-            &transcribe_cpp::RunOptions {
-                language: Some("en".into()),
-                ..Default::default()
-            },
-        );
-        done.store(true, Ordering::Release);
+        let result = {
+            let _completion = CompleteOnDrop(&done);
+            session.run(
+                audio,
+                &transcribe_cpp::RunOptions {
+                    language: Some("en".into()),
+                    ..Default::default()
+                },
+            )
+        };
         result
     });
     session.clear_cancel_token();
@@ -1637,6 +1639,86 @@ fn parakeet_run(
         .map_err(|e| e.to_string())
 }
 
+/// Dropped before a scoped watcher is joined, including while unwinding.
+struct CompleteOnDrop<'a>(&'a AtomicBool);
+impl Drop for CompleteOnDrop<'_> {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Release);
+    }
+}
+
+// This private seam keeps the native borrowed lifetime while exercising the same
+// orchestration with deterministic streams and clocks in device-free tests.
+trait BufferedStream {
+    fn feed(&mut self, audio: &[f32]) -> Result<(), String>;
+    fn finalize(&mut self) -> Result<(), String>;
+    fn text(&self) -> transcribe_cpp::StreamText;
+    fn intervals(&self) -> Vec<(i64, i64)>;
+}
+impl BufferedStream for transcribe_cpp::Stream<'_> {
+    fn feed(&mut self, audio: &[f32]) -> Result<(), String> {
+        self.feed(audio).map(|_| ()).map_err(|e| e.to_string())
+    }
+    fn finalize(&mut self) -> Result<(), String> {
+        self.finalize().map(|_| ()).map_err(|e| e.to_string())
+    }
+    fn text(&self) -> transcribe_cpp::StreamText {
+        self.text()
+    }
+    fn intervals(&self) -> Vec<(i64, i64)> {
+        // Native Token timestamps are signed i64 milliseconds, not samples.
+        self.snapshot()
+            .tokens
+            .iter()
+            .filter(|t| t.text.chars().any(char::is_alphanumeric))
+            .map(|t| (t.t0_ms, t.t1_ms))
+            .collect()
+    }
+}
+trait BufferedBackend {
+    type Stream<'a>: BufferedStream
+    where
+        Self: 'a;
+    fn install(&mut self, token: &transcribe_cpp::CancelToken);
+    fn clear(&mut self);
+    fn stream(&mut self) -> Result<Self::Stream<'_>, String>;
+    fn invalid(&self) -> bool;
+    fn batch(&mut self, audio: &[f32], cancel: &AtomicBool) -> Result<String, String>;
+}
+impl BufferedBackend for transcribe_cpp::Session {
+    type Stream<'a> = transcribe_cpp::Stream<'a>;
+    fn install(&mut self, token: &transcribe_cpp::CancelToken) {
+        self.set_cancel_token(token);
+    }
+    fn clear(&mut self) {
+        self.clear_cancel_token();
+    }
+    fn stream(&mut self) -> Result<Self::Stream<'_>, String> {
+        self.stream(
+            &transcribe_cpp::RunOptions {
+                language: Some("en".into()),
+                ..Default::default()
+            },
+            &Default::default(),
+        )
+        .map_err(|e| e.to_string())
+    }
+    fn invalid(&self) -> bool {
+        self.was_truncated() || self.was_aborted()
+    }
+    fn batch(&mut self, audio: &[f32], cancel: &AtomicBool) -> Result<String, String> {
+        parakeet_run(
+            self,
+            audio,
+            &AbortSignal {
+                cancel,
+                stop: None,
+                deadline: None,
+            },
+        )
+    }
+}
+
 // A borrowed stream lives entirely on this worker; no self-referential ownership.
 fn buffered_session(
     session: &mut transcribe_cpp::Session,
@@ -1645,10 +1727,23 @@ fn buffered_session(
     flags: &EngineFlags,
     cancel: &AtomicBool,
 ) -> Result<String, String> {
-    let token = transcribe_cpp::CancelToken::new();
-    session.set_cancel_token(&token);
-    let done = AtomicBool::new(false);
     let clock = Instant::now();
+    buffered_driver(session, jobs, events, flags, cancel, &|| {
+        clock.elapsed().as_millis() as u64
+    })
+}
+
+fn buffered_driver<B: BufferedBackend>(
+    session: &mut B,
+    jobs: &Receiver<EngineJob>,
+    events: &dyn SessionEvents,
+    flags: &EngineFlags,
+    cancel: &AtomicBool,
+    now: &(impl Fn() -> u64 + Sync),
+) -> Result<String, String> {
+    let token = transcribe_cpp::CancelToken::new();
+    session.install(&token);
+    let done = AtomicBool::new(false);
     let deadline_ms = AtomicU64::new(u64::MAX);
     let result = std::thread::scope(|scope| {
         scope.spawn(|| {
@@ -1657,18 +1752,15 @@ fn buffered_session(
                     token.cancel();
                     break;
                 }
-                if clock.elapsed().as_millis() as u64 >= deadline_ms.load(Ordering::Acquire) {
+                if now() >= deadline_ms.load(Ordering::Acquire) {
                     token.cancel();
                 }
                 std::thread::sleep(Duration::from_millis(10));
             }
         });
         let result = (|| {
-            let options = transcribe_cpp::RunOptions {
-                language: Some("en".into()),
-                ..Default::default()
-            };
-            let mut stream = session.stream(&options, &Default::default()).ok();
+            let _completion = CompleteOnDrop(&done);
+            let mut stream = session.stream().ok();
             let mut sent = 0;
             let mut final_audio = None;
             while let Ok(job) = jobs.recv() {
@@ -1678,10 +1770,7 @@ fn buffered_session(
                 match job {
                     EngineJob::Feed { offset, audio } => {
                         if let Some(active) = stream.as_mut() {
-                            deadline_ms.store(
-                                clock.elapsed().as_millis() as u64 + 8000,
-                                Ordering::Release,
-                            );
+                            deadline_ms.store(now() + 8000, Ordering::Release);
                             let failed = offset != sent || active.feed(&audio).is_err();
                             deadline_ms.store(u64::MAX, Ordering::Release);
                             if failed || token.is_cancelled() {
@@ -1706,7 +1795,7 @@ fn buffered_session(
             }
             let audio = final_audio.ok_or("Dictation stopped before transcription")?;
             let streamed = stream.as_mut().and_then(|active| {
-                deadline_ms.store(clock.elapsed().as_millis() as u64 + 8000, Ordering::Release);
+                deadline_ms.store(now() + 8000, Ordering::Release);
                 if sent > audio.len()
                     || active.feed(&audio[sent..]).is_err()
                     || active.finalize().is_err()
@@ -1714,26 +1803,15 @@ fn buffered_session(
                     return None;
                 }
                 let text = active.text().full.trim().to_owned();
-                let snapshot = active.snapshot();
-                let end = snapshot
-                    .tokens
-                    .iter()
-                    .filter(|t| t.text.chars().any(char::is_alphanumeric))
-                    .map(|t| t.t1_ms)
-                    .max()
-                    .unwrap_or(0)
-                    .max(0) as usize
-                    * 16;
-                stream_is_reliable(&audio, &text, end).then_some(text)
+                let intervals = active.intervals();
+                stream_is_reliable(&audio, &text, &intervals).then_some(text)
             });
             deadline_ms.store(u64::MAX, Ordering::Release);
             drop(stream);
             if cancel.load(Ordering::Acquire) {
                 return Err("Dictation cancelled".into());
             }
-            if let Some(text) =
-                streamed.filter(|_| !session.was_truncated() && !session.was_aborted())
-            {
+            if let Some(text) = streamed.filter(|_| !session.invalid() && !token.is_cancelled()) {
                 #[cfg(test)]
                 eprintln!("buffered stream authoritative (no batch fallback)");
                 return Ok(text);
@@ -1741,27 +1819,297 @@ fn buffered_session(
             #[cfg(test)]
             eprintln!("buffered stream rejected; whole-clip fallback");
             events.discard_partial();
-            session.clear_cancel_token();
-            parakeet_run(
-                session,
-                &audio,
-                &AbortSignal {
-                    cancel,
-                    stop: None,
-                    deadline: None,
-                },
-            )
+            session.clear();
+            let result = session.batch(&audio, cancel);
+            if cancel.load(Ordering::Acquire) {
+                Err("Dictation cancelled".into())
+            } else {
+                result
+            }
         })();
-        done.store(true, Ordering::Release);
         result
     });
-    session.clear_cancel_token();
+    session.clear();
     result
 }
 
 #[cfg(test)]
 mod buffered_tests {
     use super::*;
+    struct FakeBackend<'a> {
+        failure: &'static str,
+        token: Option<transcribe_cpp::CancelToken>,
+        alive: Arc<AtomicBool>,
+        fed: Arc<std::sync::Mutex<Vec<f32>>>,
+        clock: &'a AtomicU64,
+        batches: Vec<Vec<f32>>,
+    }
+    struct FakeStream<'a> {
+        backend: &'a FakeBackend<'a>,
+    }
+    impl Drop for FakeStream<'_> {
+        fn drop(&mut self) {
+            self.backend.alive.store(false, Ordering::Release);
+        }
+    }
+    impl BufferedStream for FakeStream<'_> {
+        fn feed(&mut self, audio: &[f32]) -> Result<(), String> {
+            if self.backend.failure == "feed" {
+                return Err("feed".into());
+            }
+            self.backend.fed.lock().unwrap().extend_from_slice(audio);
+            if self.backend.failure == "deadline" {
+                self.backend.clock.store(9000, Ordering::Release);
+                let start = Instant::now();
+                while !self.backend.token.as_ref().unwrap().is_cancelled() {
+                    assert!(start.elapsed() < Duration::from_secs(2), "watcher failed");
+                    std::thread::yield_now();
+                }
+                return Err("deadline".into());
+            }
+            Ok(())
+        }
+        fn finalize(&mut self) -> Result<(), String> {
+            if self.backend.failure == "deadline-finalize" {
+                self.backend.clock.store(9000, Ordering::Release);
+                let start = Instant::now();
+                while !self.backend.token.as_ref().unwrap().is_cancelled() {
+                    assert!(start.elapsed() < Duration::from_secs(2));
+                    std::thread::yield_now();
+                }
+            }
+            if self.backend.failure == "finalize" {
+                Err("finalize".into())
+            } else {
+                Ok(())
+            }
+        }
+        fn text(&self) -> transcribe_cpp::StreamText {
+            transcribe_cpp::StreamText {
+                full: "words".into(),
+                committed: "words".into(),
+                tentative: String::new(),
+            }
+        }
+        fn intervals(&self) -> Vec<(i64, i64)> {
+            vec![(0, 1000)]
+        }
+    }
+    impl BufferedBackend for FakeBackend<'_> {
+        type Stream<'a>
+            = FakeStream<'a>
+        where
+            Self: 'a;
+        fn install(&mut self, token: &transcribe_cpp::CancelToken) {
+            assert!(
+                !token.is_cancelled(),
+                "new recording must get a fresh token"
+            );
+            self.token = Some(token.clone());
+        }
+        fn clear(&mut self) {
+            self.token = None;
+        }
+        fn stream(&mut self) -> Result<Self::Stream<'_>, String> {
+            if self.failure == "init" {
+                return Err("init".into());
+            }
+            self.alive.store(true, Ordering::Release);
+            Ok(FakeStream { backend: self })
+        }
+        fn invalid(&self) -> bool {
+            false
+        }
+        fn batch(&mut self, audio: &[f32], cancel: &AtomicBool) -> Result<String, String> {
+            assert!(
+                !self.alive.load(Ordering::Acquire),
+                "stream must drop before batch"
+            );
+            assert!(self.token.is_none(), "failed stream token must be detached");
+            self.batches.push(audio.to_vec());
+            if self.failure == "cancel" {
+                cancel.store(true, Ordering::Release);
+            }
+            Ok("batch".into())
+        }
+    }
+    fn driver_flags() -> EngineFlags {
+        EngineFlags {
+            streaming: AtomicBool::new(true),
+            ready: AtomicBool::new(true),
+            failed: AtomicBool::new(false),
+            preview_busy: AtomicBool::new(false),
+            previews_off: AtomicBool::new(false),
+            last_preview_ms: AtomicU64::new(0),
+            preview_stop: AtomicBool::new(false),
+        }
+    }
+    #[test]
+    fn production_driver_recovery_and_exact_audio() {
+        for failure in [
+            "init",
+            "feed",
+            "finalize",
+            "deadline",
+            "deadline-finalize",
+            "offset",
+            "none",
+        ] {
+            let clock = AtomicU64::new(0);
+            let mut backend = FakeBackend {
+                failure,
+                token: None,
+                alive: Arc::new(AtomicBool::new(false)),
+                fed: Arc::new(std::sync::Mutex::new(Vec::new())),
+                clock: &clock,
+                batches: Vec::new(),
+            };
+            let audio: Vec<f32> = (0..16000).map(|i| 0.01 + i as f32 / 32000.0).collect();
+            let cancel = AtomicBool::new(false);
+            let (tx, rx) = bounded(3);
+            tx.send(EngineJob::Feed {
+                offset: 0,
+                audio: Zeroizing::new(audio[..6000].to_vec()),
+            })
+            .unwrap();
+            tx.send(EngineJob::Feed {
+                offset: if failure == "offset" { 6001 } else { 6000 },
+                audio: Zeroizing::new(audio[6000..12000].to_vec()),
+            })
+            .unwrap();
+            tx.send(EngineJob::Finish(Zeroizing::new(audio.clone())))
+                .unwrap();
+            drop(tx);
+            let result = buffered_driver(
+                &mut backend,
+                &rx,
+                &super::tests::RecordedEvents::default(),
+                &driver_flags(),
+                &cancel,
+                &|| clock.load(Ordering::Acquire),
+            );
+            if failure == "none" {
+                assert_eq!(result.unwrap(), "words");
+                assert_eq!(
+                    *backend.fed.lock().unwrap(),
+                    audio,
+                    "each sample and final tail once"
+                );
+            } else {
+                assert_eq!(result.unwrap(), "batch", "{failure}");
+                assert_eq!(backend.batches, vec![audio]);
+            }
+            assert!(backend.token.is_none());
+            backend.failure = "none";
+            clock.store(0, Ordering::Release);
+            let (tx, rx) = bounded(1);
+            tx.send(EngineJob::Finish(Zeroizing::new(vec![0.1; 16000])))
+                .unwrap();
+            assert_eq!(
+                buffered_driver(
+                    &mut backend,
+                    &rx,
+                    &super::tests::RecordedEvents::default(),
+                    &driver_flags(),
+                    &cancel,
+                    &|| clock.load(Ordering::Acquire)
+                )
+                .unwrap(),
+                "words",
+                "reuse after {failure}"
+            );
+        }
+    }
+    #[test]
+    fn production_driver_cancel_during_fallback_suppresses_result() {
+        let clock = AtomicU64::new(0);
+        let mut backend = FakeBackend {
+            failure: "cancel",
+            token: None,
+            alive: Arc::new(AtomicBool::new(false)),
+            fed: Arc::new(std::sync::Mutex::new(Vec::new())),
+            clock: &clock,
+            batches: Vec::new(),
+        };
+        let (tx, rx) = bounded(1);
+        let audio = vec![0.1; 48000]; // timing ends at 1s: uncovered activity forces fallback
+        tx.send(EngineJob::Finish(Zeroizing::new(audio.clone())))
+            .unwrap();
+        let cancel = AtomicBool::new(false);
+        assert!(buffered_driver(
+            &mut backend,
+            &rx,
+            &super::tests::RecordedEvents::default(),
+            &driver_flags(),
+            &cancel,
+            &|| 0
+        )
+        .is_err());
+        assert_eq!(backend.batches, vec![audio]);
+    }
+    #[test]
+    fn production_driver_callback_panic_joins_watcher_without_cancel() {
+        struct PanicEvents;
+        impl SessionEvents for PanicEvents {
+            fn recording(&self) {}
+            fn transcribing(&self) {}
+            fn partial(&self, _: &str) {
+                panic!("callback");
+            }
+        }
+        let (done_tx, done_rx) = bounded(1);
+        std::thread::spawn(move || {
+            let clock = AtomicU64::new(0);
+            let mut backend = FakeBackend {
+                failure: "none",
+                token: None,
+                alive: Arc::new(AtomicBool::new(false)),
+                fed: Arc::new(std::sync::Mutex::new(Vec::new())),
+                clock: &clock,
+                batches: Vec::new(),
+            };
+            let (tx, rx) = bounded(1);
+            tx.send(EngineJob::Feed {
+                offset: 0,
+                audio: Zeroizing::new(vec![0.1; 16000]),
+            })
+            .unwrap();
+            let cancel = AtomicBool::new(false);
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                buffered_driver(
+                    &mut backend,
+                    &rx,
+                    &PanicEvents,
+                    &driver_flags(),
+                    &cancel,
+                    &|| 0,
+                )
+            }));
+            assert!(result.is_err());
+            assert!(!cancel.load(Ordering::Acquire));
+            assert!(!backend.alive.load(Ordering::Acquire));
+            backend.failure = "init";
+            let (tx, rx) = bounded(1);
+            tx.send(EngineJob::Finish(Zeroizing::new(vec![0.1; 16000])))
+                .unwrap();
+            assert_eq!(
+                buffered_driver(
+                    &mut backend,
+                    &rx,
+                    &super::tests::RecordedEvents::default(),
+                    &driver_flags(),
+                    &cancel,
+                    &|| 0
+                )
+                .unwrap(),
+                "batch"
+            );
+            done_tx.send(()).unwrap();
+        });
+        done_rx
+            .recv_timeout(Duration::from_secs(3))
+            .expect("unwind must join watcher without user cancel");
+    }
     #[test]
     #[ignore = "uses installed model and synthetic WAV; no devices"]
     fn real_stream_cancel_and_reuse() {
@@ -1884,19 +2232,48 @@ mod buffered_tests {
     }
     #[test]
     fn reliability_rejects_missing_timing_trailing_phrase_and_long_pause() {
-        assert!(!stream_is_reliable(&[0.1; 16000], "words", 0));
-        assert!(!stream_is_reliable(&[0.1; 16000], "", 16000));
-        assert!(!stream_is_reliable(&[0.1; 32000], "opening", 16000));
-        assert!(stream_is_reliable(&[0.002; 16000], "quiet speech", 16000));
+        assert!(!stream_is_reliable(&[0.1; 16000], "words", &[]));
+        assert!(!stream_is_reliable(&[0.1; 16000], "", &[(0, 1000)]));
+        assert!(!stream_is_reliable(&[0.1; 32000], "opening", &[(0, 1000)]));
+        assert!(stream_is_reliable(
+            &[0.002; 16000],
+            "quiet speech",
+            &[(0, 1000)]
+        ));
         let mut clip = vec![0.1; 16000];
         clip.extend(vec![0.0001; 96000]);
         clip.extend(vec![0.002; 16000]);
         assert!(!stream_is_reliable(
             &clip,
             "opening and resumed words",
-            clip.len()
+            &[(0, clip.len() as i64 / 16)]
         ));
-        assert!(!stream_is_reliable(&[0.1; 16000], "invalid time", 100000));
+        assert!(!stream_is_reliable(
+            &[0.1; 16000],
+            "invalid time",
+            &[(0, 6250)]
+        ));
+    }
+    #[test]
+    fn reliability_checks_opening_and_middle_not_only_last_word() {
+        let audio = [0.1; 64000];
+        assert!(!stream_is_reliable(
+            &audio,
+            "missing opening",
+            &[(1500, 4000)]
+        ));
+        assert!(!stream_is_reliable(
+            &audio,
+            "missing middle",
+            &[(0, 500), (3000, 4000)]
+        ));
+        assert!(!stream_is_reliable(&audio, "missing end", &[(0, 2000)]));
+        assert!(stream_is_reliable(
+            &audio,
+            "covered",
+            &[(0, 1000), (1100, 2200), (2300, 4000)]
+        ));
+        assert!(!stream_is_reliable(&audio, "invalid", &[(-1, 4000)]));
     }
     #[test]
     fn aligned_source_seconds_match_whole_clip_resampling_including_tail() {
@@ -1918,7 +2295,27 @@ mod buffered_tests {
     }
 }
 
-fn stream_is_reliable(audio: &[f32], text: &str, end: usize) -> bool {
+fn stream_is_reliable(audio: &[f32], text: &str, intervals: &[(i64, i64)]) -> bool {
+    if text.is_empty() || intervals.is_empty() {
+        return false;
+    }
+    let mut ranges = Vec::with_capacity(intervals.len());
+    for &(start, end) in intervals {
+        let Some(start) = usize::try_from(start).ok().and_then(|v| v.checked_mul(16)) else {
+            return false;
+        };
+        let Some(end) = usize::try_from(end).ok().and_then(|v| v.checked_mul(16)) else {
+            return false;
+        };
+        if end <= start || end > audio.len().saturating_add(6400) {
+            return false;
+        }
+        ranges.push((
+            start.saturating_sub(6400).min(audio.len()),
+            end.saturating_add(6400).min(audio.len()),
+        ));
+    }
+    ranges.sort_unstable();
     // Never cut quiet speech. Low-level long pauses require a full-clip decision.
     let long_pause = audio
         .chunks(320)
@@ -1931,15 +2328,15 @@ fn stream_is_reliable(audio: &[f32], text: &str, end: usize) -> bool {
             Some(*quiet > 89_600)
         })
         .any(|long| long);
-    let uncovered = audio
-        .get(end.saturating_add(6400)..)
-        .unwrap_or(&[])
-        .iter()
-        .filter(|v| v.abs() > 0.001)
-        .count();
-    !text.is_empty()
-        && !long_pause
-        && end > 0
-        && end <= audio.len().saturating_add(6400)
-        && uncovered < 4800
+    let activity = |samples: &[f32]| samples.iter().filter(|v| v.abs() > 0.001).count();
+    let mut cursor = 0;
+    let mut uncovered = 0;
+    for (start, end) in ranges {
+        if start > cursor {
+            uncovered += activity(&audio[cursor..start]);
+        }
+        cursor = cursor.max(end);
+    }
+    uncovered += activity(&audio[cursor..]);
+    !long_pause && uncovered < 4800
 }

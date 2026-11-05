@@ -1,23 +1,36 @@
-# Buffered Parakeet streaming follow-up
+# Buffered Parakeet streaming recovery
 
-Approved direction: one worker-owned borrowed transcribe.cpp stream per recording, newly accepted continuous 16 kHz mono samples, display-only committed plus tentative hypotheses, authoritative finalized full text, retained zeroizing full clip for fallback. Whisper retains its preview/final pipeline. No insertion or focus code changes.
+One worker owns a borrowed transcribe.cpp stream per recording. Continuous 16 kHz mono samples enter through the existing one-slot job channel with sample offsets; rejected submissions retain their cursor. Finalization feeds the remaining tail exactly once. Whole source seconds preserve resampling phase. Capture remains nonblocking, recording remains bounded to 120 seconds, and the full clip remains zeroizing. Live words OFF still streams. Whisper and UI payloads are unchanged.
 
-Implementation uses the pinned native default Auto commit policy (agreement default 3), and Unified English native 5.6 s left context / 1.04 s chunk / 2.08 s lookahead. Capture submits whole source seconds with sample offsets through the existing one-slot bounded channel. Rejected submissions retain their cursor and retry; finalization feeds exactly the remaining resampled tail. Whole-second source boundaries preserve resampler phase at all supported integer sample rates. Capture never waits on inference. On release the microphone is dropped and accepted callback audio drained before the final job can wait. Native cancellation has its own retained token and does not use the capture stop flag; individual stream calls have an eight-second cooperative budget.
+Recovery rejects init/feed/finalize errors, offset mismatches, deadline cancellation, aborted/truncated output, empty text, missing/invalid token timing, uncovered activity, and long low-level pauses. The stream drops before the full original clip is passed once to batch inference. The old native cancellation token is detached; batch installs its own fresh token. Cancellation during fallback suppresses the returned text. Scoped watchers now finish on unwind, including a panicking event callback, without requiring user Cancel. Both streaming and batch native watchers retain the completion guard.
 
-Fallback rejects init/feed/finalize errors, mismatched offsets, aborted/truncated output, empty text, missing token timing, trailing uncovered activity, and long low-level pauses. It drops the stream before batch inference and clears provisional display text. The full original clip is preserved throughout. Presentation OFF still runs streaming.
+Token times in pinned transcribe.cpp are signed i64 milliseconds, converted at 16 samples/ms. Coverage checks leading, interior, and trailing gaps with 400 ms slack; at least 300 ms of uncovered activity rejects streaming. Missing, reversed, negative, zero-length, overflowing, or implausibly late timings conservatively reject. Coverage does not prove that every word was recognized.
 
-Tradeoff / review objection: this version preserves ALL pause audio and conservatively falls back for >5.6 s below a fixed amplitude floor. It does not implement Hex's adaptive PauseCap head/tail compression. Quiet speech is never cut, but can cause unnecessary fallback. Token/activity coverage is a conservative heuristic, not proof of transcript accuracy. Review should decide whether adaptive pause capping is required before approval. Deterministic tests for every native failure/deadline branch remain incomplete.
+Accepted tradeoff: preserve all pause audio and fall back after more than 5.6 seconds below a fixed amplitude floor. No adaptive Hex PauseCap compression. Quiet speech is never cut, but this heuristic can cause unnecessary fallback. Cooperative eight-second native call budgets cannot interrupt native code that stops polling cancellation.
 
-Evidence sources (static reading, not runtime proof):
-- Hex pinned 03ce5ea4f34029cc8145a3d26ec7e043939f34a6, src/transcription/engine/streaming.rs: StreamFeed, committed/tentative, PauseCap and token timing guard. No Hex code copied.
-- transcribe.cpp pinned 2778ae4: bindings/rust/transcribe-cpp/src/session.rs, streaming.rs, cancel.rs; docs/models/parakeet-unified-en-0.6b.md. Real Rust APIs, safe borrowed ownership.
+## Deterministic verification
 
-Observed synthetic CPU diagnostics (debug build, this machine only):
-- Same six-second System.Speech clip as prior baseline: visible words first nonempty ~3.3 s, post-release ~1.8 s, load ~0.77 s. Prior recorded baseline ~2 s post-release; one run does not establish a speedup.
-- Hidden words: finalized stream authoritative, no batch fallback; post-release ~1.8 s, load ~0.73 s, capture queue peak ~0.02 s.
-- Clip + seven seconds digital silence + repeated clip: correct whole-clip fallback, both sentences retained, post-release ~8.1 s, capture queue peak ~0.02 s. Fallback can be slower than the original batch flow.
-- W -> P -> W diagnostic passed, including preexisting real preview budget cancellation and final recovery. This diagnostic tests backend coexistence; it is not proof of interleaved concurrent recognition.
+A private borrowed-stream/backend and monotonic-clock seam executes the production buffered driver, including its real scoped watcher and cancellation token, without models or devices. Three new tests exercise:
 
-Local raw diagnostic logs live in ignored artifacts/buffered-*.log. No model downloaded/copied/modified, microphone opened, audio played, keyboard injected, clipboard touched, or messages sent. Live microphone/focus/selection/insertion behavior still requires manual validation. Frontend payload unchanged.
+- Init, feed, finalize, and offset failure; feed and finalize deadline expiry using an advanced fake clock and waiting for the actual watcher to cancel. Each rejection drops the stream before exactly one batch call with the unchanged full clip. A successful second recording on the same backend verifies fresh token state after each scenario.
+- Successful contiguous feeds plus final tail: exact sample-vector equality proves no duplicated or dropped samples.
+- Cancellation inside fallback: even a backend returning successful text yields an error, preventing delivery.
+- A panicking partial callback: catch unwind through the production driver, verify stream destruction and watcher join within a timeout without user Cancel, then reuse the backend successfully.
 
-Validation: real native cargo test --lib: 255 passed, 17 ignored; cargo clippy --lib -- -D warnings; cargo fmt; bun test: 152 passed; bun run build. Explicit ignored real probes run separately: visible stream, hidden stream, seven-second pause/resume, W/P/W coexistence, native stream cancel during feed/finalization followed by session reuse. Unit checks cover aligned resampling/tail, hidden stream offset/order/full final clip, missing timings, empty text, uncovered trailing phrase, quiet speech, and long pause rejection; existing slow-engine/capture/stop/session-limit tests retained. No frontend payload or markup changed, so UI smoke was not run.
+Coverage regressions separately reject omitted opening/middle/end activity and accept valid intervals, including quiet speech. Existing capture, queue, session-limit, hidden-stream, and aligned-resampling tests remain.
+
+## Fresh native evidence
+
+2026-11-05, debug CPU build, synthetic WAVs only, installed read-only models:
+
+- Native `cargo test --lib --locked`: **259 passed, 17 ignored**. `cargo clippy --lib --locked -- -D warnings`, `cargo fmt -- --check`, and `git diff --check` passed.
+- Visible six-second clip: finalized stream accepted, first nonempty partial ~4.5 s, stop wait ~3.9 s, load ~0.78 s, peak capture queue ~0.04 s.
+- Hidden same clip: finalized stream accepted, stop wait ~1.9 s, load ~0.50 s, queue ~0.02 s.
+- Clip + seven-second silence + repeated clip: full-clip fallback, both sentences retained, stop wait ~7.3 s, queue ~0.02 s.
+- Native feed/finalization cancel followed by session reuse passed. Whisper -> Parakeet -> Whisper coexistence passed; this does not prove concurrent recognition.
+
+Five explicit ignored probes passed separately. Logs: ignored `artifacts/buffered-recovery-{tests,clippy,visible,hidden,pause,cancel,coexistence}.log`. These results supersede earlier diagnostic timings. No established speedup versus the previously observed ~2 s batch baseline; fallback can be slower. Generated-phrase checks do not establish general model accuracy.
+
+Static sources: Hex 03ce5ea4f34029cc8145a3d26ec7e043939f34a6 `src/transcription/engine/streaming.rs` (no code copied); transcribe.cpp 2778ae4 Rust `session.rs`, `streaming.rs`, `result.rs`, `cancel.rs` and Parakeet model documentation.
+
+No downloads, model copies/modifications, microphone/device access, playback, keyboard/clipboard writes, or messages. No frontend changes, so Bun/UI checks were not rerun. Live microphone, focus, selection, and insertion behavior remains manual validation. Native allocator/FFI failure injection and real eight-second stalls are not reproduced by deterministic fake-backend tests.

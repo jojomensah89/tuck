@@ -29,6 +29,7 @@ Only pinned compatible catalog artifacts in known Hex/Handy/Buzz/OpenWhispr/podc
 
 ## Local evidence
 
+- Restoration cleanup uses the generation returned by its successful activation, captured under the selection lock. A later user choice still invalidates cleanup ownership. Existing service fixtures assert both reused-copy and downloaded-replacement completion notices, alongside stale-selection guards.
 - Native `cargo test --lib --locked`: 273 passed, 17 ignored (eight new service tests)
 - `cargo clippy --lib --locked -- -D warnings` and `cargo fmt -- --check`: passed using scripts/prepare-native.ps1 and the existing native cache
 - Bun: 152 passed, 0 failed; production frontend build passed

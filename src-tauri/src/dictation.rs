@@ -1180,6 +1180,7 @@ impl DictationService {
                 let mut error = result.as_ref().err().cloned();
                 let mut activated = false;
                 let mut superseded = false;
+                let mut cleanup_generation = generation;
                 // Only when the owner did not choose a model during the download.
                 if error.is_none() && !cancel.load(Ordering::Acquire) && !service.is_shutdown() {
                     // A fallback model removed during the download is not worth pinning.
@@ -1205,9 +1206,12 @@ impl DictationService {
                             None,
                             true,
                         ) {
-                            Ok(committed) => {
-                                activated = committed && id == entry.id;
-                                superseded = !committed;
+                            Ok(committed_generation) => {
+                                activated = committed_generation.is_some() && id == entry.id;
+                                superseded = committed_generation.is_none();
+                                if let Some(committed_generation) = committed_generation {
+                                    cleanup_generation = committed_generation;
+                                }
                             }
                             Err(activation_error) => error = Some(activation_error),
                         }
@@ -1218,7 +1222,7 @@ impl DictationService {
                     runtime.downloading_model = None;
                     runtime.download_cancel = None;
                     runtime.downloaded_bytes = 0;
-                    if runtime.selection_generation == generation {
+                    if runtime.selection_generation == cleanup_generation {
                         runtime.model_error = reported.clone();
                         runtime.settings_notice = Some(if cancel.load(Ordering::Acquire) {
                             "Model restoration cancelled; use Download to retry, or restart Tuck"
@@ -1317,7 +1321,7 @@ impl DictationService {
         generation: Option<u64>,
         stop: Option<&str>,
         automatic: bool,
-    ) -> Result<bool, String> {
+    ) -> Result<Option<u64>, String> {
         let settings_path = match &self.storage_root {
             Some(root) => root.join("dictation.json"),
             None => settings_path(&self.app()?)?,
@@ -1327,7 +1331,7 @@ impl DictationService {
             .lock()
             .map_err(|_| "Dictation settings unavailable")?;
         let mut runtime = self.runtime.lock().map_err(|_| "Dictation unavailable")?;
-        apply_selection_commit(&mut runtime, generation, automatic, || {
+        let committed = apply_selection_commit(&mut runtime, generation, automatic, || {
             let mut next = self.settings();
             if let Some(id) = id.as_ref() {
                 next.stopped_models.retain(|item| item != id);
@@ -1345,7 +1349,10 @@ impl DictationService {
                 .write()
                 .map_err(|_| "Dictation settings unavailable")? = next;
             Ok(())
-        })
+        })?;
+        // Capture ownership while still holding the lock: a later user choice
+        // must prevent this worker from replacing that choice's notice.
+        Ok(committed.then_some(runtime.selection_generation))
     }
 
     /// Verifies off the UI thread, then selects. Other apps' files are used where they are.
@@ -2379,6 +2386,9 @@ mod tests {
         assert_eq!(f.disk().active_model_path.as_ref(), Some(&moved));
         assert_eq!(f.service.resolve_model().active.unwrap().path, moved);
         assert_eq!(std::fs::read(&moved).unwrap(), b"abc");
+        let runtime = f.service.runtime.lock().unwrap();
+        let notice = runtime.settings_notice.as_deref().unwrap();
+        assert!(notice.starts_with("Using existing "), "{notice}");
     }
 
     #[test]
@@ -2418,6 +2428,10 @@ mod tests {
         resume_tx.send(()).unwrap();
         assert_eq!(f.calls.load(Ordering::SeqCst), 1);
         assert_eq!(f.disk().active_model_path, None);
+        assert_eq!(
+            f.service.runtime.lock().unwrap().settings_notice.as_deref(),
+            Some(format!("{} is ready", FIXTURE_ENTRY.label).as_str())
+        );
         assert_eq!(
             f.service.resolve_model().active.unwrap().entry.id,
             FIXTURE_ENTRY.id

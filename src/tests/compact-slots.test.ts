@@ -89,6 +89,7 @@ describe('collapsed media width', () => {
     expect(compactShellWidth(media, 'title')).toBe(300);
     expect(compactShellWidth(media, 'artwork')).toBe(212);
     expect(compactShellWidth(activity({ kind: 'timer' }), 'lyrics')).toBe(212);
+    expect(compactShellWidth(activity({ kind: 'dictation' }), 'artwork')).toBe(300);
     expect(compactShellWidth(null, 'title')).toBe(212);
   });
 });

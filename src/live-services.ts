@@ -41,13 +41,25 @@ export interface TelemetrySnapshot {
   stale?: boolean;
 }
 export interface DictationSnapshot {
-  status: 'disabled' | 'idle' | 'starting' | 'recording' | 'transcribing' | 'processing' | 'cancelling' | 'inserting' | 'review' | 'error';
+  status: 'disabled' | 'idle' | 'starting' | 'recording' | 'transcribing' | 'processing' | 'cancelling' | 'inserting' | 'review' | 'error' | 'modelMissing' | 'downloadingModel';
   previewsPaused?: boolean;
   transcript: string; error?: string | null; modelReady?: boolean;
+  preview?: string | null; sessionId?: number; revision?: number;
   canInsert?: boolean;
   message?: string | null; settings?: DictationSettings; modelDownloadedBytes?: number;
   models?: ModelRow[]; activeModelLabel?: string | null; modelNotice?: string | null; scanningModels?: boolean;
   shortcutProblems?: { toggle: string | null; hold: string | null }; settingsNotice?: string | null;
+}
+
+/** Native events and the initial IPC response share one monotonic ordering. */
+export class DictationUpdates {
+  private revision = -1;
+  accept(data: DictationSnapshot): boolean {
+    if (data.revision === undefined) return this.revision === -1;
+    if (!Number.isSafeInteger(data.revision) || data.revision <= this.revision) return false;
+    this.revision = data.revision;
+    return true;
+  }
 }
 export interface DictationSettings { toggleShortcut: string; holdToTalkShortcut: string; reviewBeforeInsert: boolean; partialPreview: boolean }
 export interface ClipboardItem { id: string; text: string; pinned: boolean; createdAt: number }

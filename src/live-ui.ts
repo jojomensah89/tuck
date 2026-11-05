@@ -287,18 +287,18 @@ export function mountLivePages(onLayout: () => void): {
     // Explain engine work and a paused preview without implying the microphone is live.
     speechStatus.textContent = data.error || (data.status === 'cancelling' ? 'Cancelling\u2026' : data.status === 'processing' ? 'Microphone closed. Waiting for the speech engine\u2026' : data.status === 'transcribing' ? 'Transcribing\u2026' : previewsPaused && data.status === 'recording' ? 'Live transcript paused for this recording.' : data.modelNotice || '');
     speechModel.textContent = islandModelLine(data.activeModelLabel);
-    const dotState = data.error || data.status === 'error' ? 'warn' : data.status === 'recording' ? 'live' : ['starting', 'transcribing', 'processing', 'cancelling', 'review'].includes(data.status) ? 'idle' : 'off';
+    const dotState = data.error || data.status === 'error' ? 'warn' : data.status === 'recording' ? 'live' : ['starting', 'transcribing', 'processing', 'cancelling', 'inserting', 'review'].includes(data.status) ? 'idle' : 'off';
     speechDot.set(dotState, `Offline, ${data.status}`);
     transcript.textContent = data.transcript?.slice(0, 32000) || provisional || (data.status === 'recording' ? 'Listening\u2026' : 'Your transcript appears here');
     transcript.classList.toggle('placeholder', !data.transcript && !provisional);
     insert.disabled = data.status !== 'review' || data.canInsert === false;
-    cancel.disabled = !['starting', 'recording', 'transcribing', 'processing', 'review'].includes(data.status);
+    cancel.disabled = !['starting', 'recording', 'transcribing', 'processing', 'inserting', 'review'].includes(data.status);
     record.disabled = !['idle', 'recording', 'review', 'error'].includes(data.status) || data.modelReady === false;
     if (data.status === 'recording') setIconLabel(record, 'Finish recording', SVG_ICONS.stop);
     else setIconLabel(record, 'Record', SVG_ICONS.mic);
     record.setAttribute('aria-pressed', String(data.status === 'recording'));
     document.getElementById('isl')!.dataset.dictation = data.status;
-    const active = ['starting', 'recording', 'transcribing', 'processing', 'cancelling', 'review'].includes(data.status);
+    const active = ['starting', 'recording', 'transcribing', 'processing', 'cancelling', 'inserting', 'review'].includes(data.status);
     window.dispatchEvent(new CustomEvent('tuck-activity', { detail: {
       id: 'dictation',
       type: 'dictation',

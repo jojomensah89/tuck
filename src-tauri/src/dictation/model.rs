@@ -286,7 +286,7 @@ struct VerifiedFile {
     sha256: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct FileIdentity {
     size: u64,
     modified_ns: u64,
@@ -400,7 +400,13 @@ impl VerifyCache {
 }
 
 fn file_identity(path: &Path) -> Result<FileIdentity, String> {
-    let file = std::fs::File::open(path).map_err(|e| format!("Could not open the model: {e}"))?;
+    let resolved = resolved_local(path)?;
+    let file =
+        std::fs::File::open(resolved).map_err(|e| format!("Could not open the model: {e}"))?;
+    identity_from_file(&file)
+}
+
+fn identity_from_file(file: &std::fs::File) -> Result<FileIdentity, String> {
     let meta = file
         .metadata()
         .map_err(|e| format!("Could not open the model: {e}"))?;
@@ -411,7 +417,7 @@ fn file_identity(path: &Path) -> Result<FileIdentity, String> {
         .map_or(0, |since| {
             u64::try_from(since.as_nanos()).unwrap_or(u64::MAX)
         });
-    let (file_id, change_ns) = native_identity(&file);
+    let (file_id, change_ns) = native_identity(file);
     Ok(FileIdentity {
         size: meta.len(),
         modified_ns,
@@ -522,6 +528,8 @@ pub(super) fn forget(path: &Path, cache: &Mutex<VerifyCache>) {
 }
 
 fn hash_file(path: &Path, low_priority: bool) -> Result<String, String> {
+    let resolved = resolved_local(path)?;
+    let path = resolved.as_path();
     let _priority = low_priority.then(BackgroundPriority::enter);
     let mut reader =
         std::fs::File::open(path).map_err(|e| format!("Could not open the model: {e}"))?;
@@ -567,6 +575,39 @@ impl Drop for BackgroundPriority {
     }
 }
 
+#[path = "ownership.rs"]
+mod ownership;
+pub(super) use ownership::{is_owned, remove_owned};
+
+fn resolved_local(path: &Path) -> Result<PathBuf, String> {
+    let text = path.to_string_lossy().replace('/', "\\");
+    if text.to_ascii_lowercase().starts_with(r"\\?\unc\")
+        || (text.starts_with(r"\\") && !text.starts_with(r"\\?\"))
+    {
+        return Err("Network models are not supported".into());
+    }
+    if let Ok(link) = std::fs::read_link(path) {
+        let name = link
+            .to_string_lossy()
+            .replace('/', "\\")
+            .to_ascii_lowercase();
+        if name.starts_with(r"\\?\unc\") || (name.starts_with(r"\\") && !name.starts_with(r"\\?\"))
+        {
+            return Err("Network models are not supported".into());
+        }
+    }
+    let resolved =
+        std::fs::canonicalize(path).map_err(|e| format!("Could not resolve model: {e}"))?;
+    let name = resolved
+        .to_string_lossy()
+        .replace('/', "\\")
+        .to_ascii_lowercase();
+    if name.starts_with(r"\\?\unc\") || (name.starts_with(r"\\") && !name.starts_with(r"\\?\")) {
+        return Err("Network models are not supported".into());
+    }
+    Ok(resolved)
+}
+
 /* ---------- Download ---------- */
 
 pub(super) async fn download(
@@ -583,8 +624,7 @@ pub(super) async fn download(
     std::fs::create_dir_all(models_dir)
         .map_err(|e| format!("Could not create model directory: {e}"))?;
     check_free_space(models_dir, entry.bytes)?;
-    let temporary = models_dir.join(format!("{}.part", entry.id));
-    let _cleanup = TemporaryModelFile(temporary.clone());
+    let (temporary, mut output, _cleanup) = ownership::new_temporary(models_dir)?;
     // No total timeout: 600 MB on a slow link is fine as long as data keeps arriving.
     let client = reqwest::Client::builder()
         .https_only(true)
@@ -612,8 +652,6 @@ pub(super) async fn download(
         ));
     }
     let mut reader = response;
-    let mut output = std::fs::File::create(&temporary)
-        .map_err(|e| format!("Could not create temporary model file: {e}"))?;
     let mut hash = Sha256::new();
     let mut received = 0u64;
     loop {
@@ -649,7 +687,6 @@ pub(super) async fn download(
     output
         .sync_all()
         .map_err(|e| format!("Could not sync model file: {e}"))?;
-    drop(output);
     if hex_digest(&hash.finalize()) != entry.sha256 {
         return Err(format!(
             "The download of {} failed its SHA-256 integrity check",
@@ -659,8 +696,13 @@ pub(super) async fn download(
     if cancel.load(Ordering::Acquire) {
         return Err("Model download cancelled".into());
     }
-    std::fs::rename(&temporary, &path)
-        .map_err(|e| format!("Could not install verified model: {e}"))?;
+    let source_identity = identity_from_file(&output)?;
+    // hard_link installs without replacing an existing destination.
+    std::fs::hard_link(&temporary, &path)
+        .map_err(|e| format!("Could not install verified model without replacing a file: {e}"))?;
+    drop(output);
+    drop(_cleanup);
+    ownership::record_completed(&path, &source_identity, entry.sha256)?;
     // Already hashed while downloading, so the first recording does not repeat it.
     let identity = file_identity(&path)?;
     if let Ok(mut cache) = cache.lock() {
@@ -676,12 +718,9 @@ pub(super) async fn download(
     Ok(())
 }
 
-/// Removes what a quit in the middle of a download left behind. Only `<catalog id>.part`
-/// in Tuck's own folder is ever touched.
+/// Only identity-tracked temporary files from this downloader are eligible.
 pub(super) fn sweep_partial_downloads(models_dir: &Path) {
-    for entry in CATALOG {
-        let _ = std::fs::remove_file(models_dir.join(format!("{}.part", entry.id)));
-    }
+    ownership::sweep(models_dir);
 }
 
 async fn within_stall_limit<T>(
@@ -825,6 +864,7 @@ pub(super) fn path_is_known(path: &Path, locations: &[Location]) -> bool {
     use std::path::Component;
     let is_network = path.to_string_lossy().starts_with(r"\\");
     !is_network
+        && (std::fs::symlink_metadata(path).is_err() || resolved_local(path).is_ok())
         && !path
             .components()
             .any(|part| matches!(part, Component::ParentDir))
@@ -908,6 +948,9 @@ pub(super) fn find_candidates(locations: &[Location]) -> Vec<Candidate> {
                 }
                 let name = item.file_name();
                 if !name_is_candidate(&name.to_string_lossy(), location.huggingface) {
+                    continue;
+                }
+                if resolved_local(&path).is_err() {
                     continue;
                 }
                 let Ok(size) = std::fs::metadata(&path).map(|meta| meta.len()) else {
@@ -1021,6 +1064,7 @@ pub struct ModelRow {
     pub state: String,
     pub found_in: Option<String>,
     pub active: bool,
+    pub can_remove: bool,
     pub memory_note: String,
     /// Set when this computer has less free memory right now than the model uses.
     pub memory_warning: Option<String>,
@@ -1097,13 +1141,17 @@ pub(super) fn build_rows(inputs: &RowInputs<'_>, exists: impl Fn(&Path) -> bool)
             && inputs
                 .models_dir
                 .is_some_and(|dir| exists(&dir.join(entry.id)));
+        let deletable = owned
+            && inputs
+                .models_dir
+                .is_some_and(|dir| is_owned(&dir.join(entry.id), entry));
         let state = if inputs.downloading == Some(entry.id) {
             "downloading"
         } else if inputs.checking.iter().any(|id| id == entry.id) {
             "checking"
         } else if owned {
             "installed"
-        } else if external_active.is_some() || found.is_some() {
+        } else if owned || external_active.is_some() || found.is_some() {
             "found"
         } else {
             "available"
@@ -1141,6 +1189,7 @@ pub(super) fn build_rows(inputs: &RowInputs<'_>, exists: impl Fn(&Path) -> bool)
             state: state.to_owned(),
             found_in: found_in.map(str::to_owned),
             active: active.is_some(),
+            can_remove: deletable,
             memory_note: memory_note(entry),
             memory_warning: memory_warning(entry, inputs.available_memory),
         };
@@ -1182,6 +1231,33 @@ mod tests {
             offered: true,
             memory_mb: 100,
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn local_huggingface_links_work_and_network_links_are_rejected() {
+        use std::os::windows::fs::symlink_file;
+        let dir = temp_dir();
+        let blob = dir.join("blob");
+        std::fs::write(&blob, b"model").unwrap();
+        let local = dir.join("ggml-local.bin");
+        // Windows Developer Mode or symlink privilege is required for this filesystem test.
+        if let Err(error) = symlink_file(&blob, &local) {
+            eprintln!("Symlink test unavailable: {error}");
+            std::fs::remove_dir_all(dir).unwrap();
+            return;
+        }
+        assert!(resolved_local(&local).is_ok());
+        assert_eq!(
+            hash_file(&local, false).unwrap(),
+            hash_file(&blob, false).unwrap()
+        );
+        let remote = dir.join("ggml-remote.bin");
+        symlink_file(r"\\example.invalid\models\model.bin", &remote).unwrap();
+        assert!(resolved_local(&remote).unwrap_err().contains("Network"));
+        assert!(file_identity(&remote).is_err());
+        assert!(hash_file(&remote, false).is_err());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -1374,7 +1450,7 @@ mod tests {
             std::fs::write(path, b"x").unwrap();
         }
         sweep_partial_downloads(&dir);
-        assert!(!part.exists());
+        assert!(part.exists(), "untracked legacy partials are never deleted");
         assert!(model.exists());
         assert!(other.exists());
         std::fs::remove_dir_all(&dir).unwrap();

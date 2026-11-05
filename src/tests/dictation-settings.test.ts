@@ -87,3 +87,9 @@ describe('shortcut recorder', () => {
     expect(isDualShift('Ctrl+Shift+Space')).toBe(false);
   });
 });
+
+ test('unowned local files only offer use or stop, never deletion', () => {
+  const row = { id:'ggml-base.bin', label:'Base', bytes:1, speed:'Fast', accuracy:'Good', note:null, state:'installed' as const, foundIn:null, active:true, canRemove:false };
+  expect(rowButtons(row)).toEqual([{action:'stop',label:'Stop using'}]);
+  expect(rowButtons({...row,active:false})).toEqual([{action:'use',label:'Use',primary:true}]);
+});

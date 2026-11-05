@@ -720,7 +720,12 @@ try {
   assert.match(await native.locator('.page.dictation').textContent(),/Transcribing\u2026/);
   await native.evaluate(()=>window.__emitNative('dictation_state',{status:'cancelling',modelReady:true}));
   assert.match(await native.locator('.page.dictation').textContent(),/Cancelling\u2026/);
+  await mkdir(path.join(root,'docs/screens'),{recursive:true});
+  await native.locator('#isl').screenshot({path:path.join(root,'docs/screens/dictation-cancelling.png')});
   assert.equal(await native.getByRole('button',{name:'Record',exact:true}).isDisabled(),true);
+  await native.evaluate(()=>window.__emitNative('dictation_state',{status:'processing',modelReady:true}));
+  assert.match(await native.locator('.page.dictation').textContent(),/Microphone closed/);
+  await native.locator('#isl').screenshot({path:path.join(root,'docs/screens/dictation-processing.png')});
   await native.evaluate(()=>window.__emitNative('dictation_state',{status:'starting',modelReady:true,previewsPaused:false}));
   assert.doesNotMatch(await native.locator('.page.dictation').textContent(),/Live transcript paused|Provisional words/);
   await native.evaluate(()=>window.__emitNative('dictation_state',{status:'review',transcript:'<b>Text, not markup</b>',modelReady:true}));

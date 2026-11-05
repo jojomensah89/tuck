@@ -691,7 +691,8 @@ unsafe extern "C" fn abort_requested(signal: *mut std::ffi::c_void) -> bool {
     unsafe { &*(signal as *const AbortSignal<'_>) }.requested()
 }
 
-/// About one thread per physical core, leaving the hyperthreads for the rest of the desktop.
+/// Heuristic: half the logical processors, capped below. This is not a topology query;
+/// it limits CPU contention even on machines without two threads per physical core.
 fn inference_threads() -> i32 {
     let logical = std::thread::available_parallelism().map_or(4, std::num::NonZero::get);
     (logical / 2).clamp(2, 8) as i32
@@ -901,8 +902,9 @@ mod tests {
     }
 
     const TEST_RATE: u32 = 16_000;
-    /// A short queue, so anything that stops draining fails quickly.
-    const TEST_QUEUE_FRAMES: usize = 800;
+    /// One second of audio, delivered faster than real time. This still overflows
+    /// during a 400 ms blocked preview, but tolerates ordinary scheduler jitter.
+    const TEST_QUEUE_FRAMES: usize = 16_000;
 
     /// Plays `blocks` of 20 ms through the real callback path, paced at `block_every`.
     fn play_audio(
@@ -1007,7 +1009,7 @@ mod tests {
         let stop = Arc::new(AtomicBool::new(false));
         let cancel = AtomicBool::new(false);
         let events = RecordedEvents::default();
-        // The queue holds 50 ms. One preview blocks the engine for 400 ms.
+        // At 2 ms per block this queue fills in 100 ms; a preview blocks for 400 ms.
         let (capture, player) = capture_with(150, Duration::from_millis(2), &stop);
         let engine = harness.engine(Duration::from_millis(400), false);
         let result = run_session(

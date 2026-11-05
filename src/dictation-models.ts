@@ -3,7 +3,7 @@
 export interface ModelRow {
   id: string; label: string; bytes: number; speed: string; accuracy: string; note: string | null;
   state: 'available' | 'downloading' | 'checking' | 'installed' | 'found';
-  foundIn: string | null; active: boolean; memoryNote?: string; memoryWarning?: string | null;
+  foundIn: string | null; active: boolean; canRemove?: boolean; memoryNote?: string; memoryWarning?: string | null;
 }
 export type ModelAction = 'download' | 'cancel' | 'use' | 'remove' | 'stop';
 export interface ModelButton { action: ModelAction; label: string; danger?: boolean; primary?: boolean }
@@ -36,7 +36,8 @@ export function rowButtons(row: ModelRow): ModelButton[] {
     case 'available': return [{ action: 'download', label: 'Download' }];
     case 'downloading': return [{ action: 'cancel', label: 'Cancel' }];
     case 'checking': return [];
-    case 'installed': return [
+    case 'installed': if (row.canRemove === false) return row.active ? [{ action: 'stop', label: 'Stop using' }] : [{ action: 'use', label: 'Use', primary: true }];
+    return [
       { action: 'remove', label: 'Remove', danger: true },
       ...(row.active ? [] : [{ action: 'use', label: 'Use', primary: true } as ModelButton]),
     ];

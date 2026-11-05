@@ -52,6 +52,7 @@ pub struct DictationSettings {
     pub hold_to_talk_shortcut: String,
     pub review_before_insert: bool,
     pub partial_preview: bool,
+    pub stopped_models: Vec<String>,
     #[serde(default)]
     pub settings_version: u32,
     /// Catalog id of the chosen model. Absent in files written before the picker.
@@ -69,6 +70,7 @@ impl Default for DictationSettings {
             hold_to_talk_shortcut: DEFAULT_HOLD.to_owned(),
             review_before_insert: false,
             partial_preview: true,
+            stopped_models: Vec::new(),
             settings_version: SETTINGS_VERSION,
             active_model: None,
             active_model_path: None,
@@ -143,6 +145,7 @@ struct ActiveSession {
 
 struct Runtime {
     previews_paused: bool,
+    selection_generation: u64,
     status: String,
     message: Option<String>,
     transcript: Option<String>,
@@ -174,6 +177,7 @@ pub struct DictationService {
     app: RwLock<Option<AppHandle>>,
     settings: RwLock<DictationSettings>,
     runtime: Mutex<Runtime>,
+    insertion_gate: Mutex<()>,
     model_busy: AtomicBool,
     registered_shortcuts: Mutex<Vec<Shortcut>>,
     settings_operation: Mutex<()>,
@@ -197,6 +201,7 @@ impl DictationService {
             settings: RwLock::new(DictationSettings::default()),
             runtime: Mutex::new(Runtime {
                 previews_paused: false,
+                selection_generation: 0,
                 status: "idle".into(),
                 message: None,
                 transcript: None,
@@ -214,6 +219,7 @@ impl DictationService {
                 dual_shift_problem: None,
                 settings_notice: None,
             }),
+            insertion_gate: Mutex::new(()),
             model_busy: AtomicBool::new(false),
             registered_shortcuts: Mutex::new(Vec::new()),
             settings_operation: Mutex::new(()),
@@ -248,7 +254,13 @@ impl DictationService {
             settings.active_model_path.as_deref(),
             &dir,
             |path| model::path_is_known(path, &self.locations),
-            Path::is_file,
+            |path| {
+                !settings
+                    .stopped_models
+                    .iter()
+                    .any(|id| path.file_name().is_some_and(|n| n == id.as_str()))
+                    && path.is_file()
+            },
         )
     }
 
@@ -367,6 +379,10 @@ impl DictationService {
 
     fn begin(self: &Arc<Self>, mode: RecordingMode) -> Result<(), String> {
         let app = self.app()?;
+        let operation = self
+            .settings_operation
+            .lock()
+            .map_err(|_| "Settings unavailable")?;
         let resolution = self.resolve_model();
         let Some(active) = resolution.active else {
             self.report_no_model(
@@ -380,6 +396,7 @@ impl DictationService {
         let cancel = Arc::new(AtomicBool::new(false));
         let original_target = target::capture_foreground();
         self.claim_session(stop.clone(), cancel.clone(), mode)?;
+        drop(operation);
         self.emit_state();
 
         let service = self.clone();
@@ -399,7 +416,7 @@ impl DictationService {
                 match result {
                     Ok(mut text) => {
                         truncate_utf8(&mut text, MAX_TRANSCRIPT_BYTES);
-                        service.finish_transcript(text, original_target);
+                        service.finish_transcript(text, original_target, &cancel);
                     }
                     Err(error) if error == "Dictation stopped before microphone capture began" => {
                         service.finish_cancelled();
@@ -459,8 +476,17 @@ impl DictationService {
         Ok(())
     }
 
-    fn finish_transcript(&self, text: String, original_target: Option<target::ForegroundTarget>) {
+    fn finish_transcript(
+        &self,
+        text: String,
+        original_target: Option<target::ForegroundTarget>,
+        cancel: &AtomicBool,
+    ) {
         let source = Zeroizing::new(text);
+        if cancel.load(Ordering::Acquire) {
+            self.finish_cancelled();
+            return;
+        }
         let text = Zeroizing::new(source.trim().to_owned());
         if text.is_empty() {
             self.clear_active();
@@ -476,12 +502,22 @@ impl DictationService {
                 Some(target) => target::is_editable_target(target),
                 None => Err("The original foreground window could not be captured.".into()),
             });
+        {
+            let mut runtime = self.runtime.lock().unwrap();
+            if cancel.load(Ordering::Acquire) {
+                drop(runtime);
+                self.finish_cancelled();
+                return;
+            }
+            runtime.status = "inserting".into();
+        }
+        self.emit_state();
         let mut inserted = false;
         let mut partial_insertion = false;
         let mut reason = safety.err();
         if !settings.review_before_insert && reason.is_none() {
             if let Some(target) = original_target.as_ref() {
-                match target::insert_unicode(target, text.as_str()) {
+                match target::insert_unicode(target, text.as_str(), cancel, &self.insertion_gate) {
                     Ok(()) => inserted = true,
                     Err(error) => {
                         partial_insertion = error.may_have_inserted;
@@ -492,6 +528,11 @@ impl DictationService {
         }
         let review = settings.review_before_insert || !inserted;
         if let Ok(mut runtime) = self.runtime.lock() {
+            if cancel.load(Ordering::Acquire) {
+                drop(runtime);
+                self.finish_cancelled();
+                return;
+            }
             runtime.active = None;
             runtime.status = if review { "review" } else { "idle" }.into();
             runtime.message = reason.clone();
@@ -568,6 +609,10 @@ impl DictationService {
     }
 
     fn cancel(&self) -> Result<(), String> {
+        let _gate = self
+            .insertion_gate
+            .lock()
+            .map_err(|_| "Insertion unavailable")?;
         let mut runtime = self
             .runtime
             .lock()
@@ -599,6 +644,7 @@ impl DictationService {
     }
 
     fn finish_review(self: &Arc<Self>) -> Result<(), String> {
+        let cancel = Arc::new(AtomicBool::new(false));
         let (text, original_target) = {
             let mut runtime = self
                 .runtime
@@ -612,15 +658,26 @@ impl DictationService {
                 .transcript
                 .take()
                 .ok_or("There is no transcript awaiting review")?;
+            runtime.active = Some(ActiveSession {
+                stop: Arc::new(AtomicBool::new(true)),
+                cancel: cancel.clone(),
+                mode: RecordingMode::Toggle,
+            });
             runtime.status = "inserting".into();
             (Zeroizing::new(text), target)
         };
         self.emit_state();
-        let result = target::insert_unicode(&original_target, &text);
+        let result = target::insert_unicode(&original_target, &text, &cancel, &self.insertion_gate);
         let mut runtime = self
             .runtime
             .lock()
             .map_err(|_| "Dictation service unavailable")?;
+        if cancel.load(Ordering::Acquire) {
+            drop(runtime);
+            self.finish_cancelled();
+            return Err("Dictation cancelled".into());
+        }
+        runtime.active = None;
         let result = match result {
             Ok(()) => {
                 runtime.review_target = None;
@@ -790,12 +847,31 @@ impl DictationService {
 
     /// Stores the selection in `dictation.json`, undoing it if the file cannot be written.
     fn commit_selection(&self, id: Option<String>, path: Option<PathBuf>) -> Result<(), String> {
+        self.commit_checked_selection(id, path, None, None)
+    }
+    fn commit_checked_selection(
+        &self,
+        id: Option<String>,
+        path: Option<PathBuf>,
+        generation: Option<u64>,
+        stop: Option<&str>,
+    ) -> Result<(), String> {
         let app = self.app()?;
         let _operation = self
             .settings_operation
             .lock()
             .map_err(|_| "Dictation settings unavailable")?;
+        let mut runtime = self.runtime.lock().map_err(|_| "Dictation unavailable")?;
+        validate_selection_commit(&runtime, generation)?;
         let mut next = self.settings();
+        if let Some(id) = id.as_ref() {
+            next.stopped_models.retain(|item| item != id);
+        }
+        if let Some(id) = stop {
+            if !next.stopped_models.iter().any(|item| item == id) {
+                next.stopped_models.push(id.into());
+            }
+        }
         next.active_model = id;
         next.active_model_path = path;
         persist_settings(&app, &next)?;
@@ -803,6 +879,7 @@ impl DictationService {
             .settings
             .write()
             .map_err(|_| "Dictation settings unavailable")? = next;
+        runtime.selection_generation = runtime.selection_generation.wrapping_add(1);
         Ok(())
     }
 
@@ -810,7 +887,7 @@ impl DictationService {
     fn use_model(self: &Arc<Self>, id: &str) -> Result<(), String> {
         let entry = model::entry(id).ok_or("That model is not in Tuck's catalog")?;
         let own = self.models_dir()?.join(entry.id);
-        let external = {
+        let (external, generation) = {
             let mut runtime = self
                 .runtime
                 .lock()
@@ -829,9 +906,10 @@ impl DictationService {
                     entry.label
                 ));
             }
+            runtime.selection_generation = runtime.selection_generation.wrapping_add(1);
             runtime.checking_models.push(entry.id.to_owned());
             runtime.model_error = None;
-            external
+            (external, runtime.selection_generation)
         };
         self.emit_state();
         let service = self.clone();
@@ -845,14 +923,18 @@ impl DictationService {
                     external.clone().unwrap_or(own)
                 };
                 let result = model::verify(&path, entry, &service.verified, true).and_then(|_| {
-                    service.commit_selection(
+                    service.commit_checked_selection(
                         Some(entry.id.to_owned()),
                         (!own_installed).then_some(path),
+                        Some(generation),
+                        None,
                     )
                 });
                 if let Ok(mut runtime) = service.runtime.lock() {
                     runtime.checking_models.retain(|item| item != entry.id);
-                    runtime.model_error = result.err();
+                    if runtime.selection_generation == generation || result.is_ok() {
+                        runtime.model_error = result.err();
+                    }
                 }
                 service.clear_missing_status();
                 service.emit_state();
@@ -884,6 +966,7 @@ impl DictationService {
             {
                 return Err("The model is in use; stop dictation before removing it".into());
             }
+            runtime.selection_generation = runtime.selection_generation.wrapping_add(1);
             runtime.removing_model = true;
             runtime.model_error = None;
         }
@@ -900,14 +983,13 @@ impl DictationService {
         let settings = self.settings();
         let selected = settings.active_model.as_deref() == Some(entry.id);
         if selected && settings.active_model_path.is_some() {
-            return self.commit_selection(None, None);
+            return self.commit_checked_selection(None, None, None, Some(entry.id));
         }
-        // The path comes from the catalog id inside Tuck's own folder, so this can only
-        // ever delete a file Tuck put there.
         let path = self.models_dir()?.join(entry.id);
-        if path.exists() {
-            std::fs::remove_file(&path).map_err(|e| format!("Could not remove the model: {e}"))?;
+        if !model::is_owned(&path, entry) {
+            return self.commit_checked_selection(None, None, None, Some(entry.id));
         }
+        model::remove_owned(&path, entry)?;
         model::forget(&path, &self.verified);
         if selected {
             self.commit_selection(None, None)?;
@@ -999,6 +1081,19 @@ impl DictationService {
     pub fn is_shutdown(&self) -> bool {
         self.is_shutdown.load(Ordering::Acquire)
     }
+}
+
+fn validate_selection_commit(runtime: &Runtime, generation: Option<u64>) -> Result<(), String> {
+    if runtime.active.is_some() || runtime.status == "inserting" {
+        return Err("Stop dictation before changing the model".into());
+    }
+    if generation.is_some() && runtime.removing_model {
+        return Err("Model removal is in progress".into());
+    }
+    if generation.is_some_and(|expected| expected != runtime.selection_generation) {
+        return Err("A newer model selection superseded this check".into());
+    }
+    Ok(())
 }
 
 /// What to store after a download so it never changes the model in use. With no stored
@@ -1304,6 +1399,7 @@ fn parse_settings(bytes: &[u8]) -> (DictationSettings, Option<String>) {
             .unwrap_or(defaults.hold_to_talk_shortcut),
         review_before_insert: settings_field(&map, "reviewBeforeInsert", &mut bad)
             .unwrap_or(defaults.review_before_insert),
+        stopped_models: settings_field(&map, "stoppedModels", &mut bad).unwrap_or_default(),
         partial_preview: settings_field(&map, "partialPreview", &mut bad)
             .unwrap_or(defaults.partial_preview),
         settings_version: settings_field(&map, "settingsVersion", &mut bad).unwrap_or(0),
@@ -1496,6 +1592,7 @@ pub fn dictation_set_settings(
     // The model is chosen only through its own commands, which use backend-verified paths.
     // A page can never point the recorder at a file by sending settings.
     let settings = DictationSettings {
+        stopped_models: previous.stopped_models.clone(),
         active_model: previous.active_model.clone(),
         active_model_path: previous.active_model_path.clone(),
         settings_version: SETTINGS_VERSION,
@@ -1633,6 +1730,48 @@ pub fn dictation_model_download_cancel(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stopped_models_persist_and_are_excluded_from_fallback() {
+        let settings = DictationSettings {
+            stopped_models: vec!["ggml-base.bin".into()],
+            ..Default::default()
+        };
+        let bytes = serde_json::to_vec(&settings).unwrap();
+        assert_eq!(
+            parse_settings(&bytes).0.stopped_models,
+            settings.stopped_models
+        );
+        let resolution = model::resolve_active(
+            None,
+            None,
+            Path::new("C:/models"),
+            |_| true,
+            |path| {
+                path.file_name().is_some_and(|n| n == "ggml-base.bin")
+                    && !settings
+                        .stopped_models
+                        .iter()
+                        .any(|id| path.file_name().is_some_and(|n| n == id.as_str()))
+            },
+        );
+        assert!(resolution.active.is_none());
+    }
+
+    #[test]
+    fn model_selection_commit_rechecks_session_and_generation() {
+        let service = DictationService::new();
+        let mut runtime = service.runtime.lock().unwrap();
+        runtime.selection_generation = 2;
+        assert!(validate_selection_commit(&runtime, Some(1)).is_err());
+        assert!(validate_selection_commit(&runtime, Some(2)).is_ok());
+        runtime.active = Some(ActiveSession {
+            stop: Arc::new(AtomicBool::new(false)),
+            cancel: Arc::new(AtomicBool::new(false)),
+            mode: RecordingMode::Toggle,
+        });
+        assert!(validate_selection_commit(&runtime, Some(2)).is_err());
+    }
 
     #[test]
     fn cancellation_cannot_be_overwritten_and_refuses_a_new_session() {

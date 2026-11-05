@@ -317,6 +317,7 @@ pub(super) fn insert_unicode(
         return Err(String::from("Transcript is too long to insert safely").into());
     }
     let before = Zeroizing::new(focused_text().map_err(InsertionFailure::from)?);
+    let selection = focused_selection(&before).ok();
     send_batches(
         &units,
         || {
@@ -350,7 +351,7 @@ pub(super) fn insert_unicode(
         }
         if let Ok(after) = focused_text() {
             let after = Zeroizing::new(after);
-            if confirms_insertion(&before, &after, text) {
+            if confirms_replacement(&before, &after, text, selection) {
                 return Ok(());
             }
         }
@@ -365,6 +366,98 @@ fn confirms_insertion(before: &str, after: &str, text: &str) -> bool {
         && after
             .match_indices(text)
             .any(|(i, _)| before.strip_prefix(&after[..i]) == Some(&after[i + text.len()..]))
+}
+
+fn confirms_replacement(
+    before: &str,
+    after: &str,
+    text: &str,
+    selection: Option<(usize, usize)>,
+) -> bool {
+    if let Some((start, end)) = selection {
+        return !text.is_empty()
+            && start <= end
+            && before.is_char_boundary(start)
+            && before.is_char_boundary(end)
+            && end <= before.len()
+            && after.len() == before.len() - (end - start) + text.len()
+            && after
+                .strip_prefix(&before[..start])
+                .and_then(|s| s.strip_prefix(text))
+                == Some(&before[end..]);
+    }
+    // Without a supported selection, only an exact additive change is confirmed.
+    confirms_insertion(before, after, text)
+}
+
+#[cfg(windows)]
+fn focused_selection(before: &str) -> Result<(usize, usize), String> {
+    use windows::Win32::{
+        System::Com::{
+            CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER,
+            COINIT_MULTITHREADED,
+        },
+        UI::Accessibility::{
+            CUIAutomation, IUIAutomation, IUIAutomationTextPattern, TextPatternRangeEndpoint_End,
+            TextPatternRangeEndpoint_Start, UIA_TextPatternId,
+        },
+    };
+    unsafe {
+        let initialized = CoInitializeEx(None, COINIT_MULTITHREADED).is_ok();
+        let result = (|| -> windows::core::Result<(usize, usize)> {
+            let automation: IUIAutomation =
+                CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER)?;
+            let focused = automation.GetFocusedElement()?;
+            let pattern: IUIAutomationTextPattern =
+                focused.GetCurrentPatternAs(UIA_TextPatternId)?;
+            let document = Zeroizing::new(pattern.DocumentRange()?.GetText(65537)?.to_string());
+            if document.as_str() != before {
+                return Err(windows::core::Error::from_hresult(windows::core::HRESULT(
+                    0x80004005u32 as i32,
+                )));
+            }
+            let selections = pattern.GetSelection()?;
+            if selections.Length()? != 1 {
+                return Err(windows::core::Error::from_hresult(windows::core::HRESULT(
+                    0x80004005u32 as i32,
+                )));
+            }
+            let selected = selections.GetElement(0)?;
+            let prefix = pattern.DocumentRange()?;
+            prefix.MoveEndpointByRange(
+                TextPatternRangeEndpoint_End,
+                &selected,
+                TextPatternRangeEndpoint_Start,
+            )?;
+            let prefix = Zeroizing::new(prefix.GetText(65537)?.to_string());
+            let selected = Zeroizing::new(selected.GetText(65537)?.to_string());
+            if !before
+                .strip_prefix(prefix.as_str())
+                .is_some_and(|suffix| suffix.starts_with(selected.as_str()))
+            {
+                return Err(windows::core::Error::from_hresult(windows::core::HRESULT(
+                    0x80004005u32 as i32,
+                )));
+            }
+            Ok((prefix.len(), prefix.len() + selected.len()))
+        })()
+        .map_err(|e| e.to_string())
+        .and_then(|(start, end)| {
+            if start <= end
+                && end <= before.len()
+                && before.is_char_boundary(start)
+                && before.is_char_boundary(end)
+            {
+                Ok((start, end))
+            } else {
+                Err("Selection unavailable".into())
+            }
+        });
+        if initialized {
+            CoUninitialize();
+        }
+        result
+    }
 }
 
 #[cfg(windows)]
@@ -394,7 +487,7 @@ fn focused_text() -> Result<String, String> {
                 focused
                     .GetCurrentPatternAs::<IUIAutomationTextPattern>(UIA_TextPatternId)
                     .and_then(|p| p.DocumentRange())
-                    .and_then(|r| r.GetText(65536))
+                    .and_then(|r| r.GetText(65537))
                     .map_err(|e| e.to_string())?
                     .to_string()
             };
@@ -564,6 +657,46 @@ pub(super) fn copy_final(_text: &str, _owner: ()) -> Result<(), String> {
 
 #[cfg(test)]
 mod confirmation_tests {
+    #[test]
+    fn confirms_full_and_partial_selection_replacement() {
+        assert!(super::confirms_replacement(
+            "old",
+            "new",
+            "new",
+            Some((0, 3))
+        ));
+        assert!(super::confirms_replacement(
+            "aoldz",
+            "anewz",
+            "new",
+            Some((1, 4))
+        ));
+        assert!(super::confirms_replacement(
+            "az",
+            "anewz",
+            "new",
+            Some((1, 1))
+        ));
+        assert!(!super::confirms_replacement(
+            "old",
+            "ne",
+            "new",
+            Some((0, 3))
+        ));
+        assert!(!super::confirms_replacement("old", "new", "new", None));
+        assert!(super::confirms_replacement(
+            "éold",
+            "é新",
+            "新",
+            Some((2, 5))
+        ));
+        assert!(!super::confirms_replacement(
+            "éold",
+            "é新",
+            "新",
+            Some((1, 5))
+        ));
+    }
     #[test]
     fn requires_observed_text_change() {
         assert!(super::confirms_insertion("ab", "ahellob", "hello"));

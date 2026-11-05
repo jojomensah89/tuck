@@ -194,6 +194,7 @@ pub struct DictationService {
     settings: RwLock<DictationSettings>,
     runtime: Mutex<Runtime>,
     insertion_gate: Mutex<()>,
+    focus_observer_busy: Arc<AtomicBool>,
     model_busy: AtomicBool,
     registered_shortcuts: Mutex<Vec<Shortcut>>,
     settings_operation: Mutex<()>,
@@ -207,6 +208,13 @@ pub struct DictationService {
 impl Default for DictationService {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+struct FocusObserverLease(Arc<AtomicBool>);
+impl Drop for FocusObserverLease {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
     }
 }
 
@@ -242,6 +250,7 @@ impl DictationService {
                 settings_notice: None,
             }),
             insertion_gate: Mutex::new(()),
+            focus_observer_busy: Arc::new(AtomicBool::new(false)),
             model_busy: AtomicBool::new(false),
             registered_shortcuts: Mutex::new(Vec::new()),
             settings_operation: Mutex::new(()),
@@ -339,6 +348,16 @@ impl DictationService {
             })
             .unwrap_or_default();
         let previews_paused = locked.as_ref().is_ok_and(|r| r.previews_paused);
+        let audio_level = locked
+            .as_ref()
+            .map(|r| {
+                if r.status == "recording" {
+                    r.audio_level
+                } else {
+                    0.0
+                }
+            })
+            .unwrap_or(0.0);
         let (session_id, revision, preview) = locked
             .as_ref()
             .map(|r| (r.session_id, r.revision, r.preview.clone()))
@@ -349,17 +368,7 @@ impl DictationService {
             session_id,
             revision,
             preview,
-            audio_level: self
-                .runtime
-                .lock()
-                .map(|r| {
-                    if r.status == "recording" {
-                        r.audio_level
-                    } else {
-                        0.0
-                    }
-                })
-                .unwrap_or(0.0),
+            audio_level,
             previews_paused,
             status,
             model_installed: active.is_some(),
@@ -420,14 +429,62 @@ impl DictationService {
 
     /// Preview is display-only. Publish a complete versioned snapshot so a late
     /// initial response or event cannot resurrect an earlier recording's text.
-    fn observe_recording_focus(&self) {
-        if let Ok(mut r) = self.runtime.lock() {
-            if r.active.is_some()
-                && r.recording_target
-                    .as_ref()
-                    .is_some_and(|t| target::verify_foreground_target(t).is_err())
-            {
-                r.focus_changed = true;
+    fn mark_focus_changed(&self, session_id: u64) {
+        if let Ok(mut runtime) = self.runtime.lock() {
+            if runtime.session_id == session_id && runtime.active.is_some() {
+                runtime.focus_changed = true;
+            }
+        }
+    }
+
+    /// UIA providers may hang. At most one observer can exist, and it never
+    /// owns a runtime lock or blocks capture/cancellation/session shutdown.
+    fn start_focus_observer(
+        self: &Arc<Self>,
+        session_id: u64,
+        stop: Arc<AtomicBool>,
+        cancel: Arc<AtomicBool>,
+        mut observe: impl FnMut() -> bool + Send + 'static,
+    ) -> Option<std::thread::JoinHandle<()>> {
+        if self.focus_observer_busy.swap(true, Ordering::AcqRel) {
+            // An old provider is stuck: conservatively copy this session's final text.
+            self.mark_focus_changed(session_id);
+            return None;
+        }
+        let lease = FocusObserverLease(self.focus_observer_busy.clone());
+        let service = Arc::downgrade(self);
+        let result = std::thread::Builder::new()
+            .name("tuck-focus-observer".into())
+            .spawn(move || {
+                let _lease = lease;
+                while !stop.load(Ordering::Acquire) && !cancel.load(Ordering::Acquire) {
+                    let unchanged = observe(); // No service lock or strong reference here.
+                    if stop.load(Ordering::Acquire) || cancel.load(Ordering::Acquire) {
+                        break;
+                    }
+                    let Some(service) = service.upgrade() else {
+                        break;
+                    };
+                    let current = service
+                        .runtime
+                        .lock()
+                        .is_ok_and(|r| r.session_id == session_id && r.active.is_some());
+                    if !current {
+                        break;
+                    }
+                    if !unchanged {
+                        service.mark_focus_changed(session_id);
+                        break;
+                    }
+                    drop(service);
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+            });
+        match result {
+            Ok(handle) => Some(handle),
+            Err(_) => {
+                self.mark_focus_changed(session_id);
+                None
             }
         }
     }
@@ -515,6 +572,12 @@ impl DictationService {
             r.audio_level = 0.0;
         }
         drop(operation);
+        if let Some(target) = original_target.clone() {
+            let session_id = self.runtime.lock().unwrap().session_id;
+            self.start_focus_observer(session_id, stop.clone(), cancel.clone(), move || {
+                target::verify_foreground_target(&target).is_ok()
+            });
+        }
         self.emit_state();
 
         let service = self.clone();
@@ -2591,6 +2654,76 @@ fn should_copy_final(review: bool, inserted: bool, uncertain: bool, cancelled: b
 }
 #[cfg(test)]
 mod final_delivery_tests {
+    use super::*;
+
+    #[test]
+    fn blocked_focus_provider_does_not_block_meter_cancel_or_grow_workers() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+        let service = Arc::new(DictationService::new());
+        let stop = Arc::new(AtomicBool::new(false));
+        let cancel = Arc::new(AtomicBool::new(false));
+        service
+            .claim_session(stop.clone(), cancel.clone(), RecordingMode::Toggle)
+            .unwrap();
+        service.session_status("recording");
+        let id = service.runtime.lock().unwrap().session_id;
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let observer = service
+            .start_focus_observer(id, stop, cancel.clone(), move || {
+                entered_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+                false
+            })
+            .unwrap();
+        entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        let (done_tx, done_rx) = mpsc::channel();
+        let worker_service = service.clone();
+        let worker = std::thread::spawn(move || {
+            worker_service.publish_audio_level(0.5);
+            worker_service.cancel().unwrap();
+            done_tx.send(()).unwrap();
+        });
+        let responsive = done_rx.recv_timeout(Duration::from_secs(2)).is_ok();
+        if !responsive {
+            release_tx.send(()).unwrap();
+            observer.join().unwrap();
+            panic!("Observer blocked capture or cancel");
+        }
+        worker.join().unwrap();
+        assert!(cancel.load(Ordering::Acquire));
+        service.finish_cancelled();
+        let next_stop = Arc::new(AtomicBool::new(false));
+        let next_cancel = Arc::new(AtomicBool::new(false));
+        service
+            .claim_session(
+                next_stop.clone(),
+                next_cancel.clone(),
+                RecordingMode::Toggle,
+            )
+            .unwrap();
+        let next_id = service.runtime.lock().unwrap().session_id;
+        assert!(service
+            .start_focus_observer(next_id, next_stop, next_cancel, || panic!(
+                "Unbounded observer"
+            ))
+            .is_none());
+        assert!(
+            service.runtime.lock().unwrap().focus_changed,
+            "Unobservable focus must copy instead of inserting"
+        );
+        release_tx.send(()).unwrap();
+        observer.join().unwrap();
+        assert!(!service.focus_observer_busy.load(Ordering::Acquire));
+        service.runtime.lock().unwrap().focus_changed = false;
+        service.mark_focus_changed(id);
+        assert!(
+            !service.runtime.lock().unwrap().focus_changed,
+            "Old session cannot affect new session"
+        );
+    }
+
     #[test]
     fn clipboard_fallback_is_only_for_safe_undelivered_final_text() {
         assert!(super::should_copy_final(false, false, false, false));

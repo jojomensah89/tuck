@@ -843,6 +843,7 @@ pub(super) fn known_locations(env: impl Fn(&str) -> Option<OsString>) -> Vec<Loc
         1,
         false,
     );
+    add("Hex", env("APPDATA"), &["hex", "models"], 1, false);
     add(
         "Buzz",
         env("LOCALAPPDATA"),
@@ -917,8 +918,11 @@ pub(super) struct Candidate {
 
 fn name_is_candidate(name: &str, huggingface: bool) -> bool {
     let name = name.to_ascii_lowercase();
+    if name.eq_ignore_ascii_case(PARAKEET) {
+        return true;
+    }
     if !name.ends_with(".bin") {
-        return false; // Also skips .gguf, which whisper.cpp cannot load.
+        return false; // Only the pinned Parakeet artifact is supported as GGUF.
     }
     name.starts_with("ggml") || (!huggingface && name.contains("whisper"))
 }
@@ -1568,6 +1572,7 @@ mod tests {
         let apps: HashSet<_> = locations.iter().map(|l| l.app).collect();
         for app in [
             "Handy",
+            "Hex",
             "Buzz",
             "OpenWhispr",
             "podcli",
@@ -1576,6 +1581,20 @@ mod tests {
             assert!(apps.contains(app), "{app}");
         }
         assert!(known_locations(|_| None).is_empty());
+    }
+
+    #[test]
+    fn only_the_pinned_parakeet_gguf_is_a_scan_candidate() {
+        assert!(name_is_candidate(PARAKEET, false));
+        assert!(name_is_candidate(&PARAKEET.to_ascii_lowercase(), true));
+        assert!(!name_is_candidate("unrelated-model.gguf", false));
+        let locations = known_locations(|name| fake_env(name, Path::new("C:/x")));
+        assert!(path_is_known(
+            Path::new("C:/x/Roaming/hex/models")
+                .join(PARAKEET)
+                .as_path(),
+            &locations
+        ));
     }
 
     #[test]

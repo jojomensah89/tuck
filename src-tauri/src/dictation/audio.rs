@@ -42,7 +42,6 @@ use audio_math::{release_audio_frames, resample_to_16k, try_reserve_audio_frames
 trait SessionEvents: Sync {
     fn recording(&self);
     fn meter(&self, _level: f32) {}
-    fn observe_focus(&self) {}
     fn processing(&self) {}
     fn previews_paused(&self) {}
     fn transcribing(&self);
@@ -128,9 +127,6 @@ struct AppEvents<'a> {
 }
 
 impl SessionEvents for AppEvents<'_> {
-    fn observe_focus(&self) {
-        self.service.observe_recording_focus();
-    }
     fn meter(&self, level: f32) {
         self.service.publish_audio_level(level);
     }
@@ -292,7 +288,6 @@ fn capture_loop<S>(
     let mut samples = Zeroizing::new(Vec::<f32>::with_capacity(cap));
     let mut next_preview = limits.preview_interval;
     let mut last_meter = Instant::now();
-    let mut last_focus_check = Instant::now();
     let fail = |capture: &mut Capture<S>, samples: &mut Zeroizing<Vec<f32>>, error: String| {
         capture.stream.take();
         zeroize_pending_audio(&capture.audio_rx, &capture.queued_frames);
@@ -300,10 +295,6 @@ fn capture_loop<S>(
         CaptureEnd::Failed(error)
     };
     loop {
-        if last_focus_check.elapsed() >= Duration::from_millis(100) {
-            events.observe_focus();
-            last_focus_check = Instant::now();
-        }
         if cancel.load(Ordering::Acquire) {
             return fail(capture, &mut samples, "Dictation cancelled".into());
         }
@@ -476,6 +467,9 @@ struct WhisperEngine {
 
 impl WhisperEngine {
     fn load(path: &std::path::Path) -> Result<Self, String> {
+        // Fix the shared ggml registry's CPU-only policy before Whisper can
+        // register a default mask; transcribe.cpp rejects changing it later.
+        initialize_cpu_backend()?;
         let context = WhisperContext::new_with_params(path, WhisperContextParameters::default())
             .map_err(|e| format!("Could not load the local dictation model: {e}"))?;
         let state = context
@@ -1282,7 +1276,7 @@ mod tests {
         let result = run_session(
             || {
                 let load = Instant::now();
-                let engine = WhisperEngine::load(std::path::Path::new(&model));
+                let engine = LocalEngine::load(std::path::Path::new(&model));
                 *loaded_in.lock().unwrap() = Some(load.elapsed());
                 engine
             },
@@ -1319,6 +1313,12 @@ mod tests {
         println!("final: {text}");
         println!("peak-memory {}", peak_memory_report());
         assert!(!text.trim().is_empty());
+        if let Ok(expected) = std::env::var("TUCK_TEST_EXPECTED") {
+            assert!(
+                text.to_lowercase().contains(&expected.to_lowercase()),
+                "Expected phrase missing from real inference"
+            );
+        }
     }
 
     /// What one 15 s preview costs the old way (full window, language detected every time)
@@ -1405,6 +1405,54 @@ fn audio_level(samples: &[f32]) -> f32 {
 #[cfg(test)]
 mod meter_tests {
     #[test]
+    #[ignore = "needs installed Parakeet and Whisper models plus a generated 16 kHz PCM WAV"]
+    fn real_backends_alternate_in_one_process() {
+        use super::*;
+        let wav = std::fs::read(std::env::var("TUCK_TEST_WAV").unwrap()).unwrap();
+        let data = wav.windows(4).position(|w| w == b"data").unwrap() + 8;
+        let audio = Zeroizing::new(
+            wav[data..]
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|b| f32::from(i16::from_le_bytes(*b)) / 32768.0)
+                .collect::<Vec<_>>(),
+        );
+        let whisper = std::env::var("TUCK_TEST_WHISPER").unwrap();
+        let parakeet = std::env::var("TUCK_TEST_MODEL").unwrap();
+        let expected = std::env::var("TUCK_TEST_EXPECTED").unwrap();
+        let cancel = AtomicBool::new(false);
+        let abort = AbortSignal {
+            cancel: &cancel,
+            stop: None,
+            deadline: None,
+        };
+        for path in [&whisper, &parakeet, &whisper] {
+            let mut engine = LocalEngine::load(std::path::Path::new(path)).unwrap();
+            if path == &parakeet {
+                let interrupted = AbortSignal {
+                    cancel: &cancel,
+                    stop: None,
+                    deadline: Some(Instant::now() + Duration::from_millis(10)),
+                };
+                assert!(
+                    engine.preview(&audio, &interrupted).is_err(),
+                    "Preview budget must cancel the real Parakeet computation"
+                );
+            }
+            let text = engine.finish(&audio, &abort).unwrap();
+            println!(
+                "{}: {text}",
+                std::path::Path::new(path)
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+            );
+            assert!(text.to_lowercase().contains(&expected.to_lowercase()));
+        }
+    }
+
+    #[test]
     fn rms_is_real_and_bounded() {
         assert_eq!(super::audio_level(&[]), 0.0);
         assert_eq!(super::audio_level(&[0.0; 8]), 0.0);
@@ -1421,11 +1469,7 @@ enum LocalEngine {
 impl LocalEngine {
     fn load(path: &std::path::Path) -> Result<Self, String> {
         if path.extension().is_some_and(|s| s == "gguf") {
-            transcribe_cpp::init_backends_with(
-                None::<&std::path::Path>,
-                transcribe_cpp::BackendMask::for_backend(transcribe_cpp::Backend::Cpu),
-            )
-            .map_err(|e| e.to_string())?;
+            initialize_cpu_backend()?;
             let model = transcribe_cpp::Model::load_with(
                 path,
                 &transcribe_cpp::ModelOptions {
@@ -1439,6 +1483,13 @@ impl LocalEngine {
             WhisperEngine::load(path).map(Self::Whisper)
         }
     }
+}
+fn initialize_cpu_backend() -> Result<(), String> {
+    transcribe_cpp::init_backends_with(
+        None::<&std::path::Path>,
+        transcribe_cpp::BackendMask::for_backend(transcribe_cpp::Backend::Cpu),
+    )
+    .map_err(|e| e.to_string())
 }
 impl Engine for LocalEngine {
     fn prepare(&mut self, audio: &[f32]) {

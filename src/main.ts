@@ -273,6 +273,7 @@ let lastChargerChange: number | null = null;
 let hudTimer = 0;
 let hudAnnounceTimer = 0;
 interface ExternalActivityState {
+  audioLevel: number;
   title: string;
   text: string;
   priority: number;
@@ -883,20 +884,26 @@ function renderCompact(): void {
   if (primary.kind === 'dictation') {
     const recording = external.phase === 'recording';
     const phaseLabel = recording ? 'Dictation recording' : external.phase === 'transcribing' ? 'Transcribing' : external.phase === 'processing' ? 'Processing' : external.phase === 'cancelling' ? 'Cancelling' : external.phase === 'starting' ? 'Starting' : external.phase === 'inserting' ? 'Inserting' : 'Review transcript';
-    const line = external.text || (recording ? 'Listening\u2026' : `${phaseLabel}\u2026`);
+    const line = external.text || (recording ? '' : `${phaseLabel}\u2026`);
+    if (recording && !external.text) {
+      const level = external.audioLevel;
+      setCompactSlot(cc, 'dictation:waveform', String(level), () => compactMarkup(
+        `<span class="dictation-waveform" aria-label="Listening"><i style="height:${2 + level * 8}px"></i><i style="height:${2 + level * 16}px"></i><i style="height:${2 + level * 12}px"></i><i style="height:${2 + level * 16}px"></i><i style="height:${2 + level * 8}px"></i></span>`));
+    } else {
     // Revised previews use a stable width and no marquee.
     setCompactSlot(cc, 'dictation:preview', line, () => {
       const preview = compactTitle(line);
       preview.classList.add('dictation-preview');
       return preview;
     });
+    }
     setCompactSlot(cl, 'dictation:leading', 'mic', () => compactMarkup(SVG_ICONS.mic));
     setCompactSlot(
       cr,
       'dictation:trailing',
       `${recording}:${selection.hasBackgroundActivity}`,
       () => compactIndicator(
-        `<span class="dictation-level${recording ? ' recording' : ''}" aria-hidden="true"><i></i><i></i><i></i></span>`,
+        `<span class="dictation-level" aria-hidden="true"><i></i><i></i><i></i></span>`,
         recording ? 'Dictation recording' : 'Dictation active',
         selection.hasBackgroundActivity,
       ),
@@ -1308,6 +1315,7 @@ window.addEventListener('tuck-activity',event=>{
     text:detail.text.slice(0,80),
     priority:Math.max(0,Math.min(100,detail.priority)),
     type:typeof detail.type==='string'?detail.type:'external',
+    audioLevel: Number.isFinite(detail.audioLevel) ? Math.max(0, Math.min(1, detail.audioLevel)) : 0,
     phase:typeof detail.phase==='string'?detail.phase:'active',
   });else externalActivities.delete(detail.id);
   renderCompact();
@@ -1327,6 +1335,7 @@ window.addEventListener('blur',()=>{keyboardMode=false;if(!nativeDragActive)onHo
 
 /* ================= Subscriptions & Native Events ================= */
 
+void listenToEvent<{reason?: string}>('dictation_transcript', data => { if (data.reason === 'Copied') showAnnouncement('Copied'); });
 void listenToEvent<null>('open-island', () => { keyboardMode=true;window.clearTimeout(closeTimer);setState('open');isl.focus(); });
 void listenToEvent<boolean>('hover', (inside) => onHover(inside));
 void listenToEvent<boolean>('fullscreen', (hidden) => {

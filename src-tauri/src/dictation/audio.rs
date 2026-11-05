@@ -41,6 +41,8 @@ use audio_math::{release_audio_frames, resample_to_16k, try_reserve_audio_frames
 /// What a session reports as it goes.
 trait SessionEvents: Sync {
     fn recording(&self);
+    fn meter(&self, _level: f32) {}
+    fn observe_focus(&self) {}
     fn processing(&self) {}
     fn previews_paused(&self) {}
     fn transcribing(&self);
@@ -126,6 +128,12 @@ struct AppEvents<'a> {
 }
 
 impl SessionEvents for AppEvents<'_> {
+    fn observe_focus(&self) {
+        self.service.observe_recording_focus();
+    }
+    fn meter(&self, level: f32) {
+        self.service.publish_audio_level(level);
+    }
     fn recording(&self) {
         self.service.session_status("recording");
     }
@@ -169,7 +177,7 @@ fn record_and_transcribe_inner(
     run_session(
         move || {
             model::verify(&path, entry, &service.verified, false)?;
-            WhisperEngine::load(&path)
+            LocalEngine::load(&path)
         },
         &events,
         Capture {
@@ -232,7 +240,7 @@ fn run_session<E: Engine, S>(
             })
             .map_err(|e| format!("Could not start dictation engine: {e}"))?;
         events.recording();
-        let outcome = capture_loop(&mut capture, &job_tx, &flags, limits, stop, cancel);
+        let outcome = capture_loop(&mut capture, &job_tx, &flags, limits, stop, cancel, events);
         // Whatever happened, no preview may hold up what comes next.
         flags.preview_stop.store(true, Ordering::Release);
         let result = match outcome {
@@ -276,12 +284,15 @@ fn capture_loop<S>(
     limits: SessionLimits,
     stop: &AtomicBool,
     cancel: &AtomicBool,
+    events: &dyn SessionEvents,
 ) -> CaptureEnd {
     let sample_rate = capture.sample_rate as usize;
     let started = Instant::now();
     let cap = sample_rate.saturating_mul(limits.max_seconds);
     let mut samples = Zeroizing::new(Vec::<f32>::with_capacity(cap));
     let mut next_preview = limits.preview_interval;
+    let mut last_meter = Instant::now();
+    let mut last_focus_check = Instant::now();
     let fail = |capture: &mut Capture<S>, samples: &mut Zeroizing<Vec<f32>>, error: String| {
         capture.stream.take();
         zeroize_pending_audio(&capture.audio_rx, &capture.queued_frames);
@@ -289,6 +300,10 @@ fn capture_loop<S>(
         CaptureEnd::Failed(error)
     };
     loop {
+        if last_focus_check.elapsed() >= Duration::from_millis(100) {
+            events.observe_focus();
+            last_focus_check = Instant::now();
+        }
         if cancel.load(Ordering::Acquire) {
             return fail(capture, &mut samples, "Dictation cancelled".into());
         }
@@ -305,6 +320,10 @@ fn capture_loop<S>(
                 let remaining = cap.saturating_sub(samples.len());
                 if block.len() > remaining {
                     block.truncate(remaining);
+                }
+                if last_meter.elapsed() >= Duration::from_millis(100) {
+                    events.meter(audio_level(&block));
+                    last_meter = Instant::now();
                 }
                 samples.extend_from_slice(&block);
                 block.zeroize();
@@ -1369,4 +1388,113 @@ mod tests {
             .collect();
         assert_eq!(mono, vec![0.0, 0.25]);
     }
+}
+
+/// RMS is computed off the realtime callback; silence stays still.
+fn audio_level(samples: &[f32]) -> f32 {
+    if samples.is_empty() {
+        return 0.0;
+    }
+    let energy: f64 = samples
+        .iter()
+        .filter(|v| v.is_finite())
+        .map(|v| f64::from(*v).powi(2))
+        .sum();
+    ((energy / samples.len() as f64).sqrt() as f32 * 4.0).clamp(0.0, 1.0)
+}
+#[cfg(test)]
+mod meter_tests {
+    #[test]
+    fn rms_is_real_and_bounded() {
+        assert_eq!(super::audio_level(&[]), 0.0);
+        assert_eq!(super::audio_level(&[0.0; 8]), 0.0);
+        assert_eq!(super::audio_level(&[0.125, -0.125]), 0.5);
+        assert_eq!(super::audio_level(&[1.0; 8]), 1.0);
+        assert_eq!(super::audio_level(&[f32::NAN]), 0.0);
+    }
+}
+
+enum LocalEngine {
+    Whisper(WhisperEngine),
+    Parakeet(transcribe_cpp::Session),
+}
+impl LocalEngine {
+    fn load(path: &std::path::Path) -> Result<Self, String> {
+        if path.extension().is_some_and(|s| s == "gguf") {
+            transcribe_cpp::init_backends_with(
+                None::<&std::path::Path>,
+                transcribe_cpp::BackendMask::for_backend(transcribe_cpp::Backend::Cpu),
+            )
+            .map_err(|e| e.to_string())?;
+            let model = transcribe_cpp::Model::load_with(
+                path,
+                &transcribe_cpp::ModelOptions {
+                    backend: transcribe_cpp::Backend::Cpu,
+                    ..Default::default()
+                },
+            )
+            .map_err(|e| e.to_string())?;
+            Ok(Self::Parakeet(model.session().map_err(|e| e.to_string())?))
+        } else {
+            WhisperEngine::load(path).map(Self::Whisper)
+        }
+    }
+}
+impl Engine for LocalEngine {
+    fn prepare(&mut self, audio: &[f32]) {
+        if let Self::Whisper(e) = self {
+            e.prepare(audio);
+        }
+    }
+    fn preview(&mut self, audio: &[f32], abort: &AbortSignal<'_>) -> Result<String, String> {
+        match self {
+            Self::Whisper(e) => e.preview(audio, abort),
+            Self::Parakeet(s) => parakeet_run(s, audio, abort),
+        }
+    }
+    fn finish(&mut self, audio: &[f32], abort: &AbortSignal<'_>) -> Result<String, String> {
+        match self {
+            Self::Whisper(e) => e.finish(audio, abort),
+            Self::Parakeet(s) => parakeet_run(s, audio, abort),
+        }
+    }
+}
+fn parakeet_run(
+    session: &mut transcribe_cpp::Session,
+    audio: &[f32],
+    abort: &AbortSignal<'_>,
+) -> Result<String, String> {
+    if abort.requested() {
+        return Err("Dictation cancelled".into());
+    }
+    let token = transcribe_cpp::CancelToken::new();
+    session.set_cancel_token(&token);
+    let done = AtomicBool::new(false);
+    let result = std::thread::scope(|scope| {
+        scope.spawn(|| {
+            while !done.load(Ordering::Acquire) {
+                if abort.requested() {
+                    token.cancel();
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        });
+        let result = session.run(
+            audio,
+            &transcribe_cpp::RunOptions {
+                language: Some("en".into()),
+                ..Default::default()
+            },
+        );
+        done.store(true, Ordering::Release);
+        result
+    });
+    session.clear_cancel_token();
+    if abort.requested() {
+        return Err("Dictation cancelled".into());
+    }
+    result
+        .map(|r| r.text.trim().to_owned())
+        .map_err(|e| e.to_string())
 }

@@ -86,12 +86,13 @@ pub struct ShortcutProblems {
     pub hold: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct DictationSnapshot {
     pub session_id: u64,
     pub revision: u64,
     pub preview: Option<String>,
+    pub audio_level: f32,
     pub status: String,
     pub previews_paused: bool,
     pub model_installed: bool,
@@ -153,6 +154,9 @@ struct Runtime {
     session_id: u64,
     revision: u64,
     preview: Option<String>,
+    audio_level: f32,
+    recording_target: Option<target::ForegroundTarget>,
+    focus_changed: bool,
     previews_paused: bool,
     selection_generation: u64,
     status: String,
@@ -215,6 +219,9 @@ impl DictationService {
                 session_id: 0,
                 revision: 0,
                 preview: None,
+                audio_level: 0.0,
+                recording_target: None,
+                focus_changed: false,
                 previews_paused: false,
                 selection_generation: 0,
                 status: "idle".into(),
@@ -342,6 +349,17 @@ impl DictationService {
             session_id,
             revision,
             preview,
+            audio_level: self
+                .runtime
+                .lock()
+                .map(|r| {
+                    if r.status == "recording" {
+                        r.audio_level
+                    } else {
+                        0.0
+                    }
+                })
+                .unwrap_or(0.0),
             previews_paused,
             status,
             model_installed: active.is_some(),
@@ -402,6 +420,37 @@ impl DictationService {
 
     /// Preview is display-only. Publish a complete versioned snapshot so a late
     /// initial response or event cannot resurrect an earlier recording's text.
+    fn observe_recording_focus(&self) {
+        if let Ok(mut r) = self.runtime.lock() {
+            if r.active.is_some()
+                && r.recording_target
+                    .as_ref()
+                    .is_some_and(|t| target::verify_foreground_target(t).is_err())
+            {
+                r.focus_changed = true;
+            }
+        }
+    }
+
+    fn publish_audio_level(&self, level: f32) {
+        if let Ok(mut runtime) = self.runtime.lock() {
+            if runtime.status != "recording"
+                || !runtime.active.as_ref().is_some_and(|a| {
+                    !a.cancel.load(Ordering::Acquire) && !a.stop.load(Ordering::Acquire)
+                })
+            {
+                return;
+            }
+            runtime.audio_level = level;
+            runtime.revision += 1;
+        } else {
+            return;
+        }
+        if let Ok(app) = self.app() {
+            let _ = app.emit(EVENT_PARTIAL, self.snapshot());
+        }
+    }
+
     fn publish_preview(&self, text: &str) {
         if !self.settings().partial_preview {
             return;
@@ -459,6 +508,12 @@ impl DictationService {
         let cancel = Arc::new(AtomicBool::new(false));
         let original_target = target::capture_foreground();
         self.claim_session(stop.clone(), cancel.clone(), mode)?;
+        {
+            let mut r = self.runtime.lock().unwrap();
+            r.recording_target = original_target.clone();
+            r.focus_changed = false;
+            r.audio_level = 0.0;
+        }
         drop(operation);
         self.emit_state();
 
@@ -564,10 +619,17 @@ impl DictationService {
             return;
         }
         let settings = self.settings();
+        let changed = self.runtime.lock().map(|r| r.focus_changed).unwrap_or(true);
         let safety = original_target
             .as_ref()
             .ok_or_else(|| "The original foreground window could not be captured.".to_owned())
-            .and_then(target::verify_foreground_target)
+            .and_then(|t| {
+                if changed {
+                    Err("Focus changed during recording".into())
+                } else {
+                    target::verify_foreground_target(t)
+                }
+            })
             .and_then(|_| match original_target.as_ref() {
                 Some(target) => target::is_editable_target(target),
                 None => Err("The original foreground window could not be captured.".into()),
@@ -600,7 +662,41 @@ impl DictationService {
                 }
             }
         }
-        let review = settings.review_before_insert || !inserted;
+        let mut copied = false;
+        if should_copy_final(
+            settings.review_before_insert,
+            inserted,
+            partial_insertion,
+            cancel.load(Ordering::Acquire),
+        ) {
+            let _guard = self.insertion_gate.lock().unwrap();
+            if !cancel.load(Ordering::Acquire) {
+                #[cfg(windows)]
+                let result = self
+                    .app()
+                    .and_then(|app| {
+                        app.get_webview_window("main")
+                            .ok_or("Main window unavailable".into())
+                    })
+                    .and_then(|window| window.hwnd().map_err(|e| e.to_string()))
+                    .and_then(|owner| {
+                        target::copy_final(
+                            text.as_str(),
+                            windows::Win32::Foundation::HWND(owner.0 as _),
+                        )
+                    });
+                #[cfg(not(windows))]
+                let result = target::copy_final(text.as_str(), ());
+                match result {
+                    Ok(()) => {
+                        copied = true;
+                        reason = Some("Copied".into());
+                    }
+                    Err(e) => reason = Some(e),
+                }
+            }
+        }
+        let review = settings.review_before_insert || (!inserted && !copied);
         if let Ok(mut runtime) = self.runtime.lock() {
             if cancel.load(Ordering::Acquire) {
                 drop(runtime);
@@ -608,6 +704,11 @@ impl DictationService {
                 return;
             }
             runtime.active = None;
+            runtime.recording_target = None;
+            if let Some(mut preview) = runtime.preview.take() {
+                preview.zeroize();
+            }
+            runtime.audio_level = 0.0;
             runtime.status = if review { "review" } else { "idle" }.into();
             runtime.message = reason.clone();
             // Keep text only during review. Immediate successful insertion drops it.
@@ -657,6 +758,12 @@ impl DictationService {
     fn clear_active(&self) {
         if let Ok(mut runtime) = self.runtime.lock() {
             runtime.active = None;
+            runtime.recording_target = None;
+            if let Some(mut preview) = runtime.preview.take() {
+                preview.zeroize();
+            }
+            runtime.audio_level = 0.0;
+            runtime.focus_changed = false;
             if let Some(mut text) = runtime.transcript.take() {
                 text.zeroize();
             }
@@ -2476,5 +2583,20 @@ mod tests {
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(restored, DictationSettings::default());
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+}
+
+fn should_copy_final(review: bool, inserted: bool, uncertain: bool, cancelled: bool) -> bool {
+    !review && !inserted && !uncertain && !cancelled
+}
+#[cfg(test)]
+mod final_delivery_tests {
+    #[test]
+    fn clipboard_fallback_is_only_for_safe_undelivered_final_text() {
+        assert!(super::should_copy_final(false, false, false, false));
+        assert!(!super::should_copy_final(true, false, false, false));
+        assert!(!super::should_copy_final(false, true, false, false));
+        assert!(!super::should_copy_final(false, false, true, false));
+        assert!(!super::should_copy_final(false, false, false, true));
     }
 }

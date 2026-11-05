@@ -103,7 +103,19 @@ const fn detected(
 /// English, and `ggml-base-q5_1.bin` costs about the same as the `.en` build. The accuracy
 /// order follows the WER table in `docs/research/resources-lyrics-models.md`; the speed
 /// labels are estimates from that document, not measurements on this computer.
+pub(super) const PARAKEET: &str = "parakeet-unified-en-0.6b-Q8_0.gguf";
+const PARAKEET_REVISION: &str = "7e948f21b7bdbac698d3318db9d350f1096f3b6c";
 pub(super) const CATALOG: &[CatalogEntry] = &[
+    offered(
+        PARAKEET,
+        "Parakeet Unified English (recommended)",
+        731357568,
+        "4b50b6dd862bf6e346929aaf4f5eaacec003bfa3f56462d6c874b41ef2f38795",
+        "Not measured",
+        "Not measured",
+        Some("English only. CPU performance and peak memory not measured on this computer."),
+        2048,
+    ),
     offered(
         "ggml-tiny.bin",
         "Tiny",
@@ -261,6 +273,9 @@ pub(super) fn entry(id: &str) -> Option<&'static CatalogEntry> {
 }
 
 fn download_url(entry: &CatalogEntry) -> String {
+    if entry.id == PARAKEET {
+        return format!("https://huggingface.co/handy-computer/parakeet-unified-en-0.6b-gguf/resolve/{PARAKEET_REVISION}/{}", entry.id);
+    }
     format!(
         "https://huggingface.co/ggerganov/whisper.cpp/resolve/{SOURCE_REVISION}/{}",
         entry.id
@@ -1100,6 +1115,9 @@ fn format_gb(bytes: u64) -> String {
 }
 
 fn memory_note(entry: &CatalogEntry) -> String {
+    if entry.id == PARAKEET {
+        return "Peak memory not measured; 2 GB is a planning estimate.".into();
+    }
     if entry.memory_mb < 1000 {
         format!("Uses about {} MB of memory.", entry.memory_mb)
     } else {
@@ -1272,7 +1290,10 @@ mod tests {
         let mut sizes = HashSet::new();
         let mut digests = HashSet::new();
         for entry in CATALOG {
-            assert!(entry.id.starts_with("ggml-") && entry.id.ends_with(".bin"));
+            assert!(
+                entry.id == PARAKEET
+                    || (entry.id.starts_with("ggml-") && entry.id.ends_with(".bin"))
+            );
             assert!(!entry.label.is_empty());
             assert_eq!(entry.sha256.len(), 64, "{}", entry.id);
             assert!(entry
@@ -1286,7 +1307,11 @@ mod tests {
             assert!(digests.insert(entry.sha256), "duplicate hash {}", entry.id);
             let url = download_url(entry);
             assert!(url.starts_with("https://huggingface.co/"));
-            assert!(url.contains(SOURCE_REVISION));
+            assert!(url.contains(if entry.id == PARAKEET {
+                PARAKEET_REVISION
+            } else {
+                SOURCE_REVISION
+            }));
         }
     }
 
@@ -1299,13 +1324,20 @@ mod tests {
             .collect();
         assert_eq!(
             offered,
-            ["Tiny", "Base", "Small", "Medium", "Large v3 Turbo"]
+            [
+                "Parakeet Unified English (recommended)",
+                "Tiny",
+                "Base",
+                "Small",
+                "Medium",
+                "Large v3 Turbo"
+            ]
         );
         assert!(CATALOG
             .iter()
             .filter(|e| e.offered)
             .all(|e| !e.id.contains(".en")));
-        assert!(CATALOG.iter().all(|e| !e.id.contains("gguf")));
+        assert_eq!(CATALOG.iter().filter(|e| e.id.ends_with("gguf")).count(), 1);
     }
 
     #[test]
@@ -1738,7 +1770,17 @@ mod tests {
     #[test]
     fn each_model_name_has_one_row_in_order_of_speed() {
         let names: Vec<_> = rows(None, &[], &[]).into_iter().map(|r| r.label).collect();
-        assert_eq!(names, ["Tiny", "Base", "Small", "Medium", "Large v3 Turbo"]);
+        assert_eq!(
+            names,
+            [
+                "Parakeet Unified English (recommended)",
+                "Tiny",
+                "Base",
+                "Small",
+                "Medium",
+                "Large v3 Turbo"
+            ]
+        );
     }
 
     #[test]

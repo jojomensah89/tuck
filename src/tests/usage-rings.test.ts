@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { groupUsageProviders, meterDetails, ringMeters, usageStateWord, valueText } from '../usage-rings.js';
+import { groupUsageProviders, isOut, meterDetails, ringMeters, usageStateWord, valueText } from '../usage-rings.js';
 import type { Meter } from '../types.js';
 
 const meter = (id: string, provider: string, label: string): Meter => ({
@@ -100,6 +100,15 @@ describe('card state', () => {
     expect(valueText({ ...meter('a', 'claude', 'Claude 5 h'), usedPct: 36 })).toBe('64% left');
     expect(valueText({ ...meter('a', 'anthropic-api', 'API'), usedPct: 25, spentUsd: 25 })).toBe('$25.00');
     expect(valueText({ ...meter('a', 'anthropic-api', 'API'), usedPct: null, spentUsd: 12.4 })).toBe('$12.40');
+  });
+
+  it('marks a reading as out only when its value says nothing is left', () => {
+    expect(isOut({ ...meter('a', 'claude', 'Claude 5 h'), usedPct: 100 })).toBe(true);
+    expect(isOut({ ...meter('a', 'claude', 'Claude 5 h'), usedPct: 99 })).toBe(false);
+    expect(isOut({ ...meter('chatgpt', 'chatgpt', 'ChatGPT'), count: 40, cap: 40 })).toBe(true);
+    expect(isOut({ ...meter('chatgpt', 'chatgpt', 'ChatGPT'), count: 30, cap: 40 })).toBe(false);
+    expect(isOut({ ...meter('a', 'anthropic-api', 'API'), usedPct: 100, spentUsd: 25 })).toBe(false);
+    expect(isOut({ ...meter('a', 'claude', 'Claude 5 h'), usedPct: null })).toBe(false);
   });
 
   it('states the window, value and reset in the details', () => {

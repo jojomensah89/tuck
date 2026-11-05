@@ -598,6 +598,12 @@ try {
     await native.waitForTimeout(50);
     assert.equal(await native.locator('#uList .u-provider').count(),4,'Each connected source is one card');
     assert.deepEqual(await usageFit(),{inside:true,clear:true,marksClear:true,fits:true},`Four provider cards fit at ${width}px`);
+    // A used-up quota has an empty ring, so its number warns; anything still left, or dollars spent, does not
+    const valueColours = await native.locator('#uList .u-val').evaluateAll(nodes=>nodes.map(n=>[n.textContent,n.dataset.out==='true',getComputedStyle(n).color]));
+    const warnColour = await native.locator('#uList').evaluate(n=>{const probe=document.createElement('span');probe.style.color='var(--warn)';n.append(probe);const colour=getComputedStyle(probe).color;probe.remove();return colour;});
+    assert.deepEqual(valueColours.filter(([,out])=>out).map(([text,,colour])=>[text,colour]),[['0% left',warnColour]],'Only the used-up quota reads as out, in the warning colour');
+    assert.equal(valueColours.filter(([,out])=>!out).some(([,,colour])=>colour===warnColour),false,'Other values keep their normal colour');
+    if (width===440) await native.locator('.page.usage').screenshot({path:path.join(root,'artifacts','usage-out.png')});
     await native.evaluate(()=>{localStorage.setItem('notch.chatgpt',JSON.stringify({label:'ChatGPT (estimate)',cap:10,hours:3}));localStorage.removeItem('notch.chatgpt.log');window.dispatchEvent(new StorageEvent('storage',{key:'notch.chatgpt'}));});
     await native.waitForTimeout(50);
     assert.equal(await native.locator('#uList .u-provider').count(),5);

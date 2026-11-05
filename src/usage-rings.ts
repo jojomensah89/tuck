@@ -122,11 +122,12 @@ export function meterDetails(meter: Meter, nowSeconds = Date.now() / 1000, name 
   return parts.join(', ');
 }
 
-function valueText(meter: Meter): string {
+export function valueText(meter: Meter): string {
   if (meter.id === 'chatgpt' && meter.count != null && meter.cap != null) return `${Math.max(0, meter.cap - meter.count)} left`;
+  // Spend reads in dollars even with a budget: the ring shows what is left of that budget
+  if (meter.spentUsd != null && Number.isFinite(meter.spentUsd)) return `$${meter.spentUsd.toFixed(2)}`;
   const left = remainingPct(meter.usedPct);
   if (left != null) return `${left}% left`;
-  if (meter.spentUsd != null && Number.isFinite(meter.spentUsd)) return `$${meter.spentUsd.toFixed(2)}`;
   return '\u2013';
 }
 

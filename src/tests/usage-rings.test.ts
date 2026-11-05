@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { groupUsageProviders, meterDetails, ringMeters, usageStateWord } from '../usage-rings.js';
+import { groupUsageProviders, meterDetails, ringMeters, usageStateWord, valueText } from '../usage-rings.js';
 import type { Meter } from '../types.js';
 
 const meter = (id: string, provider: string, label: string): Meter => ({
@@ -93,6 +93,13 @@ describe('card state', () => {
     expect(usageStateWord([{ ...meter('a', 'claude', 'A'), stale: true, status: 'stale' }])).toBe('Stale');
     expect(usageStateWord([{ ...meter('a', 'claude', 'A'), usedPct: null, stale: true, status: 'unavailable' }])).toBe('Unavailable');
     expect(usageStateWord([{ ...meter('a', 'codex', 'A'), stale: true, status: 'error', error: 'timed out' }])).toBe('Error');
+  });
+
+  it('shows what is left of a quota and keeps spend in dollars', () => {
+    expect(valueText({ ...meter('a', 'claude', 'Claude 5 h'), usedPct: 100 })).toBe('0% left');
+    expect(valueText({ ...meter('a', 'claude', 'Claude 5 h'), usedPct: 36 })).toBe('64% left');
+    expect(valueText({ ...meter('a', 'anthropic-api', 'API'), usedPct: 25, spentUsd: 25 })).toBe('$25.00');
+    expect(valueText({ ...meter('a', 'anthropic-api', 'API'), usedPct: null, spentUsd: 12.4 })).toBe('$12.40');
   });
 
   it('states the window, value and reset in the details', () => {

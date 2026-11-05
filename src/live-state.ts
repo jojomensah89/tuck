@@ -101,6 +101,11 @@ export function lyricIndex(lines: LyricLine[], positionMs: number): number {
   while (low < high) { const mid = (low + high) >>> 1; if (lines[mid].atMs <= positionMs) low = mid + 1; else high = mid; }
   return low - 1;
 }
+/** The line to show at `index`: a blank timed line is a short gap, so the last words stay up. */
+export function heldLyric(lines: LyricLine[], index: number): string {
+  for (let i = index; i >= 0; i--) if (lines[i].text) return lines[i].text;
+  return '';
+}
 export function measuredPercent(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 100 ? value : null;
 }

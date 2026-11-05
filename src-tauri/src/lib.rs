@@ -160,14 +160,16 @@ pub fn run() {
             let tray_menu =
                 Menu::with_items(app, &[&open_island_item, &settings_item, &quit_item])?;
 
-            let mut tray_builder = TrayIconBuilder::new()
+            let tray_builder = TrayIconBuilder::new()
                 .tooltip("Tuck")
                 .menu(&tray_menu)
-                .show_menu_on_left_click(false);
-
-            if let Some(icon) = app.default_window_icon() {
-                tray_builder = tray_builder.icon(icon.clone());
-            }
+                .show_menu_on_left_click(false)
+                .icon(tauri::image::Image::new(
+                    include_bytes!("../icons/tray.rgba"),
+                    32,
+                    32,
+                ))
+                .icon_as_template(true);
 
             let _tray = tray_builder
                 .on_menu_event(|app: &AppHandle, event| match event.id.as_ref() {

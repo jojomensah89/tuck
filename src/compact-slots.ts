@@ -23,7 +23,7 @@ export function compactShellWidth(
   primary: CompactActivityCandidate | null,
   content: CompactContent,
 ): number {
-  return primary?.kind === 'media' && content !== 'artwork' ? COMPACT_TEXT_WIDTH : COMPACT_IDLE_WIDTH;
+  return primary?.kind === 'dictation' || (primary?.kind === 'media' && content !== 'artwork') ? COMPACT_TEXT_WIDTH : COMPACT_IDLE_WIDTH;
 }
 
 /** Share of the one-shot marquee spent travelling; the rest holds, then returns to the start */

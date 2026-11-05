@@ -6,14 +6,13 @@
 //! transcription. The microphone opens before the model loads, so the first words are kept
 //! however long loading takes.
 
-use super::{model, DictationService, EVENT_PARTIAL};
+use super::{model, DictationService};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{SampleFormat, Stream, StreamConfig};
 use crossbeam_channel::{bounded, Receiver, Sender, TrySendError};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use tauri::{AppHandle, Emitter};
 use whisper_rs::{
     FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters, WhisperState,
 };
@@ -112,20 +111,18 @@ struct EngineFlags {
 
 pub(super) fn record_and_transcribe(
     service: &DictationService,
-    app: &AppHandle,
     active: &model::Active,
     stop: Arc<AtomicBool>,
     cancel: Arc<AtomicBool>,
 ) -> Result<String, String> {
     service.model_busy.store(true, Ordering::Release);
-    let result = record_and_transcribe_inner(service, app, active, stop, cancel);
+    let result = record_and_transcribe_inner(service, active, stop, cancel);
     service.model_busy.store(false, Ordering::Release);
     result
 }
 
 struct AppEvents<'a> {
     service: &'a DictationService,
-    app: &'a AppHandle,
 }
 
 impl SessionEvents for AppEvents<'_> {
@@ -145,18 +142,12 @@ impl SessionEvents for AppEvents<'_> {
         self.service.emit_state();
     }
     fn partial(&self, text: &str) {
-        let _ = self.app.emit(
-            EVENT_PARTIAL,
-            PartialTranscript {
-                text: text.to_owned(),
-            },
-        );
+        self.service.publish_preview(text);
     }
 }
 
 fn record_and_transcribe_inner(
     service: &DictationService,
-    app: &AppHandle,
     active: &model::Active,
     stop: Arc<AtomicBool>,
     cancel: Arc<AtomicBool>,
@@ -172,7 +163,7 @@ fn record_and_transcribe_inner(
     let (error_tx, error_rx) = bounded::<String>(1);
     let (stream, sample_rate) = open_input_stream(audio_tx, error_tx, queued_frames.clone())?;
     stream.play().map_err(|e| format!("Could not start microphone capture: {e}. Check Windows microphone privacy settings and the selected input device."))?;
-    let events = AppEvents { service, app };
+    let events = AppEvents { service };
     let path = active.path.clone();
     let entry = active.entry;
     run_session(
@@ -534,18 +525,6 @@ fn zeroize_pending_audio(receiver: &Receiver<Vec<f32>>, queued_frames: &AtomicUs
     while let Ok(mut block) = receiver.try_recv() {
         release_audio_frames(queued_frames, block.len());
         block.zeroize();
-    }
-}
-
-#[derive(Clone, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-struct PartialTranscript {
-    text: String,
-}
-
-impl Drop for PartialTranscript {
-    fn drop(&mut self) {
-        self.text.zeroize();
     }
 }
 

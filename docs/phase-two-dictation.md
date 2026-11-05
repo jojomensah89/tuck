@@ -9,7 +9,10 @@ This packet implements the native dictation and clipboard-history services. It p
 - Detection runs only when the picker is on screen or on "Look for models". It lists known folders of other apps (section 3.6 of `docs/research/resources-lyrics-models.md`) by name and size, then hashes matches once on a low-priority thread. Only exact catalog matches are offered. They are used in place and read-only; "Stop using" never touches the file. No other file of those apps is opened.
 - Each dictation checks the installed model size and digest before opening the microphone. Startup only reads bounded settings and registers shortcuts; it does not open the microphone, load the inference model or download model bytes.
 - Audio is captured only after the explicit toggle or hold-to-talk command/shortcut. Capture is capped at 120 seconds, callback blocks at one second and queued audio at ten seconds. Overflow stops capture with an error. Audio buffers are zeroized after use/cancellation and are never written to disk. Whisper's abort callback receives cancellation during inference.
-- Partial preview is optional and enabled by default. It re-runs local transcription on up to the latest 15 seconds every three seconds; it is not token-by-token streaming. No audio or transcript is sent to a cloud service.
+- Partial preview is optional and enabled by default. It re-runs local transcription on up to the latest 15 seconds, with main's adaptive scheduling (at least three seconds and twice the last inference cost); it is not token-by-token streaming. Only one preview can be in flight; slow inference skips missed attempts. Release is checked before beginning another preview. No audio or transcript is sent to a cloud service.
+- While recording, the collapsed island reserves a stable 300px pill for the microphone, a trailing excerpt of provisional words, and the recording indicator. Before the first preview it shows “Listening…”. Preview updates do not expand the island, transfer focus, or start a marquee. Words may change, and overlapping windows are replaced rather than concatenated.
+- The last provisional preview remains visible during final transcription. Authoritative text replaces it during review; insertion success, cancellation, errors, and a new recording clear it. Previews remain in memory only and are zeroized when replaced or cleared.
+- State and preview payloads carry a session ID and globally increasing revision. The renderer uses one ordering gate for events and its initial snapshot, rejecting stale/duplicate responses. The full snapshot in a preview event makes reordered delivery self-contained.
 - Holding both Shift keys starts dictation after 200 ms, so rolling across them while typing does nothing. Windows has its own use for that key: holding right Shift for 8 seconds turns Filter Keys on or off if that shortcut is enabled (https://support.microsoft.com/en-us/accessibility/windows/windows-keyboard-shortcuts-for-accessibility), and its prompt can take focus and stop insertion. It is switched off under Settings > Accessibility > Keyboard > Filter keys.
 - Model removal is explicit through `dictation_model_remove` and is rejected while recording, reviewing, inserting, running inference or downloading that model. It deletes only files in Tuck's own folder.
 
@@ -56,7 +59,7 @@ All serialized DTO fields use camelCase.
 ### Dictation events
 
 - `dictation_state`: `DictationSnapshot`.
-- `dictation_partial`: `{ text }`, only when partial preview is enabled.
+- `dictation_partial`: a full `DictationSnapshot` with provisional `preview`, `sessionId`, and `revision`, only when partial preview is enabled. `transcript` remains reserved for the authoritative result. `dictation_state` and `dictation_get_state` carry the same additional fields.
 - `dictation_transcript`: `{ text, inserted, requiresReview, reason }` once per completed result.
 - `dictation_error`: error string for worker, download or capture failures.
 

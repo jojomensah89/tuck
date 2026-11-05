@@ -694,7 +694,7 @@ function compactCandidates(): CompactActivityCandidate[] {
       title: activity.title,
       priority: activity.priority,
       active: true,
-      running: activity.type !== 'dictation' || activity.phase === 'recording',
+      running: activity.type !== 'dictation' || ['starting', 'recording', 'transcribing', 'processing', 'cancelling', 'inserting'].includes(activity.phase || ''),
     })),
     {
       id: 'media',

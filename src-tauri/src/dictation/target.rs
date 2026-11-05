@@ -2,6 +2,10 @@
 //! Clipboard is never touched: text is sent with Unicode keyboard input, so
 //! concurrent clipboard changes are preserved without a restore race.
 
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Mutex,
+};
 use zeroize::{Zeroize, Zeroizing};
 
 #[derive(Debug)]
@@ -16,6 +20,41 @@ impl From<String> for InsertionFailure {
             may_have_inserted: false,
         }
     }
+}
+
+fn check_cancel(cancel: &AtomicBool) -> Result<(), String> {
+    if cancel.load(Ordering::Acquire) {
+        Err("Dictation cancelled".into())
+    } else {
+        Ok(())
+    }
+}
+
+fn wait_for_modifiers(
+    cancel: &AtomicBool,
+    mut held: impl FnMut() -> bool,
+    mut wait: impl FnMut(),
+) -> Result<(), String> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    check_cancel(cancel)?;
+    while held() {
+        check_cancel(cancel)?;
+        if std::time::Instant::now() > deadline {
+            return Err("Release shortcut keys before inserting.".into());
+        }
+        wait();
+    }
+    check_cancel(cancel)
+}
+
+fn guarded_send(
+    cancel: &AtomicBool,
+    gate: &Mutex<()>,
+    send: impl FnOnce() -> usize,
+) -> Result<usize, String> {
+    let _guard = gate.lock().map_err(|_| "Insertion unavailable")?;
+    check_cancel(cancel)?;
+    Ok(send())
 }
 
 pub(super) fn send_batches(
@@ -242,29 +281,39 @@ pub(super) fn is_editable_target(_: &ForegroundTarget) -> Result<(), String> {
 pub(super) fn insert_unicode(
     target: &ForegroundTarget,
     text: &str,
+    cancel: &AtomicBool,
+    gate: &Mutex<()>,
 ) -> Result<(), InsertionFailure> {
     use windows::Win32::UI::Input::KeyboardAndMouse::{
         GetAsyncKeyState, VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT,
     };
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-    while [VK_CONTROL, VK_SHIFT, VK_MENU, VK_LWIN, VK_RWIN]
-        .iter()
-        .any(|key| unsafe { GetAsyncKeyState(key.0 as i32) } < 0)
-    {
-        if std::time::Instant::now() > deadline {
-            return Err(String::from("Release shortcut keys before inserting.").into());
-        }
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
+    check_cancel(cancel)?;
+    wait_for_modifiers(
+        cancel,
+        || {
+            [VK_CONTROL, VK_SHIFT, VK_MENU, VK_LWIN, VK_RWIN]
+                .iter()
+                .any(|key| unsafe { GetAsyncKeyState(key.0 as i32) } < 0)
+        },
+        || std::thread::sleep(std::time::Duration::from_millis(10)),
+    )?;
+    check_cancel(cancel)?;
     verify_foreground_target(target)?;
+    check_cancel(cancel)?;
     is_editable_target(target)?;
+    check_cancel(cancel)?;
     let units = Zeroizing::new(text.encode_utf16().collect::<Vec<u16>>());
     if units.len() > 32 * 1024 {
         return Err(String::from("Transcript is too long to insert safely").into());
     }
     send_batches(
         &units,
-        || verify_foreground_target(target).and_then(|_| is_editable_target(target)),
+        || {
+            check_cancel(cancel)
+                .and_then(|_| verify_foreground_target(target))
+                .and_then(|_| is_editable_target(target))
+                .and_then(|_| check_cancel(cancel))
+        },
         |chunk| {
             let mut inputs = Vec::with_capacity(chunk.len() * 2);
             for unit in chunk {
@@ -272,7 +321,10 @@ pub(super) fn insert_unicode(
                 inputs.push(key_input(*unit, KEYEVENTF_KEYUP));
             }
             unsafe {
-                let inserted = SendInput(&inputs, std::mem::size_of::<INPUT>() as i32) as usize;
+                let inserted = guarded_send(cancel, gate, || {
+                    SendInput(&inputs, std::mem::size_of::<INPUT>() as i32) as usize
+                })
+                .unwrap_or(0);
                 for input in &mut inputs {
                     input.Anonymous.ki.wScan.zeroize();
                 }
@@ -302,13 +354,60 @@ fn key_input(
 }
 
 #[cfg(not(windows))]
-pub(super) fn insert_unicode(_: &ForegroundTarget, _: &str) -> Result<(), InsertionFailure> {
+pub(super) fn insert_unicode(
+    _: &ForegroundTarget,
+    _: &str,
+    _: &AtomicBool,
+    _: &Mutex<()>,
+) -> Result<(), InsertionFailure> {
     Err(String::from("Automatic text insertion is supported only on Windows.").into())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn cancel_while_waiting_for_shift_stops_even_when_shift_is_released() {
+        let cancel = AtomicBool::new(false);
+        let held = std::cell::Cell::new(true);
+        let result = wait_for_modifiers(
+            &cancel,
+            || held.get(),
+            || {
+                cancel.store(true, Ordering::Release);
+                held.set(false);
+            },
+        );
+        assert_eq!(result.unwrap_err(), "Dictation cancelled");
+    }
+
+    #[test]
+    fn cancellation_during_validation_or_between_batches_never_sends_more() {
+        let cancel = AtomicBool::new(false);
+        let gate = Mutex::new(());
+        let sent = std::cell::Cell::new(0);
+        let result = send_batches(
+            &[65; 600],
+            || Ok(()),
+            |chunk| {
+                let n = guarded_send(&cancel, &gate, || {
+                    sent.set(sent.get() + 1);
+                    chunk.len() * 2
+                })
+                .unwrap_or(0);
+                {
+                    let _guard = gate.lock().unwrap();
+                    cancel.store(true, Ordering::Release);
+                }
+                n
+            },
+        );
+        assert!(result.unwrap_err().may_have_inserted);
+        assert_eq!(sent.get(), 1);
+        assert!(guarded_send(&cancel, &gate, || panic!("typed after cancel")).is_err());
+        assert!(check_cancel(&cancel).is_err()); // also used during modifier-release wait
+    }
+
     #[test]
     fn partial_batch_or_later_focus_failure_disables_whole_text_retry() {
         let partial = send_batches(&[65, 66], || Ok(()), |_| 1).unwrap_err();

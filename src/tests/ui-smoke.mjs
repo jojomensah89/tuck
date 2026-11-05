@@ -186,7 +186,7 @@ try {
   const usageFixture = pct => [{id:'claude-5h',provider:'claude',label:'Claude session',usedPct:pct,spentUsd:null,resetsAt:null,source:'official',stale:false,status:'ok'}];
   await native.evaluate(meters => { window.__usageSnapshot = meters; window.__emitNative('open-island',null); }, usageFixture(31));
   try {
-    await native.waitForFunction(() => document.querySelector('#panel-usage')?.textContent.includes('31%'));
+    await native.waitForFunction(() => document.querySelector('#uList .u-face')?.getAttribute('aria-label')?.includes('69% left'));
   } catch (error) {
     console.error('Usage open diagnostics', await native.evaluate(() => ({state:document.getElementById('isl')?.dataset.state,calls:window.__calls,usage:document.querySelector('#panel-usage')?.textContent})), nativeErrors);
     throw error;
@@ -197,7 +197,7 @@ try {
   await native.evaluate(meters => window.__emitNative('usage',meters), usageFixture(72));
   await native.evaluate(meters => { window.__resolveUsage(meters); window.__holdUsage = false; }, usageFixture(12));
   await native.waitForTimeout(20);
-  assert.ok((await native.locator('#panel-usage').textContent()).includes('72%'),'A stale open response cannot overwrite a newer usage event');
+  assert.ok((await native.locator('#uList .u-face').getAttribute('aria-label')).includes('28% left'),'A stale open response cannot overwrite a newer usage event');
   await native.keyboard.press('Escape');
   await native.evaluate(() => {
     document.querySelectorAll('.live-spectrum i, .wide-spectrum i').forEach(el=>el.style.setProperty('--level','1'));

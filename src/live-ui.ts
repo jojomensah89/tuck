@@ -1,7 +1,7 @@
 import { listenToEvent, mediaSeek, isTauri } from './ipc.js';
 import { SVG_ICONS } from './icons.js';
 import { nativeAction, nativeService, normalizeClipboard, normalizeDictation, normalizeTelemetry, type ClipboardSnapshot, type DictationSnapshot, type LyricsSnapshot, type MediaSession, type TelemetrySnapshot } from './live-services.js';
-import { historyPath, lyricIndex, lyricOffsetFor, matchesLyricRequest, MAX_LYRIC_OFFSET_MS, measuredPercent, newRequestId, parseLrc, readPreferences, TelemetryGate, withLyricOffset, writePreferences, type LyricLine } from './live-state.js';
+import { historyPath, heldLyric, lyricIndex, lyricOffsetFor, matchesLyricRequest, MAX_LYRIC_OFFSET_MS, measuredPercent, newRequestId, parseLrc, readPreferences, TelemetryGate, withLyricOffset, writePreferences, type LyricLine } from './live-state.js';
 import { formatClockTime } from './time-format.js';
 import { createRing, usageTone, type Ring } from './rings.js';
 import type { MediaState } from './types.js';
@@ -81,7 +81,7 @@ export function mountLivePages(onLayout: () => void): {
     lastPosition = position;
     const pastLyrics = lines.length > 0 && position > lines[lines.length - 1].atMs + 20000;
     const index = pastLyrics ? -1 : lyricIndex(lines, position);
-    currentLyric = index >= 0 ? lines[index].text : '';
+    currentLyric = heldLyric(lines, index);
     if (index === activeLine) return;
     activeLine = index;
     [...lyricList.children].forEach((el, i) => {

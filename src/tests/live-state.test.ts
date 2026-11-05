@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { historyPath, lyricIndex, lyricOffsetFor, matchesLyricRequest, MAX_LYRIC_OFFSETS, measuredPercent, normalizePreferences, parseLrc, TelemetryGate, withLyricOffset } from '../live-state';
+import { heldLyric, historyPath, lyricIndex, lyricOffsetFor, matchesLyricRequest, MAX_LYRIC_OFFSETS, measuredPercent, normalizePreferences, parseLrc, TelemetryGate, withLyricOffset } from '../live-state';
 
 describe('live island state', () => {
   test('bounds saved geometry and delays while retaining explicit choices', () => {
@@ -80,5 +80,13 @@ describe('live island state', () => {
     expect(gate.failed()).toBe(false); expect(gate.failed()).toBe(false); expect(gate.failed()).toBe(true);
     gate.accept(200);
     expect(gate.failed()).toBe(false);
+  });
+  test('keeps the last words up through a blank timed line', () => {
+    const lines = [{ atMs: 3000, text: 'Ooh' }, { atMs: 7000, text: '' }, { atMs: 9000, text: 'I just woke up' }];
+    expect(heldLyric(lines, -1)).toBe('');
+    expect(heldLyric(lines, 0)).toBe('Ooh');
+    expect(heldLyric(lines, 1)).toBe('Ooh');
+    expect(heldLyric(lines, 2)).toBe('I just woke up');
+    expect(heldLyric([{ atMs: 0, text: '' }], 0)).toBe('');
   });
 });

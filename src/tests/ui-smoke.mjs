@@ -794,6 +794,13 @@ try {
   assert.match(await native.locator('#dictationSetupStatus').textContent(),/In use: Tiny/);
   assert.match(await native.locator('.model-row[data-id="ggml-base.bin"]').textContent(),/Found in podcli/);
   assert.equal(await native.locator('.model-row[data-id="ggml-base.bin"] button',{hasText:'Remove'}).count(),0,'Another app\'s model has no Remove button');
+  await native.evaluate(()=>{
+    const row={id:'ggml-tiny.bin',label:'Tiny',bytes:77691713,speed:'Fastest',accuracy:'Lower',note:null,state:'installed',foundIn:null,active:true,canRemove:true};
+    window.__emitNative('dictation_state',{status:'idle',modelInstalled:true,activeModelLabel:'Tiny',models:[row]});
+    window.__emitNative('dictation_state',{status:'idle',modelInstalled:true,activeModelLabel:'Tiny',models:[{...row,canRemove:false}]});
+  });
+  assert.equal(await native.locator('.model-row[data-id="ggml-tiny.bin"] button',{hasText:'Remove'}).count(),0,'Ownership loss removes the delete action even when phase and active model are unchanged');
+  assert.equal(await native.locator('.model-row[data-id="ggml-tiny.bin"] button',{hasText:'Stop using'}).isEnabled(),true);
   await native.evaluate(()=>window.__emitNative('dictation_state',{status:'idle',modelInstalled:true,modelDownloadedBytes:0,activeModelLabel:'Tiny',modelNotice:'Base is no longer on this computer. Using Tiny instead.',shortcutProblems:{toggle:'Ctrl+Shift+Space is in use by another app right now. Try again once it is free, or record a different shortcut.',hold:null}}));
   assert.match(await native.locator('#dictationModelNotice').textContent(),/no longer on this computer/);
   assert.match(await native.locator('#dictationShortcutError').textContent(),/in use by another app/);

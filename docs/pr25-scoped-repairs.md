@@ -32,3 +32,5 @@ Automated evidence for the final head is recorded in the PR description. The UI 
 - origin/main was merged because GitHub reported CONFLICTING/DIRTY and no pull_request workflow existed for 37e20ec. The compact-candidate conflict retains main's shared helper and busy dictation phases. PR27 was not imported.
 
 The accelerated-audio harness queue was widened from a roughly 5 ms scheduling allowance to 100 ms. A 400 ms blocking-preview regression still exceeds that queue. The production queue and capture/engine architecture are unchanged. An initial post-merge UI attempt timed out at the existing HUD return-to-open check; subsequent runs are recorded in the PR. Processing and cancelling screenshots use synthetic native events and do not prove microphone/runtime behavior.
+
+Final audit follow-up: model availability/UI metadata checks also resolve and reject network destinations before target metadata. Picker action caching includes canRemove, so a replacement that loses ownership changes Remove to Stop using even if the model id, phase and active selection are unchanged. The UI smoke test covers that ownership transition.

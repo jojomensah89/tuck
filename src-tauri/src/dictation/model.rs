@@ -608,6 +608,11 @@ fn resolved_local(path: &Path) -> Result<PathBuf, String> {
     Ok(resolved)
 }
 
+/// Resolve links and reject network destinations before asking for target metadata.
+pub(super) fn local_model_exists(path: &Path) -> bool {
+    resolved_local(path).is_ok_and(|resolved| resolved.is_file())
+}
+
 /* ---------- Download ---------- */
 
 pub(super) async fn download(
@@ -618,8 +623,11 @@ pub(super) async fn download(
     mut progress: impl FnMut(u64),
 ) -> Result<(), String> {
     let path = models_dir.join(entry.id);
-    if path.is_file() {
-        return Err(format!("{} is already installed", entry.label));
+    if std::fs::symlink_metadata(&path).is_ok() {
+        return Err(format!(
+            "{} already has a file at its install path",
+            entry.label
+        ));
     }
     std::fs::create_dir_all(models_dir)
         .map_err(|e| format!("Could not create model directory: {e}"))?;
@@ -950,10 +958,10 @@ pub(super) fn find_candidates(locations: &[Location]) -> Vec<Candidate> {
                 if !name_is_candidate(&name.to_string_lossy(), location.huggingface) {
                     continue;
                 }
-                if resolved_local(&path).is_err() {
+                let Ok(resolved) = resolved_local(&path) else {
                     continue;
-                }
-                let Ok(size) = std::fs::metadata(&path).map(|meta| meta.len()) else {
+                };
+                let Ok(size) = std::fs::metadata(&resolved).map(|meta| meta.len()) else {
                     continue;
                 };
                 if let Some(entry) = CATALOG.iter().find(|entry| entry.bytes == size) {

@@ -253,7 +253,7 @@ export function mountDictationSettings(): void {
       // Buttons are rebuilt only when they change, so progress ticks keep focus and an
       // open confirmation in place.
       // The row can change file (a found Base replaces the one to download), so the id counts.
-      const signature = `${row.id}|${row.state}|${row.active}|${locked}`;
+      const signature = `${row.id}|${row.state}|${row.active}|${row.canRemove}|${locked}`;
       if (signature !== view.signature) {
         view.signature = signature;
         view.actions.replaceChildren(...rowButtons(row).map(spec => makeButton(row, spec, locked)));

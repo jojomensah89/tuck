@@ -259,7 +259,7 @@ impl DictationService {
                     .stopped_models
                     .iter()
                     .any(|id| path.file_name().is_some_and(|n| n == id.as_str()))
-                    && path.is_file()
+                    && model::local_model_exists(path)
             },
         )
     }
@@ -287,7 +287,7 @@ impl DictationService {
                             locations: &self.locations,
                             available_memory: model::available_memory(),
                         },
-                        Path::is_file,
+                        model::local_model_exists,
                     ),
                     runtime
                         .model_error
@@ -783,7 +783,8 @@ impl DictationService {
                 if error.is_none() && service.settings().active_model == selection_before {
                     // A fallback model removed during the download is not worth pinning.
                     let still_there = selection_before.is_some()
-                        || active_before.is_some_and(|id| dir_for_pin.join(id).is_file());
+                        || active_before
+                            .is_some_and(|id| model::local_model_exists(&dir_for_pin.join(id)));
                     let selection = selection_after_download(
                         active_before.filter(|_| still_there),
                         selection_before.is_some(),
@@ -900,7 +901,7 @@ impl DictationService {
                 .iter()
                 .find(|found| found.id == entry.id)
                 .map(|found| found.path.clone());
-            if !own.is_file() && external.is_none() {
+            if !model::local_model_exists(&own) && external.is_none() {
                 return Err(format!(
                     "{} is not on this computer. Download it first.",
                     entry.label
@@ -916,7 +917,7 @@ impl DictationService {
         let spawned = std::thread::Builder::new()
             .name("tuck-model-check".into())
             .spawn(move || {
-                let own_installed = own.is_file();
+                let own_installed = model::local_model_exists(&own);
                 let path = if own_installed {
                     own
                 } else {
@@ -1020,7 +1021,7 @@ impl DictationService {
                 for candidate in model::find_candidates(&service.locations) {
                     let id = candidate.entry.id;
                     if service.is_shutdown()
-                        || dir.join(id).is_file()
+                        || model::local_model_exists(&dir.join(id))
                         || found.iter().any(|item| item.id == id)
                     {
                         continue;

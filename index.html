@@ -4,6 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Tuck Island</title>
+    <link rel="icon" type="image/svg+xml" href="/tuck.svg" />
     <link rel="stylesheet" href="/src/styles.css" />
     <script type="module" src="/src/main.ts" defer></script>
   </head>
@@ -99,6 +100,7 @@
 
               <!-- Usage tab: AI usage meters -->
               <section class="page usage" data-page="usage" aria-label="AI Usage Meters">
+                <div class="usage-actions"><span id="usageRefreshStatus" role="status"></span><button class="icon-btn" id="usageRefresh" aria-label="Refresh AI usage" title="Refresh AI usage"></button></div>
                 <div class="u-list" id="uList"></div>
               </section>
 
@@ -119,6 +121,7 @@
         </div>
       </div>
     </div>
+    <div id="openAnnouncement" class="open-announcement" aria-hidden="true"></div>
     <div id="statusMessage" class="sr-only" role="status" aria-live="polite"></div>
   </body>
 </html>

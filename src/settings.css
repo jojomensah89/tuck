@@ -119,10 +119,10 @@ body {
 }
 
 .brand-mark, .about-mark {
-  width: 22px;
-  height: 9px;
-  border-radius: 0 0 6px 6px;
-  background: var(--ink);
+  width: 24px;
+  height: 24px;
+  flex: none;
+  background: url('/tuck.svg') center / contain no-repeat;
 }
 
 .brand-name { font-weight: var(--w-strong); }
@@ -589,7 +589,7 @@ mark { background: none; color: inherit; text-decoration: underline; text-decora
 
 /* About */
 .about-head { display: flex; align-items: center; gap: var(--s-4); margin-top: var(--s-4); }
-.about-mark { width: 44px; height: 18px; border-radius: 0 0 12px 12px; flex: none; }
+.about-mark { width: 48px; height: 48px; }
 .about-name { margin: 0; font-weight: var(--w-strong); }
 .about-name .num { color: var(--ink-2); font-weight: var(--w-regular); font-variant-numeric: tabular-nums; }
 

@@ -305,6 +305,7 @@ export function mountLivePages(onLayout: () => void): {
       id: 'dictation',
       type: 'dictation',
       phase: data.status,
+      audioLevel: data.audioLevel || 0,
       active,
       title: 'Dictation',
       text: text.slice(-65),

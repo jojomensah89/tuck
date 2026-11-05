@@ -14,6 +14,17 @@ bun run tauri dev
 
 `bun run dev` runs a clearly labeled browser demo. The desktop app connects to Windows media and power services. Use the tray menu to open settings, focus the island for keyboard operation, or quit.
 
+## Standalone Windows installer
+
+For a desktop build that embeds the frontend and runs without a development server:
+
+```powershell
+. .\scripts\prepare-native.ps1
+bun run tauri build
+```
+
+The installer is written to `src-tauri/target/release/bundle/nsis/`. Public releases are built and updater-signed by GitHub Actions using the configured repository secrets; see [releasing](docs/releasing.md). Update signatures authenticate updates; they are separate from Windows Authenticode signing.
+
 ## Check
 
 ```powershell

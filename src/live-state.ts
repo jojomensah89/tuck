@@ -42,7 +42,7 @@ export function normalizePreferences(input: unknown): LivePreferences {
   const bounded = (value: unknown, fallback: number, min: number, max: number) =>
     typeof value === 'number' && Number.isFinite(value) ? Math.round(Math.max(min, Math.min(max, value))) : fallback;
   return {
-    hoverExpand: typeof p.hoverExpand === 'boolean' ? p.hoverExpand : true,
+    hoverExpand: true,
     pinned: p.pinned === true, lyricsOpen: p.lyricsOpen !== false,
     compactContent: p.compactContent === 'artwork' || p.compactContent === 'title' ? p.compactContent : 'lyrics',
     desktopPeeks: p.desktopPeeks !== false,

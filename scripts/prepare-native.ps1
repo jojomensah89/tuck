@@ -23,3 +23,6 @@ if (-not (Get-Command cmake.exe -ErrorAction SilentlyContinue)) {
 }
 if (-not (Get-Command cmake.exe -ErrorAction SilentlyContinue)) { throw 'Install CMake or add its bin directory to PATH.' }
 Write-Output 'Native speech build environment ready for this PowerShell session.'
+
+# Portable Parakeet CPU build; never tune the shipped backend to this host.
+$env:TRANSCRIBE_CMAKE_ARGS = "-DGGML_NATIVE=OFF -DGGML_AVX512=OFF -DGGML_AVX512_VBMI=OFF -DGGML_AVX512_VNNI=OFF"

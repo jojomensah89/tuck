@@ -13,6 +13,8 @@ use std::{
     time::{Duration, Instant},
 };
 use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
+static REQUESTED: AtomicU64 = AtomicU64::new(0);
+static COMPLETED: AtomicU64 = AtomicU64::new(0);
 static EPOCH: AtomicU64 = AtomicU64::new(0);
 static ENABLED: AtomicBool = AtomicBool::new(false);
 static REFRESH: Mutex<bool> = Mutex::new(true);
@@ -63,6 +65,14 @@ pub fn set_installed_usage_enabled(window: WebviewWindow, enabled: bool) -> Resu
 #[tauri::command]
 pub fn refresh_installed_usage() {
     request_refresh();
+}
+pub fn request_manual_refresh() -> u64 {
+    let ticket = REQUESTED.fetch_add(1, Ordering::SeqCst) + 1;
+    request_refresh();
+    ticket
+}
+pub fn manual_refresh_finished(ticket: u64) -> bool {
+    !ENABLED.load(Ordering::SeqCst) || COMPLETED.load(Ordering::SeqCst) >= ticket
 }
 /// Why a probe returned no quota. Only `NotConnected` keeps a provider off the island:
 /// the client is missing, signed out, or on an account without subscription limits.
@@ -458,6 +468,7 @@ pub fn start(app: AppHandle) {
                     std::mem::take(&mut *refresh)
                 } || last.elapsed() >= Duration::from_secs(300))
             {
+                let ticket = REQUESTED.load(Ordering::SeqCst);
                 let epoch = EPOCH.load(Ordering::SeqCst);
                 let previous = METERS.lock().unwrap_or_else(|p| p.into_inner()).clone();
                 let mut meters = Vec::new();
@@ -482,6 +493,7 @@ pub fn start(app: AppHandle) {
                 if committed {
                     let _ = app.emit("usage", crate::usage::current_snapshot());
                 }
+                COMPLETED.store(ticket, Ordering::SeqCst);
                 last = Instant::now();
             }
             let refresh = REFRESH.lock().unwrap_or_else(|p| p.into_inner());

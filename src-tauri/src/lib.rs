@@ -126,6 +126,7 @@ pub fn run() {
             extensions::radio_set,
             extensions::notification_access,
             usage::usage_now,
+            usage::refresh_usage,
             usage::set_secret,
             desktop_signals::volume_step,
             desktop_signals::volume_toggle_mute,
@@ -212,14 +213,16 @@ pub fn run() {
                 check_updates: check_updates_item.clone(),
             });
 
-            let mut tray_builder = TrayIconBuilder::with_id("main")
+            let tray_builder = TrayIconBuilder::with_id("main")
                 .tooltip("Tuck")
                 .menu(&tray_menu)
-                .show_menu_on_left_click(false);
-
-            if let Some(icon) = app.default_window_icon() {
-                tray_builder = tray_builder.icon(icon.clone());
-            }
+                .show_menu_on_left_click(false)
+                .icon(tauri::image::Image::new(
+                    include_bytes!("../icons/tray.rgba"),
+                    32,
+                    32,
+                ))
+                .icon_as_template(true);
 
             let _tray = tray_builder
                 .on_tray_icon_event(|tray, event| {

@@ -43,6 +43,7 @@ export interface TelemetrySnapshot {
 export interface DictationSnapshot {
   status: 'disabled' | 'idle' | 'starting' | 'recording' | 'transcribing' | 'processing' | 'cancelling' | 'inserting' | 'review' | 'error' | 'modelMissing' | 'downloadingModel';
   previewsPaused?: boolean;
+  audioLevel?: number;
   transcript: string; error?: string | null; modelReady?: boolean;
   preview?: string | null; sessionId?: number; revision?: number;
   canInsert?: boolean;

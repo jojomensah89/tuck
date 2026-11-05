@@ -86,12 +86,13 @@ pub struct ShortcutProblems {
     pub hold: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct DictationSnapshot {
     pub session_id: u64,
     pub revision: u64,
     pub preview: Option<String>,
+    pub audio_level: f32,
     pub status: String,
     pub previews_paused: bool,
     pub model_installed: bool,
@@ -153,6 +154,9 @@ struct Runtime {
     session_id: u64,
     revision: u64,
     preview: Option<String>,
+    audio_level: f32,
+    recording_target: Option<target::ForegroundTarget>,
+    focus_changed: bool,
     previews_paused: bool,
     selection_generation: u64,
     status: String,
@@ -190,6 +194,7 @@ pub struct DictationService {
     settings: RwLock<DictationSettings>,
     runtime: Mutex<Runtime>,
     insertion_gate: Mutex<()>,
+    focus_observer_busy: Arc<AtomicBool>,
     model_busy: AtomicBool,
     registered_shortcuts: Mutex<Vec<Shortcut>>,
     settings_operation: Mutex<()>,
@@ -206,6 +211,13 @@ impl Default for DictationService {
     }
 }
 
+struct FocusObserverLease(Arc<AtomicBool>);
+impl Drop for FocusObserverLease {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
+
 impl DictationService {
     pub fn new() -> Self {
         Self {
@@ -215,6 +227,9 @@ impl DictationService {
                 session_id: 0,
                 revision: 0,
                 preview: None,
+                audio_level: 0.0,
+                recording_target: None,
+                focus_changed: false,
                 previews_paused: false,
                 selection_generation: 0,
                 status: "idle".into(),
@@ -235,6 +250,7 @@ impl DictationService {
                 settings_notice: None,
             }),
             insertion_gate: Mutex::new(()),
+            focus_observer_busy: Arc::new(AtomicBool::new(false)),
             model_busy: AtomicBool::new(false),
             registered_shortcuts: Mutex::new(Vec::new()),
             settings_operation: Mutex::new(()),
@@ -332,6 +348,16 @@ impl DictationService {
             })
             .unwrap_or_default();
         let previews_paused = locked.as_ref().is_ok_and(|r| r.previews_paused);
+        let audio_level = locked
+            .as_ref()
+            .map(|r| {
+                if r.status == "recording" {
+                    r.audio_level
+                } else {
+                    0.0
+                }
+            })
+            .unwrap_or(0.0);
         let (session_id, revision, preview) = locked
             .as_ref()
             .map(|r| (r.session_id, r.revision, r.preview.clone()))
@@ -342,6 +368,7 @@ impl DictationService {
             session_id,
             revision,
             preview,
+            audio_level,
             previews_paused,
             status,
             model_installed: active.is_some(),
@@ -422,6 +449,85 @@ impl DictationService {
 
     /// Preview is display-only. Publish a complete versioned snapshot so a late
     /// initial response or event cannot resurrect an earlier recording's text.
+    fn mark_focus_changed(&self, session_id: u64) {
+        if let Ok(mut runtime) = self.runtime.lock() {
+            if runtime.session_id == session_id && runtime.active.is_some() {
+                runtime.focus_changed = true;
+            }
+        }
+    }
+
+    /// UIA providers may hang. At most one observer can exist, and it never
+    /// owns a runtime lock or blocks capture/cancellation/session shutdown.
+    fn start_focus_observer(
+        self: &Arc<Self>,
+        session_id: u64,
+        stop: Arc<AtomicBool>,
+        cancel: Arc<AtomicBool>,
+        mut observe: impl FnMut() -> bool + Send + 'static,
+    ) -> Option<std::thread::JoinHandle<()>> {
+        if self.focus_observer_busy.swap(true, Ordering::AcqRel) {
+            // An old provider is stuck: conservatively copy this session's final text.
+            self.mark_focus_changed(session_id);
+            return None;
+        }
+        let lease = FocusObserverLease(self.focus_observer_busy.clone());
+        let service = Arc::downgrade(self);
+        let result = std::thread::Builder::new()
+            .name("tuck-focus-observer".into())
+            .spawn(move || {
+                let _lease = lease;
+                while !stop.load(Ordering::Acquire) && !cancel.load(Ordering::Acquire) {
+                    let unchanged = observe(); // No service lock or strong reference here.
+                    if stop.load(Ordering::Acquire) || cancel.load(Ordering::Acquire) {
+                        break;
+                    }
+                    let Some(service) = service.upgrade() else {
+                        break;
+                    };
+                    let current = service
+                        .runtime
+                        .lock()
+                        .is_ok_and(|r| r.session_id == session_id && r.active.is_some());
+                    if !current {
+                        break;
+                    }
+                    if !unchanged {
+                        service.mark_focus_changed(session_id);
+                        break;
+                    }
+                    drop(service);
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+            });
+        match result {
+            Ok(handle) => Some(handle),
+            Err(_) => {
+                self.mark_focus_changed(session_id);
+                None
+            }
+        }
+    }
+
+    fn publish_audio_level(&self, level: f32) {
+        if let Ok(mut runtime) = self.runtime.lock() {
+            if runtime.status != "recording"
+                || !runtime.active.as_ref().is_some_and(|a| {
+                    !a.cancel.load(Ordering::Acquire) && !a.stop.load(Ordering::Acquire)
+                })
+            {
+                return;
+            }
+            runtime.audio_level = level;
+            runtime.revision += 1;
+        } else {
+            return;
+        }
+        if let Ok(app) = self.app() {
+            let _ = app.emit(EVENT_PARTIAL, self.snapshot());
+        }
+    }
+
     fn publish_preview(&self, text: &str) {
         if !self.settings().partial_preview {
             return;
@@ -479,7 +585,19 @@ impl DictationService {
         let cancel = Arc::new(AtomicBool::new(false));
         let original_target = target::capture_foreground();
         self.claim_session(stop.clone(), cancel.clone(), mode)?;
+        {
+            let mut r = self.runtime.lock().unwrap();
+            r.recording_target = original_target.clone();
+            r.focus_changed = false;
+            r.audio_level = 0.0;
+        }
         drop(operation);
+        if let Some(target) = original_target.clone() {
+            let session_id = self.runtime.lock().unwrap().session_id;
+            self.start_focus_observer(session_id, stop.clone(), cancel.clone(), move || {
+                target::verify_foreground_target(&target).is_ok()
+            });
+        }
         self.emit_state();
 
         let service = self.clone();
@@ -584,10 +702,17 @@ impl DictationService {
             return;
         }
         let settings = self.settings();
+        let changed = self.runtime.lock().map(|r| r.focus_changed).unwrap_or(true);
         let safety = original_target
             .as_ref()
             .ok_or_else(|| "The original foreground window could not be captured.".to_owned())
-            .and_then(target::verify_foreground_target)
+            .and_then(|t| {
+                if changed {
+                    Err("Focus changed during recording".into())
+                } else {
+                    target::verify_foreground_target(t)
+                }
+            })
             .and_then(|_| match original_target.as_ref() {
                 Some(target) => target::is_editable_target(target),
                 None => Err("The original foreground window could not be captured.".into()),
@@ -620,7 +745,41 @@ impl DictationService {
                 }
             }
         }
-        let review = settings.review_before_insert || !inserted;
+        let mut copied = false;
+        if should_copy_final(
+            settings.review_before_insert,
+            inserted,
+            partial_insertion,
+            cancel.load(Ordering::Acquire),
+        ) {
+            let _guard = self.insertion_gate.lock().unwrap();
+            if !cancel.load(Ordering::Acquire) {
+                #[cfg(windows)]
+                let result = self
+                    .app()
+                    .and_then(|app| {
+                        app.get_webview_window("main")
+                            .ok_or("Main window unavailable".into())
+                    })
+                    .and_then(|window| window.hwnd().map_err(|e| e.to_string()))
+                    .and_then(|owner| {
+                        target::copy_final(
+                            text.as_str(),
+                            windows::Win32::Foundation::HWND(owner.0 as _),
+                        )
+                    });
+                #[cfg(not(windows))]
+                let result = target::copy_final(text.as_str(), ());
+                match result {
+                    Ok(()) => {
+                        copied = true;
+                        reason = Some("Copied".into());
+                    }
+                    Err(e) => reason = Some(e),
+                }
+            }
+        }
+        let review = settings.review_before_insert || (!inserted && !copied);
         if let Ok(mut runtime) = self.runtime.lock() {
             if cancel.load(Ordering::Acquire) {
                 drop(runtime);
@@ -628,6 +787,11 @@ impl DictationService {
                 return;
             }
             runtime.active = None;
+            runtime.recording_target = None;
+            if let Some(mut preview) = runtime.preview.take() {
+                preview.zeroize();
+            }
+            runtime.audio_level = 0.0;
             runtime.status = if review { "review" } else { "idle" }.into();
             runtime.message = reason.clone();
             // Keep text only during review. Immediate successful insertion drops it.
@@ -677,6 +841,12 @@ impl DictationService {
     fn clear_active(&self) {
         if let Ok(mut runtime) = self.runtime.lock() {
             runtime.active = None;
+            runtime.recording_target = None;
+            if let Some(mut preview) = runtime.preview.take() {
+                preview.zeroize();
+            }
+            runtime.audio_level = 0.0;
+            runtime.focus_changed = false;
             if let Some(mut text) = runtime.transcript.take() {
                 text.zeroize();
             }
@@ -2540,5 +2710,90 @@ mod tests {
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(restored, DictationSettings::default());
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+}
+
+fn should_copy_final(review: bool, inserted: bool, uncertain: bool, cancelled: bool) -> bool {
+    !review && !inserted && !uncertain && !cancelled
+}
+#[cfg(test)]
+mod final_delivery_tests {
+    use super::*;
+
+    #[test]
+    fn blocked_focus_provider_does_not_block_meter_cancel_or_grow_workers() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+        let service = Arc::new(DictationService::new());
+        let stop = Arc::new(AtomicBool::new(false));
+        let cancel = Arc::new(AtomicBool::new(false));
+        service
+            .claim_session(stop.clone(), cancel.clone(), RecordingMode::Toggle)
+            .unwrap();
+        service.session_status("recording");
+        let id = service.runtime.lock().unwrap().session_id;
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let observer = service
+            .start_focus_observer(id, stop, cancel.clone(), move || {
+                entered_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+                false
+            })
+            .unwrap();
+        entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        let (done_tx, done_rx) = mpsc::channel();
+        let worker_service = service.clone();
+        let worker = std::thread::spawn(move || {
+            worker_service.publish_audio_level(0.5);
+            worker_service.cancel().unwrap();
+            done_tx.send(()).unwrap();
+        });
+        let responsive = done_rx.recv_timeout(Duration::from_secs(2)).is_ok();
+        if !responsive {
+            release_tx.send(()).unwrap();
+            observer.join().unwrap();
+            panic!("Observer blocked capture or cancel");
+        }
+        worker.join().unwrap();
+        assert!(cancel.load(Ordering::Acquire));
+        service.finish_cancelled();
+        let next_stop = Arc::new(AtomicBool::new(false));
+        let next_cancel = Arc::new(AtomicBool::new(false));
+        service
+            .claim_session(
+                next_stop.clone(),
+                next_cancel.clone(),
+                RecordingMode::Toggle,
+            )
+            .unwrap();
+        let next_id = service.runtime.lock().unwrap().session_id;
+        assert!(service
+            .start_focus_observer(next_id, next_stop, next_cancel, || panic!(
+                "Unbounded observer"
+            ))
+            .is_none());
+        assert!(
+            service.runtime.lock().unwrap().focus_changed,
+            "Unobservable focus must copy instead of inserting"
+        );
+        release_tx.send(()).unwrap();
+        observer.join().unwrap();
+        assert!(!service.focus_observer_busy.load(Ordering::Acquire));
+        service.runtime.lock().unwrap().focus_changed = false;
+        service.mark_focus_changed(id);
+        assert!(
+            !service.runtime.lock().unwrap().focus_changed,
+            "Old session cannot affect new session"
+        );
+    }
+
+    #[test]
+    fn clipboard_fallback_is_only_for_safe_undelivered_final_text() {
+        assert!(super::should_copy_final(false, false, false, false));
+        assert!(!super::should_copy_final(true, false, false, false));
+        assert!(!super::should_copy_final(false, true, false, false));
+        assert!(!super::should_copy_final(false, false, true, false));
+        assert!(!super::should_copy_final(false, false, false, true));
     }
 }

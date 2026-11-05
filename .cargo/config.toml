@@ -1,0 +1,3 @@
+[env]
+GGML_NATIVE = { value = "OFF", force = true }
+TRANSCRIBE_CMAKE_ARGS = { value = "-DGGML_NATIVE=OFF -DGGML_AVX512=OFF -DGGML_AVX512_VBMI=OFF -DGGML_AVX512_VNNI=OFF", force = true }

@@ -10,7 +10,7 @@ export function mountLiveSettings(): void {
 
   /* ---------- Island and player preferences (local storage) ---------- */
   const prefs = readPreferences();
-  input('hoverExpand').checked = prefs.hoverExpand; input('pinOpen').checked = prefs.pinned;
+  input('pinOpen').checked = prefs.pinned;
   input('fullscreenAutoHide').checked = prefs.fullscreenAutoHide;
   input('lyricsOpen').checked = prefs.lyricsOpen; input('desktopPeeks').checked = prefs.desktopPeeks;
   input('levelHud').checked = prefs.levelHud;
@@ -36,7 +36,7 @@ export function mountLiveSettings(): void {
       setStatus(statusFor(invalid), `Enter a value from ${field.min} to ${field.max}${field.step && field.step !== '1' ? ` in steps of ${field.step}` : ''}.`, 'error');
       return;
     }
-    const next = normalizePreferences({ hoverExpand: input('hoverExpand').checked, pinned: input('pinOpen').checked,
+    const next = normalizePreferences({ pinned: input('pinOpen').checked,
       fullscreenAutoHide: input('fullscreenAutoHide').checked,
       lyricsOpen: input('lyricsOpen').checked, desktopPeeks: input('desktopPeeks').checked, levelHud: input('levelHud').checked,
       compactContent: compact().find(radio => radio.checked)?.value ?? 'lyrics',
@@ -55,7 +55,7 @@ export function mountLiveSettings(): void {
       setStatus(statusFor(changed.id), 'Could not save settings. Check available storage and try again.', 'error');
     }
   };
-  for (const id of ['hoverExpand', 'pinOpen', 'fullscreenAutoHide', 'lyricsOpen', 'desktopPeeks', 'levelHud']) input(id).addEventListener('change', () => savePreferences(input(id)));
+  for (const id of ['pinOpen', 'fullscreenAutoHide', 'lyricsOpen', 'desktopPeeks', 'levelHud']) input(id).addEventListener('change', () => savePreferences(input(id)));
   for (const radio of compact()) radio.addEventListener('change', () => savePreferences(radio));
   for (const id of numbers) onCommit(input(id), () => savePreferences(input(id)));
 

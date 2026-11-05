@@ -5,7 +5,7 @@ describe('live island state', () => {
   test('bounds saved geometry and delays while retaining explicit choices', () => {
     const prefs = normalizePreferences({ openWidth: 9000, openDelayMs: -1, closeDelayMs: Infinity, hoverExpand: false, pinned: true });
     expect(prefs.openWidth).toBe(500); expect(prefs.openDelayMs).toBe(0); expect(prefs.closeDelayMs).toBe(0);
-    expect(prefs.hoverExpand).toBe(false); expect(prefs.pinned).toBe(true);
+    expect(prefs.hoverExpand).toBe(true); expect(prefs.pinned).toBe(true);
   });
   test('collapses instantly by default and allows zero', () => {
     expect(normalizePreferences({}).closeDelayMs).toBe(0);

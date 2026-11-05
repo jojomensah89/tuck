@@ -291,6 +291,20 @@ describe('release steps against a local bare remote', () => {
     expect(log).not.toContain('edit');
   });
 
+  it('a re-run of a published release fails if the update feed still serves another version', () => {
+    const r = setUp();
+    build(r, '0.2.0');
+    freshCheckout(r, r.source);
+    expect(publish(r, '0.2.0').status).toBe(0);
+    fs.writeFileSync(path.join(r.state, 'live-latest.json'), '{"version": "0.1.0"}');
+    freshCheckout(r, r.source);
+
+    const finish = step(r, true, 'finish-pending');
+
+    expect(finish.status).toBe(1);
+    expect(finish.stderr).toContain('does not serve version 0.2.0');
+  });
+
   it('publish fails after the push: the job is red and a re-run finishes without building', () => {
     const r = setUp();
     build(r, '0.2.0');

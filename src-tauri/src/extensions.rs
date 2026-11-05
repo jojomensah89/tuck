@@ -780,6 +780,7 @@ pub fn start(app: AppHandle) {
         }
     }
     std::thread::spawn(move || {
+        let mut emitted = None;
         #[cfg(windows)]
         let _apartment = Apartment::enter();
         let mut history = HashMap::new();
@@ -870,7 +871,12 @@ pub fn start(app: AppHandle) {
                     state.errors = errors;
                 }
             }
-            let _ = app.emit("extension-state", snapshot());
+            let current = snapshot();
+            let serialized = serde_json::to_value(&current).ok();
+            if serialized != emitted {
+                let _ = app.emit("extension-state", current);
+                emitted = serialized;
+            }
 
             std::thread::sleep(Duration::from_secs(1));
         }

@@ -1,7 +1,8 @@
 import { listenToEvent, mediaSeek, isTauri } from './ipc.js';
 import { SVG_ICONS } from './icons.js';
-import { nativeAction, nativeService, normalizeClipboard, normalizeDictation, normalizeTelemetry, type ClipboardSnapshot, type DictationSnapshot, type LyricsSnapshot, type MediaSession, type TelemetrySnapshot } from './live-services.js';
-import { historyPath, lyricIndex, lyricOffsetFor, matchesLyricRequest, MAX_LYRIC_OFFSET_MS, measuredPercent, newRequestId, parseLrc, readPreferences, TelemetryGate, withLyricOffset, writePreferences, type LyricLine } from './live-state.js';
+import { islandModelLine } from './dictation-models.js';
+import { DictationUpdates, nativeAction, nativeService, normalizeClipboard, normalizeDictation, normalizeTelemetry, type ClipboardSnapshot, type DictationSnapshot, type LyricsSnapshot, type MediaSession, type TelemetrySnapshot } from './live-services.js';
+import { historyPath, heldLyric, lyricIndex, lyricOffsetFor, matchesLyricRequest, MAX_LYRIC_OFFSET_MS, measuredPercent, newRequestId, parseLrc, readPreferences, TelemetryGate, withLyricOffset, writePreferences, type LyricLine } from './live-state.js';
 import { formatClockTime } from './time-format.js';
 import { createRing, usageTone, type Ring } from './rings.js';
 import type { MediaState } from './types.js';
@@ -81,7 +82,7 @@ export function mountLivePages(onLayout: () => void): {
     lastPosition = position;
     const pastLyrics = lines.length > 0 && position > lines[lines.length - 1].atMs + 20000;
     const index = pastLyrics ? -1 : lyricIndex(lines, position);
-    currentLyric = index >= 0 ? lines[index].text : '';
+    currentLyric = heldLyric(lines, index);
     if (index === activeLine) return;
     activeLine = index;
     [...lyricList.children].forEach((el, i) => {
@@ -265,40 +266,48 @@ export function mountLivePages(onLayout: () => void): {
   const speechDot = statusDot(); speechDot.set('off', 'Offline, set up a model in Settings');
   speechTitleRow.append(node('h2', '', 'Dictation'), speechDot.el);
   const speechStatus = node('p', 'live-note');
+  const speechModel = node('p', 'live-note', islandModelLine(null));
   const transcript = node('div', 'transcript placeholder', 'Your transcript appears here'); transcript.setAttribute('role', 'status');
   const speechActions = node('div', 'live-actions');
   let dictationPhase = 'disabled';
+  const dictationUpdates = new DictationUpdates();
+  let previewsPaused = false;
   const record = iconButton('Record', SVG_ICONS.mic, () => {
     void act(nativeAction(dictationPhase === 'recording' ? 'dictation_stop' : 'dictation_toggle'), speechStatus);
   }, 'primary');
   const cancel = iconButton('Cancel', SVG_ICONS.close, () => { void act(nativeAction('dictation_cancel'), speechStatus); });
   const insert = iconButton('Insert', SVG_ICONS.insert, () => { void act(nativeAction('dictation_insert'), speechStatus); }); insert.disabled = true;
   speechActions.append(record, cancel, insert); speechHead.append(speechTitleRow, speechActions);
-  speech.append(speechHead, transcript, speechStatus);
+  speech.append(speechHead, transcript, speechModel, speechStatus);
   function dictation(data: DictationSnapshot): void {
-    if (!data || typeof data.status !== 'string') return;
+    if (!data || typeof data.status !== 'string' || !dictationUpdates.accept(data)) return;
     dictationPhase = data.status;
-    // Visible text only for an error; the state itself is the dot
-    speechStatus.textContent = data.error || '';
-    const dotState = data.error || data.status === 'error' ? 'warn' : data.status === 'recording' ? 'live' : ['transcribing', 'review'].includes(data.status) ? 'idle' : 'off';
+    previewsPaused = data.previewsPaused === true;
+    // Explain engine work and a paused preview without implying the microphone is live.
+    speechStatus.textContent = data.error || (data.status === 'cancelling' ? 'Cancelling\u2026' : data.status === 'processing' ? 'Microphone closed. Waiting for the speech engine\u2026' : data.status === 'transcribing' ? 'Transcribing\u2026' : previewsPaused && data.status === 'recording' ? 'Live transcript paused for this recording.' : data.modelNotice || '');
+    speechModel.textContent = islandModelLine(data.activeModelLabel);
+    const dotState = data.error || data.status === 'error' ? 'warn' : data.status === 'recording' ? 'live' : ['starting', 'transcribing', 'processing', 'cancelling', 'inserting', 'review'].includes(data.status) ? 'idle' : 'off';
     speechDot.set(dotState, `Offline, ${data.status}`);
-    transcript.textContent = data.transcript?.slice(0, 32000) || (data.status === 'recording' ? 'Listening\u2026' : 'Your transcript appears here');
-    transcript.classList.toggle('placeholder', !data.transcript);
+    const provisional = ['recording', 'transcribing', 'processing'].includes(data.status) && !previewsPaused ? data.preview || '' : '';
+    const text = data.transcript || provisional;
+    transcript.textContent = text.slice(0, 32000) || (data.status === 'recording' ? 'Listening\u2026' : data.status === 'transcribing' ? 'Transcribing\u2026' : 'Your transcript appears here');
+    transcript.classList.toggle('placeholder', !text);
+    transcript.setAttribute('aria-label', provisional ? 'Live preview, words may change' : 'Transcript');
     insert.disabled = data.status !== 'review' || data.canInsert === false;
-    cancel.disabled = !['starting', 'downloadingModel', 'recording', 'transcribing', 'review'].includes(data.status);
+    cancel.disabled = !['starting', 'recording', 'transcribing', 'processing', 'inserting', 'review'].includes(data.status);
     record.disabled = !['idle', 'recording', 'review', 'error'].includes(data.status) || data.modelReady === false;
     if (data.status === 'recording') setIconLabel(record, 'Finish recording', SVG_ICONS.stop);
     else setIconLabel(record, 'Record', SVG_ICONS.mic);
     record.setAttribute('aria-pressed', String(data.status === 'recording'));
     document.getElementById('isl')!.dataset.dictation = data.status;
-    const active = ['recording', 'transcribing', 'review'].includes(data.status);
+    const active = ['starting', 'recording', 'transcribing', 'processing', 'cancelling', 'inserting', 'review'].includes(data.status);
     window.dispatchEvent(new CustomEvent('tuck-activity', { detail: {
       id: 'dictation',
       type: 'dictation',
       phase: data.status,
       active,
       title: 'Dictation',
-      text: data.transcript?.slice(-65) || data.status,
+      text: text.slice(-65),
       priority: 99,
     } }));
   }
@@ -359,6 +368,14 @@ export function mountLivePages(onLayout: () => void): {
   const wideSpectrum = node('div', 'wide-spectrum'); wideSpectrum.setAttribute('aria-label', 'Measured playback frequency bands');
   const wideBars = Array.from({ length: 48 }, () => { const bar = node('i'); wideSpectrum.append(bar); return bar; });
   audioPage.append(audioTitle, wideSpectrum, audioStatus);
+  const visibleSpectra = new Set<Element>();
+  const spectrumObserver = new IntersectionObserver(entries => {
+    for (const entry of entries) {
+      if (entry.isIntersecting && entry.intersectionRatio > 0) visibleSpectra.add(entry.target);
+      else visibleSpectra.delete(entry.target);
+    }
+  });
+  spectrumObserver.observe(spectrum); spectrumObserver.observe(wideSpectrum);
   let lastAudio = 0;
   function audio(data: { bands: number[]; active?: boolean }): void {
     if (!data || !Array.isArray(data.bands)) return;
@@ -369,12 +386,16 @@ export function mountLivePages(onLayout: () => void): {
     }
     lastAudio = Date.now();
     audioStatus.textContent = data.active === false ? 'Silence, no audio is stored' : 'Live spectrum, no audio is stored';
-    for (const group of [bars, wideBars]) group.forEach((bar, i) => {
-      const source = i * Math.max(0, data.bands.length - 1) / (group.length - 1);
-      const low = data.bands[Math.floor(source)] || 0, high = data.bands[Math.ceil(source)] || 0;
-      const sample = data.active === false ? 0 : low + (high - low) * (source % 1);
-      bar.style.setProperty('--level', String(Number.isFinite(sample) ? Math.max(0, Math.min(1, sample)) : 0));
-    });
+    if (document.getElementById('isl')?.dataset.state !== 'open') return;
+    for (const [element, group] of [[spectrum, bars], [wideSpectrum, wideBars]] as const) {
+      if (!visibleSpectra.has(element)) continue;
+      group.forEach((bar, i) => {
+        const source = i * Math.max(0, data.bands.length - 1) / (group.length - 1);
+        const low = data.bands[Math.floor(source)] || 0, high = data.bands[Math.ceil(source)] || 0;
+        const sample = data.active === false ? 0 : low + (high - low) * (source % 1);
+        bar.style.setProperty('--level', String(Number.isFinite(sample) ? Math.max(0, Math.min(1, sample)) : 0));
+      });
+    }
   }
   async function act(action: Promise<unknown>, status: HTMLElement): Promise<void> {
     try { await action; status.textContent = ''; } catch (error) { status.textContent = friendlyError(error); }
@@ -383,28 +404,42 @@ export function mountLivePages(onLayout: () => void): {
   for (const [event, handler] of [
     ['lyrics', applyLyrics], ['telemetry', (data: unknown) => telemetry(normalizeTelemetry(data))], ['dictation_state', (data: unknown) => dictation(normalizeDictation(data))], ['clipboard_history_changed', (data: unknown) => renderClipboard(normalizeClipboard(data))], ['visualizer', (data: {bins?: number[]; bands?: number[]; isSilent?: boolean}) => audio({ bands: data.bins || data.bands || [], active: !data.isSilent })],
   ] as const) void listenToEvent(event, handler as (data: unknown) => void).then(unlisten => unlisteners.push(unlisten));
-  void listenToEvent<{ text: string }>('dictation_partial', data => {
-    if (dictationPhase !== 'recording' || typeof data?.text !== 'string') return;
-    transcript.textContent = data.text.slice(0, 32000);
-    transcript.classList.toggle('placeholder', !data.text);
-    window.dispatchEvent(new CustomEvent('tuck-activity', { detail: { id: 'dictation', type: 'dictation', phase: 'recording', active: true, title: 'Dictation', text: data.text.slice(-65), priority: 99 } }));
-  }).then(unlisten => unlisteners.push(unlisten));
+  void listenToEvent<DictationSnapshot>('dictation_partial', data => dictation(normalizeDictation(data))).then(unlisten => unlisteners.push(unlisten));
   void listenToEvent<{ enabled: boolean }>('lyrics-settings', data => {
     if (!data.enabled) { generation++; currentRequestId = ''; baseLines = []; lines = []; currentLyric = ''; lyricList.replaceChildren(); hideTiming(); lyricsStatus.textContent = 'Enable online lyrics in Settings'; }
     else if (latestMedia?.active) void requestLyrics(latestMedia);
   }).then(unlisten => unlisteners.push(unlisten));
   void listenToEvent<string>('visualizer-error', () => { audioStatus.textContent = 'Playback analysis unavailable, check the output device'; }).then(unlisten => unlisteners.push(unlisten));
   void sessions();
-  void refreshTelemetry();
   void nativeService<DictationSnapshot>('dictation_snapshot').then(dictation).catch(() => { speechStatus.textContent = 'Dictation service unavailable, see Settings'; });
   void refreshClipboard().catch(() => { clipboardStatus.textContent = 'Clipboard service unavailable, see Settings'; });
-  const interval = window.setInterval(() => {
-    if (Date.now() - lastAudio > 1000) [...bars, ...wideBars].forEach(bar => bar.style.setProperty('--level', '0'));
-    if (telemetryGate.sampledAt && Date.now() - telemetryGate.sampledAt > 10000) invalidateTelemetry('Stale, warming up');
+  let interval: number | undefined;
+  let sessionInterval: number | undefined;
+  const visible = () => document.getElementById('isl')?.dataset.state === 'open';
+  let wasVisible = false;
+  const clearAudioBars = () => [...bars, ...wideBars].forEach(bar => bar.style.setProperty('--level', '0'));
+  const syncTimers = () => {
+    const open = visible();
+    if (open && !wasVisible) clearAudioBars();
+    wasVisible = open;
+    window.clearInterval(interval); window.clearInterval(sessionInterval);
+    interval = undefined; sessionInterval = undefined;
+    if (!visible()) return;
+    void sessions();
     if (stats.closest('.tab-panel.on')) void refreshTelemetry();
-  }, 1000);
-  const sessionInterval = window.setInterval(() => { void sessions(); }, 5000);
-  window.addEventListener('pagehide', () => { clearInterval(interval); clearInterval(sessionInterval); unlisteners.forEach(unlisten => unlisten()); }, { once: true });
+    interval = window.setInterval(() => {
+      if (Date.now() - lastAudio > 1000) [...bars, ...wideBars].forEach(bar => bar.style.setProperty('--level', '0'));
+      if (stats.closest('.tab-panel.on')) void refreshTelemetry();
+    }, 1000);
+    sessionInterval = window.setInterval(() => { void sessions(); }, 5000);
+  };
+  window.addEventListener('tuck-visibility', syncTimers);
+  window.addEventListener('pagehide', () => {
+    spectrumObserver.disconnect();
+    clearInterval(interval); clearInterval(sessionInterval);
+    window.removeEventListener('tuck-visibility', syncTimers);
+    unlisteners.forEach(unlisten => unlisten());
+  }, { once: true });
   return {
     media(state, position) { latestMedia = state; updatePosition(position); if (state.trackId !== currentTrack || !state.active) { currentTrack = state.trackId; void requestLyrics(state); } },
     position: updatePosition, compactLyric: () => currentLyric,

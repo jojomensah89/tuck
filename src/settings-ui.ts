@@ -41,7 +41,7 @@ export function setStatus(target: string | HTMLElement | null, text: string, kin
  */
 export function confirmThen(trigger: HTMLButtonElement, message: string, confirmLabel: string, action: () => void | Promise<void>): void {
   trigger.addEventListener('click', () => {
-    const row = trigger.closest('.set-row');
+    const row = trigger.closest('.set-row, .model-row');
     if (!row) { void action(); return; }
     row.querySelector('.confirm')?.remove();
     const strip = document.createElement('div');

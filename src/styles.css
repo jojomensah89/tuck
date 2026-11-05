@@ -253,7 +253,8 @@ body.fullscreen-hidden .island {
 
 /* Title and lyric modes keep a stable per-track shell width; long text reuses the marquee. */
 .island[data-state="idle"][data-compact-text] .compact {
-  grid-template-columns: var(--s-6) minmax(0, 1fr) auto;
+  /* Equal side columns keep the text centred on the pill */
+  grid-template-columns: var(--s-6) minmax(0, 1fr) var(--s-6);
 }
 
 .island[data-state="open"] .compact {
@@ -322,7 +323,7 @@ body.fullscreen-hidden .island {
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
-  text-align: left;
+  text-align: center;
 }
 
 /* Inline at rest, so an overflowing line ends in an ellipsis; a box only while it scrolls */
@@ -1493,6 +1494,11 @@ body.fullscreen-hidden .island {
   line-height: 16px;
 }
 
+/* A used-up quota: its ring is empty, so the number carries the warning */
+.u-val[data-out="true"] {
+  color: var(--warn);
+}
+
 /* The word beside the values only appears when a reading cannot be trusted */
 .u-state {
   color: var(--ink-2);
@@ -1649,4 +1655,9 @@ body.fullscreen-hidden .island {
   .eq i:nth-child(3) { transform: scaleY(0.4); }
 
   .dictation-level i { transform: scaleY(0.3); }
+}
+
+/* Hidden pages have no animation work; the playing compact equalizer stays live. */
+#isl:not([data-state="open"]) .full * {
+  animation-play-state: paused !important;
 }

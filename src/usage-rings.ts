@@ -3,7 +3,7 @@
  * 5-hour and weekly quotas into concentric rings; other providers keep one ring.
  */
 import { SVG_ICONS } from './icons.js';
-import { createRing, meterWindow, providerInitial, providerMark, usageTone, type Ring } from './rings.js';
+import { createRing, meterWindow, providerInitial, providerMark, remainingPct, usageTone, type Ring } from './rings.js';
 import { resetSpan } from './usage.js';
 import type { Meter } from './types.js';
 
@@ -109,8 +109,9 @@ export function ringMeters(meters: Meter[]): Meter[] {
 export function meterDetails(meter: Meter, nowSeconds = Date.now() / 1000, name = meterWindow(meter)): string {
   const parts: string[] = [];
   if (name) parts.push(name);
-  if (meter.usedPct != null && Number.isFinite(meter.usedPct)) parts.push(`${Math.round(meter.usedPct)}% used`);
-  if (meter.id === 'chatgpt' && meter.count != null && meter.cap != null) parts.push(`${meter.count} of ${meter.cap} messages`);
+  const left = remainingPct(meter.usedPct);
+  if (left != null) parts.push(`${left}% left`);
+  if (meter.id === 'chatgpt' && meter.count != null && meter.cap != null) parts.push(`${Math.max(0, meter.cap - meter.count)} of ${meter.cap} messages left`);
   if (meter.spentUsd != null && Number.isFinite(meter.spentUsd)) parts.push(`$${meter.spentUsd.toFixed(2)} spent this month`);
   const reset = resetSpan(meter.resetsAt, nowSeconds);
   if (reset) parts.push(reset === 'now' ? 'resetting now' : meter.id === 'chatgpt' ? `next slot frees in ${reset}` : `resets in ${reset}`);
@@ -121,11 +122,18 @@ export function meterDetails(meter: Meter, nowSeconds = Date.now() / 1000, name 
   return parts.join(', ');
 }
 
-function valueText(meter: Meter): string {
-  if (meter.id === 'chatgpt' && meter.count != null && meter.cap != null) return `${meter.count}/${meter.cap}`;
-  if (meter.usedPct != null && Number.isFinite(meter.usedPct)) return `${Math.round(meter.usedPct)}%`;
+export function valueText(meter: Meter): string {
+  if (meter.id === 'chatgpt' && meter.count != null && meter.cap != null) return `${Math.max(0, meter.cap - meter.count)} left`;
+  // Spend reads in dollars even with a budget: the ring shows what is left of that budget
   if (meter.spentUsd != null && Number.isFinite(meter.spentUsd)) return `$${meter.spentUsd.toFixed(2)}`;
+  const left = remainingPct(meter.usedPct);
+  if (left != null) return `${left}% left`;
   return '\u2013';
+}
+
+/** The shown value says nothing is left. An empty ring has no colour of its own, so the number warns instead. */
+export function isOut(meter: Meter): boolean {
+  return /^0%? left$/.test(valueText(meter));
 }
 
 function glyphFor(meter: Meter): { key: string; markup: string } {
@@ -211,9 +219,11 @@ export function renderUsageRings(list: HTMLElement, meters: Meter[], onLog: () =
     const { key, markup } = glyphFor(drawn[0]);
     if (cell.glyphKey !== key) { cell.glyph.innerHTML = markup; cell.glyphKey = key; }
     drawn.forEach((meter, meterIndex) => {
-      rings[meterIndex].set(meter.usedPct, usageTone(meter.usedPct));
+      // The ring drains as quota runs out; its colour still warns from how much is used
+      rings[meterIndex].set(remainingPct(meter.usedPct), usageTone(meter.usedPct));
       setIfChanged(lines[meterIndex].window, meterWindow(meter));
       setIfChanged(lines[meterIndex].value, valueText(meter));
+      lines[meterIndex].value.dataset.out = String(isOut(meter));
     });
 
     const word = usageStateWord(drawn);

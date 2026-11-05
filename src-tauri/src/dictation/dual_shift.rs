@@ -2,8 +2,10 @@
 //!
 //! The monitor thread starts the first time the shortcut is turned on. While the shortcut
 //! is off it blocks in `GetMessageW` with no keyboard registration, so it never wakes.
-//! While it is on, it wakes once per key event. A timer runs only during a hold, because
-//! a release can be invisible (elevated foreground window, secure desktop, sleep).
+//! While it is on, it wakes once per key event. A hold must last `MIN_HOLD_MS`, timed by a
+//! one-shot timer, so rolling between Shift keys while typing starts nothing. A second
+//! timer runs only during a hold, because a release can be invisible (elevated foreground
+//! window, secure desktop, sleep).
 //!
 //! Raw Input was chosen over `WH_KEYBOARD_LL`: it cannot delay anyone's typing and adds
 //! no callback to the system input path. Each event is reduced to "was this a physical
@@ -19,6 +21,8 @@ pub(super) enum HoldChange {
     Pressed,
     Released,
     Unavailable(String),
+    /// The keyboard registration works, so any earlier problem is over.
+    Available,
 }
 
 pub(super) type Handler = Box<dyn FnMut(HoldChange) + Send>;
@@ -53,27 +57,53 @@ fn classify_shift(vkey: u16, make_code: u16, flags: u16) -> Option<(ShiftKey, bo
     Some((key, flags & RI_KEY_BREAK == 0))
 }
 
-/// Key repeat arrives as more key-downs, so only an edge produces a change.
+/// How long both keys must stay down. Rolling between Shift keys while typing "USA"
+/// overlaps them for far less than this.
 #[cfg_attr(not(any(windows, test)), allow(dead_code))]
-fn hold_transition(holding: bool, both_down: bool) -> Option<HoldChange> {
-    match (holding, both_down) {
-        (false, true) => Some(HoldChange::Pressed),
-        (true, false) => Some(HoldChange::Released),
-        _ => None,
+const MIN_HOLD_MS: u32 = 200;
+
+#[cfg_attr(not(any(windows, test)), allow(dead_code))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Hold {
+    Idle,
+    Arming,
+    Held,
+}
+
+/// A key event. Key repeat arrives as more key-downs, so only a change does anything.
+#[cfg_attr(not(any(windows, test)), allow(dead_code))]
+fn hold_after_keys(hold: Hold, both_down: bool) -> (Hold, Option<HoldChange>) {
+    match (hold, both_down) {
+        (Hold::Idle, true) => (Hold::Arming, None),
+        (Hold::Arming, false) => (Hold::Idle, None),
+        (Hold::Held, false) => (Hold::Idle, Some(HoldChange::Released)),
+        (unchanged, _) => (unchanged, None),
+    }
+}
+
+/// The one-shot timer ran out. The keys still count only if they are still down.
+#[cfg_attr(not(any(windows, test)), allow(dead_code))]
+fn hold_after_arm_timer(hold: Hold, both_down: bool) -> (Hold, Option<HoldChange>) {
+    match (hold, both_down) {
+        (Hold::Arming, true) => (Hold::Held, Some(HoldChange::Pressed)),
+        (Hold::Arming, false) => (Hold::Idle, None),
+        (unchanged, _) => (unchanged, None),
     }
 }
 
 #[cfg(windows)]
 mod native {
     use super::*;
-    use std::{
-        panic::{catch_unwind, AssertUnwindSafe},
-        sync::atomic::{AtomicBool, AtomicIsize, Ordering},
+    use std::sync::{
+        atomic::{AtomicBool, AtomicIsize, Ordering},
+        Arc, Mutex,
     };
     use windows::{
         core::w,
         Win32::{
-            Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM},
+            Foundation::{
+                GetLastError, ERROR_CLASS_ALREADY_EXISTS, HINSTANCE, HWND, LPARAM, LRESULT, WPARAM,
+            },
             System::LibraryLoader::GetModuleHandleW,
             UI::{
                 Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LSHIFT, VK_RSHIFT},
@@ -95,6 +125,7 @@ mod native {
     const WM_TUCK_SYNC: u32 = WM_APP + 51;
     const WM_TUCK_STOP: u32 = WM_APP + 52;
     const HOLD_TIMER: usize = 1;
+    const ARM_TIMER: usize = 2;
     const HOLD_RECHECK_MS: u32 = 100;
     const USAGE_PAGE_GENERIC: u16 = 0x01;
     const USAGE_KEYBOARD: u16 = 0x06;
@@ -108,6 +139,15 @@ mod native {
         std::sync::atomic::AtomicUsize::new(0);
 
     pub(super) type IsDown = fn(ShiftKey) -> bool;
+    pub(super) type SharedHandler = Arc<Mutex<Handler>>;
+    /// `run`, or a stand-in in tests that need it to fail.
+    pub(super) type Runner = fn(&SharedHandler, IsDown) -> windows::core::Result<()>;
+
+    fn report(handler: &SharedHandler, change: HoldChange) {
+        if let Ok(mut handler) = handler.lock() {
+            handler(change);
+        }
+    }
 
     fn async_is_down(key: ShiftKey) -> bool {
         let vk = match key {
@@ -118,27 +158,45 @@ mod native {
     }
 
     struct Monitor {
-        handler: Handler,
+        handler: SharedHandler,
         is_down: IsDown,
         hwnd: HWND,
         registered: bool,
-        holding: bool,
+        hold: Hold,
     }
 
     impl Monitor {
-        fn set_holding(&mut self, both_down: bool) {
-            let Some(change) = hold_transition(self.holding, both_down) else {
-                return;
-            };
-            self.holding = both_down;
-            unsafe {
-                if both_down {
-                    SetTimer(self.hwnd, HOLD_TIMER, HOLD_RECHECK_MS, None);
-                } else {
-                    let _ = KillTimer(self.hwnd, HOLD_TIMER);
+        fn both_down(&self) -> bool {
+            (self.is_down)(ShiftKey::Left) && (self.is_down)(ShiftKey::Right)
+        }
+
+        fn apply(&mut self, next: (Hold, Option<HoldChange>)) {
+            let (hold, change) = next;
+            if hold != self.hold {
+                unsafe {
+                    // Each timer runs only in the state that needs it.
+                    match (self.hold, hold) {
+                        (Hold::Idle, Hold::Arming) => {
+                            SetTimer(self.hwnd, ARM_TIMER, MIN_HOLD_MS, None);
+                        }
+                        (Hold::Arming, Hold::Held) => {
+                            let _ = KillTimer(self.hwnd, ARM_TIMER);
+                            SetTimer(self.hwnd, HOLD_TIMER, HOLD_RECHECK_MS, None);
+                        }
+                        (Hold::Arming, Hold::Idle) => {
+                            let _ = KillTimer(self.hwnd, ARM_TIMER);
+                        }
+                        (Hold::Held, Hold::Idle) => {
+                            let _ = KillTimer(self.hwnd, HOLD_TIMER);
+                        }
+                        _ => {}
+                    }
                 }
+                self.hold = hold;
             }
-            (self.handler)(change);
+            if let Some(change) = change {
+                report(&self.handler, change);
+            }
         }
 
         fn sync(&mut self) {
@@ -160,13 +218,19 @@ mod native {
                 RegisterRawInputDevices(&[device], std::mem::size_of::<RAWINPUTDEVICE>() as u32)
             };
             match result {
-                Ok(()) => self.registered = wanted,
-                Err(error) => (self.handler)(HoldChange::Unavailable(format!(
-                    "Holding both Shift keys is unavailable: {error}"
-                ))),
+                Ok(()) => {
+                    self.registered = wanted;
+                    report(&self.handler, HoldChange::Available);
+                }
+                Err(error) => report(
+                    &self.handler,
+                    HoldChange::Unavailable(format!(
+                        "Holding both Shift keys is unavailable: {error}"
+                    )),
+                ),
             }
             if !wanted {
-                self.set_holding(false);
+                self.apply(hold_after_keys(self.hold, false));
             }
         }
 
@@ -182,12 +246,15 @@ mod native {
                 ShiftKey::Left => ShiftKey::Right,
                 ShiftKey::Right => ShiftKey::Left,
             };
-            self.set_holding(down && (self.is_down)(other));
+            self.apply(hold_after_keys(self.hold, down && (self.is_down)(other)));
         }
 
         fn recheck_hold(&mut self) {
-            let both = (self.is_down)(ShiftKey::Left) && (self.is_down)(ShiftKey::Right);
-            self.set_holding(both);
+            self.apply(hold_after_keys(self.hold, self.both_down()));
+        }
+
+        fn arm_timer_ran_out(&mut self) {
+            self.apply(hold_after_arm_timer(self.hold, self.both_down()));
         }
     }
 
@@ -216,32 +283,29 @@ mod native {
         wparam: WPARAM,
         lparam: LPARAM,
     ) -> LRESULT {
-        let result = catch_unwind(AssertUnwindSafe(|| unsafe {
+        unsafe {
             if message == WM_NCCREATE {
                 let create = &*(lparam.0 as *const CREATESTRUCTW);
                 SetWindowLongPtrW(hwnd, GWLP_USERDATA, create.lpCreateParams as isize);
-                return;
+            } else {
+                let raw = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut Monitor;
+                if !raw.is_null() {
+                    let monitor = &mut *raw;
+                    match message {
+                        WM_INPUT => monitor.key_event(lparam),
+                        WM_TIMER if wparam.0 == HOLD_TIMER => monitor.recheck_hold(),
+                        WM_TIMER if wparam.0 == ARM_TIMER => monitor.arm_timer_ran_out(),
+                        WM_TUCK_SYNC => monitor.sync(),
+                        WM_TUCK_STOP => PostQuitMessage(0),
+                        _ => {}
+                    }
+                }
             }
-            let raw = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut Monitor;
-            if raw.is_null() {
-                return;
-            }
-            let monitor = &mut *raw;
-            match message {
-                WM_INPUT => monitor.key_event(lparam),
-                WM_TIMER if wparam.0 == HOLD_TIMER => monitor.recheck_hold(),
-                WM_TUCK_SYNC => monitor.sync(),
-                WM_TUCK_STOP => PostQuitMessage(0),
-                _ => {}
-            }
-        }));
-        if result.is_err() {
-            eprintln!("Dual-shift monitor callback panicked");
+            DefWindowProcW(hwnd, message, wparam, lparam)
         }
-        unsafe { DefWindowProcW(hwnd, message, wparam, lparam) }
     }
 
-    fn run(handler: Handler, is_down: IsDown) -> windows::core::Result<()> {
+    fn run(handler: &SharedHandler, is_down: IsDown) -> windows::core::Result<()> {
         let module = unsafe { GetModuleHandleW(None)? };
         let instance = HINSTANCE(module.0);
         let class_name = w!("TuckDualShift");
@@ -251,15 +315,18 @@ mod native {
             lpszClassName: class_name,
             ..Default::default()
         };
-        if unsafe { RegisterClassW(&class) } == 0 {
+        // A retry after a failed start finds the class already registered.
+        if unsafe { RegisterClassW(&class) } == 0
+            && unsafe { GetLastError() } != ERROR_CLASS_ALREADY_EXISTS
+        {
             return Err(windows::core::Error::from_win32());
         }
         let mut monitor = Box::new(Monitor {
-            handler,
+            handler: handler.clone(),
             is_down,
             hwnd: HWND::default(),
             registered: false,
-            holding: false,
+            hold: Hold::Idle,
         });
         let hwnd = unsafe {
             CreateWindowExW(
@@ -298,6 +365,14 @@ mod native {
         Ok(())
     }
 
+    #[cfg(test)]
+    pub(super) fn run_for_test(
+        handler: &SharedHandler,
+        is_down: IsDown,
+    ) -> windows::core::Result<()> {
+        run(handler, is_down)
+    }
+
     fn post(message: u32) {
         let raw = WINDOW.load(Ordering::SeqCst);
         if raw != 0 {
@@ -307,24 +382,40 @@ mod native {
         }
     }
 
+    /// A failed start clears STARTED, so the next attempt tries again instead of posting to
+    /// a window that does not exist, and tells the owner why.
     pub(super) fn set_enabled_with(
         enabled: bool,
         make_handler: impl FnOnce() -> Handler,
         is_down: IsDown,
+        runner: Runner,
     ) {
         WANTED.store(enabled, Ordering::SeqCst);
         if enabled && !STARTED.swap(true, Ordering::SeqCst) {
-            let handler = make_handler();
+            let handler: SharedHandler = Arc::new(Mutex::new(make_handler()));
+            let thread_handler = handler.clone();
             let spawned = std::thread::Builder::new()
                 .name("tuck-dual-shift".into())
                 .spawn(move || {
-                    if let Err(error) = run(handler, is_down) {
-                        eprintln!("Dual-shift monitor stopped: {error}");
+                    if let Err(error) = runner(&thread_handler, is_down) {
+                        WINDOW.store(0, Ordering::SeqCst);
+                        STARTED.store(false, Ordering::SeqCst);
+                        report(
+                            &thread_handler,
+                            HoldChange::Unavailable(format!(
+                                "Holding both Shift keys is unavailable: {error}"
+                            )),
+                        );
                     }
                 });
             if let Err(error) = spawned {
-                eprintln!("Could not start dual-shift monitor: {error}");
                 STARTED.store(false, Ordering::SeqCst);
+                report(
+                    &handler,
+                    HoldChange::Unavailable(format!(
+                        "Holding both Shift keys is unavailable: {error}"
+                    )),
+                );
             }
             return;
         }
@@ -332,7 +423,7 @@ mod native {
     }
 
     pub(in super::super) fn set_enabled(enabled: bool, make_handler: impl FnOnce() -> Handler) {
-        set_enabled_with(enabled, make_handler, async_is_down);
+        set_enabled_with(enabled, make_handler, async_is_down, run);
     }
 
     pub(in super::super) fn stop() {
@@ -372,11 +463,78 @@ mod tests {
     }
 
     #[test]
-    fn hold_changes_only_on_edges() {
-        assert_eq!(hold_transition(false, true), Some(HoldChange::Pressed));
-        assert_eq!(hold_transition(true, true), None, "key repeat");
-        assert_eq!(hold_transition(true, false), Some(HoldChange::Released));
-        assert_eq!(hold_transition(false, false), None);
+    fn rolling_between_shift_keys_while_typing_starts_nothing() {
+        // Typing "USA": the keys overlap, then one lifts before the timer runs out.
+        let (hold, change) = hold_after_keys(Hold::Idle, true);
+        assert_eq!((hold, change), (Hold::Arming, None));
+        let (hold, change) = hold_after_keys(hold, false);
+        assert_eq!((hold, change), (Hold::Idle, None));
+        // A late timer finds nothing to do.
+        assert_eq!(hold_after_arm_timer(hold, false), (Hold::Idle, None));
+    }
+
+    #[test]
+    fn a_timer_racing_a_release_does_not_start_a_recording() {
+        assert_eq!(
+            hold_after_arm_timer(Hold::Arming, false),
+            (Hold::Idle, None)
+        );
+    }
+
+    #[test]
+    fn a_real_hold_starts_after_the_minimum_and_ends_on_release() {
+        let (hold, _) = hold_after_keys(Hold::Idle, true);
+        // Key repeat while waiting changes nothing.
+        assert_eq!(hold_after_keys(hold, true), (Hold::Arming, None));
+        let (hold, change) = hold_after_arm_timer(hold, true);
+        assert_eq!((hold, change), (Hold::Held, Some(HoldChange::Pressed)));
+        assert_eq!(
+            hold_after_keys(hold, true),
+            (Hold::Held, None),
+            "key repeat"
+        );
+        assert_eq!(
+            hold_after_keys(hold, false),
+            (Hold::Idle, Some(HoldChange::Released))
+        );
+    }
+
+    #[test]
+    fn the_minimum_hold_is_longer_than_a_typing_overlap() {
+        assert!((150..=300).contains(&MIN_HOLD_MS));
+    }
+
+    /// A failed start reports why and leaves the monitor able to try again.
+    #[cfg(windows)]
+    #[test]
+    fn a_failed_start_reports_why_and_can_be_retried() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::mpsc;
+        use std::time::Duration;
+        static ATTEMPTS: AtomicUsize = AtomicUsize::new(0);
+        fn failing(
+            _handler: &native::SharedHandler,
+            _is_down: native::IsDown,
+        ) -> windows::core::Result<()> {
+            ATTEMPTS.fetch_add(1, Ordering::SeqCst);
+            Err(windows::core::Error::from_hresult(windows::core::HRESULT(
+                0x8000_4005_u32 as i32,
+            )))
+        }
+        for attempt in 1..=2 {
+            let (tx, rx) = mpsc::channel();
+            native::set_enabled_with(
+                true,
+                || Box::new(move |change| tx.send(change).unwrap()),
+                |_| false,
+                failing,
+            );
+            match rx.recv_timeout(Duration::from_secs(5)).unwrap() {
+                HoldChange::Unavailable(reason) => assert!(reason.contains("unavailable")),
+                other => panic!("expected a reason, got {other:?}"),
+            }
+            assert_eq!(ATTEMPTS.load(Ordering::SeqCst), attempt, "tried again");
+        }
     }
 
     /// Injects one real Shift key, so it needs an interactive desktop and is not run in CI.
@@ -415,8 +573,18 @@ mod tests {
             true,
             || Box::new(move |change| tx.send(change).unwrap()),
             |_| true,
+            native::run_for_test,
         );
-        std::thread::sleep(Duration::from_millis(300));
+        assert_eq!(
+            rx.recv_timeout(Duration::from_secs(2)).unwrap(),
+            HoldChange::Available
+        );
+
+        // A tap shorter than the minimum hold reports nothing.
+        left_shift(KEYBD_EVENT_FLAGS(0));
+        std::thread::sleep(Duration::from_millis(40));
+        left_shift(KEYEVENTF_KEYUP);
+        assert!(rx.recv_timeout(Duration::from_millis(400)).is_err());
 
         left_shift(KEYBD_EVENT_FLAGS(0));
         assert_eq!(
@@ -430,7 +598,12 @@ mod tests {
         );
         assert!(KEY_EVENTS.load(Ordering::SeqCst) >= 2);
 
-        native::set_enabled_with(false, || unreachable!("already started"), |_| true);
+        native::set_enabled_with(
+            false,
+            || unreachable!("already started"),
+            |_| true,
+            native::run_for_test,
+        );
         std::thread::sleep(Duration::from_millis(200));
         let before = KEY_EVENTS.load(Ordering::SeqCst);
         left_shift(KEYBD_EVENT_FLAGS(0));

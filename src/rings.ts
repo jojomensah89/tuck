@@ -41,6 +41,12 @@ export function ringDashOffset(pct: number | null | undefined, c: number): numbe
 }
 
 /** Threshold colour for a quota: the logo names the provider, the colour says how close the limit is */
+/** How much of a quota is left, as a whole percent. Unknown usage stays unknown. */
+export function remainingPct(usedPct: number | null | undefined): number | null {
+  const used = clampPct(usedPct);
+  return used === null ? null : Math.round(100 - used);
+}
+
 export function usageTone(pct: number | null | undefined): RingTone {
   const value = clampPct(pct);
   if (value === null) return 'none';

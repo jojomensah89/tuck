@@ -1,17 +1,14 @@
 import { invokeCommand, isTauri } from './ipc.js';
+import type { ModelRow } from './dictation-models.js';
 
 /** Only desktop services may resolve native actions. Browser previews never fake them. */
 export async function nativeService<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   if (!isTauri()) throw new Error('Open Tuck on Windows to use this feature.');
-  const names: Record<string, string> = { lyrics_settings: 'lyrics_status', visualizer_settings: 'visualizer_status', telemetry_snapshot: 'telemetry_now', lyrics_lookup: 'lyrics_get', dictation_snapshot: 'dictation_get_state', dictation_settings: 'dictation_get_state', clipboard_snapshot: 'clipboard_get_state', clipboard_settings: 'clipboard_get_state' };
+  const names: Record<string, string> = { lyrics_settings: 'lyrics_status', visualizer_settings: 'visualizer_status', telemetry_snapshot: 'telemetry_now', lyrics_lookup: 'lyrics_get', dictation_snapshot: 'dictation_get_state', clipboard_snapshot: 'clipboard_get_state', clipboard_settings: 'clipboard_get_state' };
   let result: unknown = await invokeCommand(names[command] || command, args);
   if (result === null || result === undefined) throw new Error('This service is not available in this build.');
   if (command === 'telemetry_snapshot') result = normalizeTelemetry(result);
   if (command === 'dictation_snapshot') result = normalizeDictation(result);
-  if (command === 'dictation_settings') {
-    const data = result as NativeDictation;
-    result = { ...data.settings, modelReady: data.modelInstalled };
-  }
   if (command === 'clipboard_snapshot' || command === 'clipboard_settings') result = normalizeClipboard(result);
   if (command === 'media_sessions') result = (result as {id: string; sourceAppId: string; isSelected: boolean}[]).map(session => ({ id: session.id, name: session.sourceAppId, selected: session.isSelected }));
   if (command === 'lyrics_lookup') {
@@ -28,7 +25,7 @@ export async function nativeAction(command: string, args?: Record<string, unknow
     const settings = args?.settings as { enabled: boolean; persist: boolean };
     await invokeCommand('clipboard_configure', { enabled: settings.enabled, persistOnExit: settings.persist }); return;
   }
-  const names: Record<string, string> = { dictation_stop: 'dictation_hold_stop', dictation_insert: 'dictation_review_insert', dictation_download_model: 'dictation_model_download', clipboard_remove: 'clipboard_delete' };
+  const names: Record<string, string> = { dictation_stop: 'dictation_hold_stop', dictation_insert: 'dictation_review_insert', clipboard_remove: 'clipboard_delete' };
   await invokeCommand(names[command] || command, args);
 }
 export interface MediaSession { id: string; name: string; selected: boolean }
@@ -44,14 +41,31 @@ export interface TelemetrySnapshot {
   stale?: boolean;
 }
 export interface DictationSnapshot {
-  status: 'disabled' | 'idle' | 'recording' | 'transcribing' | 'review' | 'error';
+  status: 'disabled' | 'idle' | 'starting' | 'recording' | 'transcribing' | 'processing' | 'cancelling' | 'inserting' | 'review' | 'error' | 'modelMissing' | 'downloadingModel';
+  previewsPaused?: boolean;
   transcript: string; error?: string | null; modelReady?: boolean;
+  preview?: string | null; sessionId?: number; revision?: number;
   canInsert?: boolean;
+  message?: string | null; settings?: DictationSettings; modelDownloadedBytes?: number;
+  models?: ModelRow[]; activeModelLabel?: string | null; modelNotice?: string | null; scanningModels?: boolean;
+  shortcutProblems?: { toggle: string | null; hold: string | null }; settingsNotice?: string | null;
 }
+
+/** Native events and the initial IPC response share one monotonic ordering. */
+export class DictationUpdates {
+  private revision = -1;
+  accept(data: DictationSnapshot): boolean {
+    if (data.revision === undefined) return this.revision === -1;
+    if (!Number.isSafeInteger(data.revision) || data.revision <= this.revision) return false;
+    this.revision = data.revision;
+    return true;
+  }
+}
+export interface DictationSettings { toggleShortcut: string; holdToTalkShortcut: string; reviewBeforeInsert: boolean; partialPreview: boolean }
 export interface ClipboardItem { id: string; text: string; pinned: boolean; createdAt: number }
 export interface ClipboardSnapshot { enabled: boolean; items: ClipboardItem[] }
 
-interface NativeDictation { status: string; transcript: string | null; message: string | null; modelInstalled: boolean; modelDownloadedBytes: number; settings: { toggleShortcut: string; holdToTalkShortcut: string; reviewBeforeInsert: boolean; partialPreview: boolean } }
+interface NativeDictation { status: string; transcript: string | null; message: string | null; modelInstalled: boolean; modelDownloadedBytes: number; settings: DictationSettings }
 export function normalizeDictation(value: unknown): DictationSnapshot {
   const data = value as NativeDictation & DictationSnapshot;
   return { ...data, transcript: data.transcript || '', error: data.message || data.error, modelReady: data.modelInstalled ?? data.modelReady };

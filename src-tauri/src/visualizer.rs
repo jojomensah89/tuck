@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
+use std::sync::{Condvar, Mutex};
 use tauri::{AppHandle, Emitter, Manager};
 
 pub const NUM_BINS: usize = 16;
@@ -30,6 +30,22 @@ impl Default for VisualizerSnapshot {
             is_silent: true,
         }
     }
+}
+
+static PLAYING: Mutex<bool> = Mutex::new(false);
+static WAKE: Condvar = Condvar::new();
+
+fn playback_active(active: bool, playing: bool) -> bool {
+    active && playing
+}
+pub fn playback_changed(active: bool, playing: bool) {
+    let mut current = PLAYING.lock().unwrap_or_else(|p| p.into_inner());
+    *current = playback_active(active, playing);
+    WAKE.notify_all();
+}
+
+fn capture_requested() -> bool {
+    ENABLED.load(Ordering::Acquire) && *PLAYING.lock().unwrap_or_else(|p| p.into_inner())
 }
 
 static ENABLED: AtomicBool = AtomicBool::new(false);
@@ -69,6 +85,10 @@ pub fn visualizer_set_enabled(window: tauri::Window, enabled: bool) -> Result<()
     let _preference =
         crate::service_preferences::write(window.app_handle(), "visualizer", enabled)?;
     ENABLED.store(enabled, Ordering::SeqCst);
+    {
+        let _guard = PLAYING.lock().unwrap_or_else(|p| p.into_inner());
+        WAKE.notify_all();
+    }
     if !enabled {
         ACTIVE.store(false, Ordering::SeqCst);
         if let Ok(mut snap) = SNAPSHOT.lock() {
@@ -270,15 +290,21 @@ pub fn start(app: AppHandle) {
         Ordering::Release,
     );
     std::thread::spawn(move || loop {
-        std::thread::sleep(std::time::Duration::from_millis(200));
-        if ENABLED.load(Ordering::Relaxed) {
+        let playing = PLAYING.lock().unwrap_or_else(|p| p.into_inner());
+        let playing = WAKE
+            .wait_while(playing, |playing| {
+                !ENABLED.load(Ordering::Acquire) || !*playing
+            })
+            .unwrap_or_else(|p| p.into_inner());
+        drop(playing);
+        if capture_requested() {
             #[cfg(windows)]
             native_wasapi::run_loopback_capture(app.clone());
 
             #[cfg(not(windows))]
             {
                 ACTIVE.store(true, Ordering::SeqCst);
-                while ENABLED.load(Ordering::Relaxed) {
+                while capture_requested() {
                     std::thread::sleep(std::time::Duration::from_millis(50));
                     let snap = VisualizerSnapshot::default();
                     let _ = app.emit("visualizer", snap);
@@ -292,6 +318,14 @@ pub fn start(app: AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn capture_requires_active_playback() {
+        assert!(playback_active(true, true));
+        assert!(!playback_active(true, false));
+        assert!(!playback_active(false, true));
+        assert!(!playback_active(false, false));
+    }
 
     #[test]
     fn test_fft_radix2_impulse() {

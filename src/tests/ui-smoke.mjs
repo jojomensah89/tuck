@@ -15,6 +15,14 @@ try {
   };
   await context.route('http://tuck.test/**', serveDist);
   const page = await context.newPage();
+  const instrumentTimers = () => {
+    const active = new Set();
+    const start = window.setInterval.bind(window), stop = window.clearInterval.bind(window);
+    window.setInterval = (callback, delay, ...args) => { const id = start(callback, delay, ...args); active.add(id); return id; };
+    window.clearInterval = id => { active.delete(id); stop(id); };
+    window.__idleIntervals = active;
+  };
+  await context.addInitScript(instrumentTimers);
   const errors = [];
   page.on('pageerror',error => errors.push(error.message));
   await page.goto('http://tuck.test/');
@@ -162,7 +170,10 @@ try {
       if(command==='radio_set'){state.radios[0].state=args.enabled?'On':'Off';return;}
       if(command==='extension_settings')throw 'Activity settings could not be saved';
       if(command==='media_now')return {active:false,trackId:'',title:'',artist:'',playing:false,positionMs:0,durationMs:0,artwork:null};
-      if(command==='usage_now')return [];
+      if(command==='usage_now') {
+        if(window.__holdUsage) return new Promise(resolve => { window.__resolveUsage = resolve; });
+        return structuredClone(window.__usageSnapshot || []);
+      }
       if(command==='clipboard_get_state')return {enabled:false,persistOnExit:false,items:[]};
       if(command==='clipboard_configure')throw 'Fixture atomic save failure';
       if(command==='plugin:updater|check')return null;
@@ -176,7 +187,9 @@ try {
   };
   await context.addInitScript(nativeBridge);
   const native=await context.newPage();const nativeErrors=[];native.on('pageerror',error=>nativeErrors.push(error.message));
-  await native.goto('http://tuck.test/');await native.waitForTimeout(100);
+  await native.goto('http://tuck.test/');
+  await native.waitForFunction(() => window.__calls?.some(call => call.command === 'plugin:event|listen' && call.args.event === 'open-island') && window.__calls.some(call => call.command === 'usage_now'));
+  assert.equal(await native.evaluate(() => window.__idleIntervals.size), 0, 'No intervals while collapsed without running activities');
   assert.equal(await native.locator('.page.todos').count(), 0, 'Todos feature must be completely removed');
   // Settings hears about an update from the background check, shows notes as text, and counts the row
   const updates=await context.newPage();
@@ -202,6 +215,29 @@ try {
   await updates.evaluate(()=>window.__emitNative('pending-update-changed',null));
   await updates.locator('#row-update-available').waitFor({state:'hidden'});
   await updates.close();
+  // A missed event is recovered by the pull on open; a racing newer event wins.
+  const usageFixture = pct => [{id:'claude-5h',provider:'claude',label:'Claude session',usedPct:pct,spentUsd:null,resetsAt:null,source:'official',stale:false,status:'ok'}];
+  await native.evaluate(meters => { window.__usageSnapshot = meters; window.__emitNative('open-island',null); }, usageFixture(31));
+  try {
+    await native.waitForFunction(() => document.querySelector('#uList .u-face')?.getAttribute('aria-label')?.includes('69% left'));
+  } catch (error) {
+    console.error('Usage open diagnostics', await native.evaluate(() => ({state:document.getElementById('isl')?.dataset.state,calls:window.__calls,usage:document.querySelector('#panel-usage')?.textContent})), nativeErrors);
+    throw error;
+  }
+  await native.keyboard.press('Escape');
+  await native.evaluate(() => { window.__holdUsage = true; window.__emitNative('open-island',null); });
+  await native.waitForFunction(() => typeof window.__resolveUsage === 'function');
+  await native.evaluate(meters => window.__emitNative('usage',meters), usageFixture(72));
+  await native.evaluate(meters => { window.__resolveUsage(meters); window.__holdUsage = false; }, usageFixture(12));
+  await native.waitForTimeout(20);
+  assert.ok((await native.locator('#uList .u-face').getAttribute('aria-label')).includes('28% left'),'A stale open response cannot overwrite a newer usage event');
+  await native.keyboard.press('Escape');
+  await native.evaluate(() => {
+    document.querySelectorAll('.live-spectrum i, .wide-spectrum i').forEach(el=>el.style.setProperty('--level','1'));
+    window.__emitNative('open-island',null);
+  });
+  assert.equal(await native.locator('.live-spectrum i, .wide-spectrum i').evaluateAll(nodes=>nodes.every(el=>el.style.getPropertyValue('--level')==='0')),true,'Opening clears old bars immediately, before the one-second stale timer');
+  await native.keyboard.press('Escape');
   // Volume/brightness HUD from a mocked native level event
   const hudState = () => native.locator('#isl').evaluate(el => [el.dataset.state, el.dataset.hud ?? null]);
   await native.evaluate(()=>window.__emitNative('system-level',{kind:'volume',level:37,muted:false}));
@@ -411,6 +447,7 @@ try {
   assert.equal(await native.locator('#isl').getAttribute('data-state'),'idle');
   assert.equal((await native.locator('#isl').boundingBox()).width,300,'Lyric mode reserves a stable wider closed pill');
   assert.equal((await native.locator('#cc .compact-title-track').textContent()).trim(),'Current fixture line');
+  assert.ok(await native.evaluate(()=>{const m=r=>r.left+r.width/2;return Math.abs(m(document.querySelector('#cc .compact-slot.current .compact-title-track').getBoundingClientRect())-m(document.querySelector('.island').getBoundingClientRect()))<=2;}),'Collapsed text is centred on the pill');
   await setLive({compactContent:'title'}); await native.waitForTimeout(50);
   assert.equal((await native.locator('#cc .compact-title-track').textContent()).trim(),'Artwork color fixture');
   assert.equal((await native.locator('#isl').boundingBox()).width,300,'Title mode keeps the same stable width');
@@ -457,11 +494,12 @@ try {
   await native.evaluate(()=>window.__emitNative('media',{active:true,trackId:'fixture-track',title:'Artwork color fixture',artist:'Synthetic test data',playing:true,positionMs:5000,durationMs:120000,artwork:null}));
   assert.equal((await native.locator('#isl').boundingBox()).width,300,'The next track finds the pill unchanged');
   assert.equal(await hitCalls(),hitsBeforePause,'A pause between tracks never touches the native bounds');
-  // Dictation outranks media and gives the pill back its base width
+  // Dictation outranks media and reserves readable space for its live preview
   await native.evaluate(()=>window.dispatchEvent(new CustomEvent('tuck-activity',{detail:{id:'dictation',type:'dictation',phase:'recording',title:'Dictation',text:'',priority:100,active:true}})));
   assert.equal(await native.locator('.compact').getAttribute('aria-label'),'Dictation recording');
   await native.waitForTimeout(50);
-  assert.equal((await native.locator('#isl').boundingBox()).width,212,'A higher-priority activity takes the slot');
+  assert.equal((await native.locator('#isl').boundingBox()).width,300,'Dictation reserves a stable preview width');
+  assert.equal(await native.locator('#cc .compact-slot.current').textContent(),'Listening\u2026');
   await native.evaluate(()=>window.dispatchEvent(new CustomEvent('tuck-activity',{detail:{id:'dictation',type:'dictation',title:'Dictation',text:'',priority:100,active:false}})));
   await setLive({compactContent:'title'}); await native.waitForTimeout(50);
   await setLive({compactContent:'artwork'}); await native.waitForTimeout(450);
@@ -602,8 +640,8 @@ try {
   assert.equal(await native.locator('#uList .u-ring-inner').count(),2);
   await native.waitForTimeout(100);
   assert.deepEqual(await native.locator('#uList .ring').evaluateAll(n=>n.map(x=>x.dataset.tone)),['ok','ok','caution','ok']);
-  assert.deepEqual(await native.locator('#uList .u-provider').first().locator('.u-value-line').evaluateAll(n=>n.map(x=>x.textContent)),['5h42%','7d18%']);
-  assert.match(await native.locator('#uList .u-face').first().getAttribute('aria-label'),/Claude\. 5h, 42% used.*7d, 18% used/);
+  assert.deepEqual(await native.locator('#uList .u-provider').first().locator('.u-value-line').evaluateAll(n=>n.map(x=>x.textContent)),['5h58% left','7d82% left']);
+  assert.match(await native.locator('#uList .u-face').first().getAttribute('aria-label'),/Claude\. 5h, 58% left.*7d, 82% left/);
   assert.equal(await native.locator('#uList .u-provider').nth(1).getAttribute('data-stale'),'true','A stale configured provider remains and dims');
   assert.equal(await native.locator('#uList .u-provider').nth(1).locator('.u-state').textContent(),'Stale','A stale provider says so');
   assert.equal(await native.locator('#uList .u-provider').first().locator('.u-state').isHidden(),true,'A fresh provider has no state word');
@@ -637,6 +675,12 @@ try {
     await native.waitForTimeout(50);
     assert.equal(await native.locator('#uList .u-provider').count(),4,'Each connected source is one card');
     assert.deepEqual(await usageFit(),{inside:true,clear:true,marksClear:true,fits:true},`Four provider cards fit at ${width}px`);
+    // A used-up quota has an empty ring, so its number warns; anything still left, or dollars spent, does not
+    const valueColours = await native.locator('#uList .u-val').evaluateAll(nodes=>nodes.map(n=>[n.textContent,n.dataset.out==='true',getComputedStyle(n).color]));
+    const warnColour = await native.locator('#uList').evaluate(n=>{const probe=document.createElement('span');probe.style.color='var(--warn)';n.append(probe);const colour=getComputedStyle(probe).color;probe.remove();return colour;});
+    assert.deepEqual(valueColours.filter(([,out])=>out).map(([text,,colour])=>[text,colour]),[['0% left',warnColour]],'Only the used-up quota reads as out, in the warning colour');
+    assert.equal(valueColours.filter(([,out])=>!out).some(([,,colour])=>colour===warnColour),false,'Other values keep their normal colour');
+    if (width===440) await native.locator('.page.usage').screenshot({path:path.join(root,'artifacts','usage-out.png')});
     await native.evaluate(()=>{localStorage.setItem('notch.chatgpt',JSON.stringify({label:'ChatGPT (estimate)',cap:10,hours:3}));localStorage.removeItem('notch.chatgpt.log');window.dispatchEvent(new StorageEvent('storage',{key:'notch.chatgpt'}));});
     await native.waitForTimeout(50);
     assert.equal(await native.locator('#uList .u-provider').count(),5);
@@ -645,7 +689,7 @@ try {
     // The ChatGPT estimate is logged by pressing its ring
     const logButton = native.getByRole('button',{name:/^Log a ChatGPT message/});
     await logButton.click();
-    assert.equal(await native.locator('#uList .u-provider').last().locator('.u-val').textContent(),'1/10');
+    assert.equal(await native.locator('#uList .u-provider').last().locator('.u-val').textContent(),'9 left');
     assert.equal(await logButton.evaluate(n=>document.activeElement===n),true,'Logging keeps focus on the ring');
     await native.evaluate(()=>{localStorage.removeItem('notch.chatgpt');localStorage.removeItem('notch.chatgpt.log');});
     await native.evaluate(meters=>window.__emitNative('usage',meters),fiveProviders(Math.round(Date.now()/1000)).slice(0,4));
@@ -748,6 +792,26 @@ try {
   await setLive({openWidth:500});
   await native.getByRole('tab',{name:'Tools',exact:true}).click();
   await native.locator('.page.dictation').scrollIntoViewIfNeeded();
+  await native.evaluate(()=>window.__emitNative('dictation_state',{status:'starting',modelReady:true}));
+  await native.evaluate(()=>window.__emitNative('dictation_state',{status:'recording',modelReady:true}));
+  await native.evaluate(()=>window.__emitNative('dictation_partial',{status:'recording',preview:'Provisional words',modelReady:true}));
+  await native.evaluate(()=>window.__emitNative('dictation_state',{status:'recording',modelReady:true,previewsPaused:true}));
+  assert.match(await native.locator('.page.dictation').textContent(),/Live transcript paused for this recording/);
+  await native.evaluate(()=>window.__emitNative('dictation_partial',{status:'recording',preview:'Late stale preview',previewsPaused:true,modelReady:true}));
+  assert.doesNotMatch(await native.locator('.transcript').textContent(),/Provisional words|Late stale preview/);
+  await native.evaluate(()=>window.__emitNative('dictation_state',{status:'transcribing',modelReady:true,previewsPaused:true}));
+  assert.doesNotMatch(await native.locator('.transcript').textContent(),/Provisional words|Late stale preview/);
+  assert.match(await native.locator('.page.dictation').textContent(),/Transcribing\u2026/);
+  await native.evaluate(()=>window.__emitNative('dictation_state',{status:'cancelling',modelReady:true}));
+  assert.match(await native.locator('.page.dictation').textContent(),/Cancelling\u2026/);
+  await mkdir(path.join(root,'docs/screens'),{recursive:true});
+  await native.locator('#isl').screenshot({path:path.join(root,'docs/screens/dictation-cancelling.png')});
+  assert.equal(await native.getByRole('button',{name:'Record',exact:true}).isDisabled(),true);
+  await native.evaluate(()=>window.__emitNative('dictation_state',{status:'processing',modelReady:true}));
+  assert.match(await native.locator('.page.dictation').textContent(),/Microphone closed/);
+  await native.locator('#isl').screenshot({path:path.join(root,'docs/screens/dictation-processing.png')});
+  await native.evaluate(()=>window.__emitNative('dictation_state',{status:'starting',modelReady:true,previewsPaused:false}));
+  assert.doesNotMatch(await native.locator('.page.dictation').textContent(),/Live transcript paused|Provisional words/);
   await native.evaluate(()=>window.__emitNative('dictation_state',{status:'review',transcript:'<b>Text, not markup</b>',modelReady:true}));
   assert.equal(await native.locator('.transcript').textContent(),'<b>Text, not markup</b>');
   assert.equal(await native.locator('.transcript b').count(),0);
@@ -809,8 +873,24 @@ try {
   await native.locator('#railSettings').click();
   assert.equal(await native.evaluate(()=>window.__calls.some(call=>call.command==='open_settings_cmd')),true,'The rail settings button opens the settings window');
   await native.goto('http://tuck.test/settings.html#tools');
-  await native.evaluate(()=>window.__emitNative('dictation_state',{status:'review',modelInstalled:true,modelDownloadedBytes:0}));
-  assert.equal(await native.locator('#removeModel').isDisabled(),true,'Review must be discarded before model removal');
+  await native.evaluate(()=>window.__emitNative('dictation_state',{status:'review',modelInstalled:true,modelDownloadedBytes:0,activeModelLabel:'Tiny',models:[{id:'ggml-tiny.bin',label:'Tiny',bytes:77691713,speed:'Fastest',accuracy:'Lower',note:null,state:'installed',foundIn:null,active:true},{id:'ggml-base.bin',label:'Base (full size)',bytes:147951465,speed:'Very fast',accuracy:'Good',note:null,state:'found',foundIn:'podcli',active:false}]}));
+  assert.equal(await native.locator('.model-row[data-id="ggml-tiny.bin"] button',{hasText:'Remove'}).isDisabled(),true,'Review must be discarded before model removal');
+  assert.match(await native.locator('#dictationSetupStatus').textContent(),/In use: Tiny/);
+  assert.match(await native.locator('.model-row[data-id="ggml-base.bin"]').textContent(),/Found in podcli/);
+  assert.equal(await native.locator('.model-row[data-id="ggml-base.bin"] button',{hasText:'Remove'}).count(),0,'Another app\'s model has no Remove button');
+  await native.evaluate(()=>{
+    const row={id:'ggml-tiny.bin',label:'Tiny',bytes:77691713,speed:'Fastest',accuracy:'Lower',note:null,state:'installed',foundIn:null,active:true,canRemove:true};
+    window.__emitNative('dictation_state',{status:'idle',modelInstalled:true,activeModelLabel:'Tiny',models:[row]});
+    window.__emitNative('dictation_state',{status:'idle',modelInstalled:true,activeModelLabel:'Tiny',models:[{...row,canRemove:false}]});
+  });
+  assert.equal(await native.locator('.model-row[data-id="ggml-tiny.bin"] button',{hasText:'Remove'}).count(),0,'Ownership loss removes the delete action even when phase and active model are unchanged');
+  assert.equal(await native.locator('.model-row[data-id="ggml-tiny.bin"] button',{hasText:'Stop using'}).isEnabled(),true);
+  await native.evaluate(()=>window.__emitNative('dictation_state',{status:'idle',modelInstalled:true,modelDownloadedBytes:0,activeModelLabel:'Tiny',modelNotice:'Base is no longer on this computer. Using Tiny instead.',shortcutProblems:{toggle:'Ctrl+Shift+Space is in use by another app right now. Try again once it is free, or record a different shortcut.',hold:null}}));
+  assert.match(await native.locator('#dictationModelNotice').textContent(),/no longer on this computer/);
+  assert.match(await native.locator('#dictationShortcutError').textContent(),/in use by another app/);
+  await native.evaluate(()=>window.__emitNative('dictation_state',{status:'idle',modelInstalled:true,modelDownloadedBytes:0,activeModelLabel:'Tiny',models:[]}));
+  assert.equal(await native.locator('#dictationModelNotice').isHidden(),true,'A cleared notice disappears');
+  assert.equal(await native.locator('#dictationShortcutError').isHidden(),true,'A fixed shortcut clears its reason');
   await native.locator('#clipboardEnabled').click();
   await native.getByText('Could not save clipboard settings. Current preferences restored below.',{exact:true}).waitFor();
   assert.equal(await native.locator('#clipboardEnabled').isChecked(),false);
@@ -834,10 +914,77 @@ try {
   assert.equal(await native.locator('#flyoutStatus').getAttribute('data-kind'),'error');
   assert.deepEqual(nativeErrors,[]);
 
+  // Isolate spectrum navigation from the HUD suite's announcement timing.
+  const spectraContext = await browser.newContext({viewport:{width:520,height:230}, reducedMotion:'reduce'});
+  await spectraContext.route('http://tuck.test/**', serveDist);
+  await spectraContext.addInitScript(nativeBridge);
+  const spectra = await spectraContext.newPage();
+  await spectra.goto('http://tuck.test/');
+  await spectra.waitForFunction(() => window.__calls?.some(call => call.command === 'plugin:event|listen' && call.args.event === 'open-island'));
+  await spectra.evaluate(() => window.__emitNative('open-island',null));
+  await spectra.getByRole('tab',{name:'Media',exact:true}).click();
+  await spectra.getByRole('button',{name:'Go to now playing',exact:true}).click();
+  await spectra.waitForTimeout(400);
+  await spectra.evaluate(() => window.__emitNative('visualizer',{bins:[1,1,1],isSilent:false}));
+  assert.equal(await spectra.locator('.live-spectrum i').first().evaluate(el=>el.style.getPropertyValue('--level')),'1');
+  assert.equal(await spectra.locator('.wide-spectrum i').first().evaluate(el=>el.style.getPropertyValue('--level')),'0','Hidden visualizer group is not updated');
+  await spectra.getByRole('button',{name:'Go to visualizer',exact:true}).click();
+  await spectra.waitForTimeout(400);
+  await spectra.evaluate(() => window.__emitNative('visualizer',{bins:[0.5,0.5],isSilent:false}));
+  assert.equal(await spectra.locator('.wide-spectrum i').first().evaluate(el=>el.style.getPropertyValue('--level')),'0.5');
+  await spectra.getByRole('tab',{name:'Usage',exact:true}).click();
+  await spectra.waitForTimeout(100); // Allow IntersectionObserver to deliver the visibility change.
+  const hiddenLevels = await spectra.locator('.live-spectrum i, .wide-spectrum i').evaluateAll(nodes=>nodes.map(el=>el.style.getPropertyValue('--level')));
+  await spectra.evaluate(() => window.__emitNative('visualizer',{bins:[0.3,0.3],isSilent:false}));
+  assert.deepEqual(await spectra.locator('.live-spectrum i, .wide-spectrum i').evaluateAll(nodes=>nodes.map(el=>el.style.getPropertyValue('--level'))),hiddenLevels,'Inactive-tab groups are not updated');
+  await spectra.keyboard.press('Escape');
+  await spectra.evaluate(() => window.__emitNative('visualizer',{bins:[0.2,0.2],isSilent:false}));
+  assert.equal(await spectra.locator('.wide-spectrum i').first().evaluate(el=>el.style.getPropertyValue('--level')),'0.5','Collapsed full-page spectra are not updated');
+  await spectra.evaluate(() => window.__emitNative('open-island',null));
+  assert.equal(await spectra.locator('.live-spectrum i, .wide-spectrum i').evaluateAll(nodes=>nodes.every(el=>el.style.getPropertyValue('--level')==='0')),true,'Opening clears old bars immediately, before the one-second stale timer');
+  await spectra.keyboard.press('Escape');
+  await spectra.mouse.move(0, 220);
+  await spectraContext.close();
+
+  // Versioned native snapshots drive collapsed and expanded previews together.
+  await native.setViewportSize({width:520,height:230});
+  await native.goto('http://tuck.test/');
+  await native.locator('#isl').waitFor();
+  await native.keyboard.press('Escape');
+  await native.mouse.move(0,220);
+  const dictationEvent = (event, revision, status, preview = null, transcript = null, sessionId = 1) =>
+    native.evaluate(({event, revision, status, preview, transcript, sessionId}) => window.__emitNative(event,{revision,sessionId,status,preview,transcript,modelInstalled:true}),{event,revision,status,preview,transcript,sessionId});
+  await dictationEvent('dictation_state',10,'recording');
+  await native.waitForTimeout(450);
+  await native.locator('#isl').screenshot({path:path.join(root,'docs/screens/dictation-preview-listening.png')});
+  const focusBeforePreview = await native.evaluate(()=>document.activeElement.id);
+  await dictationEvent('dictation_partial',11,'recording','Live words <b>stay text</b>');
+  assert.equal(await native.locator('#cc .compact-slot.current').textContent(),'Live words <b>stay text</b>');
+  assert.equal(await native.locator('#cc b').count(),0);
+  assert.equal(await native.locator('#isl').getAttribute('data-state'),'idle');
+  assert.equal(await native.evaluate(()=>document.activeElement.id),focusBeforePreview,'Preview never takes focus');
+  await native.locator('#isl').screenshot({path:path.join(root,'docs/screens/dictation-preview-recording.png')});
+  await dictationEvent('dictation_state',12,'transcribing','Live words <b>stay text</b>');
+  assert.equal(await native.locator('.transcript').textContent(),'Live words <b>stay text</b>');
+  await dictationEvent('dictation_partial',11,'recording','stale text');
+  assert.equal(await native.locator('.transcript').textContent(),'Live words <b>stay text</b>');
+  await dictationEvent('dictation_state',13,'review',null,'Final words');
+  assert.equal(await native.locator('#cc .compact-slot.current').textContent(),'Final words');
+  await dictationEvent('dictation_state',14,'idle');
+  assert.equal(await native.locator('.transcript').textContent(),'Your transcript appears here');
+  await dictationEvent('dictation_partial',11,'recording','late cancelled text');
+  assert.equal(await native.locator('.transcript').textContent(),'Your transcript appears here');
+  await dictationEvent('dictation_state',15,'recording',null,null,2);
+  assert.equal(await native.locator('#cc .compact-slot.current').textContent(),'Listening\u2026');
+  await dictationEvent('dictation_state',16,'error',null,null,2);
+  assert.equal(await native.locator('.transcript').textContent(),'Your transcript appears here');
+  assert.deepEqual(nativeErrors,[]);
+
   // With motion on: what actually keeps running while the island is collapsed
   const motionContext = await browser.newContext({viewport:{width:520,height:230}, reducedMotion:'no-preference'});
   await motionContext.route('http://tuck.test/**', serveDist);
   await motionContext.addInitScript(nativeBridge);
+  await motionContext.addInitScript(instrumentTimers);
   const motion = await motionContext.newPage();
   const motionErrors = []; motion.on('pageerror',error=>motionErrors.push(error.message));
   await motion.goto('http://tuck.test/');
@@ -871,7 +1018,20 @@ try {
   await emitTrack(`${longTitle} again`,false);
   await motion.waitForTimeout(1600);
   assert.deepEqual(await running(),[],'The equalizer stops on pause and nothing else runs');
+  assert.equal(await motion.evaluate(() => window.__idleIntervals.size), 0, 'Pausing collapsed media parks all intervals');
   assert.deepEqual(motionErrors,[]);
+  // The compact clock stays accurate with one minute-aligned timeout, without an interval.
+  const idleClock = await context.newPage();
+  const minuteEdge = new Date('2026-11-04T12:00:59.900Z');
+  await idleClock.clock.install({time:new Date(minuteEdge.getTime() - 1000)});
+  await idleClock.clock.pauseAt(minuteEdge);
+  await idleClock.goto('http://tuck.test/');
+  const beforeMinute = await idleClock.locator('.compact').innerText();
+  await idleClock.clock.runFor(200);
+  assert.notEqual(await idleClock.locator('.compact').innerText(), beforeMinute, 'Collapsed clock advances at the next minute');
+  assert.equal(await idleClock.evaluate(() => window.__idleIntervals.size), 0, 'The minute clock does not start an interval');
+  await idleClock.close();
+
   console.log('UI smoke passed: geometry, tab rail (keys, wheel edges, swipe, memory), accessibility, keyboard seeking, timers, collapsed media text and its running animations, usage rings, section marks, icon buttons, persistence errors, volume/brightness HUD, wheel and middle-click volume, the pill-sized strip on the open island, queued flyout failure, return to open after HUD, HUD setting, charger-ramp brightness, flyout opt-in, native-bridge call priority, shelf, focused radio updates, drag hold and previews.');
 } finally { await browser.close(); }
 

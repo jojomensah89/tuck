@@ -161,6 +161,8 @@ cmd_finish_pending() {
   case "$state" in
     published)
       echo "$tag is already published."
+      # An earlier run may have stopped after publishing, before confirming this
+      verify_live "${tag#v}"
       ;;
     none)
       subject=$(git log -1 --format=%s "$tag")

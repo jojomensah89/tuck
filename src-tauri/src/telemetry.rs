@@ -2,7 +2,14 @@ use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tauri::{AppHandle, Emitter};
+use tauri::AppHandle;
+
+#[cfg(windows)]
+static ADAPTERS_DIRTY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+#[cfg(windows)]
+pub(crate) fn invalidate_adapters() {
+    ADAPTERS_DIRTY.store(true, std::sync::atomic::Ordering::Release);
+}
 
 const MAX_HISTORY_POINTS: usize = 60;
 #[cfg(windows)]
@@ -70,6 +77,8 @@ impl Default for TelemetrySnapshot {
     }
 }
 
+type Request = std::sync::mpsc::Sender<TelemetrySnapshot>;
+static REQUESTS: Mutex<Option<std::sync::mpsc::Sender<Request>>> = Mutex::new(None);
 static SNAPSHOT: Mutex<Option<TelemetrySnapshot>> = Mutex::new(None);
 static HISTORY: Mutex<Option<VecDeque<TelemetryHistoryPoint>>> = Mutex::new(None);
 
@@ -82,11 +91,16 @@ fn now_ms() -> u64 {
 
 #[tauri::command]
 pub fn telemetry_now() -> Result<TelemetrySnapshot, String> {
-    SNAPSHOT
+    let (tx, rx) = std::sync::mpsc::channel();
+    REQUESTS
         .lock()
-        .map_err(|_| "Failed to lock telemetry snapshot")?
-        .clone()
-        .ok_or_else(|| "Telemetry not ready yet".to_string())
+        .map_err(|_| "Telemetry unavailable")?
+        .as_ref()
+        .ok_or("Telemetry not ready")?
+        .send(tx)
+        .map_err(|_| "Telemetry stopped")?;
+    rx.recv_timeout(std::time::Duration::from_secs(3))
+        .map_err(|_| "Telemetry sample timed out".into())
 }
 
 #[tauri::command]
@@ -380,21 +394,33 @@ mod native_windows {
 }
 
 /// Starts the dedicated 1000ms background telemetry poller.
-pub fn start(app: AppHandle) {
+pub fn start(_app: AppHandle) {
+    let (tx, rx) = std::sync::mpsc::channel::<Request>();
+    *REQUESTS.lock().unwrap_or_else(|p| p.into_inner()) = Some(tx);
     std::thread::spawn(move || {
         let mut prev_times: Option<(u64, u64, u64)> = None;
         let mut first_cycle = true;
+        let mut last_sample = std::time::Instant::now();
         #[cfg(windows)]
         let mut gpu_counters = gpu_counters::GpuCounters::new();
 
-        loop {
-            std::thread::sleep(std::time::Duration::from_millis(1000));
-
+        #[cfg(windows)]
+        let mut adapters = Vec::new();
+        while let Ok(reply) = rx.recv() {
+            // CPU deltas after a long idle would describe the whole gap, not current load.
+            if last_sample.elapsed() > std::time::Duration::from_secs(2) {
+                prev_times = None;
+                first_cycle = true;
+            }
+            last_sample = std::time::Instant::now();
             #[cfg(windows)]
             let (cpu, ram, gpus) = {
                 let cpu = native_windows::sample_cpu(&mut prev_times);
                 let ram = native_windows::sample_ram();
-                let mut gpus = native_windows::sample_gpus();
+                if ADAPTERS_DIRTY.swap(false, std::sync::atomic::Ordering::AcqRel) {
+                    adapters = native_windows::sample_gpus();
+                }
+                let mut gpus = adapters.clone();
                 if let Some(counters) = gpu_counters.as_mut() {
                     counters.sample(&mut gpus);
                 }
@@ -453,7 +479,7 @@ pub fn start(app: AppHandle) {
                 *snap_guard = Some(snapshot.clone());
             }
 
-            let _ = app.emit("telemetry", snapshot);
+            let _ = reply.send(snapshot);
         }
     });
 }

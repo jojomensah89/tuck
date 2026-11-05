@@ -1,3 +1,4 @@
+import { UsageSnapshotGate } from './usage-snapshot.js';
 import {mountExtensions} from './extensions.js';
 import { mountLivePages } from './live-ui.js';
 import { LIVE_SETTINGS_KEY, readPreferences, writePreferences } from './live-state.js';
@@ -226,6 +227,31 @@ window.addEventListener('storage', (e) => {
 /* ================= State Machine ================= */
 
 let state: IslandState = 'idle';
+const usageSnapshots = new UsageSnapshotGate();
+let seekInterval: number | undefined;
+let openInterval: number | undefined;
+let compactClockTimeout: number | undefined;
+function syncIdleTimers(): void {
+  window.clearInterval(seekInterval);
+  window.clearInterval(openInterval);
+  window.clearTimeout(compactClockTimeout);
+  seekInterval = undefined;
+  openInterval = undefined;
+  if (mediaState.active && mediaState.playing) seekInterval = window.setInterval(tick, 200);
+  if (state === 'open') {
+    tick(); renderToday(); renderMediaHeader(); renderUsage();
+    void refreshUsageSnapshot();
+    openInterval = window.setInterval(() => { renderToday(); renderMediaHeader(); renderUsage(); }, 1000);
+  }
+  if (state !== 'open' && !mediaState.playing) {
+    compactClockTimeout = window.setTimeout(() => {
+      renderCompact();
+      syncIdleTimers();
+    }, 60000 - Date.now() % 60000 + 10);
+  }
+  window.dispatchEvent(new Event('tuck-visibility'));
+}
+
 let closeTimer = 0;
 let openTimer = 0;
 let hoverInside = false;
@@ -276,6 +302,8 @@ function setState(next: IslandState): void {
   isl.style.width = `${w}px`;
   isl.style.height = `${h}px`;
   isl.dataset.state = next;
+  if (isTauri()) void invokeCommand('island_activity', { active: next !== 'idle' || hoverInside });
+  syncIdleTimers();
   if (next === 'peek' && hud.visible(Date.now())) isl.dataset.hud = hud.reading!.kind;
   else delete isl.dataset.hud;
 
@@ -316,6 +344,7 @@ function syncFlyoutPause(): void {
 
 function onHover(inside: boolean): void {
   hoverInside = inside;
+  if (isTauri()) void invokeCommand('island_activity', { active: inside || state !== 'idle' });
   window.clearTimeout(closeTimer);
   window.clearTimeout(openTimer);
   // The HUD owns the shell until it times out; hover is re-read when it leaves
@@ -352,6 +381,7 @@ const rail = mountTabRail({
   initial: livePreferences.lastTab,
   isOpen: () => state === 'open',
   onChange: id => {
+    window.dispatchEvent(new Event('tuck-visibility'));
     if (id !== 'media') return;
     fitTitle();
     renderMediaHeader();
@@ -536,6 +566,7 @@ function onMediaUpdate(payload: MediaState): void {
   ($('prev') as HTMLButtonElement).disabled = !mediaState.active || mediaState.canSkipPrev === false;
   ($('next') as HTMLButtonElement).disabled = !mediaState.active || mediaState.canSkipNext === false;
   live.media(mediaState, currentPosition());
+  syncIdleTimers();
   renderCompact();
 }
 
@@ -561,7 +592,7 @@ function tick(): void {
   trackSlider.setAttribute('aria-disabled', String(!mediaState.active || mediaState.canSeek === false || mediaState.durationMs <= 0));
 }
 
-setInterval(tick, 200);
+
 
 $('play').onclick = (e) => {
   e.stopPropagation();
@@ -641,7 +672,7 @@ function fitCompactTitle(): void {
     // The leaving layer is still in the DOM during the cross-fade; measure the current one
     const title = document.querySelector<HTMLElement>('#cc .compact-slot.current .compact-title');
     const track = title?.querySelector<HTMLElement>('.compact-title-track');
-    if (!title || !track || state === 'open') return;
+    if (!title || !track || state === 'open' || title.classList.contains('dictation-preview')) return;
     // Mid-morph the column is the wrong width; transitionend refits once the shell settles
     if (Math.abs(isl.offsetWidth - parseFloat(isl.style.width)) > 1) return;
     const line = track.textContent ?? '';
@@ -695,7 +726,7 @@ function compactCandidates(): CompactActivityCandidate[] {
       title: activity.title,
       priority: activity.priority,
       active: true,
-      running: activity.type !== 'dictation' || activity.phase === 'recording',
+      running: activity.type !== 'dictation' || ['starting', 'recording', 'transcribing', 'processing', 'cancelling', 'inserting'].includes(activity.phase || ''),
     })),
     {
       id: 'media',
@@ -757,7 +788,7 @@ function renderCompact(): void {
   const primary = selection.primary;
 
   const mediaText = primary?.kind === 'media' && livePreferences.compactContent !== 'artwork';
-  isl.toggleAttribute('data-compact-text', mediaText);
+  isl.toggleAttribute('data-compact-text', mediaText || primary?.kind === 'dictation');
   const closedWidth = compactShellWidth(primary, livePreferences.compactContent);
   if (state === 'idle') syncIdleWidth(closedWidth);
   if (closedWidth !== pillStrip.width) {
@@ -790,7 +821,9 @@ function renderCompact(): void {
   // Media can show the current lyric line instead of the track title (Settings > Collapsed content)
   const lyric = primary.kind === 'media' && livePreferences.compactContent === 'lyrics' ? compactLyric() : '';
   const title = lyric || primary.title;
-  if (state === 'peek' || mediaText) {
+  if (primary.kind === 'dictation') {
+    // Its center is rendered below from provisional text rather than the activity title.
+  } else if (state === 'peek' || mediaText) {
     const changed = setCompactSlot(cc, `${primary.id}:title`, title, () => compactTitle(title));
     if (changed) fitCompactTitle();
   } else {
@@ -850,6 +883,14 @@ function renderCompact(): void {
   const external = externalActivities.get(externalId)!;
   if (primary.kind === 'dictation') {
     const recording = external.phase === 'recording';
+    const phaseLabel = recording ? 'Dictation recording' : external.phase === 'transcribing' ? 'Transcribing' : external.phase === 'processing' ? 'Processing' : external.phase === 'cancelling' ? 'Cancelling' : external.phase === 'starting' ? 'Starting' : external.phase === 'inserting' ? 'Inserting' : 'Review transcript';
+    const line = external.text || (recording ? 'Listening\u2026' : `${phaseLabel}\u2026`);
+    // Revised previews use a stable width and no marquee.
+    setCompactSlot(cc, 'dictation:preview', line, () => {
+      const preview = compactTitle(line);
+      preview.classList.add('dictation-preview');
+      return preview;
+    });
     setCompactSlot(cl, 'dictation:leading', 'mic', () => compactMarkup(SVG_ICONS.mic));
     setCompactSlot(
       cr,
@@ -861,7 +902,7 @@ function renderCompact(): void {
         selection.hasBackgroundActivity,
       ),
     );
-    setLabel(compact, recording ? 'Dictation recording' : 'Dictation active');
+    setLabel(compact, external.text ? `${phaseLabel}: ${external.text}` : phaseLabel);
     return;
   }
 
@@ -940,11 +981,7 @@ function renderPower(): void {
   renderCompact();
 }
 
-setInterval(() => {
-  renderToday();
-  renderMediaHeader();
-  if (state !== 'open') renderCompact();
-}, 1000);
+
 
 /* ================= Live Activities ================= */
 
@@ -1069,7 +1106,14 @@ function renderUsage(): void {
   rail.setSectionVisible('usage', providers > 0);
 }
 
+async function refreshUsageSnapshot(): Promise<void> {
+  const ticket = usageSnapshots.begin();
+  const meters = await fetchUsageNow();
+  if (usageSnapshots.accepts(ticket)) onUsageUpdate(meters);
+}
+
 function onUsageUpdate(meters: Meter[]): void {
+  usageSnapshots.changed();
   rawMeters = meters || [];
   const merged = connectedUsageMeters(mergeMeters(rawMeters));
   prevPcts = checkResets(merged, prevPcts, announceReset);
@@ -1077,9 +1121,7 @@ function onUsageUpdate(meters: Meter[]): void {
 }
 
 window.addEventListener('storage', () => { renderUsage(); });
-setInterval(() => {
-  renderUsage();
-}, 30000);
+
 
 /* ================= Quick Actions ================= */
 
@@ -1427,11 +1469,7 @@ if (isTauri()) {
 }
 
 // Fetch initial usage if running in native app
-void fetchUsageNow().then((initial) => {
-  if (initial && initial.length > 0) {
-    onUsageUpdate(initial);
-  }
-});
+void refreshUsageSnapshot();
 
 /* ================= Initialization ================= */
 
@@ -1443,8 +1481,3 @@ renderUsage();
 renderMedia();
 renderCompact();
 setState('idle');
-
-// Refresh usage meters periodically
-setInterval(() => {
-  void fetchUsageNow();
-}, 60000);

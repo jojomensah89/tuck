@@ -609,6 +609,7 @@ fn emit_snapshot(
             if let Ok(mut cached) = SNAPSHOT.lock() {
                 *cached = Some(state.clone());
             }
+            crate::visualizer::playback_changed(state.active, state.playing);
             let mut event = state;
             if !art_changed {
                 event.artwork = None;
@@ -625,6 +626,7 @@ fn emit_snapshot(
         if let Ok(mut cached) = SNAPSHOT.lock() {
             *cached = Some(last_state.clone());
         }
+        crate::visualizer::playback_changed(false, false);
         let _ = app.emit("media", last_state.clone());
     }
 }
@@ -784,6 +786,7 @@ fn run_event_service(
 }
 
 pub fn suspend() {
+    crate::visualizer::playback_changed(false, false);
     #[cfg(windows)]
     request(MediaSignal::Suspend);
 }

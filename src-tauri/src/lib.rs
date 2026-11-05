@@ -2,6 +2,7 @@ pub mod clipboard_history;
 pub mod desktop_signals;
 pub mod dictation;
 pub mod extensions;
+mod idle_webview;
 pub mod installed_usage;
 pub mod lifecycle;
 pub mod lyrics;
@@ -73,11 +74,16 @@ pub fn run() {
             system::check_update_allowed,
             system::prepare_update_install,
             system::restart_after_failed_update,
+            idle_webview::island_activity,
             dictation::dictation_get_state,
             dictation::dictation_set_settings,
             dictation::dictation_model_download,
             dictation::dictation_model_download_cancel,
             dictation::dictation_model_remove,
+            dictation::dictation_model_use,
+            dictation::dictation_models_scan,
+            dictation::dictation_shortcuts_pause,
+            dictation::dictation_shortcuts_retry,
             dictation::dictation_toggle,
             dictation::dictation_hold_start,
             dictation::dictation_hold_stop,
@@ -297,18 +303,28 @@ pub fn run() {
 
                 // Listen for scale and display changes to keep centered, and handle keyboard focus restore
                 let win_clone = main_win.clone();
-                main_win.on_window_event(move |event| match event {
-                    WindowEvent::ScaleFactorChanged { .. } | WindowEvent::Moved(_) => {
-                        let _ = system::center_on_primary_monitor(&win_clone);
+                main_win.on_window_event(move |event| {
+                    if matches!(
+                        event,
+                        WindowEvent::Moved(_)
+                            | WindowEvent::Resized(_)
+                            | WindowEvent::ScaleFactorChanged { .. }
+                    ) {
+                        system::invalidate_hit_geometry();
                     }
-                    WindowEvent::Focused(false) =>
-                    {
-                        #[cfg(windows)]
-                        if let Ok(hwnd) = win_clone.hwnd() {
-                            system::set_island_focusable(HWND(hwnd.0 as _), false);
+                    match event {
+                        WindowEvent::ScaleFactorChanged { .. } | WindowEvent::Moved(_) => {
+                            let _ = system::center_on_primary_monitor(&win_clone);
                         }
+                        WindowEvent::Focused(false) =>
+                        {
+                            #[cfg(windows)]
+                            if let Ok(hwnd) = win_clone.hwnd() {
+                                system::set_island_focusable(HWND(hwnd.0 as _), false);
+                            }
+                        }
+                        _ => {}
                     }
-                    _ => {}
                 });
             }
 

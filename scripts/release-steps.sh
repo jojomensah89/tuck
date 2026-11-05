@@ -86,10 +86,14 @@ publish_draft() {
     die "$1 is tagged and uploaded but still a draft. Re-run this workflow: it finishes the publish without building."
 }
 
-# Confirms what an installed Tuck will actually fetch.
-verify_live() {
+feed_url() {
+  grep -o 'https://[^"]*latest\.json' src-tauri/tauri.conf.json
+}
+
+# Whether the feed an installed Tuck fetches serves this version.
+feed_serves() {
   local version=$1 url body attempt
-  url=$(grep -o 'https://[^"]*latest\.json' src-tauri/tauri.conf.json)
+  url=$(feed_url)
   # GitHub can serve the previous release for a moment after publishing
   for attempt in 1 2 3 4 5 6; do
     body=$("${RELEASE_CURL:-curl}" -fsSL "$url") || body=""
@@ -99,7 +103,12 @@ verify_live() {
     fi
     [ "$attempt" = 6 ] || sleep "$RETRY_DELAY"
   done
-  die "$url does not serve version $version."
+  return 1
+}
+
+# For the run that did the publishing: a feed that doesn't update means the release failed.
+verify_live() {
+  feed_serves "$1" || die "$(feed_url) does not serve version $1."
 }
 
 # whisper.cpp otherwise compiles for the build machine's CPU, and a release built on an AVX-512
@@ -161,8 +170,10 @@ cmd_finish_pending() {
   case "$state" in
     published)
       echo "$tag is already published."
-      # An earlier run may have stopped after publishing, before confirming this
-      verify_live "${tag#v}"
+      # An earlier run may have stopped before confirming this. Only a warning: pulling a bad
+      # release legitimately changes what the feed serves, and must not block the fix.
+      feed_serves "${tag#v}" ||
+        echo "::warning::$(feed_url) does not serve ${tag#v}. Expected only if that release was pulled. See Recovery in docs/releasing.md."
       ;;
     none)
       subject=$(git log -1 --format=%s "$tag")

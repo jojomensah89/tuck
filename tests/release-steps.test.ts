@@ -291,7 +291,7 @@ describe('release steps against a local bare remote', () => {
     expect(log).not.toContain('edit');
   });
 
-  it('a re-run of a published release fails if the update feed still serves another version', () => {
+  it('a re-run of a published release warns if the update feed serves another version, without blocking the next release', () => {
     const r = setUp();
     build(r, '0.2.0');
     freshCheckout(r, r.source);
@@ -301,8 +301,9 @@ describe('release steps against a local bare remote', () => {
 
     const finish = step(r, true, 'finish-pending');
 
-    expect(finish.status).toBe(1);
-    expect(finish.stderr).toContain('does not serve version 0.2.0');
+    expect(finish.status).toBe(0);
+    expect(finish.stdout).toContain('::warning::');
+    expect(finish.stdout).toContain('does not serve 0.2.0');
   });
 
   it('publish fails after the push: the job is red and a re-run finishes without building', () => {

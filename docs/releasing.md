@@ -164,6 +164,7 @@ Re-running the failed workflow is safe and is the first thing to try. If a newer
 | `Latest tag ... does not match package.json version` | A tag or version was changed by hand | Make the newest `vX.Y.Z` tag on `main` equal `package.json`, then re-run. |
 | `Merge commit ... has no PR title` | A merge message was edited or emptied, so history can't say what it contained | Release by hand once to move the range past it, below. |
 | `Tag <tag> already exists but main has no release commit` | A tag was pushed by hand | If it was a mistake, delete it with `git push origin :refs/tags/<tag>` and re-run. |
+| Warning: `latest.json does not serve <version>` | The feed serves another version, because a release was pulled or marked as a pre-release, or the feed is stale | Nothing, if you pulled it: the warning doesn't block the next release. If you didn't, check which release is marked Latest. |
 
 ### Releasing by hand past a bad merge
 
@@ -185,7 +186,12 @@ git switch --detach vX.Y.Z
 bun install --frozen-lockfile
 $env:TAURI_SIGNING_PRIVATE_KEY = Get-Content -Raw "$env:USERPROFILE\.tauri\tuck-updater.key"
 $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = Get-Content -Raw "$env:USERPROFILE\.tauri\tuck-updater.key.password"
+# Without these, whisper.cpp targets this machine's CPU and the release can crash on other PCs.
+# The clean matters: changing the variable doesn't rebuild an existing target directory.
+$env:GGML_NATIVE = "OFF"
+cargo clean --manifest-path src-tauri/Cargo.toml
 bun run tauri build
+bash scripts/release-steps.sh verify-cpu-baseline
 # Notes for the version, without its "## [X.Y.Z]" heading, in release-notes.md
 bun run scripts/release-assets.ts --version X.Y.Z --notes-file release-notes.md --out release-assets
 gh release create vX.Y.Z --verify-tag --title "Tuck vX.Y.Z" --notes-file release-assets/release-notes.md --latest `

@@ -104,7 +104,7 @@ export async function fetchUsageNow(): Promise<Meter[]> {
       return Array.isArray(res) ? res : [];
     } catch (err) {
       console.warn('[IPC] usage_now error:', err);
-      return [];
+      throw err;
     }
   }
   return [];

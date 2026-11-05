@@ -119,6 +119,7 @@ pub fn run() {
             extensions::radio_set,
             extensions::notification_access,
             usage::usage_now,
+            usage::refresh_usage,
             usage::set_secret,
             desktop_signals::volume_step,
             desktop_signals::volume_toggle_mute,

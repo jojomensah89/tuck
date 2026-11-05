@@ -102,10 +102,7 @@ try {
   await page.evaluate(() => localStorage.removeItem('tuck.live.v2'));
   await page.reload(); await page.locator('#nav a[data-view="island"]').click();
   await page.locator('#view-island').waitFor({state:'visible'});
-  const hoverBefore = await page.locator('#hoverExpand').isChecked();
-  await page.locator('#hoverExpand').click();
-  assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem('tuck.live.v2') || '{}').hoverExpand), !hoverBefore, 'Default delays do not block saving');
-  await page.locator('#hoverExpand').click(); // restore for the island checks below
+  assert.equal(await page.locator('#hoverExpand').count(),0);
   assert.equal(await page.locator('#row-openDelay').isVisible(),true);
   // Collapsed content offers all three modes and defaults to the lyric
   await page.evaluate(() => document.querySelector('#row-compactContent').closest('.view').dataset.view).then(view => page.locator(`#nav a[data-view="${view}"]`).click());
@@ -162,6 +159,7 @@ try {
       if(command==='radio_set'){state.radios[0].state=args.enabled?'On':'Off';return;}
       if(command==='extension_settings')throw 'Activity settings could not be saved';
       if(command==='media_now')return {active:false,trackId:'',title:'',artist:'',playing:false,positionMs:0,durationMs:0,artwork:null};
+      if(command==='refresh_usage') return new Promise((resolve,reject) => { window.__refreshResolve = resolve; window.__refreshReject = reject; });
       if(command==='usage_now') {
         if(window.__holdUsage) return new Promise(resolve => { window.__resolveUsage = resolve; });
         return structuredClone(window.__usageSnapshot || []);
@@ -191,6 +189,37 @@ try {
     console.error('Usage open diagnostics', await native.evaluate(() => ({state:document.getElementById('isl')?.dataset.state,calls:window.__calls,usage:document.querySelector('#panel-usage')?.textContent})), nativeErrors);
     throw error;
   }
+  await native.locator('#tab-media').click();
+  await native.mouse.move(250,90);
+  await native.locator('#track').focus();
+  const beforeAnnouncement = await native.evaluate(() => ({focus:document.activeElement.id,hits:window.__calls.filter(c=>c.command==='set_hit').length}));
+  await native.evaluate(() => {
+    window.__openStates = [];
+    new MutationObserver(records => records.forEach(r => { if(r.attributeName==='data-state') window.__openStates.push(document.getElementById('isl').dataset.state); })).observe(document.getElementById('isl'),{attributes:true});
+    window.dispatchEvent(new CustomEvent('tuck-preview',{detail:{title:'Test',text:'Quiet notification'}}));
+  });
+  await native.waitForTimeout(3600);
+  assert.equal(await native.locator('#isl').getAttribute('data-state'),'open');
+  assert.equal(await native.evaluate(() => document.activeElement.id),beforeAnnouncement.focus);
+  assert.deepEqual(await native.evaluate(() => window.__openStates),[],'Notification never transitions open geometry');
+  assert.equal(await native.evaluate(() => window.__calls.filter(c=>c.command==='set_hit').length),beforeAnnouncement.hits);
+  await native.locator('#tab-usage').click();
+  await native.locator('#usageRefresh').click();
+  assert.equal(await native.locator('#usageRefresh').isDisabled(),true);
+  await native.evaluate(() => document.getElementById('usageRefresh').click());
+  assert.equal(await native.evaluate(() => window.__calls.filter(c=>c.command==='refresh_usage').length),1);
+  await native.evaluate(() => window.__refreshReject('Fixture failure'));
+  await native.waitForFunction(() => !document.getElementById('usageRefresh').disabled);
+  assert.match(await native.locator('#usageRefreshStatus').textContent(),/failed/);
+  assert.ok((await native.locator('#uList .u-face').getAttribute('aria-label')).includes('69% left'),'Failure retains readings');
+  const refreshBox = await native.locator('#usageRefresh').boundingBox();
+  assert.ok(refreshBox.width>=32 && refreshBox.height>=32);
+  await native.locator('#usageRefresh').click();
+  await native.evaluate(meters => window.__refreshResolve(meters),usageFixture(62));
+  await native.waitForFunction(() => !document.getElementById('usageRefresh').disabled);
+  assert.ok((await native.locator('#uList .u-face').getAttribute('aria-label')).includes('38% left'));
+  await native.screenshot({path:path.join(root,'artifacts','island-usage-refresh.png')});
+  await native.mouse.move(519,229);
   await native.keyboard.press('Escape');
   await native.evaluate(() => { window.__holdUsage = true; window.__emitNative('open-island',null); });
   await native.waitForFunction(() => typeof window.__resolveUsage === 'function');
@@ -279,12 +308,10 @@ try {
   await native.locator('#statusMessage').filter({hasText:'Volume 66%'}).waitFor({timeout:2000});
   assert.deepEqual(await hudState(),['open',null],'A level change does not collapse the open island');
   await native.evaluate(()=>window.__emitNative('desktop-peek',{title:'Caps Lock',text:'On'}));
-  assert.equal(await native.locator('#isl').getAttribute('data-state'),'peek');
-  assert.deepEqual(await flyoutPause(),[false,true],'A peek over the pinned island does not hide the flyout again');
+  assert.equal(await native.locator('#isl').getAttribute('data-state'),'open');
+  assert.match(await native.locator('#openAnnouncement').textContent(),/Caps Lock/);
   await native.evaluate(()=>window.__emitNative('system-level',{kind:'volume',level:55,muted:false}));
-  assert.deepEqual(await hudState(),['peek','volume'],'The HUD interrupts the announcement');
-  await native.locator('#cc .compact-slot.current').filter({hasText:'Caps Lock: On'}).waitFor({timeout:3000});
-  await native.waitForFunction(()=>document.getElementById('isl').dataset.state==='open',null,{timeout:6000});
+  assert.deepEqual(await hudState(),['open',null],'Notifications and HUD keep the pinned island open');
   await setLive({pinned:false});
   assert.deepEqual(await flyoutPause(),[false,false]);
   await native.evaluate(()=>window.__emitNative('hover',false));

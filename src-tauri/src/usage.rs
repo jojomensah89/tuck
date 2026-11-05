@@ -15,7 +15,7 @@ use std::{
     io::Read,
     path::PathBuf,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex, OnceLock,
     },
     time::{Duration, Instant, SystemTime},
@@ -650,6 +650,9 @@ struct SharedState {
     openai: ApiSlot,
 }
 static CACHE: OnceLock<Arc<Mutex<SharedState>>> = OnceLock::new();
+static MANUAL_BUSY: AtomicBool = AtomicBool::new(false);
+static REQUESTED: AtomicU64 = AtomicU64::new(0);
+static COMPLETED: AtomicU64 = AtomicU64::new(0);
 static REFRESH: AtomicBool = AtomicBool::new(true);
 fn get_cache() -> &'static Arc<Mutex<SharedState>> {
     CACHE.get_or_init(|| Arc::new(Mutex::new(SharedState::default())))
@@ -733,6 +736,37 @@ pub fn current_snapshot() -> Vec<Meter> {
 pub fn usage_now() -> Vec<Meter> {
     current_snapshot()
 }
+/// Refresh existing sources only; workers retain their last good readings on failure.
+#[tauri::command]
+pub async fn refresh_usage() -> Result<Vec<Meter>, String> {
+    if MANUAL_BUSY.swap(true, Ordering::SeqCst) {
+        return Err("Usage refresh already pending".into());
+    }
+    tauri::async_runtime::spawn_blocking(|| {
+        struct BusyGuard;
+        impl Drop for BusyGuard {
+            fn drop(&mut self) {
+                MANUAL_BUSY.store(false, Ordering::SeqCst);
+            }
+        }
+        let _guard = BusyGuard;
+        let ticket = REQUESTED.fetch_add(1, Ordering::SeqCst) + 1;
+        let installed = crate::installed_usage::request_manual_refresh();
+        REFRESH.store(true, Ordering::SeqCst);
+        let started = Instant::now();
+        while COMPLETED.load(Ordering::SeqCst) < ticket
+            || !crate::installed_usage::manual_refresh_finished(installed)
+        {
+            if started.elapsed() > Duration::from_secs(90) {
+                return Err("Usage refresh timed out; previous readings retained".into());
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        Ok(current_snapshot())
+    })
+    .await
+    .map_err(|_| "Usage refresh worker failed".to_string())?
+}
 /// A key that cannot be read may still exist, so the provider stays on the island with an error.
 fn record_key_read_failure(slot: &mut ApiSlot, generation: u64) {
     if slot.generation == generation {
@@ -779,13 +813,25 @@ pub fn start<R: Runtime>(app: AppHandle<R>) {
         let mut last_month = 0;
         let mut emitted = None;
         loop {
-            if last_file.elapsed() >= Duration::from_secs(60) {
-                let claude = claude_meters();
-                get_cache().lock().unwrap_or_else(|p| p.into_inner()).claude = claude;
+            let manual_ticket = REQUESTED.load(Ordering::SeqCst);
+            if manual_ticket > COMPLETED.load(Ordering::SeqCst)
+                || last_file.elapsed() >= Duration::from_secs(60)
+            {
+                let mut claude = claude_meters();
+                let mut cache = get_cache().lock().unwrap_or_else(|p| p.into_inner());
+                for meter in &mut claude {
+                    if meter.stale && meter.used_pct.is_none() {
+                        if let Some(previous) = cache.claude.iter().find(|old| old.id == meter.id) {
+                            meter.used_pct = previous.used_pct;
+                        }
+                    }
+                }
+                cache.claude = claude;
                 last_file = Instant::now();
             }
             let month = current_month_start_utc().timestamp();
             if REFRESH.swap(false, Ordering::Relaxed)
+                || manual_ticket > COMPLETED.load(Ordering::SeqCst)
                 || last_api.elapsed() >= Duration::from_secs(600)
                 || month != last_month
             {
@@ -818,6 +864,7 @@ pub fn start<R: Runtime>(app: AppHandle<R>) {
                 }
                 last_api = Instant::now();
                 last_month = month;
+                COMPLETED.store(manual_ticket, Ordering::SeqCst);
             }
             let snapshot = current_snapshot();
             if emitted.as_ref() != Some(&snapshot) {

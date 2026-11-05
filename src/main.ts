@@ -352,8 +352,7 @@ function onHover(inside: boolean): void {
   if (nativeDragActive || (!inside && (keyboardMode || livePreferences.pinned) && state === 'open')) return;
 
   if (inside) {
-    if (livePreferences.hoverExpand) openTimer = window.setTimeout(() => setState('open'), livePreferences.openDelayMs);
-    else if (state === 'idle') setState('peek');
+    openTimer = window.setTimeout(() => setState('open'), livePreferences.openDelayMs);
   } else {
     const delay = state === 'open' ? livePreferences.closeDelayMs : 0;
     if (delay === 0) setState('idle');
@@ -1109,13 +1108,16 @@ function renderUsage(): void {
     logChatGPTMessage();
     renderUsage();
   });
+  $('uList').classList.toggle('with-toolbar', providers > 2);
   rail.setSectionVisible('usage', providers > 0);
 }
 
 async function refreshUsageSnapshot(): Promise<void> {
   const ticket = usageSnapshots.begin();
-  const meters = await fetchUsageNow();
-  if (usageSnapshots.accepts(ticket)) onUsageUpdate(meters);
+  try {
+    const meters = await fetchUsageNow();
+    if (usageSnapshots.accepts(ticket)) onUsageUpdate(meters);
+  } catch { $('statusMessage').textContent = 'Usage unavailable; keeping previous readings'; }
 }
 
 function onUsageUpdate(meters: Meter[]): void {
@@ -1161,12 +1163,18 @@ function finishPeek(): void {
   setState(peekReturnTarget({ returnOpen: returnOpenAfterPeek, hover: hoverInside, pinned: livePreferences.pinned, dragging: nativeDragActive }));
 }
 
+let openAnnouncementTimer = 0;
 function showAnnouncement(text:string, speak=true):void {
   // Screen readers hear it right away, even when the text has to wait for the HUD
   if(speak)$('statusMessage').textContent=text;
   const wasOpen = state === 'open';
-  if(wasOpen && (rail.active() !== 'media' || keyboardMode))return;
-  if(wasOpen)returnOpenAfterPeek=true;
+  if(wasOpen){
+    const feedback = $('openAnnouncement');
+    feedback.textContent = text.slice(0,180);
+    window.clearTimeout(openAnnouncementTimer);
+    openAnnouncementTimer = window.setTimeout(() => { feedback.textContent = ''; if (state === 'open') finishPeek(); },3500);
+    return;
+  }
   // The HUD owns the shell until it times out; the text follows it
   if(hud.visible(Date.now())){pendingAnnouncements.add(text,Date.now());return;}
   announcement={text:text.slice(0,180),until:Date.now()+3500};
@@ -1456,3 +1464,24 @@ renderUsage();
 renderMedia();
 renderCompact();
 setState('idle');
+
+const usageRefresh = $('usageRefresh') as HTMLButtonElement;
+usageRefresh.innerHTML = SVG_ICONS.refresh;
+usageRefresh.onclick = async () => {
+  if (usageRefresh.disabled) return;
+  usageRefresh.disabled = true;
+  usageRefresh.setAttribute('aria-busy', 'true');
+  $('usageRefreshStatus').textContent = 'Refreshing...';
+  const ticket = usageSnapshots.begin();
+  try {
+    const meters = await invokeCommand<Meter[]>('refresh_usage');
+    if (!Array.isArray(meters)) throw new Error('Unavailable');
+    if (usageSnapshots.accepts(ticket)) onUsageUpdate(meters);
+    $('usageRefreshStatus').textContent = rawMeters.some(m => m.stale || m.status === 'error') ? 'Some readings stale or unavailable' : 'Refresh finished';
+  } catch {
+    $('usageRefreshStatus').textContent = 'Refresh failed; keeping previous readings';
+  } finally {
+    usageRefresh.disabled = false;
+    usageRefresh.setAttribute('aria-busy', 'false');
+  }
+};

@@ -142,7 +142,7 @@ function setUp(): Rehearsal {
 function build(r: Rehearsal, version: string, source = r.source): void {
   fs.rmSync(r.assets, { recursive: true, force: true });
   fs.mkdirSync(r.assets, { recursive: true });
-  const installer = `tuck_${version}_x64-setup.exe`;
+  const installer = `Tuck_${version}_Setup.exe`;
   fs.writeFileSync(path.join(r.assets, installer), 'installer');
   fs.writeFileSync(path.join(r.assets, `${installer}.sig`), 'signature');
   fs.writeFileSync(path.join(r.assets, 'release-notes.md'), 'notes');
@@ -198,9 +198,9 @@ describe('release steps against a local bare remote', () => {
     expect(remoteRef(r, 'refs/tags/v0.2.0')).toBe(built);
     expect(releaseDraftFlag(r, 'v0.2.0')).toBe('false');
     expect(fs.readdirSync(path.join(r.state, 'releases', 'v0.2.0', 'assets')).sort()).toEqual([
+      'Tuck_0.2.0_Setup.exe',
+      'Tuck_0.2.0_Setup.exe.sig',
       'latest.json',
-      'tuck_0.2.0_x64-setup.exe',
-      'tuck_0.2.0_x64-setup.exe.sig',
     ]);
     // Uploaded while still a draft, published only after the push
     const log = fs.readFileSync(path.join(r.state, 'gh.log'), 'utf8');
@@ -336,6 +336,15 @@ describe('release steps against a local bare remote', () => {
     fs.writeFileSync(path.join(r.state, 'fail-edit'), '');
     expect(publish(r, '0.2.0').status).toBe(1);
     fs.rmSync(path.join(r.state, 'fail-edit'));
+
+    // Older interrupted releases keep their original public asset names.
+    const oldAssets = path.join(r.state, 'releases', 'v0.2.0', 'assets');
+    for (const suffix of ['', '.sig']) {
+      fs.renameSync(
+        path.join(oldAssets, `Tuck_0.2.0_Setup.exe${suffix}`),
+        path.join(oldAssets, `tuck_0.2.0_x64-setup.exe${suffix}`),
+      );
+    }
 
     const next = landAnotherMerge(r, 'fix: next merge');
     git(r.work, 'fetch', '-q', 'origin', 'main');

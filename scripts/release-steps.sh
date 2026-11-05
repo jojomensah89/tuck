@@ -185,8 +185,8 @@ cmd_finish_pending() {
     draft)
       assets=$(gh release view "$tag" --json assets --jq '.assets[].name')
       missing=""
-      grep -q '_x64-setup\.exe$' <<<"$assets" || missing="$missing installer"
-      grep -q '_x64-setup\.exe\.sig$' <<<"$assets" || missing="$missing signature"
+      grep -Eq '(_x64-setup|_Setup)\.exe$' <<<"$assets" || missing="$missing installer"
+      grep -Eq '(_x64-setup|_Setup)\.exe\.sig$' <<<"$assets" || missing="$missing signature"
       grep -q '^latest\.json$' <<<"$assets" || missing="$missing latest.json"
       [ -z "$missing" ] || die "The $tag draft is missing:$missing. See Recovery in docs/releasing.md."
       echo "Finishing $tag: tagged and uploaded by an earlier run, still a draft."
@@ -199,7 +199,7 @@ cmd_finish_pending() {
 cmd_publish() {
   require_live
   local version=$1 source_sha=$2 dir=$3
-  local tag="v$version" installer="tuck_${version}_x64-setup.exe" tip release_sha
+  local tag="v$version" installer="Tuck_${version}_Setup.exe" tip release_sha
 
   tip=$(remote_head main)
   if [ "$tip" != "$source_sha" ]; then

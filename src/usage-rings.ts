@@ -131,6 +131,11 @@ export function valueText(meter: Meter): string {
   return '\u2013';
 }
 
+/** The shown value says nothing is left. An empty ring has no colour of its own, so the number warns instead. */
+export function isOut(meter: Meter): boolean {
+  return /^0%? left$/.test(valueText(meter));
+}
+
 function glyphFor(meter: Meter): { key: string; markup: string } {
   const mark = providerMark(meter.provider);
   if (mark) return { key: mark, markup: SVG_ICONS[mark] };
@@ -218,6 +223,7 @@ export function renderUsageRings(list: HTMLElement, meters: Meter[], onLog: () =
       rings[meterIndex].set(remainingPct(meter.usedPct), usageTone(meter.usedPct));
       setIfChanged(lines[meterIndex].window, meterWindow(meter));
       setIfChanged(lines[meterIndex].value, valueText(meter));
+      lines[meterIndex].value.dataset.out = String(isOut(meter));
     });
 
     const word = usageStateWord(drawn);

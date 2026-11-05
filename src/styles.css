@@ -1494,6 +1494,11 @@ body.fullscreen-hidden .island {
   line-height: 16px;
 }
 
+/* A used-up quota: its ring is empty, so the number carries the warning */
+.u-val[data-out="true"] {
+  color: var(--warn);
+}
+
 /* The word beside the values only appears when a reading cannot be trusted */
 .u-state {
   color: var(--ink-2);

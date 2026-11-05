@@ -407,6 +407,7 @@ try {
   assert.equal(await native.locator('#isl').getAttribute('data-state'),'idle');
   assert.equal((await native.locator('#isl').boundingBox()).width,300,'Lyric mode reserves a stable wider closed pill');
   assert.equal((await native.locator('#cc .compact-title-track').textContent()).trim(),'Current fixture line');
+  assert.ok(await native.evaluate(()=>{const m=r=>r.left+r.width/2;return Math.abs(m(document.querySelector('#cc .compact-slot.current .compact-title-track').getBoundingClientRect())-m(document.querySelector('.island').getBoundingClientRect()))<=2;}),'Collapsed text is centred on the pill');
   await setLive({compactContent:'title'}); await native.waitForTimeout(50);
   assert.equal((await native.locator('#cc .compact-title-track').textContent()).trim(),'Artwork color fixture');
   assert.equal((await native.locator('#isl').boundingBox()).width,300,'Title mode keeps the same stable width');
@@ -598,8 +599,8 @@ try {
   assert.equal(await native.locator('#uList .u-ring-inner').count(),2);
   await native.waitForTimeout(100);
   assert.deepEqual(await native.locator('#uList .ring').evaluateAll(n=>n.map(x=>x.dataset.tone)),['ok','ok','caution','ok']);
-  assert.deepEqual(await native.locator('#uList .u-provider').first().locator('.u-value-line').evaluateAll(n=>n.map(x=>x.textContent)),['5h42%','7d18%']);
-  assert.match(await native.locator('#uList .u-face').first().getAttribute('aria-label'),/Claude\. 5h, 42% used.*7d, 18% used/);
+  assert.deepEqual(await native.locator('#uList .u-provider').first().locator('.u-value-line').evaluateAll(n=>n.map(x=>x.textContent)),['5h58% left','7d82% left']);
+  assert.match(await native.locator('#uList .u-face').first().getAttribute('aria-label'),/Claude\. 5h, 58% left.*7d, 82% left/);
   assert.equal(await native.locator('#uList .u-provider').nth(1).getAttribute('data-stale'),'true','A stale configured provider remains and dims');
   assert.equal(await native.locator('#uList .u-provider').nth(1).locator('.u-state').textContent(),'Stale','A stale provider says so');
   assert.equal(await native.locator('#uList .u-provider').first().locator('.u-state').isHidden(),true,'A fresh provider has no state word');
@@ -633,6 +634,12 @@ try {
     await native.waitForTimeout(50);
     assert.equal(await native.locator('#uList .u-provider').count(),4,'Each connected source is one card');
     assert.deepEqual(await usageFit(),{inside:true,clear:true,marksClear:true,fits:true},`Four provider cards fit at ${width}px`);
+    // A used-up quota has an empty ring, so its number warns; anything still left, or dollars spent, does not
+    const valueColours = await native.locator('#uList .u-val').evaluateAll(nodes=>nodes.map(n=>[n.textContent,n.dataset.out==='true',getComputedStyle(n).color]));
+    const warnColour = await native.locator('#uList').evaluate(n=>{const probe=document.createElement('span');probe.style.color='var(--warn)';n.append(probe);const colour=getComputedStyle(probe).color;probe.remove();return colour;});
+    assert.deepEqual(valueColours.filter(([,out])=>out).map(([text,,colour])=>[text,colour]),[['0% left',warnColour]],'Only the used-up quota reads as out, in the warning colour');
+    assert.equal(valueColours.filter(([,out])=>!out).some(([,,colour])=>colour===warnColour),false,'Other values keep their normal colour');
+    if (width===440) await native.locator('.page.usage').screenshot({path:path.join(root,'artifacts','usage-out.png')});
     await native.evaluate(()=>{localStorage.setItem('notch.chatgpt',JSON.stringify({label:'ChatGPT (estimate)',cap:10,hours:3}));localStorage.removeItem('notch.chatgpt.log');window.dispatchEvent(new StorageEvent('storage',{key:'notch.chatgpt'}));});
     await native.waitForTimeout(50);
     assert.equal(await native.locator('#uList .u-provider').count(),5);
@@ -641,7 +648,7 @@ try {
     // The ChatGPT estimate is logged by pressing its ring
     const logButton = native.getByRole('button',{name:/^Log a ChatGPT message/});
     await logButton.click();
-    assert.equal(await native.locator('#uList .u-provider').last().locator('.u-val').textContent(),'1/10');
+    assert.equal(await native.locator('#uList .u-provider').last().locator('.u-val').textContent(),'9 left');
     assert.equal(await logButton.evaluate(n=>document.activeElement===n),true,'Logging keeps focus on the ring');
     await native.evaluate(()=>{localStorage.removeItem('notch.chatgpt');localStorage.removeItem('notch.chatgpt.log');});
     await native.evaluate(meters=>window.__emitNative('usage',meters),fiveProviders(Math.round(Date.now()/1000)).slice(0,4));
@@ -744,6 +751,26 @@ try {
   await setLive({openWidth:500});
   await native.getByRole('tab',{name:'Tools',exact:true}).click();
   await native.locator('.page.dictation').scrollIntoViewIfNeeded();
+  await native.evaluate(()=>window.__emitNative('dictation_state',{status:'starting',modelReady:true}));
+  await native.evaluate(()=>window.__emitNative('dictation_state',{status:'recording',modelReady:true}));
+  await native.evaluate(()=>window.__emitNative('dictation_partial',{text:'Provisional words'}));
+  await native.evaluate(()=>window.__emitNative('dictation_state',{status:'recording',modelReady:true,previewsPaused:true}));
+  assert.match(await native.locator('.page.dictation').textContent(),/Live transcript paused for this recording/);
+  await native.evaluate(()=>window.__emitNative('dictation_partial',{text:'Late stale preview'}));
+  assert.equal(await native.locator('.transcript').textContent(),'Provisional words');
+  await native.evaluate(()=>window.__emitNative('dictation_state',{status:'transcribing',modelReady:true,previewsPaused:true}));
+  assert.equal(await native.locator('.transcript').textContent(),'Provisional words');
+  assert.match(await native.locator('.page.dictation').textContent(),/Transcribing\u2026/);
+  await native.evaluate(()=>window.__emitNative('dictation_state',{status:'cancelling',modelReady:true}));
+  assert.match(await native.locator('.page.dictation').textContent(),/Cancelling\u2026/);
+  await mkdir(path.join(root,'docs/screens'),{recursive:true});
+  await native.locator('#isl').screenshot({path:path.join(root,'docs/screens/dictation-cancelling.png')});
+  assert.equal(await native.getByRole('button',{name:'Record',exact:true}).isDisabled(),true);
+  await native.evaluate(()=>window.__emitNative('dictation_state',{status:'processing',modelReady:true}));
+  assert.match(await native.locator('.page.dictation').textContent(),/Microphone closed/);
+  await native.locator('#isl').screenshot({path:path.join(root,'docs/screens/dictation-processing.png')});
+  await native.evaluate(()=>window.__emitNative('dictation_state',{status:'starting',modelReady:true,previewsPaused:false}));
+  assert.doesNotMatch(await native.locator('.page.dictation').textContent(),/Live transcript paused|Provisional words/);
   await native.evaluate(()=>window.__emitNative('dictation_state',{status:'review',transcript:'<b>Text, not markup</b>',modelReady:true}));
   assert.equal(await native.locator('.transcript').textContent(),'<b>Text, not markup</b>');
   assert.equal(await native.locator('.transcript b').count(),0);
@@ -805,8 +832,24 @@ try {
   await native.locator('#railSettings').click();
   assert.equal(await native.evaluate(()=>window.__calls.some(call=>call.command==='open_settings_cmd')),true,'The rail settings button opens the settings window');
   await native.goto('http://tuck.test/settings.html#tools');
-  await native.evaluate(()=>window.__emitNative('dictation_state',{status:'review',modelInstalled:true,modelDownloadedBytes:0}));
-  assert.equal(await native.locator('#removeModel').isDisabled(),true,'Review must be discarded before model removal');
+  await native.evaluate(()=>window.__emitNative('dictation_state',{status:'review',modelInstalled:true,modelDownloadedBytes:0,activeModelLabel:'Tiny',models:[{id:'ggml-tiny.bin',label:'Tiny',bytes:77691713,speed:'Fastest',accuracy:'Lower',note:null,state:'installed',foundIn:null,active:true},{id:'ggml-base.bin',label:'Base (full size)',bytes:147951465,speed:'Very fast',accuracy:'Good',note:null,state:'found',foundIn:'podcli',active:false}]}));
+  assert.equal(await native.locator('.model-row[data-id="ggml-tiny.bin"] button',{hasText:'Remove'}).isDisabled(),true,'Review must be discarded before model removal');
+  assert.match(await native.locator('#dictationSetupStatus').textContent(),/In use: Tiny/);
+  assert.match(await native.locator('.model-row[data-id="ggml-base.bin"]').textContent(),/Found in podcli/);
+  assert.equal(await native.locator('.model-row[data-id="ggml-base.bin"] button',{hasText:'Remove'}).count(),0,'Another app\'s model has no Remove button');
+  await native.evaluate(()=>{
+    const row={id:'ggml-tiny.bin',label:'Tiny',bytes:77691713,speed:'Fastest',accuracy:'Lower',note:null,state:'installed',foundIn:null,active:true,canRemove:true};
+    window.__emitNative('dictation_state',{status:'idle',modelInstalled:true,activeModelLabel:'Tiny',models:[row]});
+    window.__emitNative('dictation_state',{status:'idle',modelInstalled:true,activeModelLabel:'Tiny',models:[{...row,canRemove:false}]});
+  });
+  assert.equal(await native.locator('.model-row[data-id="ggml-tiny.bin"] button',{hasText:'Remove'}).count(),0,'Ownership loss removes the delete action even when phase and active model are unchanged');
+  assert.equal(await native.locator('.model-row[data-id="ggml-tiny.bin"] button',{hasText:'Stop using'}).isEnabled(),true);
+  await native.evaluate(()=>window.__emitNative('dictation_state',{status:'idle',modelInstalled:true,modelDownloadedBytes:0,activeModelLabel:'Tiny',modelNotice:'Base is no longer on this computer. Using Tiny instead.',shortcutProblems:{toggle:'Ctrl+Shift+Space is in use by another app right now. Try again once it is free, or record a different shortcut.',hold:null}}));
+  assert.match(await native.locator('#dictationModelNotice').textContent(),/no longer on this computer/);
+  assert.match(await native.locator('#dictationShortcutError').textContent(),/in use by another app/);
+  await native.evaluate(()=>window.__emitNative('dictation_state',{status:'idle',modelInstalled:true,modelDownloadedBytes:0,activeModelLabel:'Tiny',models:[]}));
+  assert.equal(await native.locator('#dictationModelNotice').isHidden(),true,'A cleared notice disappears');
+  assert.equal(await native.locator('#dictationShortcutError').isHidden(),true,'A fixed shortcut clears its reason');
   await native.locator('#clipboardEnabled').click();
   await native.getByText('Could not save clipboard settings. Current preferences restored below.',{exact:true}).waitFor();
   assert.equal(await native.locator('#clipboardEnabled').isChecked(),false);

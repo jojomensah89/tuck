@@ -1,12 +1,11 @@
 import { LIVE_SETTINGS_KEY, normalizePreferences, PREFS_VERSION, readPreferences } from './live-state.js';
 import { nativeAction, nativeService } from './live-services.js';
-import { listenToEvent } from './ipc.js';
-import { clearSaved, confirmThen, markSaved, onCommit, setStatus } from './settings-ui.js';
+import { clearSaved, markSaved, onCommit, setStatus } from './settings-ui.js';
+import { mountDictationSettings } from './dictation-settings.js';
 
 /** Binds the island, media, dictation and clipboard rows in settings.html. Every control saves itself. */
 export function mountLiveSettings(): void {
   const input = (id: string) => document.getElementById(id) as HTMLInputElement;
-  const control = (id: string) => document.getElementById(id) as HTMLButtonElement;
   const compact = () => [...document.querySelectorAll<HTMLInputElement>('input[name="compactContent"]')];
 
   /* ---------- Island and player preferences (local storage) ---------- */
@@ -74,57 +73,7 @@ export function mountLiveSettings(): void {
     };
   }
 
-  /* ---------- Dictation ---------- */
-  const dictationFields = ['dictationShortcut', 'dictationHoldShortcut', 'dictationReview', 'dictationPreview'];
-  const dictationStatus = (text: string, kind: 'info' | 'error' = 'info') => setStatus('dictationSetupStatus', text, kind);
-  type DictationSettings = { toggleShortcut: string; holdToTalkShortcut: string; partialPreview: boolean; reviewBeforeInsert: boolean };
-  let savedDictation: DictationSettings | null = null;
-  const applyDictation = (data: DictationSettings) => {
-    input('dictationShortcut').value = data.toggleShortcut || 'Ctrl+Shift+Space'; input('dictationHoldShortcut').value = data.holdToTalkShortcut || 'Shift+Shift';
-    input('dictationReview').checked = data.reviewBeforeInsert; input('dictationPreview').checked = data.partialPreview;
-  };
-  void nativeService<DictationSettings & { modelReady: boolean }>('dictation_settings').then(data => {
-    savedDictation = data; applyDictation(data);
-    dictationFields.forEach(id => { input(id).disabled = false; });
-    control('downloadModel').disabled = data.modelReady;
-    control('removeModel').disabled = !data.modelReady;
-    dictationStatus(data.modelReady ? 'Offline model ready.' : 'Download the model before recording.');
-  }).catch(() => dictationStatus('Dictation needs the desktop app.'));
-  const saveDictation = async (changed: HTMLInputElement) => {
-    // Lock the fields so two saves can't finish out of order and revert to stale values
-    dictationFields.forEach(id => { input(id).disabled = true; });
-    const settings: DictationSettings = { toggleShortcut: input('dictationShortcut').value.trim(), holdToTalkShortcut: input('dictationHoldShortcut').value.trim(), reviewBeforeInsert: input('dictationReview').checked, partialPreview: input('dictationPreview').checked };
-    try { await nativeAction('dictation_set_settings', { settings }); savedDictation = settings; setStatus('dictationStatus', ''); markSaved(changed); }
-    catch {
-      if (savedDictation) applyDictation(savedDictation);
-      clearSaved(changed);
-      setStatus('dictationStatus', 'Could not save shortcut or dictation settings. The previous values are back.', 'error');
-    } finally {
-      dictationFields.forEach(id => { input(id).disabled = false; });
-    }
-  };
-  for (const id of ['dictationReview', 'dictationPreview']) input(id).addEventListener('change', () => { void saveDictation(input(id)); });
-  for (const id of ['dictationShortcut', 'dictationHoldShortcut']) onCommit(input(id), () => { void saveDictation(input(id)); });
-
-  control('downloadModel').onclick = async () => {
-    control('downloadModel').disabled = true; control('cancelModelDownload').disabled = false; dictationStatus('Downloading and verifying the offline model…');
-    try { await nativeAction('dictation_download_model'); dictationStatus('Download started.'); }
-    catch { dictationStatus('Model download failed. Check your connection and retry.', 'error'); control('downloadModel').disabled = false; control('cancelModelDownload').disabled = true; }
-  };
-  control('cancelModelDownload').onclick = async () => {
-    try { await nativeAction('dictation_model_download_cancel'); dictationStatus('Cancellation requested.'); }
-    catch { dictationStatus('Could not change the model. Stop dictation first.', 'error'); }
-  };
-  confirmThen(control('removeModel'), 'Remove the offline speech model? Dictation stops working until you download it again.', 'Remove model', async () => {
-    try { await nativeAction('dictation_model_remove'); dictationStatus('Model removed.'); }
-    catch { dictationStatus('Could not change the model. Stop dictation first.', 'error'); }
-  });
-  void listenToEvent<{status: string; modelInstalled: boolean; modelDownloadedBytes: number; message?: string}>('dictation_state', data => {
-    control('downloadModel').disabled = data.status === 'downloadingModel' || data.modelInstalled;
-    control('cancelModelDownload').disabled = data.status !== 'downloadingModel';
-    control('removeModel').disabled = !data.modelInstalled || ['downloadingModel', 'starting', 'recording', 'transcribing', 'cancelling', 'inserting', 'review'].includes(data.status);
-    dictationStatus(data.message || (data.status === 'downloadingModel' ? `Downloading model · ${(data.modelDownloadedBytes / 1048576).toFixed(1)} MB` : data.modelInstalled ? 'Offline model ready.' : 'Download the model before recording.'));
-  });
+  mountDictationSettings();
 
   /* ---------- Clipboard: both flags in one native mutation ---------- */
   const clipboardIds = ['clipboardEnabled', 'clipboardPersist'];

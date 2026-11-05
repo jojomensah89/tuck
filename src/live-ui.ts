@@ -1,7 +1,8 @@
 import { listenToEvent, mediaSeek, isTauri } from './ipc.js';
 import { SVG_ICONS } from './icons.js';
+import { islandModelLine } from './dictation-models.js';
 import { nativeAction, nativeService, normalizeClipboard, normalizeDictation, normalizeTelemetry, type ClipboardSnapshot, type DictationSnapshot, type LyricsSnapshot, type MediaSession, type TelemetrySnapshot } from './live-services.js';
-import { historyPath, lyricIndex, lyricOffsetFor, matchesLyricRequest, MAX_LYRIC_OFFSET_MS, measuredPercent, newRequestId, parseLrc, readPreferences, TelemetryGate, withLyricOffset, writePreferences, type LyricLine } from './live-state.js';
+import { historyPath, heldLyric, lyricIndex, lyricOffsetFor, matchesLyricRequest, MAX_LYRIC_OFFSET_MS, measuredPercent, newRequestId, parseLrc, readPreferences, TelemetryGate, withLyricOffset, writePreferences, type LyricLine } from './live-state.js';
 import { formatClockTime } from './time-format.js';
 import { createRing, usageTone, type Ring } from './rings.js';
 import type { MediaState } from './types.js';
@@ -81,7 +82,7 @@ export function mountLivePages(onLayout: () => void): {
     lastPosition = position;
     const pastLyrics = lines.length > 0 && position > lines[lines.length - 1].atMs + 20000;
     const index = pastLyrics ? -1 : lyricIndex(lines, position);
-    currentLyric = index >= 0 ? lines[index].text : '';
+    currentLyric = heldLyric(lines, index);
     if (index === activeLine) return;
     activeLine = index;
     [...lyricList.children].forEach((el, i) => {
@@ -265,33 +266,39 @@ export function mountLivePages(onLayout: () => void): {
   const speechDot = statusDot(); speechDot.set('off', 'Offline, set up a model in Settings');
   speechTitleRow.append(node('h2', '', 'Dictation'), speechDot.el);
   const speechStatus = node('p', 'live-note');
+  const speechModel = node('p', 'live-note', islandModelLine(null));
   const transcript = node('div', 'transcript placeholder', 'Your transcript appears here'); transcript.setAttribute('role', 'status');
   const speechActions = node('div', 'live-actions');
   let dictationPhase = 'disabled';
+  let provisional = '';
+  let previewsPaused = false;
   const record = iconButton('Record', SVG_ICONS.mic, () => {
     void act(nativeAction(dictationPhase === 'recording' ? 'dictation_stop' : 'dictation_toggle'), speechStatus);
   }, 'primary');
   const cancel = iconButton('Cancel', SVG_ICONS.close, () => { void act(nativeAction('dictation_cancel'), speechStatus); });
   const insert = iconButton('Insert', SVG_ICONS.insert, () => { void act(nativeAction('dictation_insert'), speechStatus); }); insert.disabled = true;
   speechActions.append(record, cancel, insert); speechHead.append(speechTitleRow, speechActions);
-  speech.append(speechHead, transcript, speechStatus);
+  speech.append(speechHead, transcript, speechModel, speechStatus);
   function dictation(data: DictationSnapshot): void {
     if (!data || typeof data.status !== 'string') return;
+    if (data.status === 'starting' || !['recording', 'transcribing'].includes(data.status)) provisional = '';
     dictationPhase = data.status;
-    // Visible text only for an error; the state itself is the dot
-    speechStatus.textContent = data.error || '';
-    const dotState = data.error || data.status === 'error' ? 'warn' : data.status === 'recording' ? 'live' : ['transcribing', 'review'].includes(data.status) ? 'idle' : 'off';
+    previewsPaused = data.previewsPaused === true;
+    // Explain engine work and a paused preview without implying the microphone is live.
+    speechStatus.textContent = data.error || (data.status === 'cancelling' ? 'Cancelling\u2026' : data.status === 'processing' ? 'Microphone closed. Waiting for the speech engine\u2026' : data.status === 'transcribing' ? 'Transcribing\u2026' : previewsPaused && data.status === 'recording' ? 'Live transcript paused for this recording.' : data.modelNotice || '');
+    speechModel.textContent = islandModelLine(data.activeModelLabel);
+    const dotState = data.error || data.status === 'error' ? 'warn' : data.status === 'recording' ? 'live' : ['starting', 'transcribing', 'processing', 'cancelling', 'inserting', 'review'].includes(data.status) ? 'idle' : 'off';
     speechDot.set(dotState, `Offline, ${data.status}`);
-    transcript.textContent = data.transcript?.slice(0, 32000) || (data.status === 'recording' ? 'Listening\u2026' : 'Your transcript appears here');
-    transcript.classList.toggle('placeholder', !data.transcript);
+    transcript.textContent = data.transcript?.slice(0, 32000) || provisional || (data.status === 'recording' ? 'Listening\u2026' : 'Your transcript appears here');
+    transcript.classList.toggle('placeholder', !data.transcript && !provisional);
     insert.disabled = data.status !== 'review' || data.canInsert === false;
-    cancel.disabled = !['starting', 'downloadingModel', 'recording', 'transcribing', 'review'].includes(data.status);
+    cancel.disabled = !['starting', 'recording', 'transcribing', 'processing', 'inserting', 'review'].includes(data.status);
     record.disabled = !['idle', 'recording', 'review', 'error'].includes(data.status) || data.modelReady === false;
     if (data.status === 'recording') setIconLabel(record, 'Finish recording', SVG_ICONS.stop);
     else setIconLabel(record, 'Record', SVG_ICONS.mic);
     record.setAttribute('aria-pressed', String(data.status === 'recording'));
     document.getElementById('isl')!.dataset.dictation = data.status;
-    const active = ['recording', 'transcribing', 'review'].includes(data.status);
+    const active = ['starting', 'recording', 'transcribing', 'processing', 'cancelling', 'inserting', 'review'].includes(data.status);
     window.dispatchEvent(new CustomEvent('tuck-activity', { detail: {
       id: 'dictation',
       type: 'dictation',
@@ -396,7 +403,8 @@ export function mountLivePages(onLayout: () => void): {
     ['lyrics', applyLyrics], ['telemetry', (data: unknown) => telemetry(normalizeTelemetry(data))], ['dictation_state', (data: unknown) => dictation(normalizeDictation(data))], ['clipboard_history_changed', (data: unknown) => renderClipboard(normalizeClipboard(data))], ['visualizer', (data: {bins?: number[]; bands?: number[]; isSilent?: boolean}) => audio({ bands: data.bins || data.bands || [], active: !data.isSilent })],
   ] as const) void listenToEvent(event, handler as (data: unknown) => void).then(unlisten => unlisteners.push(unlisten));
   void listenToEvent<{ text: string }>('dictation_partial', data => {
-    if (dictationPhase !== 'recording' || typeof data?.text !== 'string') return;
+    if (dictationPhase !== 'recording' || previewsPaused || typeof data?.text !== 'string') return;
+    provisional = data.text.slice(0, 32000);
     transcript.textContent = data.text.slice(0, 32000);
     transcript.classList.toggle('placeholder', !data.text);
     window.dispatchEvent(new CustomEvent('tuck-activity', { detail: { id: 'dictation', type: 'dictation', phase: 'recording', active: true, title: 'Dictation', text: data.text.slice(-65), priority: 99 } }));

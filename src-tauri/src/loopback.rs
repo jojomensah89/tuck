@@ -69,7 +69,7 @@ fn capture(app: &AppHandle) -> Result<(), String> {
     ACTIVE.store(true, Ordering::Release);
     let mut previous = vec![0.0; NUM_BINS];
     let output_generation = OUTPUT_GENERATION.load(Ordering::Acquire);
-    while ENABLED.load(Ordering::Acquire)
+    while capture_requested()
         && !failed.load(Ordering::Acquire)
         && OUTPUT_GENERATION.load(Ordering::Acquire) == output_generation
     {
@@ -87,7 +87,9 @@ fn capture(app: &AppHandle) -> Result<(), String> {
         if let Ok(mut saved) = SNAPSHOT.lock() {
             *saved = Some(snapshot.clone());
         }
-        let _ = app.emit("visualizer", snapshot);
+        if !snapshot.is_silent {
+            let _ = app.emit("visualizer", snapshot);
+        }
     }
     drop(stream);
     ACTIVE.store(false, Ordering::Release);

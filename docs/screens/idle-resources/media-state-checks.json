@@ -1,0 +1,26 @@
+[
+    {
+        "Phase":  "before-3",
+        "Utc":  "2026-11-04T18:25:37.0381638Z",
+        "Active":  true,
+        "Playing":  false
+    },
+    {
+        "Phase":  "after-3",
+        "Utc":  "2026-11-04T18:28:39.9267427Z",
+        "Active":  true,
+        "Playing":  false
+    },
+    {
+        "Phase":  "before-4",
+        "Utc":  "2026-11-04T18:28:39.9812825Z",
+        "Active":  true,
+        "Playing":  false
+    },
+    {
+        "Phase":  "after-4",
+        "Utc":  "2026-11-04T18:31:45.6855339Z",
+        "Active":  true,
+        "Playing":  false
+    }
+]

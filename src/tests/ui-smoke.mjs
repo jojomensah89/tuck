@@ -15,6 +15,14 @@ try {
   };
   await context.route('http://tuck.test/**', serveDist);
   const page = await context.newPage();
+  const instrumentTimers = () => {
+    const active = new Set();
+    const start = window.setInterval.bind(window), stop = window.clearInterval.bind(window);
+    window.setInterval = (callback, delay, ...args) => { const id = start(callback, delay, ...args); active.add(id); return id; };
+    window.clearInterval = id => { active.delete(id); stop(id); };
+    window.__idleIntervals = active;
+  };
+  await context.addInitScript(instrumentTimers);
   const errors = [];
   page.on('pageerror',error => errors.push(error.message));
   await page.goto('http://tuck.test/');
@@ -154,7 +162,10 @@ try {
       if(command==='radio_set'){state.radios[0].state=args.enabled?'On':'Off';return;}
       if(command==='extension_settings')throw 'Activity settings could not be saved';
       if(command==='media_now')return {active:false,trackId:'',title:'',artist:'',playing:false,positionMs:0,durationMs:0,artwork:null};
-      if(command==='usage_now')return [];
+      if(command==='usage_now') {
+        if(window.__holdUsage) return new Promise(resolve => { window.__resolveUsage = resolve; });
+        return structuredClone(window.__usageSnapshot || []);
+      }
       if(command==='clipboard_get_state')return {enabled:false,persistOnExit:false,items:[]};
       if(command==='clipboard_configure')throw 'Fixture atomic save failure';
       if(command==='get_autostart'||command==='installed_usage_enabled'||command==='fullscreen_now')return false;
@@ -167,8 +178,33 @@ try {
   };
   await context.addInitScript(nativeBridge);
   const native=await context.newPage();const nativeErrors=[];native.on('pageerror',error=>nativeErrors.push(error.message));
-  await native.goto('http://tuck.test/');await native.waitForTimeout(100);
+  await native.goto('http://tuck.test/');
+  await native.waitForFunction(() => window.__calls?.some(call => call.command === 'plugin:event|listen' && call.args.event === 'open-island') && window.__calls.some(call => call.command === 'usage_now'));
+  assert.equal(await native.evaluate(() => window.__idleIntervals.size), 0, 'No intervals while collapsed without running activities');
   assert.equal(await native.locator('.page.todos').count(), 0, 'Todos feature must be completely removed');
+  // A missed event is recovered by the pull on open; a racing newer event wins.
+  const usageFixture = pct => [{id:'claude-5h',provider:'claude',label:'Claude session',usedPct:pct,spentUsd:null,resetsAt:null,source:'official',stale:false,status:'ok'}];
+  await native.evaluate(meters => { window.__usageSnapshot = meters; window.__emitNative('open-island',null); }, usageFixture(31));
+  try {
+    await native.waitForFunction(() => document.querySelector('#uList .u-face')?.getAttribute('aria-label')?.includes('69% left'));
+  } catch (error) {
+    console.error('Usage open diagnostics', await native.evaluate(() => ({state:document.getElementById('isl')?.dataset.state,calls:window.__calls,usage:document.querySelector('#panel-usage')?.textContent})), nativeErrors);
+    throw error;
+  }
+  await native.keyboard.press('Escape');
+  await native.evaluate(() => { window.__holdUsage = true; window.__emitNative('open-island',null); });
+  await native.waitForFunction(() => typeof window.__resolveUsage === 'function');
+  await native.evaluate(meters => window.__emitNative('usage',meters), usageFixture(72));
+  await native.evaluate(meters => { window.__resolveUsage(meters); window.__holdUsage = false; }, usageFixture(12));
+  await native.waitForTimeout(20);
+  assert.ok((await native.locator('#uList .u-face').getAttribute('aria-label')).includes('28% left'),'A stale open response cannot overwrite a newer usage event');
+  await native.keyboard.press('Escape');
+  await native.evaluate(() => {
+    document.querySelectorAll('.live-spectrum i, .wide-spectrum i').forEach(el=>el.style.setProperty('--level','1'));
+    window.__emitNative('open-island',null);
+  });
+  assert.equal(await native.locator('.live-spectrum i, .wide-spectrum i').evaluateAll(nodes=>nodes.every(el=>el.style.getPropertyValue('--level')==='0')),true,'Opening clears old bars immediately, before the one-second stale timer');
+  await native.keyboard.press('Escape');
   // Volume/brightness HUD from a mocked native level event
   const hudState = () => native.locator('#isl').evaluate(el => [el.dataset.state, el.dataset.hud ?? null]);
   await native.evaluate(()=>window.__emitNative('system-level',{kind:'volume',level:37,muted:false}));
@@ -838,6 +874,38 @@ try {
   assert.equal(await native.locator('#flyoutStatus').getAttribute('data-kind'),'error');
   assert.deepEqual(nativeErrors,[]);
 
+  // Isolate spectrum navigation from the HUD suite's announcement timing.
+  const spectraContext = await browser.newContext({viewport:{width:520,height:230}, reducedMotion:'reduce'});
+  await spectraContext.route('http://tuck.test/**', serveDist);
+  await spectraContext.addInitScript(nativeBridge);
+  const spectra = await spectraContext.newPage();
+  await spectra.goto('http://tuck.test/');
+  await spectra.waitForFunction(() => window.__calls?.some(call => call.command === 'plugin:event|listen' && call.args.event === 'open-island'));
+  await spectra.evaluate(() => window.__emitNative('open-island',null));
+  await spectra.getByRole('tab',{name:'Media',exact:true}).click();
+  await spectra.getByRole('button',{name:'Go to now playing',exact:true}).click();
+  await spectra.waitForTimeout(400);
+  await spectra.evaluate(() => window.__emitNative('visualizer',{bins:[1,1,1],isSilent:false}));
+  assert.equal(await spectra.locator('.live-spectrum i').first().evaluate(el=>el.style.getPropertyValue('--level')),'1');
+  assert.equal(await spectra.locator('.wide-spectrum i').first().evaluate(el=>el.style.getPropertyValue('--level')),'0','Hidden visualizer group is not updated');
+  await spectra.getByRole('button',{name:'Go to visualizer',exact:true}).click();
+  await spectra.waitForTimeout(400);
+  await spectra.evaluate(() => window.__emitNative('visualizer',{bins:[0.5,0.5],isSilent:false}));
+  assert.equal(await spectra.locator('.wide-spectrum i').first().evaluate(el=>el.style.getPropertyValue('--level')),'0.5');
+  await spectra.getByRole('tab',{name:'Usage',exact:true}).click();
+  await spectra.waitForTimeout(100); // Allow IntersectionObserver to deliver the visibility change.
+  const hiddenLevels = await spectra.locator('.live-spectrum i, .wide-spectrum i').evaluateAll(nodes=>nodes.map(el=>el.style.getPropertyValue('--level')));
+  await spectra.evaluate(() => window.__emitNative('visualizer',{bins:[0.3,0.3],isSilent:false}));
+  assert.deepEqual(await spectra.locator('.live-spectrum i, .wide-spectrum i').evaluateAll(nodes=>nodes.map(el=>el.style.getPropertyValue('--level'))),hiddenLevels,'Inactive-tab groups are not updated');
+  await spectra.keyboard.press('Escape');
+  await spectra.evaluate(() => window.__emitNative('visualizer',{bins:[0.2,0.2],isSilent:false}));
+  assert.equal(await spectra.locator('.wide-spectrum i').first().evaluate(el=>el.style.getPropertyValue('--level')),'0.5','Collapsed full-page spectra are not updated');
+  await spectra.evaluate(() => window.__emitNative('open-island',null));
+  assert.equal(await spectra.locator('.live-spectrum i, .wide-spectrum i').evaluateAll(nodes=>nodes.every(el=>el.style.getPropertyValue('--level')==='0')),true,'Opening clears old bars immediately, before the one-second stale timer');
+  await spectra.keyboard.press('Escape');
+  await spectra.mouse.move(0, 220);
+  await spectraContext.close();
+
   // Versioned native snapshots drive collapsed and expanded previews together.
   await native.setViewportSize({width:520,height:230});
   await native.goto('http://tuck.test/');
@@ -876,6 +944,7 @@ try {
   const motionContext = await browser.newContext({viewport:{width:520,height:230}, reducedMotion:'no-preference'});
   await motionContext.route('http://tuck.test/**', serveDist);
   await motionContext.addInitScript(nativeBridge);
+  await motionContext.addInitScript(instrumentTimers);
   const motion = await motionContext.newPage();
   const motionErrors = []; motion.on('pageerror',error=>motionErrors.push(error.message));
   await motion.goto('http://tuck.test/');
@@ -909,7 +978,20 @@ try {
   await emitTrack(`${longTitle} again`,false);
   await motion.waitForTimeout(1600);
   assert.deepEqual(await running(),[],'The equalizer stops on pause and nothing else runs');
+  assert.equal(await motion.evaluate(() => window.__idleIntervals.size), 0, 'Pausing collapsed media parks all intervals');
   assert.deepEqual(motionErrors,[]);
+  // The compact clock stays accurate with one minute-aligned timeout, without an interval.
+  const idleClock = await context.newPage();
+  const minuteEdge = new Date('2026-11-04T12:00:59.900Z');
+  await idleClock.clock.install({time:new Date(minuteEdge.getTime() - 1000)});
+  await idleClock.clock.pauseAt(minuteEdge);
+  await idleClock.goto('http://tuck.test/');
+  const beforeMinute = await idleClock.locator('.compact').innerText();
+  await idleClock.clock.runFor(200);
+  assert.notEqual(await idleClock.locator('.compact').innerText(), beforeMinute, 'Collapsed clock advances at the next minute');
+  assert.equal(await idleClock.evaluate(() => window.__idleIntervals.size), 0, 'The minute clock does not start an interval');
+  await idleClock.close();
+
   console.log('UI smoke passed: geometry, tab rail (keys, wheel edges, swipe, memory), accessibility, keyboard seeking, timers, collapsed media text and its running animations, usage rings, section marks, icon buttons, persistence errors, volume/brightness HUD, wheel and middle-click volume, the pill-sized strip on the open island, queued flyout failure, return to open after HUD, HUD setting, charger-ramp brightness, flyout opt-in, native-bridge call priority, shelf, focused radio updates, drag hold and previews.');
 } finally { await browser.close(); }
 

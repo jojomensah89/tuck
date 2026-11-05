@@ -38,6 +38,8 @@ tauri-plugin-single-instance = "2"
 [target.'cfg(windows)'.dependencies]
 drag = "=2.1.1"
 windows-core = "0.58"
+webview2-com = "0.39"
+webview-core = { package = "windows-core", version = "0.62" }
 
 [target.'cfg(windows)'.dependencies.windows]
 version = "0.58"

@@ -1,5 +1,18 @@
 use serde::Serialize;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
+static HIT_GEOMETRY_DIRTY: AtomicBool = AtomicBool::new(true);
+pub(crate) fn invalidate_hit_geometry() {
+    HIT_GEOMETRY_DIRTY.store(true, Ordering::Release);
+}
+
+pub(crate) fn cursor_poll_ms(near: bool) -> u64 {
+    if near {
+        40
+    } else {
+        60
+    }
+}
+
 static FULLSCREEN: AtomicBool = AtomicBool::new(false);
 static FULLSCREEN_AUTO_HIDE: AtomicBool = AtomicBool::new(true);
 static CURSOR_PAUSE_REASONS: AtomicU8 = AtomicU8::new(0);
@@ -179,6 +192,21 @@ pub fn is_point_inside(bounds: &HitBounds, x: f64, y: f64) -> bool {
     x >= bounds.left && x <= bounds.right && y >= bounds.top && y <= bounds.bottom
 }
 
+/// Keep fast sampling within 400 CSS pixels, including across negative monitor origins.
+fn cursor_near(bounds: &HitBounds, x: f64, y: f64, scale: f64) -> bool {
+    let margin = 400.0 * scale;
+    is_point_inside(
+        &HitBounds {
+            left: bounds.left - margin,
+            right: bounds.right + margin,
+            top: bounds.top - margin,
+            bottom: bounds.bottom + margin,
+        },
+        x,
+        y,
+    )
+}
+
 /// Rectangle geometry for fullscreen classification.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Rect {
@@ -321,15 +349,67 @@ fn park_cursor_while_paused(win: &WebviewWindow, on_park: impl FnOnce()) -> bool
     true
 }
 
-/// Applies a hit-test result only if no pause began since the test ran. The window
-/// setter only queues a message to the event loop, so holding the gate cannot deadlock.
-fn apply_hit_test(win: &WebviewWindow, hovered: bool) -> bool {
-    let _guard = lock_cursor_gate();
-    if CURSOR_PAUSE_REASONS.load(Ordering::SeqCst) != 0 {
-        return false;
+#[derive(Clone, Copy)]
+struct CursorGeometry {
+    x: i32,
+    y: i32,
+    width: u32,
+    scale: f64,
+}
+impl CursorGeometry {
+    fn bounds(self, hit: &HitState) -> HitBounds {
+        compute_hit_bounds(
+            self.x,
+            self.y,
+            self.width,
+            self.scale,
+            hit.width.load(Ordering::Acquire),
+            hit.height.load(Ordering::Acquire),
+            6.0,
+        )
     }
-    let _ = win.set_ignore_cursor_events(!hovered);
-    true
+}
+
+/// Re-read the cursor on the UI thread: a queued outside sample must never turn
+/// click-through back on after the pointer has already entered the island.
+fn apply_hit_test(
+    win: &WebviewWindow,
+    app: AppHandle,
+    was_hovered: Arc<AtomicBool>,
+    geometry: Option<CursorGeometry>,
+    hit: Arc<HitState>,
+    _sampled_hovered: bool,
+) -> bool {
+    let target = win.clone();
+    win.run_on_main_thread(move || {
+        let _guard = lock_cursor_gate();
+        if CURSOR_PAUSE_REASONS.load(Ordering::SeqCst) != 0 {
+            return;
+        }
+        #[cfg(windows)]
+        let hovered = {
+            let mut point = POINT::default();
+            let current = unsafe { GetCursorPos(&mut point) }
+                .ok()
+                .map(|_| (point.x as f64, point.y as f64));
+            let bounds = geometry.map(|geometry| geometry.bounds(&hit));
+            hit_at_delivery(bounds.as_ref(), current)
+        };
+        #[cfg(not(windows))]
+        let hovered = _sampled_hovered;
+        // Tauri/Wry and Tao execute this setter inline when already on the event thread.
+        let _ = target.set_ignore_cursor_events(!hovered);
+        if was_hovered.swap(hovered, Ordering::AcqRel) != hovered {
+            let _ = app.emit("hover", hovered);
+        }
+    })
+    .is_ok()
+}
+
+fn hit_at_delivery(bounds: Option<&HitBounds>, current: Option<(f64, f64)>) -> bool {
+    bounds
+        .zip(current)
+        .is_some_and(|(bounds, (x, y))| is_point_inside(bounds, x, y))
 }
 
 #[cfg(windows)]
@@ -527,64 +607,79 @@ pub(crate) fn deactivate_island(app: AppHandle) -> Result<(), String> {
         .map_err(|_| "Could not restore click-through".to_string())
 }
 
-/// Starts the 40ms cursor hit-testing loop. Native lifecycle, display, power and
+/// Starts adaptive cursor hit testing (40 ms near, 60 ms far). Native lifecycle, display, power and
 /// fullscreen events are handled by the hidden window in `lifecycle`.
 pub fn start(app: AppHandle, hit_state: Arc<HitState>) {
     let app_cursor = app.clone();
     let hit_cursor = hit_state.clone();
 
-    // 40ms Cursor & Fullscreen polling thread
+    // Adaptive cursor sampling; fullscreen is handled by lifecycle notifications.
     std::thread::spawn(move || {
         #[cfg(windows)]
         unsafe {
             let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
         }
 
-        let mut was_hovered = false;
+        let was_hovered = Arc::new(AtomicBool::new(false));
+        let mut near = true;
+        #[cfg(windows)]
+        let mut geometry = None;
 
         loop {
-            std::thread::sleep(std::time::Duration::from_millis(40));
+            std::thread::sleep(std::time::Duration::from_millis(cursor_poll_ms(near)));
 
             let Some(win) = app_cursor.get_webview_window("main") else {
                 continue;
             };
             let parked = park_cursor_while_paused(&win, || {
-                if was_hovered {
+                if was_hovered.swap(false, Ordering::AcqRel) {
                     let _ = app_cursor.emit("hover", false);
                 }
             });
             if parked {
-                was_hovered = false;
                 continue;
             }
 
             // Hit test: physical cursor vs scaled CSS geometry
             let mut is_hovered = false;
+            let mut delivery_geometry = None;
             #[cfg(windows)]
             unsafe {
                 let mut pt = POINT::default();
                 if GetCursorPos(&mut pt).is_ok() {
-                    if let (Ok(pos), Ok(size), Ok(sf)) =
-                        (win.outer_position(), win.outer_size(), win.scale_factor())
-                    {
+                    if geometry.is_none() || HIT_GEOMETRY_DIRTY.swap(false, Ordering::AcqRel) {
+                        geometry = win
+                            .outer_position()
+                            .ok()
+                            .zip(win.outer_size().ok())
+                            .zip(win.scale_factor().ok());
+                    }
+                    if let Some(((pos, size), sf)) = geometry {
                         let hit_w = hit_cursor.width.load(Ordering::Relaxed);
                         let hit_h = hit_cursor.height.load(Ordering::Relaxed);
-                        let bounds = compute_hit_bounds(
-                            pos.x, pos.y, size.width, sf, hit_w, hit_h, 6.0, // 6px slop
-                        );
+                        let bounds =
+                            compute_hit_bounds(pos.x, pos.y, size.width, sf, hit_w, hit_h, 6.0);
+                        delivery_geometry = Some(CursorGeometry {
+                            x: pos.x,
+                            y: pos.y,
+                            width: size.width,
+                            scale: sf,
+                        });
                         is_hovered = is_point_inside(&bounds, pt.x as f64, pt.y as f64);
+                        near = cursor_near(&bounds, pt.x as f64, pt.y as f64, sf);
                     }
                 }
             }
 
             // Reconcile even without an enter/leave transition: tray activation changes this externally.
-            if !apply_hit_test(&win, is_hovered) {
-                continue;
-            }
-            if is_hovered != was_hovered {
-                was_hovered = is_hovered;
-                let _ = app_cursor.emit("hover", is_hovered);
-            }
+            let _ = apply_hit_test(
+                &win,
+                app_cursor.clone(),
+                was_hovered.clone(),
+                delivery_geometry,
+                hit_cursor.clone(),
+                is_hovered,
+            );
         }
     });
 
@@ -679,5 +774,66 @@ pub(crate) async fn set_autostart(app: AppHandle, enable: bool) -> Result<(), St
         app.autolaunch().enable().map_err(|e| e.to_string())
     } else {
         app.autolaunch().disable().map_err(|e| e.to_string())
+    }
+}
+
+#[cfg(test)]
+mod idle_cursor_tests {
+    use super::*;
+    #[test]
+    fn queued_reconciliation_uses_latest_css_hit_size() {
+        let geometry = CursorGeometry {
+            x: 0,
+            y: 0,
+            width: 520,
+            scale: 1.0,
+        };
+        let hit = HitState::default();
+        hit.width.store(500, Ordering::Release);
+        assert!(hit_at_delivery(
+            Some(&geometry.bounds(&hit)),
+            Some((30.0, 20.0))
+        ));
+        hit.width.store(160, Ordering::Release);
+        assert!(!hit_at_delivery(
+            Some(&geometry.bounds(&hit)),
+            Some((30.0, 20.0))
+        ));
+    }
+    #[test]
+    fn delayed_outside_sample_uses_cursor_at_delivery_not_enqueue_time() {
+        let bounds = HitBounds {
+            left: 100.0,
+            right: 200.0,
+            top: 0.0,
+            bottom: 40.0,
+        };
+        let queued_outside = (50.0, 20.0);
+        assert!(!hit_at_delivery(Some(&bounds), Some(queued_outside)));
+        assert!(hit_at_delivery(Some(&bounds), Some((150.0, 20.0))));
+        assert!(!hit_at_delivery(Some(&bounds), None));
+        assert!(!hit_at_delivery(None, Some((150.0, 20.0))));
+    }
+    #[test]
+    fn fast_region_preserves_hit_bounds_and_scales_on_negative_monitors() {
+        let bounds = HitBounds {
+            left: -1000.0,
+            right: -800.0,
+            top: 0.0,
+            bottom: 40.0,
+        };
+        assert!(!is_point_inside(&bounds, -1200.0, 200.0));
+        assert!(cursor_near(&bounds, -1200.0, 200.0, 1.5));
+        assert!(cursor_near(&bounds, -1600.0, 640.0, 1.5));
+        assert!(!cursor_near(&bounds, -1600.1, 640.0, 1.5));
+        assert!(!cursor_near(&bounds, -1000.0, 641.0, 1.5));
+        assert_eq!(
+            cursor_poll_ms(cursor_near(&bounds, -1200.0, 200.0, 1.5)),
+            40
+        );
+        assert_eq!(
+            cursor_poll_ms(cursor_near(&bounds, -1700.0, 200.0, 1.5)),
+            60
+        );
     }
 }

@@ -777,6 +777,7 @@ pub fn start<R: Runtime>(app: AppHandle<R>) {
         let mut last_file = Instant::now() - Duration::from_secs(60);
         let mut last_api = Instant::now() - Duration::from_secs(600);
         let mut last_month = 0;
+        let mut emitted = None;
         loop {
             if last_file.elapsed() >= Duration::from_secs(60) {
                 let claude = claude_meters();
@@ -818,7 +819,11 @@ pub fn start<R: Runtime>(app: AppHandle<R>) {
                 last_api = Instant::now();
                 last_month = month;
             }
-            let _ = app.emit("usage", current_snapshot());
+            let snapshot = current_snapshot();
+            if emitted.as_ref() != Some(&snapshot) {
+                let _ = app.emit("usage", &snapshot);
+                emitted = Some(snapshot);
+            }
             std::thread::sleep(Duration::from_secs(1));
         }
     });

@@ -7,10 +7,79 @@ use std::io::Read;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager, State};
 use uuid::Uuid;
 use zeroize::{Zeroize, Zeroizing};
+
+static CLIPBOARD_WAKE: Mutex<Option<std::sync::mpsc::Sender<()>>> = Mutex::new(None);
+pub(crate) fn clipboard_updated() {
+    if let Some(tx) = CLIPBOARD_WAKE
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .as_ref()
+    {
+        let _ = tx.send(());
+    }
+}
+pub(crate) fn listener_enabled(app: &AppHandle) -> bool {
+    app.state::<Arc<ClipboardHistoryService>>()
+        .snapshot()
+        .enabled
+}
+
+#[derive(Debug, PartialEq)]
+enum ClipboardRead {
+    Busy,
+    Ignored,
+    Text(u32, String),
+}
+
+// Ten reads per sequence: at most 5.24 seconds of scheduled backoff, then no timer.
+const CAPTURE_ATTEMPTS: u8 = 10;
+#[derive(Default)]
+struct CaptureRetry {
+    delay: Option<std::time::Duration>,
+    sequence: Option<(u32, u64)>,
+    remaining: u8,
+}
+impl CaptureRetry {
+    fn notified(&mut self, sequence: u32, generation: u64) {
+        // Duplicate notifications cannot renew an exhausted sequence's budget.
+        if self.sequence == Some((sequence, generation)) {
+            return;
+        }
+        self.sequence = Some((sequence, generation));
+        self.remaining = CAPTURE_ATTEMPTS;
+        self.delay = Some(std::time::Duration::from_millis(20));
+    }
+    fn completed(&mut self) {
+        self.delay = None;
+        self.remaining = 0;
+    }
+    fn wait(
+        &self,
+        rx: &std::sync::mpsc::Receiver<()>,
+    ) -> Result<(), std::sync::mpsc::RecvTimeoutError> {
+        match self.delay {
+            Some(delay) => rx.recv_timeout(delay),
+            None => rx
+                .recv()
+                .map_err(|_| std::sync::mpsc::RecvTimeoutError::Disconnected),
+        }
+    }
+    fn observed(&mut self, result: &Result<ClipboardRead, String>) {
+        self.remaining = self.remaining.saturating_sub(1);
+        if matches!(result, Ok(ClipboardRead::Busy)) && self.remaining > 0 {
+            self.delay = Some(
+                (self.delay.unwrap_or(std::time::Duration::from_millis(20)) * 2)
+                    .min(std::time::Duration::from_secs(1)),
+            );
+        } else {
+            self.completed();
+        }
+    }
+}
 
 const EVENT_CHANGED: &str = "clipboard_history_changed";
 const EVENT_ERROR: &str = "clipboard_history_error";
@@ -149,6 +218,8 @@ impl ClipboardHistoryService {
                 .map_err(|_| "Clipboard settings unavailable")?;
             update_enabled(&mut state, enabled);
         }
+        clipboard_updated();
+        crate::lifecycle::request_refresh();
         self.emit_changed();
         Ok(())
     }
@@ -193,6 +264,8 @@ impl ClipboardHistoryService {
             self.last_sequence
                 .store(current_clipboard_sequence(), Ordering::Release);
         }
+        clipboard_updated();
+        crate::lifecycle::request_refresh();
         self.emit_changed();
         Ok(())
     }
@@ -233,6 +306,8 @@ impl ClipboardHistoryService {
             .lock()
             .map_err(|_| "Clipboard settings unavailable")?
             .persist_on_exit = persist;
+        clipboard_updated();
+        crate::lifecycle::request_refresh();
         self.emit_changed();
         Ok(())
     }
@@ -285,6 +360,8 @@ impl ClipboardHistoryService {
             .lock()
             .map_err(|_| "Clipboard history unavailable")?
             .items = next;
+        clipboard_updated();
+        crate::lifecycle::request_refresh();
         self.emit_changed();
         Ok(())
     }
@@ -313,6 +390,8 @@ impl ClipboardHistoryService {
             .lock()
             .map_err(|_| "Clipboard history unavailable")?
             .items = items.into_iter().collect();
+        clipboard_updated();
+        crate::lifecycle::request_refresh();
         self.emit_changed();
         Ok(())
     }
@@ -342,6 +421,8 @@ impl ClipboardHistoryService {
             .lock()
             .map_err(|_| "Clipboard history unavailable")?
             .items = items.into_iter().collect();
+        clipboard_updated();
+        crate::lifecycle::request_refresh();
         self.emit_changed();
         Ok(())
     }
@@ -356,6 +437,8 @@ impl ClipboardHistoryService {
         if let Ok(mut state) = self.inner.lock() {
             state.items.clear();
         }
+        clipboard_updated();
+        crate::lifecycle::request_refresh();
         self.emit_changed();
         Ok(())
     }
@@ -613,6 +696,8 @@ pub fn start(app: AppHandle, service: &Arc<ClipboardHistoryService>) -> Result<(
         // A missing/invalid opt-in setting must not leave stale clipboard text on disk.
         service.remove_items_file(&app)?;
     }
+    let (tx, rx) = std::sync::mpsc::channel();
+    *CLIPBOARD_WAKE.lock().unwrap_or_else(|p| p.into_inner()) = Some(tx);
     let worker_service = service.clone();
     let stop = service.stop.clone();
     service
@@ -621,38 +706,59 @@ pub fn start(app: AppHandle, service: &Arc<ClipboardHistoryService>) -> Result<(
     std::thread::Builder::new()
         .name("tuck-clipboard-history".into())
         .spawn(move || {
-            while !stop.load(Ordering::Acquire) {
+            let mut retry = CaptureRetry::default();
+            loop {
+                let notified = match retry.wait(&rx) {
+                    Ok(()) => true,
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => false,
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                };
+                if stop.load(Ordering::Acquire) {
+                    break;
+                }
                 let (enabled, generation) = worker_service
                     .inner
                     .lock()
                     .map(|s| (s.enabled, s.generation))
                     .unwrap_or((false, 0));
-                if enabled {
-                    match read_clipboard_text() {
-                        Ok(Some((sequence, text))) => {
-                            let mut text = Zeroizing::new(text);
-                            let previous = worker_service
-                                .last_sequence
-                                .swap(sequence, Ordering::AcqRel);
-                            if sequence != previous {
-                                if let Err(error) =
-                                    worker_service.push_text(std::mem::take(&mut *text), generation)
-                                {
-                                    if let Ok(app) = worker_service.app() {
-                                        let _ = app.emit(EVENT_ERROR, error);
-                                    }
+                if !enabled {
+                    retry.completed();
+                    continue;
+                }
+                if notified {
+                    retry.notified(current_clipboard_sequence(), generation);
+                }
+                if retry.delay.is_none() {
+                    continue;
+                }
+                let result = read_clipboard_text();
+                retry.observed(&result);
+                match result {
+                    Ok(ClipboardRead::Busy) => {}
+                    Ok(ClipboardRead::Text(sequence, text)) => {
+                        retry.completed();
+                        let mut text = Zeroizing::new(text);
+                        let previous = worker_service
+                            .last_sequence
+                            .swap(sequence, Ordering::AcqRel);
+                        if sequence != previous {
+                            if let Err(error) =
+                                worker_service.push_text(std::mem::take(&mut *text), generation)
+                            {
+                                if let Ok(app) = worker_service.app() {
+                                    let _ = app.emit(EVENT_ERROR, error);
                                 }
                             }
                         }
-                        Ok(None) => {}
-                        Err(error) => {
-                            if let Ok(app) = worker_service.app() {
-                                let _ = app.emit(EVENT_ERROR, error);
-                            }
+                    }
+                    Ok(ClipboardRead::Ignored) => retry.completed(),
+                    Err(error) => {
+                        retry.completed();
+                        if let Ok(app) = worker_service.app() {
+                            let _ = app.emit(EVENT_ERROR, error);
                         }
                     }
                 }
-                std::thread::sleep(Duration::from_millis(350));
             }
         })
         .map_err(|e| format!("Could not start clipboard watcher: {e}"))?;
@@ -663,6 +769,7 @@ pub fn start(app: AppHandle, service: &Arc<ClipboardHistoryService>) -> Result<(
 /// Stop clipboard polling during the app exit path.
 pub fn stop(service: &Arc<ClipboardHistoryService>) {
     service.stop.store(true, Ordering::Release);
+    clipboard_updated();
 }
 
 fn valid_items(items: &[ClipboardHistoryItem]) -> bool {
@@ -678,13 +785,14 @@ fn valid_items(items: &[ClipboardHistoryItem]) -> bool {
 }
 
 #[cfg(windows)]
-fn read_clipboard_text() -> Result<Option<(u32, String)>, String> {
+fn read_clipboard_text() -> Result<ClipboardRead, String> {
     use windows::Win32::{
         Foundation::HGLOBAL,
         System::{
             DataExchange::{
                 CloseClipboard, EnumClipboardFormats, GetClipboardData, GetClipboardOwner,
-                GetClipboardSequenceNumber, OpenClipboard, RegisterClipboardFormatW,
+                GetClipboardSequenceNumber, IsClipboardFormatAvailable, OpenClipboard,
+                RegisterClipboardFormatW,
             },
             Memory::{GlobalLock, GlobalSize, GlobalUnlock},
             Ole::CF_UNICODETEXT,
@@ -695,17 +803,17 @@ fn read_clipboard_text() -> Result<Option<(u32, String)>, String> {
     unsafe {
         let before = GetClipboardSequenceNumber();
         if OpenClipboard(None).is_err() {
-            return Ok(None);
+            return Ok(ClipboardRead::Busy);
         }
         let mut result = (|| {
             let owner = GetClipboardOwner().unwrap_or_default();
             if !owner.0.is_null() {
                 let mut owner_pid = 0;
                 if GetWindowThreadProcessId(owner, Some(&mut owner_pid)) == 0 {
-                    return Ok(None);
+                    return Ok(ClipboardRead::Ignored);
                 }
                 if owner_pid == GetCurrentProcessId() {
-                    return Ok(None);
+                    return Ok(ClipboardRead::Ignored);
                 }
             }
             let exclude_from_monitoring =
@@ -719,19 +827,24 @@ fn read_clipboard_text() -> Result<Option<(u32, String)>, String> {
                 password_marked,
                 tuck_transient,
             ) {
-                return Ok(None);
+                return Ok(ClipboardRead::Ignored);
+            }
+            if IsClipboardFormatAvailable(CF_UNICODETEXT.0 as u32).is_err() {
+                return Ok(ClipboardRead::Ignored);
             }
             let handle = match GetClipboardData(CF_UNICODETEXT.0 as u32) {
                 Ok(handle) => HGLOBAL(handle.0),
-                Err(_) => return Ok(None),
+                // Clipboard is open: failure to render advertised text is terminal
+                // for this sequence; a later update will get a fresh budget.
+                Err(_) => return Ok(ClipboardRead::Ignored),
             };
             let bytes = GlobalSize(handle);
             if !(2..=MAX_ITEM_BYTES + 2).contains(&bytes) || !bytes.is_multiple_of(2) {
-                return Ok(None);
+                return Ok(ClipboardRead::Ignored);
             }
             let pointer = GlobalLock(handle) as *const u16;
             if pointer.is_null() {
-                return Ok(None);
+                return Ok(ClipboardRead::Ignored);
             }
             let units = std::slice::from_raw_parts(pointer, bytes / 2);
             let length = units
@@ -743,13 +856,13 @@ fn read_clipboard_text() -> Result<Option<(u32, String)>, String> {
             let after = GetClipboardSequenceNumber();
             if !clipboard_sequence_unchanged(before, after) {
                 text.zeroize();
-                return Ok(None);
+                return Ok(ClipboardRead::Busy);
             }
-            Ok(Some((after, text)))
+            Ok(ClipboardRead::Text(after, text))
         })();
         let close = CloseClipboard();
         if close.is_err() {
-            if let Ok(Some((_, text))) = &mut result {
+            if let Ok(ClipboardRead::Text(_, text)) = &mut result {
                 text.zeroize();
             }
             return Err("Could not close the Windows clipboard after reading it".into());
@@ -883,8 +996,8 @@ fn current_clipboard_sequence() -> u32 {
 }
 
 #[cfg(not(windows))]
-fn read_clipboard_text() -> Result<Option<(u32, String)>, String> {
-    Ok(None)
+fn read_clipboard_text() -> Result<ClipboardRead, String> {
+    Ok(ClipboardRead::Ignored)
 }
 
 #[cfg(not(windows))]
@@ -1124,5 +1237,75 @@ mod tests {
         std::fs::write(&path, b"small").unwrap();
         assert_eq!(read_bounded(&path, 16).unwrap(), b"small");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod retry_tests {
+    use super::*;
+    #[test]
+    fn busy_sequence_exhausts_budget_and_duplicate_notifications_do_not_renew_it() {
+        let mut retry = CaptureRetry::default();
+        retry.notified(123, 0);
+        let mut total_delay = std::time::Duration::ZERO;
+        for attempt in 0..CAPTURE_ATTEMPTS {
+            assert!(retry.delay.is_some());
+            retry.notified(123, 0);
+            retry.observed(&Ok(ClipboardRead::Busy));
+            if attempt + 1 < CAPTURE_ATTEMPTS {
+                total_delay += retry.delay.unwrap();
+            }
+        }
+        assert_eq!(total_delay, std::time::Duration::from_millis(5240));
+        assert!(retry.delay.is_none());
+        retry.notified(123, 0);
+        assert!(retry.delay.is_none());
+    }
+    #[test]
+    fn exhausted_worker_parks_until_later_change_then_captures_and_parks_again() {
+        let mut retry = CaptureRetry::default();
+        retry.notified(123, 0);
+        for _ in 0..CAPTURE_ATTEMPTS {
+            retry.observed(&Ok(ClipboardRead::Busy));
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let (read_tx, read_rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            ready_tx.send(()).unwrap();
+            retry.wait(&rx).unwrap();
+            retry.notified(124, 0);
+            assert!(retry.delay.is_some());
+            let result = Ok(ClipboardRead::Text(124, "later clipboard change".into()));
+            retry.observed(&result);
+            read_tx.send(result).unwrap();
+            assert!(retry.delay.is_none());
+            assert!(retry.wait(&rx).is_err());
+        });
+        ready_rx.recv().unwrap();
+        assert!(matches!(
+            read_rx.recv_timeout(std::time::Duration::from_millis(50)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        ));
+        tx.send(()).unwrap();
+        assert_eq!(
+            read_rx.recv().unwrap(),
+            Ok(ClipboardRead::Text(124, "later clipboard change".into()))
+        );
+        drop(tx);
+        worker.join().unwrap();
+    }
+    #[test]
+    fn terminal_results_and_disable_park_and_reenable_gets_fresh_budget() {
+        for result in [Ok(ClipboardRead::Ignored), Err("terminal error".into())] {
+            let mut retry = CaptureRetry::default();
+            retry.notified(123, 0);
+            retry.observed(&result);
+            assert!(retry.delay.is_none());
+            retry.notified(123, 1);
+            assert_eq!(retry.remaining, CAPTURE_ATTEMPTS);
+            retry.completed();
+            assert!(retry.delay.is_none());
+        }
     }
 }

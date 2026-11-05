@@ -368,6 +368,14 @@ export function mountLivePages(onLayout: () => void): {
   const wideSpectrum = node('div', 'wide-spectrum'); wideSpectrum.setAttribute('aria-label', 'Measured playback frequency bands');
   const wideBars = Array.from({ length: 48 }, () => { const bar = node('i'); wideSpectrum.append(bar); return bar; });
   audioPage.append(audioTitle, wideSpectrum, audioStatus);
+  const visibleSpectra = new Set<Element>();
+  const spectrumObserver = new IntersectionObserver(entries => {
+    for (const entry of entries) {
+      if (entry.isIntersecting && entry.intersectionRatio > 0) visibleSpectra.add(entry.target);
+      else visibleSpectra.delete(entry.target);
+    }
+  });
+  spectrumObserver.observe(spectrum); spectrumObserver.observe(wideSpectrum);
   let lastAudio = 0;
   function audio(data: { bands: number[]; active?: boolean }): void {
     if (!data || !Array.isArray(data.bands)) return;
@@ -378,12 +386,16 @@ export function mountLivePages(onLayout: () => void): {
     }
     lastAudio = Date.now();
     audioStatus.textContent = data.active === false ? 'Silence, no audio is stored' : 'Live spectrum, no audio is stored';
-    for (const group of [bars, wideBars]) group.forEach((bar, i) => {
-      const source = i * Math.max(0, data.bands.length - 1) / (group.length - 1);
-      const low = data.bands[Math.floor(source)] || 0, high = data.bands[Math.ceil(source)] || 0;
-      const sample = data.active === false ? 0 : low + (high - low) * (source % 1);
-      bar.style.setProperty('--level', String(Number.isFinite(sample) ? Math.max(0, Math.min(1, sample)) : 0));
-    });
+    if (document.getElementById('isl')?.dataset.state !== 'open') return;
+    for (const [element, group] of [[spectrum, bars], [wideSpectrum, wideBars]] as const) {
+      if (!visibleSpectra.has(element)) continue;
+      group.forEach((bar, i) => {
+        const source = i * Math.max(0, data.bands.length - 1) / (group.length - 1);
+        const low = data.bands[Math.floor(source)] || 0, high = data.bands[Math.ceil(source)] || 0;
+        const sample = data.active === false ? 0 : low + (high - low) * (source % 1);
+        bar.style.setProperty('--level', String(Number.isFinite(sample) ? Math.max(0, Math.min(1, sample)) : 0));
+      });
+    }
   }
   async function act(action: Promise<unknown>, status: HTMLElement): Promise<void> {
     try { await action; status.textContent = ''; } catch (error) { status.textContent = friendlyError(error); }
@@ -399,16 +411,35 @@ export function mountLivePages(onLayout: () => void): {
   }).then(unlisten => unlisteners.push(unlisten));
   void listenToEvent<string>('visualizer-error', () => { audioStatus.textContent = 'Playback analysis unavailable, check the output device'; }).then(unlisten => unlisteners.push(unlisten));
   void sessions();
-  void refreshTelemetry();
   void nativeService<DictationSnapshot>('dictation_snapshot').then(dictation).catch(() => { speechStatus.textContent = 'Dictation service unavailable, see Settings'; });
   void refreshClipboard().catch(() => { clipboardStatus.textContent = 'Clipboard service unavailable, see Settings'; });
-  const interval = window.setInterval(() => {
-    if (Date.now() - lastAudio > 1000) [...bars, ...wideBars].forEach(bar => bar.style.setProperty('--level', '0'));
-    if (telemetryGate.sampledAt && Date.now() - telemetryGate.sampledAt > 10000) invalidateTelemetry('Stale, warming up');
+  let interval: number | undefined;
+  let sessionInterval: number | undefined;
+  const visible = () => document.getElementById('isl')?.dataset.state === 'open';
+  let wasVisible = false;
+  const clearAudioBars = () => [...bars, ...wideBars].forEach(bar => bar.style.setProperty('--level', '0'));
+  const syncTimers = () => {
+    const open = visible();
+    if (open && !wasVisible) clearAudioBars();
+    wasVisible = open;
+    window.clearInterval(interval); window.clearInterval(sessionInterval);
+    interval = undefined; sessionInterval = undefined;
+    if (!visible()) return;
+    void sessions();
     if (stats.closest('.tab-panel.on')) void refreshTelemetry();
-  }, 1000);
-  const sessionInterval = window.setInterval(() => { void sessions(); }, 5000);
-  window.addEventListener('pagehide', () => { clearInterval(interval); clearInterval(sessionInterval); unlisteners.forEach(unlisten => unlisten()); }, { once: true });
+    interval = window.setInterval(() => {
+      if (Date.now() - lastAudio > 1000) [...bars, ...wideBars].forEach(bar => bar.style.setProperty('--level', '0'));
+      if (stats.closest('.tab-panel.on')) void refreshTelemetry();
+    }, 1000);
+    sessionInterval = window.setInterval(() => { void sessions(); }, 5000);
+  };
+  window.addEventListener('tuck-visibility', syncTimers);
+  window.addEventListener('pagehide', () => {
+    spectrumObserver.disconnect();
+    clearInterval(interval); clearInterval(sessionInterval);
+    window.removeEventListener('tuck-visibility', syncTimers);
+    unlisteners.forEach(unlisten => unlisten());
+  }, { once: true });
   return {
     media(state, position) { latestMedia = state; updatePosition(position); if (state.trackId !== currentTrack || !state.active) { currentTrack = state.trackId; void requestLyrics(state); } },
     position: updatePosition, compactLyric: () => currentLyric,

@@ -1,0 +1,119 @@
+{
+    "Summary":  {
+                    "RootId":  9884,
+                    "DurationSeconds":  183.003465,
+                    "Samples":  13,
+                    "WorkingSetMB":  343.890625,
+                    "PrivateMB":  195.671875,
+                    "CpuPctOfOneCore":  5.9633271748663477,
+                    "CpuMin":  2.6496169633350273,
+                    "CpuMax":  8.0494305301159024,
+                    "ContextSwitchesPerSecond":  574.23232788864448
+                },
+    "Rows":  [
+                 {
+                     "Seconds":  19.2126771,
+                     "Processes":  7,
+                     "WorkingSetMB":  343.3359375,
+                     "PrivateMB":  194.7421875,
+                     "CpuPctOfOneCore":  3.7677688379222882,
+                     "ContextSwitchesPerSecond":  514.74135549572372
+                 },
+                 {
+                     "Seconds":  35.1395075,
+                     "Processes":  7,
+                     "WorkingSetMB":  343.4609375,
+                     "PrivateMB":  194.98828125,
+                     "CpuPctOfOneCore":  2.6496169633350273,
+                     "ContextSwitchesPerSecond":  430.46857584419308
+                 },
+                 {
+                     "Seconds":  51.4290668,
+                     "Processes":  7,
+                     "WorkingSetMB":  343.765625,
+                     "PrivateMB":  195.09765625,
+                     "CpuPctOfOneCore":  6.2309850211847042,
+                     "ContextSwitchesPerSecond":  603.08568323269492
+                 },
+                 {
+                     "Seconds":  65.9514918,
+                     "Processes":  7,
+                     "WorkingSetMB":  344.21484375,
+                     "PrivateMB":  196.61328125,
+                     "CpuPctOfOneCore":  7.4230027009951849,
+                     "ContextSwitchesPerSecond":  722.67544848742557
+                 },
+                 {
+                     "Seconds":  80.4163397,
+                     "Processes":  7,
+                     "WorkingSetMB":  344.0703125,
+                     "PrivateMB":  195.671875,
+                     "CpuPctOfOneCore":  5.9385346181206664,
+                     "ContextSwitchesPerSecond":  589.98200734623708
+                 },
+                 {
+                     "Seconds":  93.224699199999989,
+                     "Processes":  7,
+                     "WorkingSetMB":  343.890625,
+                     "PrivateMB":  195.0703125,
+                     "CpuPctOfOneCore":  8.0494305301159024,
+                     "ContextSwitchesPerSecond":  650.512659330026
+                 },
+                 {
+                     "Seconds":  106.8291804,
+                     "Processes":  7,
+                     "WorkingSetMB":  344.3984375,
+                     "PrivateMB":  195.69921875,
+                     "CpuPctOfOneCore":  6.2038381882581417,
+                     "ContextSwitchesPerSecond":  498.36520043116349
+                 },
+                 {
+                     "Seconds":  118.941474,
+                     "Processes":  7,
+                     "WorkingSetMB":  343.796875,
+                     "PrivateMB":  195.0234375,
+                     "CpuPctOfOneCore":  4.5160728270325281,
+                     "ContextSwitchesPerSecond":  636.79103683550068
+                 },
+                 {
+                     "Seconds":  130.8286487,
+                     "Processes":  7,
+                     "WorkingSetMB":  343.4765625,
+                     "PrivateMB":  195.875,
+                     "CpuPctOfOneCore":  5.1231685860560274,
+                     "ContextSwitchesPerSecond":  574.23232788864448
+                 },
+                 {
+                     "Seconds":  142.1845217,
+                     "Processes":  7,
+                     "WorkingSetMB":  344.01171875,
+                     "PrivateMB":  196.34765625,
+                     "CpuPctOfOneCore":  5.7767465345905133,
+                     "ContextSwitchesPerSecond":  563.14472696198686
+                 },
+                 {
+                     "Seconds":  153.0781785,
+                     "Processes":  7,
+                     "WorkingSetMB":  344.40625,
+                     "PrivateMB":  196.23046875,
+                     "CpuPctOfOneCore":  7.747627959052279,
+                     "ContextSwitchesPerSecond":  589.60917513024629
+                 },
+                 {
+                     "Seconds":  165.1646944,
+                     "Processes":  7,
+                     "WorkingSetMB":  344.2421875,
+                     "PrivateMB":  195.85546875,
+                     "CpuPctOfOneCore":  6.2052621798147829,
+                     "ContextSwitchesPerSecond":  475.48855663194075
+                 },
+                 {
+                     "Seconds":  177.9931034,
+                     "Processes":  7,
+                     "WorkingSetMB":  343.23828125,
+                     "PrivateMB":  194.75,
+                     "CpuPctOfOneCore":  5.9633271748663477,
+                     "ContextSwitchesPerSecond":  542.54584492901677
+                 }
+             ]
+}

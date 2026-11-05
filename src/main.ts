@@ -1,3 +1,4 @@
+import { UsageSnapshotGate } from './usage-snapshot.js';
 import {mountExtensions} from './extensions.js';
 import { mountLivePages } from './live-ui.js';
 import { LIVE_SETTINGS_KEY, readPreferences, writePreferences } from './live-state.js';
@@ -225,6 +226,7 @@ window.addEventListener('storage', (e) => {
 /* ================= State Machine ================= */
 
 let state: IslandState = 'idle';
+const usageSnapshots = new UsageSnapshotGate();
 let seekInterval: number | undefined;
 let openInterval: number | undefined;
 let compactClockTimeout: number | undefined;
@@ -237,7 +239,7 @@ function syncIdleTimers(): void {
   if (mediaState.active && mediaState.playing) seekInterval = window.setInterval(tick, 200);
   if (state === 'open') {
     tick(); renderToday(); renderMediaHeader(); renderUsage();
-    void fetchUsageNow();
+    void refreshUsageSnapshot();
     openInterval = window.setInterval(() => { renderToday(); renderMediaHeader(); renderUsage(); }, 1000);
   }
   if (state !== 'open' && !mediaState.playing) {
@@ -1093,7 +1095,14 @@ function renderUsage(): void {
   rail.setSectionVisible('usage', providers > 0);
 }
 
+async function refreshUsageSnapshot(): Promise<void> {
+  const ticket = usageSnapshots.begin();
+  const meters = await fetchUsageNow();
+  if (usageSnapshots.accepts(ticket)) onUsageUpdate(meters);
+}
+
 function onUsageUpdate(meters: Meter[]): void {
+  usageSnapshots.changed();
   rawMeters = meters || [];
   const merged = connectedUsageMeters(mergeMeters(rawMeters));
   prevPcts = checkResets(merged, prevPcts, announceReset);
@@ -1416,11 +1425,7 @@ if (isTauri()) {
 }
 
 // Fetch initial usage if running in native app
-void fetchUsageNow().then((initial) => {
-  if (initial && initial.length > 0) {
-    onUsageUpdate(initial);
-  }
-});
+void refreshUsageSnapshot();
 
 /* ================= Initialization ================= */
 

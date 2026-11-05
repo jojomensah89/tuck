@@ -1,5 +1,7 @@
 # Idle resource validation
 
+> Historical evidence from `55dc58fad77323272d1bdc47d1c1c465a52a2759`. These measurements, build hashes, and native screenshots predate the Astra review fixes and the merge of newer `main`. They must not be presented as measurements of the revised head. See [review follow-up](review-follow-up.md) for current changes and outstanding real-Windows checks. No new desktop/input measurements were performed in the review round.
+
 Date: 2026-11-04. Windows release builds, same machine, same isolated WebView profile.
 Baseline: `139deb32d013188284e441c75e69ea9abdf4349e` (`origin/main` at setup).
 

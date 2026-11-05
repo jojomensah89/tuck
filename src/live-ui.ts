@@ -400,7 +400,12 @@ export function mountLivePages(onLayout: () => void): {
   let interval: number | undefined;
   let sessionInterval: number | undefined;
   const visible = () => document.getElementById('isl')?.dataset.state === 'open';
+  let wasVisible = false;
+  const clearAudioBars = () => [...bars, ...wideBars].forEach(bar => bar.style.setProperty('--level', '0'));
   const syncTimers = () => {
+    const open = visible();
+    if (open && !wasVisible) clearAudioBars();
+    wasVisible = open;
     window.clearInterval(interval); window.clearInterval(sessionInterval);
     interval = undefined; sessionInterval = undefined;
     if (!visible()) return;

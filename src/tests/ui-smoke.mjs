@@ -162,7 +162,10 @@ try {
       if(command==='radio_set'){state.radios[0].state=args.enabled?'On':'Off';return;}
       if(command==='extension_settings')throw 'Activity settings could not be saved';
       if(command==='media_now')return {active:false,trackId:'',title:'',artist:'',playing:false,positionMs:0,durationMs:0,artwork:null};
-      if(command==='usage_now')return [];
+      if(command==='usage_now') {
+        if(window.__holdUsage) return new Promise(resolve => { window.__resolveUsage = resolve; });
+        return structuredClone(window.__usageSnapshot || []);
+      }
       if(command==='clipboard_get_state')return {enabled:false,persistOnExit:false,items:[]};
       if(command==='clipboard_configure')throw 'Fixture atomic save failure';
       if(command==='get_autostart'||command==='installed_usage_enabled'||command==='fullscreen_now')return false;
@@ -178,6 +181,23 @@ try {
   await native.goto('http://tuck.test/');await native.waitForTimeout(100);
   assert.equal(await native.evaluate(() => window.__idleIntervals.size), 0, 'No intervals while collapsed without running activities');
   assert.equal(await native.locator('.page.todos').count(), 0, 'Todos feature must be completely removed');
+  // A missed event is recovered by the pull on open; a racing newer event wins.
+  const usageFixture = pct => [{id:'claude-5h',provider:'claude',label:'Claude session',usedPct:pct,spentUsd:null,resetsAt:null,source:'official',stale:false,status:'ok'}];
+  await native.evaluate(meters => { window.__usageSnapshot = meters; window.__emitNative('open-island',null); }, usageFixture(31));
+  await native.waitForFunction(() => document.querySelector('#panel-usage')?.textContent.includes('31%'));
+  await native.keyboard.press('Escape');
+  await native.evaluate(() => { window.__holdUsage = true; window.__emitNative('open-island',null); });
+  await native.waitForFunction(() => typeof window.__resolveUsage === 'function');
+  await native.evaluate(meters => window.__emitNative('usage',meters), usageFixture(72));
+  await native.evaluate(meters => { window.__resolveUsage(meters); window.__holdUsage = false; }, usageFixture(12));
+  await native.waitForTimeout(20);
+  assert.ok((await native.locator('#panel-usage').textContent()).includes('72%'),'A stale open response cannot overwrite a newer usage event');
+  await native.keyboard.press('Escape');
+  await native.evaluate(() => window.__emitNative('visualizer',{bins:[1,1,1],isSilent:false}));
+  assert.equal(await native.locator('.live-spectrum i').first().evaluate(el=>el.style.getPropertyValue('--level')),'1');
+  await native.evaluate(() => window.__emitNative('open-island',null));
+  assert.equal(await native.locator('.live-spectrum i, .wide-spectrum i').evaluateAll(nodes=>nodes.every(el=>el.style.getPropertyValue('--level')==='0')),true,'Opening clears old bars immediately, before the one-second stale timer');
+  await native.keyboard.press('Escape');
   // Volume/brightness HUD from a mocked native level event
   const hudState = () => native.locator('#isl').evaluate(el => [el.dataset.state, el.dataset.hud ?? null]);
   await native.evaluate(()=>window.__emitNative('system-level',{kind:'volume',level:37,muted:false}));

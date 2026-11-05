@@ -84,6 +84,42 @@ pub(crate) fn is_duplicate_resume(
     !suspended && last_resume.is_some_and(|at| now.saturating_duration_since(at) < RESUME_DEDUPE)
 }
 
+fn update_clipboard_registration<E>(
+    registered: &mut bool,
+    enabled: bool,
+    apply: impl FnOnce(bool) -> Result<(), E>,
+) -> Result<bool, E> {
+    if *registered == enabled {
+        return Ok(false);
+    }
+    apply(enabled)?;
+    *registered = enabled;
+    Ok(true)
+}
+
+/// Foreground hook ownership deliberately excludes the clipboard subscription.
+fn rebind_foreground<H: Copy + Default>(
+    pid: u32,
+    current: &mut u32,
+    hook: &mut H,
+    valid: impl Fn(H) -> bool,
+    remove: impl FnOnce(H),
+    add: impl FnOnce(u32) -> H,
+) {
+    if pid == *current && (pid == 0 || valid(*hook)) {
+        return;
+    }
+    if valid(*hook) {
+        remove(*hook);
+    }
+    *hook = H::default();
+    *current = 0;
+    if pid != 0 {
+        *hook = add(pid);
+        *current = pid;
+    }
+}
+
 #[cfg(windows)]
 mod native {
     use super::*;
@@ -172,20 +208,21 @@ mod native {
                 AddClipboardFormatListener, RemoveClipboardFormatListener,
             };
             let enabled = crate::clipboard_history::listener_enabled(&self.app);
-            if enabled == self.clipboard_listener {
-                return;
-            }
-            let result = unsafe {
-                if enabled {
-                    AddClipboardFormatListener(self.hwnd)
-                } else {
-                    RemoveClipboardFormatListener(self.hwnd)
-                }
-            };
-            match result {
-                Ok(()) => {
-                    self.clipboard_listener = enabled;
+            let hwnd = self.hwnd;
+            let result = update_clipboard_registration(
+                &mut self.clipboard_listener,
+                enabled,
+                |enabled| unsafe {
                     if enabled {
+                        AddClipboardFormatListener(hwnd)
+                    } else {
+                        RemoveClipboardFormatListener(hwnd)
+                    }
+                },
+            );
+            match result {
+                Ok(changed) => {
+                    if changed && enabled {
                         crate::clipboard_history::clipboard_updated();
                     }
                 }
@@ -273,44 +310,47 @@ mod native {
             if pid == unsafe { GetCurrentProcessId() } {
                 pid = 0;
             }
-            if pid == self.location_pid && (pid == 0 || !self.location_hook.0.is_null()) {
-                return;
-            }
-            if self.clipboard_listener {
-                let _ = unsafe {
-                    windows::Win32::System::DataExchange::RemoveClipboardFormatListener(self.hwnd)
-                };
-            }
-            self.unhook_location();
-            if pid == 0 {
-                return;
-            }
-            let hook = unsafe {
-                SetWinEventHook(
-                    EVENT_OBJECT_LOCATIONCHANGE,
-                    EVENT_OBJECT_LOCATIONCHANGE,
-                    HMODULE::default(),
-                    Some(location_callback),
-                    pid,
-                    0,
-                    WINEVENT_OUTOFCONTEXT,
-                )
-            };
-            if hook.0.is_null() {
-                eprintln!("Location hook registration failed");
-            }
-            self.location_hook = hook;
-            self.location_pid = pid;
+            rebind_foreground(
+                pid,
+                &mut self.location_pid,
+                &mut self.location_hook,
+                |hook| !hook.0.is_null(),
+                |hook| {
+                    if !unsafe { UnhookWinEvent(hook) }.as_bool() {
+                        eprintln!("Location hook cleanup failed");
+                    }
+                },
+                |pid| {
+                    let hook = unsafe {
+                        SetWinEventHook(
+                            EVENT_OBJECT_LOCATIONCHANGE,
+                            EVENT_OBJECT_LOCATIONCHANGE,
+                            HMODULE::default(),
+                            Some(location_callback),
+                            pid,
+                            0,
+                            WINEVENT_OUTOFCONTEXT,
+                        )
+                    };
+                    if hook.0.is_null() {
+                        eprintln!("Location hook registration failed");
+                    }
+                    hook
+                },
+            );
         }
 
         fn unhook_location(&mut self) {
-            if !self.location_hook.0.is_null()
-                && !unsafe { UnhookWinEvent(self.location_hook) }.as_bool()
-            {
-                eprintln!("Location hook cleanup failed");
-            }
-            self.location_hook = HWINEVENTHOOK::default();
-            self.location_pid = 0;
+            rebind_foreground(
+                0,
+                &mut self.location_pid,
+                &mut self.location_hook,
+                |hook| !hook.0.is_null(),
+                |hook| {
+                    let _ = unsafe { UnhookWinEvent(hook) };
+                },
+                |_| HWINEVENTHOOK::default(),
+            );
         }
 
         fn location_changed(&mut self) {
@@ -406,6 +446,12 @@ mod native {
 
     impl Drop for Context {
         fn drop(&mut self) {
+            if self.clipboard_listener {
+                let _ = unsafe {
+                    windows::Win32::System::DataExchange::RemoveClipboardFormatListener(self.hwnd)
+                };
+                self.clipboard_listener = false;
+            }
             self.unhook_location();
         }
     }
@@ -818,5 +864,50 @@ mod tests {
         assert!(!is_duplicate_resume(false, None, now));
         assert!(is_duplicate_resume(false, Some(now), now + ms(500)));
         assert!(!is_duplicate_resume(false, Some(now), now + RESUME_DEDUPE));
+    }
+}
+
+#[cfg(test)]
+mod clipboard_foreground_tests {
+    #[test]
+    fn enabled_clipboard_survives_foreground_switch_and_receives_notification() {
+        use std::cell::Cell;
+        let clipboard_registered = Cell::new(false);
+        let mut listener_enabled = false;
+        super::update_clipboard_registration(&mut listener_enabled, true, |enabled| {
+            clipboard_registered.set(enabled);
+            Ok::<(), ()>(())
+        })
+        .unwrap();
+        let location_registered = Cell::new(7u32);
+        let (mut pid, mut hook) = (7, 7);
+        super::rebind_foreground(
+            9,
+            &mut pid,
+            &mut hook,
+            |h| h != 0,
+            |_| location_registered.set(0),
+            |next| {
+                location_registered.set(next);
+                next
+            },
+        );
+        assert_eq!(location_registered.get(), 9);
+        assert!(clipboard_registered.get());
+        let notifications = Cell::new(0);
+        if clipboard_registered.get() {
+            notifications.set(notifications.get() + 1);
+        }
+        assert_eq!(notifications.get(), 1);
+        // Disabling/destroying the window owns the only clipboard removal.
+        super::update_clipboard_registration(&mut listener_enabled, false, |enabled| {
+            clipboard_registered.set(enabled);
+            Ok::<(), ()>(())
+        })
+        .unwrap();
+        if clipboard_registered.get() {
+            notifications.set(notifications.get() + 1);
+        }
+        assert_eq!(notifications.get(), 1);
     }
 }

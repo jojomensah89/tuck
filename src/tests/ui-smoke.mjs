@@ -849,7 +849,7 @@ try {
   await spectra.evaluate(() => window.__emitNative('visualizer',{bins:[0.5,0.5],isSilent:false}));
   assert.equal(await spectra.locator('.wide-spectrum i').first().evaluate(el=>el.style.getPropertyValue('--level')),'0.5');
   await spectra.getByRole('tab',{name:'Usage',exact:true}).click();
-  await spectra.waitForFunction(() => window.__calls?.some(call => call.command === 'plugin:event|listen' && call.args.event === 'open-island'));
+  await spectra.waitForTimeout(100); // Allow IntersectionObserver to deliver the visibility change.
   const hiddenLevels = await spectra.locator('.live-spectrum i, .wide-spectrum i').evaluateAll(nodes=>nodes.map(el=>el.style.getPropertyValue('--level')));
   await spectra.evaluate(() => window.__emitNative('visualizer',{bins:[0.3,0.3],isSilent:false}));
   assert.deepEqual(await spectra.locator('.live-spectrum i, .wide-spectrum i').evaluateAll(nodes=>nodes.map(el=>el.style.getPropertyValue('--level'))),hiddenLevels,'Inactive-tab groups are not updated');

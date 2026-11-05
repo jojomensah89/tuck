@@ -359,6 +359,14 @@ export function mountLivePages(onLayout: () => void): {
   const wideSpectrum = node('div', 'wide-spectrum'); wideSpectrum.setAttribute('aria-label', 'Measured playback frequency bands');
   const wideBars = Array.from({ length: 48 }, () => { const bar = node('i'); wideSpectrum.append(bar); return bar; });
   audioPage.append(audioTitle, wideSpectrum, audioStatus);
+  const visibleSpectra = new Set<Element>();
+  const spectrumObserver = new IntersectionObserver(entries => {
+    for (const entry of entries) {
+      if (entry.isIntersecting && entry.intersectionRatio > 0) visibleSpectra.add(entry.target);
+      else visibleSpectra.delete(entry.target);
+    }
+  });
+  spectrumObserver.observe(spectrum); spectrumObserver.observe(wideSpectrum);
   let lastAudio = 0;
   function audio(data: { bands: number[]; active?: boolean }): void {
     if (!data || !Array.isArray(data.bands)) return;
@@ -369,12 +377,16 @@ export function mountLivePages(onLayout: () => void): {
     }
     lastAudio = Date.now();
     audioStatus.textContent = data.active === false ? 'Silence, no audio is stored' : 'Live spectrum, no audio is stored';
-    for (const group of [bars, wideBars]) group.forEach((bar, i) => {
-      const source = i * Math.max(0, data.bands.length - 1) / (group.length - 1);
-      const low = data.bands[Math.floor(source)] || 0, high = data.bands[Math.ceil(source)] || 0;
-      const sample = data.active === false ? 0 : low + (high - low) * (source % 1);
-      bar.style.setProperty('--level', String(Number.isFinite(sample) ? Math.max(0, Math.min(1, sample)) : 0));
-    });
+    if (document.getElementById('isl')?.dataset.state !== 'open') return;
+    for (const [element, group] of [[spectrum, bars], [wideSpectrum, wideBars]] as const) {
+      if (!visibleSpectra.has(element)) continue;
+      group.forEach((bar, i) => {
+        const source = i * Math.max(0, data.bands.length - 1) / (group.length - 1);
+        const low = data.bands[Math.floor(source)] || 0, high = data.bands[Math.ceil(source)] || 0;
+        const sample = data.active === false ? 0 : low + (high - low) * (source % 1);
+        bar.style.setProperty('--level', String(Number.isFinite(sample) ? Math.max(0, Math.min(1, sample)) : 0));
+      });
+    }
   }
   async function act(action: Promise<unknown>, status: HTMLElement): Promise<void> {
     try { await action; status.textContent = ''; } catch (error) { status.textContent = friendlyError(error); }
@@ -419,6 +431,7 @@ export function mountLivePages(onLayout: () => void): {
   };
   window.addEventListener('tuck-visibility', syncTimers);
   window.addEventListener('pagehide', () => {
+    spectrumObserver.disconnect();
     clearInterval(interval); clearInterval(sessionInterval);
     window.removeEventListener('tuck-visibility', syncTimers);
     unlisteners.forEach(unlisten => unlisten());

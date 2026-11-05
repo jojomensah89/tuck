@@ -35,30 +35,49 @@ enum ClipboardRead {
     Text(u32, String),
 }
 
+// Ten reads per sequence: at most 5.24 seconds of scheduled backoff, then no timer.
+const CAPTURE_ATTEMPTS: u8 = 10;
 #[derive(Default)]
 struct CaptureRetry {
     delay: Option<std::time::Duration>,
+    sequence: Option<(u32, u64)>,
+    remaining: u8,
 }
 impl CaptureRetry {
-    fn notified(&mut self) {
+    fn notified(&mut self, sequence: u32, generation: u64) {
+        // Duplicate notifications cannot renew an exhausted sequence's budget.
+        if self.sequence == Some((sequence, generation)) {
+            return;
+        }
+        self.sequence = Some((sequence, generation));
+        self.remaining = CAPTURE_ATTEMPTS;
         self.delay = Some(std::time::Duration::from_millis(20));
     }
     fn completed(&mut self) {
         self.delay = None;
+        self.remaining = 0;
+    }
+    fn wait(
+        &self,
+        rx: &std::sync::mpsc::Receiver<()>,
+    ) -> Result<(), std::sync::mpsc::RecvTimeoutError> {
+        match self.delay {
+            Some(delay) => rx.recv_timeout(delay),
+            None => rx
+                .recv()
+                .map_err(|_| std::sync::mpsc::RecvTimeoutError::Disconnected),
+        }
     }
     fn observed(&mut self, result: &Result<ClipboardRead, String>) {
-        if matches!(result, Ok(ClipboardRead::Busy)) {
-            self.busy();
+        self.remaining = self.remaining.saturating_sub(1);
+        if matches!(result, Ok(ClipboardRead::Busy)) && self.remaining > 0 {
+            self.delay = Some(
+                (self.delay.unwrap_or(std::time::Duration::from_millis(20)) * 2)
+                    .min(std::time::Duration::from_secs(1)),
+            );
         } else {
             self.completed();
         }
-    }
-
-    fn busy(&mut self) {
-        self.delay = Some(
-            (self.delay.unwrap_or(std::time::Duration::from_millis(20)) * 2)
-                .min(std::time::Duration::from_secs(1)),
-        );
     }
 }
 
@@ -689,17 +708,11 @@ pub fn start(app: AppHandle, service: &Arc<ClipboardHistoryService>) -> Result<(
         .spawn(move || {
             let mut retry = CaptureRetry::default();
             loop {
-                let signal = match retry.delay {
-                    Some(delay) => rx.recv_timeout(delay),
-                    None => rx
-                        .recv()
-                        .map_err(|_| std::sync::mpsc::RecvTimeoutError::Disconnected),
-                };
-                match signal {
-                    Ok(()) => retry.notified(),
-                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                let notified = match retry.wait(&rx) {
+                    Ok(()) => true,
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => false,
                     Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
-                }
+                };
                 if stop.load(Ordering::Acquire) {
                     break;
                 }
@@ -710,6 +723,12 @@ pub fn start(app: AppHandle, service: &Arc<ClipboardHistoryService>) -> Result<(
                     .unwrap_or((false, 0));
                 if !enabled {
                     retry.completed();
+                    continue;
+                }
+                if notified {
+                    retry.notified(current_clipboard_sequence(), generation);
+                }
+                if retry.delay.is_none() {
                     continue;
                 }
                 let result = read_clipboard_text();
@@ -815,7 +834,9 @@ fn read_clipboard_text() -> Result<ClipboardRead, String> {
             }
             let handle = match GetClipboardData(CF_UNICODETEXT.0 as u32) {
                 Ok(handle) => HGLOBAL(handle.0),
-                Err(_) => return Ok(ClipboardRead::Busy),
+                // Clipboard is open: failure to render advertised text is terminal
+                // for this sequence; a later update will get a fresh budget.
+                Err(_) => return Ok(ClipboardRead::Ignored),
             };
             let bytes = GlobalSize(handle);
             if !(2..=MAX_ITEM_BYTES + 2).contains(&bytes) || !bytes.is_multiple_of(2) {
@@ -823,7 +844,7 @@ fn read_clipboard_text() -> Result<ClipboardRead, String> {
             }
             let pointer = GlobalLock(handle) as *const u16;
             if pointer.is_null() {
-                return Ok(ClipboardRead::Busy);
+                return Ok(ClipboardRead::Ignored);
             }
             let units = std::slice::from_raw_parts(pointer, bytes / 2);
             let length = units
@@ -1223,31 +1244,68 @@ mod tests {
 mod retry_tests {
     use super::*;
     #[test]
-    fn busy_beyond_old_retry_limit_stays_pending_then_parks_on_resolution() {
+    fn busy_sequence_exhausts_budget_and_duplicate_notifications_do_not_renew_it() {
         let mut retry = CaptureRetry::default();
-        assert!(retry.delay.is_none());
-        retry.notified();
-        for _ in 0..20 {
+        retry.notified(123, 0);
+        let mut total_delay = std::time::Duration::ZERO;
+        for attempt in 0..CAPTURE_ATTEMPTS {
+            assert!(retry.delay.is_some());
+            retry.notified(123, 0);
             retry.observed(&Ok(ClipboardRead::Busy));
-            assert!(retry.delay.unwrap() <= std::time::Duration::from_secs(1));
+            if attempt + 1 < CAPTURE_ATTEMPTS {
+                total_delay += retry.delay.unwrap();
+            }
         }
-        assert_eq!(retry.delay, Some(std::time::Duration::from_secs(1)));
-        retry.observed(&Ok(ClipboardRead::Text(
-            123,
-            "captured after contention".into(),
-        )));
+        assert_eq!(total_delay, std::time::Duration::from_millis(5240));
+        assert!(retry.delay.is_none());
+        retry.notified(123, 0);
         assert!(retry.delay.is_none());
     }
     #[test]
-    fn new_notification_supersedes_backoff_and_disable_cancels_it() {
+    fn exhausted_worker_parks_until_later_change_then_captures_and_parks_again() {
         let mut retry = CaptureRetry::default();
-        retry.notified();
-        for _ in 0..8 {
-            retry.busy();
+        retry.notified(123, 0);
+        for _ in 0..CAPTURE_ATTEMPTS {
+            retry.observed(&Ok(ClipboardRead::Busy));
         }
-        retry.notified();
-        assert_eq!(retry.delay, Some(std::time::Duration::from_millis(20)));
-        retry.observed(&Ok(ClipboardRead::Ignored));
-        assert!(retry.delay.is_none());
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let (read_tx, read_rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            ready_tx.send(()).unwrap();
+            retry.wait(&rx).unwrap();
+            retry.notified(124, 0);
+            assert!(retry.delay.is_some());
+            let result = Ok(ClipboardRead::Text(124, "later clipboard change".into()));
+            retry.observed(&result);
+            read_tx.send(result).unwrap();
+            assert!(retry.delay.is_none());
+            assert!(retry.wait(&rx).is_err());
+        });
+        ready_rx.recv().unwrap();
+        assert!(matches!(
+            read_rx.recv_timeout(std::time::Duration::from_millis(50)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        ));
+        tx.send(()).unwrap();
+        assert_eq!(
+            read_rx.recv().unwrap(),
+            Ok(ClipboardRead::Text(124, "later clipboard change".into()))
+        );
+        drop(tx);
+        worker.join().unwrap();
+    }
+    #[test]
+    fn terminal_results_and_disable_park_and_reenable_gets_fresh_budget() {
+        for result in [Ok(ClipboardRead::Ignored), Err("terminal error".into())] {
+            let mut retry = CaptureRetry::default();
+            retry.notified(123, 0);
+            retry.observed(&result);
+            assert!(retry.delay.is_none());
+            retry.notified(123, 1);
+            assert_eq!(retry.remaining, CAPTURE_ATTEMPTS);
+            retry.completed();
+            assert!(retry.delay.is_none());
+        }
     }
 }

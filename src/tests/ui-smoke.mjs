@@ -193,9 +193,10 @@ try {
   await native.waitForTimeout(20);
   assert.ok((await native.locator('#panel-usage').textContent()).includes('72%'),'A stale open response cannot overwrite a newer usage event');
   await native.keyboard.press('Escape');
-  await native.evaluate(() => window.__emitNative('visualizer',{bins:[1,1,1],isSilent:false}));
-  assert.equal(await native.locator('.live-spectrum i').first().evaluate(el=>el.style.getPropertyValue('--level')),'1');
-  await native.evaluate(() => window.__emitNative('open-island',null));
+  await native.evaluate(() => {
+    document.querySelectorAll('.live-spectrum i, .wide-spectrum i').forEach(el=>el.style.setProperty('--level','1'));
+    window.__emitNative('open-island',null);
+  });
   assert.equal(await native.locator('.live-spectrum i, .wide-spectrum i').evaluateAll(nodes=>nodes.every(el=>el.style.getPropertyValue('--level')==='0')),true,'Opening clears old bars immediately, before the one-second stale timer');
   await native.keyboard.press('Escape');
   // Volume/brightness HUD from a mocked native level event
@@ -822,6 +823,38 @@ try {
   assert.equal(await native.locator('#hideSystemFlyout').isChecked(),false,'An unavailable flyout turns the setting back off');
   assert.equal(await native.locator('#flyoutStatus').getAttribute('data-kind'),'error');
   assert.deepEqual(nativeErrors,[]);
+
+  // Isolate spectrum navigation from the HUD suite's announcement timing.
+  const spectraContext = await browser.newContext({viewport:{width:520,height:230}, reducedMotion:'reduce'});
+  await spectraContext.route('http://tuck.test/**', serveDist);
+  await spectraContext.addInitScript(nativeBridge);
+  const spectra = await spectraContext.newPage();
+  await spectra.goto('http://tuck.test/');
+  await spectra.waitForTimeout(100);
+  await spectra.evaluate(() => window.__emitNative('open-island',null));
+  await spectra.getByRole('tab',{name:'Media',exact:true}).click();
+  await spectra.getByRole('button',{name:'Go to now playing',exact:true}).click();
+  await spectra.waitForTimeout(400);
+  await spectra.evaluate(() => window.__emitNative('visualizer',{bins:[1,1,1],isSilent:false}));
+  assert.equal(await spectra.locator('.live-spectrum i').first().evaluate(el=>el.style.getPropertyValue('--level')),'1');
+  assert.equal(await spectra.locator('.wide-spectrum i').first().evaluate(el=>el.style.getPropertyValue('--level')),'0','Hidden visualizer group is not updated');
+  await spectra.getByRole('button',{name:'Go to visualizer',exact:true}).click();
+  await spectra.waitForTimeout(400);
+  await spectra.evaluate(() => window.__emitNative('visualizer',{bins:[0.5,0.5],isSilent:false}));
+  assert.equal(await spectra.locator('.wide-spectrum i').first().evaluate(el=>el.style.getPropertyValue('--level')),'0.5');
+  await spectra.getByRole('tab',{name:'Usage',exact:true}).click();
+  await spectra.waitForTimeout(100);
+  const hiddenLevels = await spectra.locator('.live-spectrum i, .wide-spectrum i').evaluateAll(nodes=>nodes.map(el=>el.style.getPropertyValue('--level')));
+  await spectra.evaluate(() => window.__emitNative('visualizer',{bins:[0.3,0.3],isSilent:false}));
+  assert.deepEqual(await spectra.locator('.live-spectrum i, .wide-spectrum i').evaluateAll(nodes=>nodes.map(el=>el.style.getPropertyValue('--level'))),hiddenLevels,'Inactive-tab groups are not updated');
+  await spectra.keyboard.press('Escape');
+  await spectra.evaluate(() => window.__emitNative('visualizer',{bins:[0.2,0.2],isSilent:false}));
+  assert.equal(await spectra.locator('.wide-spectrum i').first().evaluate(el=>el.style.getPropertyValue('--level')),'0.5','Collapsed full-page spectra are not updated');
+  await spectra.evaluate(() => window.__emitNative('open-island',null));
+  assert.equal(await spectra.locator('.live-spectrum i, .wide-spectrum i').evaluateAll(nodes=>nodes.every(el=>el.style.getPropertyValue('--level')==='0')),true,'Opening clears old bars immediately, before the one-second stale timer');
+  await spectra.keyboard.press('Escape');
+  await spectra.mouse.move(0, 220);
+  await spectraContext.close();
 
   // With motion on: what actually keeps running while the island is collapsed
   const motionContext = await browser.newContext({viewport:{width:520,height:230}, reducedMotion:'no-preference'});

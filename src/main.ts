@@ -3,6 +3,7 @@ import {mountExtensions} from './extensions.js';
 import { mountLivePages } from './live-ui.js';
 import { LIVE_SETTINGS_KEY, readPreferences, writePreferences } from './live-state.js';
 import { mountTabRail } from './tab-rail.js';
+import { startBackgroundUpdateScheduler } from './updater.js';
 import './live.css';
 import {
   isTauri,
@@ -1339,12 +1340,45 @@ function holdDrag(active:boolean):void {
 }
 window.addEventListener('tuck-drop-active',event=>holdDrag((event as CustomEvent).detail===true));
 window.addEventListener('tuck-drag-active',event=>holdDrag((event as CustomEvent).detail===true));
-window.addEventListener('blur',()=>{keyboardMode=false;if(!nativeDragActive)onHover(hoverInside);});
+let lastBlurCloseTime = 0;
+
+window.addEventListener('blur', () => {
+  keyboardMode = false;
+  if (state === 'open' && !livePreferences.pinned && !nativeDragActive) {
+    lastBlurCloseTime = Date.now();
+    window.clearTimeout(closeTimer);
+    setState('idle');
+  }
+  if (!nativeDragActive) onHover(hoverInside);
+});
 
 /* ================= Subscriptions & Native Events ================= */
 
 void listenToEvent<{reason?: string}>('dictation_transcript', data => { if (data.reason === 'Copied') showAnnouncement('Copied'); });
-void listenToEvent<null>('open-island', () => { keyboardMode=true;window.clearTimeout(closeTimer);setState('open');isl.focus(); });
+void listenToEvent<null>('open-island', () => {
+  keyboardMode = true;
+  window.clearTimeout(closeTimer);
+  setState('open');
+  isl.focus();
+});
+
+void listenToEvent<null>('tray-toggle-island', () => {
+  const now = Date.now();
+  // If the island was just blurred and closed (e.g. mousedown on the tray icon), ignore the mouseup toggle
+  if (now - lastBlurCloseTime < 400) {
+    return;
+  }
+  if (state === 'open') {
+    keyboardMode = false;
+    window.clearTimeout(closeTimer);
+    setState('idle');
+  } else {
+    // Open via native command which focuses the window and removes WS_EX_NOACTIVATE
+    void invokeCommand('open_island_cmd').catch(() => {});
+  }
+});
+
+startBackgroundUpdateScheduler();
 void listenToEvent<boolean>('hover', (inside) => onHover(inside));
 void listenToEvent<boolean>('fullscreen', (hidden) => {
   document.body.classList.toggle('fullscreen-hidden', hidden);

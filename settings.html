@@ -548,6 +548,40 @@
             </div>
           </div>
           <div class="group">
+            <h2>Updates</h2>
+            <div class="panel">
+              <div class="set-row" id="row-update-check" data-keywords="update version check upgrade release download">
+                <div class="row-text">
+                  <span class="row-title">Software update</span>
+                  <p class="row-desc" id="updateStatusText">Check for updates.</p>
+                </div>
+                <button class="button" id="btnCheckUpdates" type="button">Check for updates</button>
+              </div>
+
+              <div class="set-row stack" id="row-update-available" data-keywords="update available install download changelog" hidden>
+                <div class="row-text">
+                  <div class="update-header">
+                    <span class="row-title">Update available</span>
+                    <span class="badge" id="updateVersionBadge"></span>
+                  </div>
+                  <p class="row-desc update-notes-summary" id="updateNotesSummary">A new version of Tuck is available.</p>
+                  <div class="update-notes-container" id="updateNotesContainer">
+                    <div class="update-notes" id="updateNotes"></div>
+                  </div>
+                </div>
+                <div class="update-action-row">
+                  <button class="button primary" id="btnInstallUpdate" type="button">Download and install</button>
+                  <div class="update-progress-wrap" id="updateProgressWrap" hidden>
+                    <div class="update-progress-bar-bg">
+                      <div class="update-progress-bar" id="updateProgressBar"></div>
+                    </div>
+                    <span class="update-progress-label" id="updateProgressLabel">Downloading...</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="group">
             <h2>Keyboard</h2>
             <div class="panel">
               <div class="set-row" id="row-kbd-search" data-keywords="keyboard shortcut search find">

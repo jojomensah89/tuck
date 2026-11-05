@@ -96,6 +96,14 @@ try {
   assert.equal(await page.locator('#row-kAnthropic').isVisible(),true);
   assert.equal(await page.locator('#row-kOpenai').isVisible(),false);
   assert.equal(await page.locator('#row-openDelay').isVisible(),false);
+  // The update row is not on screen without an update, so search must not find or count it
+  const searchSettings = async query => { await page.locator('#settingsSearch').fill(query); return (await page.locator('#searchSummary').textContent()).trim(); };
+  assert.equal(await searchSettings('update'),'3 settings match "update".');
+  assert.equal(await page.locator('.view .set-row:visible').count(),3,'The update count equals the rows on screen');
+  assert.equal(await page.locator('#row-update-check').isVisible(),true);
+  assert.equal(await page.locator('#row-update-available').isVisible(),false,'Update row must stay hidden when no update is available');
+  assert.equal(await searchSettings('changelog'),'No settings match "changelog".');
+  assert.equal(await page.locator('#searchEmpty').isVisible(),true,'A search for the hidden row shows the empty state, not a blank page');
   await page.keyboard.press('Escape');
   await page.locator('#view-island').waitFor({state:'visible'});
   // A default profile (180ms expand delay) must save a switch change straight away
@@ -166,6 +174,7 @@ try {
       }
       if(command==='clipboard_get_state')return {enabled:false,persistOnExit:false,items:[]};
       if(command==='clipboard_configure')throw 'Fixture atomic save failure';
+      if(command==='plugin:updater|check')return null;
       if(command==='get_autostart'||command==='installed_usage_enabled'||command==='fullscreen_now')return false;
       if(command==='volume_step')return {kind:'volume',level:40+args.delta,muted:false};
       if(command==='volume_toggle_mute')return {kind:'volume',level:40,muted:true};
@@ -180,6 +189,30 @@ try {
   await native.waitForFunction(() => window.__calls?.some(call => call.command === 'plugin:event|listen' && call.args.event === 'open-island') && window.__calls.some(call => call.command === 'usage_now'));
   assert.equal(await native.evaluate(() => window.__idleIntervals.size), 0, 'No intervals while collapsed without running activities');
   assert.equal(await native.locator('.page.todos').count(), 0, 'Todos feature must be completely removed');
+  // Settings hears about an update from the background check, shows notes as text, and counts the row
+  const updates=await context.newPage();
+  await updates.goto('http://tuck.test/settings.html#about');
+  assert.equal(await updates.locator('#row-update-available').isVisible(),false);
+  await updates.evaluate(()=>window.__emitNative('pending-update-changed',{version:'9.9.9',currentVersion:'0.1.0',body:'### Added\n- <img src=x>One\n- Two\n\n### Fixed\n- Three'}));
+  await updates.locator('#row-update-available').waitFor({state:'visible'});
+  assert.equal(await updates.locator('#updateVersionBadge').textContent(),'v9.9.9');
+  assert.match(await updates.locator('#updateStatusText').textContent(),/Update available: v9\.9\.9/);
+  assert.deepEqual(await updates.locator('#updateNotes h3').allTextContents(),['Added','Fixed']);
+  assert.deepEqual(await updates.locator('#updateNotes li').allTextContents(),['<img src=x>One','Two','Three']);
+  assert.equal(await updates.locator('#updateNotes img').count(),0,'Release notes never become HTML');
+  await updates.locator('#settingsSearch').fill('changelog');
+  assert.equal((await updates.locator('#searchSummary').textContent()).trim(),'1 setting matches "changelog".');
+  assert.equal(await updates.locator('#row-update-available').isVisible(),true);
+  await updates.locator('#settingsSearch').fill('');
+  // A failed install explains itself and does not stop services unless it got that far
+  await updates.locator('#btnInstallUpdate').click();
+  await updates.locator('#updateProgressLabel').filter({hasText:'No update available to install'}).waitFor({timeout:2000});
+  assert.equal(await updates.locator('#btnInstallUpdate').isEnabled(),true);
+  assert.equal(await updates.evaluate(()=>window.__calls.some(call=>call.command==='check_update_allowed')),true,'Dictation is checked before any download');
+  assert.equal(await updates.evaluate(()=>window.__calls.some(call=>call.command==='prepare_update_install')),false);
+  await updates.evaluate(()=>window.__emitNative('pending-update-changed',null));
+  await updates.locator('#row-update-available').waitFor({state:'hidden'});
+  await updates.close();
   // A missed event is recovered by the pull on open; a racing newer event wins.
   const usageFixture = pct => [{id:'claude-5h',provider:'claude',label:'Claude session',usedPct:pct,spentUsd:null,resetsAt:null,source:'official',stale:false,status:'ok'}];
   await native.evaluate(meters => { window.__usageSnapshot = meters; window.__emitNative('open-island',null); }, usageFixture(31));
@@ -312,7 +345,14 @@ try {
   assert.match(await native.locator('#openAnnouncement').textContent(),/Caps Lock/);
   await native.evaluate(()=>window.__emitNative('system-level',{kind:'volume',level:55,muted:false}));
   assert.deepEqual(await hudState(),['open',null],'Notifications and HUD keep the pinned island open');
+  // Losing focus does not close a pinned island.
+  await native.evaluate(()=>window.dispatchEvent(new Event('blur')));
+  assert.equal(await native.locator('#isl').getAttribute('data-state'),'open','Blur does not close a pinned island');
   await setLive({pinned:false});
+  await native.evaluate(()=>window.dispatchEvent(new CustomEvent('tuck-drag-active',{detail:true})));
+  await native.evaluate(()=>window.dispatchEvent(new Event('blur')));
+  assert.equal(await native.locator('#isl').getAttribute('data-state'),'open','Blur does not close the island during a drag');
+  await native.evaluate(()=>window.dispatchEvent(new CustomEvent('tuck-drag-active',{detail:false})));
   assert.deepEqual(await flyoutPause(),[false,false]);
   await native.evaluate(()=>window.__emitNative('hover',false));
   await toIdle();

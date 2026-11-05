@@ -593,6 +593,103 @@ mark { background: none; color: inherit; text-decoration: underline; text-decora
 .about-name { margin: 0; font-weight: var(--w-strong); }
 .about-name .num { color: var(--ink-2); font-weight: var(--w-regular); font-variant-numeric: tabular-nums; }
 
+/* Updates */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--control);
+  color: var(--on);
+  font-size: var(--t-xs);
+  font-weight: var(--w-medium);
+}
+
+.update-header {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+}
+
+.update-notes-summary {
+  margin-top: 4px;
+}
+
+.update-notes-container {
+  margin-top: var(--s-2);
+  padding: var(--s-2) var(--s-3);
+  max-height: 140px;
+  overflow-y: auto;
+  background: var(--well);
+  border-radius: var(--r-md);
+  box-shadow: inset 0 0 0 1px var(--rule);
+}
+
+.update-notes {
+  font-size: var(--t-sm);
+  color: var(--ink-2);
+  line-height: 18px;
+}
+
+.update-notes h3 {
+  margin: var(--s-2) 0 2px;
+  font-size: inherit;
+  font-weight: var(--w-strong);
+  color: var(--ink);
+}
+
+.update-notes h3:first-child {
+  margin-top: 0;
+}
+
+.update-notes p {
+  margin: 0;
+}
+
+.update-notes ul {
+  margin: 0;
+  padding-left: var(--s-4);
+}
+
+.update-action-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  margin-top: var(--s-2);
+}
+
+.update-progress-wrap {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.update-progress-wrap[hidden] {
+  display: none;
+}
+
+.update-progress-bar-bg {
+  width: 100%;
+  height: 6px;
+  background: var(--control);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.update-progress-bar {
+  height: 100%;
+  width: 0%;
+  background: var(--on);
+  border-radius: 999px;
+  transition: width var(--d-fast) var(--ease-out);
+}
+
+.update-progress-label {
+  font-size: var(--t-sm);
+  color: var(--ink-2);
+}
+
 .keys { display: inline-flex; gap: var(--s-1); }
 
 kbd {

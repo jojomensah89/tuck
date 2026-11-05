@@ -510,6 +510,36 @@ fn engine_thread<E: Engine>(
     result
 }
 
+/// Names the instruction sets the release build of whisper needs that this CPU lacks.
+fn missing_cpu_features(features: &[(&'static str, bool)]) -> Vec<&'static str> {
+    features
+        .iter()
+        .filter(|(_, present)| !present)
+        .map(|(name, _)| *name)
+        .collect()
+}
+
+/// Release builds of whisper target AVX2, which would crash Tuck on an older CPU with an
+/// illegal instruction. Refusing first leaves everything else in Tuck working.
+fn ensure_cpu_supports_whisper() -> Result<(), String> {
+    #[cfg(target_arch = "x86_64")]
+    {
+        let missing = missing_cpu_features(&[
+            ("AVX2", std::arch::is_x86_feature_detected!("avx2")),
+            ("FMA", std::arch::is_x86_feature_detected!("fma")),
+            ("F16C", std::arch::is_x86_feature_detected!("f16c")),
+            ("BMI2", std::arch::is_x86_feature_detected!("bmi2")),
+        ]);
+        if !missing.is_empty() {
+            return Err(format!(
+                "Dictation needs a newer processor. This one lacks {}.",
+                missing.join(", ")
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Preview buffers are released before final full-context inference.
 struct WhisperEngine {
     _context: WhisperContext,
@@ -519,6 +549,7 @@ struct WhisperEngine {
 
 impl WhisperEngine {
     fn load(path: &std::path::Path) -> Result<Self, String> {
+        ensure_cpu_supports_whisper()?;
         // Fix the shared ggml registry's CPU-only policy before Whisper can
         // register a default mask; transcribe.cpp rejects changing it later.
         initialize_cpu_backend()?;
@@ -808,6 +839,15 @@ fn transcribe(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn names_only_the_cpu_features_that_are_missing() {
+        assert!(super::missing_cpu_features(&[("AVX2", true), ("FMA", true)]).is_empty());
+        assert_eq!(
+            super::missing_cpu_features(&[("AVX2", false), ("FMA", true), ("BMI2", false)]),
+            ["AVX2", "BMI2"]
+        );
+    }
+
     use super::*;
 
     #[test]

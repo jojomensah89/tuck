@@ -35,7 +35,8 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": "nsis",
+    "createUpdaterArtifacts": true,
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -43,5 +44,13 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ]
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IENCRDgyNTk0N0I5NjY4RUQKUldUdGFKWjdsQ1hZeTFGQzhadW5WcVBvcUN4TnZvMFdvVGNOdDYwdUVFRWN2NURETFJ5YlUzK1IK",
+      "endpoints": [
+        "https://github.com/jojomensah89/tuck/releases/latest/download/latest.json"
+      ]
+    }
   }
 }

@@ -42,16 +42,31 @@ export function matchesTokens(text: string, tokens: readonly string[]): boolean 
   return tokens.every(token => words.some(word => word.startsWith(token)));
 }
 
-export function filterSettings(entries: readonly SearchEntry[], query: string): SearchResult {
+/** Filters rows by query. Rows in `unavailable` are not on screen, so they never match or count. */
+export function filterSettings(
+  entries: readonly SearchEntry[],
+  query: string,
+  unavailable: ReadonlySet<string> = new Set(),
+): SearchResult {
   const tokens = queryTokens(query);
   const ids: string[] = [];
   const views = new Map<string, number>();
   for (const entry of entries) {
-    if (!matchesTokens(entry.text, tokens)) continue;
+    if (unavailable.has(entry.id) || !matchesTokens(entry.text, tokens)) continue;
     ids.push(entry.id);
     views.set(entry.view, (views.get(entry.view) ?? 0) + 1);
   }
   return { ids, views };
+}
+
+/** Whether a row stays hidden: it has nothing to show, or a search is running and it did not match. */
+export function isRowHidden(
+  id: string,
+  searching: boolean,
+  matched: ReadonlySet<string>,
+  unavailable: ReadonlySet<string>,
+): boolean {
+  return unavailable.has(id) || (searching && !matched.has(id));
 }
 
 /** Index of the sidebar item a key moves to, or null when the key does not navigate. Wraps at the ends. */

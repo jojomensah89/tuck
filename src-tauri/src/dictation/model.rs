@@ -639,9 +639,20 @@ pub(super) fn verified_existing(
     cache: &Mutex<VerifyCache>,
     cancel: &AtomicBool,
 ) -> Result<Option<PathBuf>, String> {
+    verified_existing_with_catalog(dir, entry, locations, cache, cancel, CATALOG)
+}
+
+pub(super) fn verified_existing_with_catalog(
+    dir: &Path,
+    entry: &CatalogEntry,
+    locations: &[Location],
+    cache: &Mutex<VerifyCache>,
+    cancel: &AtomicBool,
+    catalog: &'static [CatalogEntry],
+) -> Result<Option<PathBuf>, String> {
     let own = dir.join(entry.id);
     let candidates = std::iter::once((own, false)).chain(
-        find_candidates(locations)
+        find_candidates_with_catalog(locations, catalog)
             .into_iter()
             .filter(|c| c.entry.id == entry.id)
             .map(|c| (c.path, true)),
@@ -1001,6 +1012,13 @@ fn huggingface_path_allowed(root: &Path, dir: &Path) -> bool {
 /// Lists files by name and size only, without opening any of them. Directory links are not
 /// followed. Hugging Face snapshots are file links, so the size of a file link is its target's.
 pub(super) fn find_candidates(locations: &[Location]) -> Vec<Candidate> {
+    find_candidates_with_catalog(locations, CATALOG)
+}
+
+pub(super) fn find_candidates_with_catalog(
+    locations: &[Location],
+    catalog: &'static [CatalogEntry],
+) -> Vec<Candidate> {
     let mut candidates = Vec::new();
     let mut visited = 0usize;
     for location in locations {
@@ -1040,7 +1058,7 @@ pub(super) fn find_candidates(locations: &[Location]) -> Vec<Candidate> {
                 let Ok(size) = std::fs::metadata(&resolved).map(|meta| meta.len()) else {
                     continue;
                 };
-                if let Some(entry) = CATALOG.iter().find(|entry| entry.bytes == size) {
+                if let Some(entry) = catalog.iter().find(|entry| entry.bytes == size) {
                     candidates.push(Candidate {
                         entry,
                         path,

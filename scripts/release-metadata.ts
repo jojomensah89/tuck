@@ -369,7 +369,10 @@ export function getCommitsSinceTag(repoDir: string, tag: string): ParsedCommit[]
 }
 
 /**
- * Update version strings across package.json, tauri.conf.json, and Cargo.toml.
+ * Update only the package-owned version fields.  Cargo's resolver can rewrite
+ * unrelated dependency entries, which makes a version-only release PR noisy
+ * and can accidentally change the dependency graph.  The lockfile helper below
+ * updates the root `tuck` package entry only.
  */
 export function syncVersionFiles(projectRoot: string, newVersion: string): void {
   // 1. package.json
@@ -392,6 +395,23 @@ export function syncVersionFiles(projectRoot: string, newVersion: string): void 
     `$1"${newVersion}"`
   );
   fs.writeFileSync(cargoPath, cargoContent, 'utf8');
+}
+
+/** Update the root package entry in Cargo.lock without running Cargo's resolver. */
+export function syncCargoLockVersion(projectRoot: string, newVersion: string): void {
+  const lockPath = path.join(projectRoot, 'src-tauri', 'Cargo.lock');
+  const lockContent = fs.readFileSync(lockPath, 'utf8');
+  const blocks = lockContent.split(/(?=^\[\[package\]\]\s*$)/m);
+  const rootIndex = blocks.findIndex(block => /^name\s*=\s*"tuck"\s*$/m.test(block));
+  if (rootIndex === -1) {
+    throw new Error('Cargo.lock has no root tuck package entry; refusing to rewrite the lockfile.');
+  }
+  const updated = blocks[rootIndex].replace(/(^version\s*=\s*)"[^"]+"/m, `$1"${newVersion}"`);
+  if (updated === blocks[rootIndex]) {
+    throw new Error('Cargo.lock root tuck package has no version field; refusing to rewrite the lockfile.');
+  }
+  blocks[rootIndex] = updated;
+  fs.writeFileSync(lockPath, blocks.join(''), 'utf8');
 }
 
 /**
@@ -471,11 +491,9 @@ if (import.meta.main) {
     const existing = fs.existsSync(changelogPath) ? fs.readFileSync(changelogPath, 'utf8') : '';
     fs.writeFileSync(changelogPath, updateChangelogContent(existing, decision.changelogSection), 'utf8');
 
-    // A lockfile that disagrees with the version would make the release commit wrong, so this must stop
-    execFileSync('cargo', ['update', '-p', 'tuck', '--manifest-path', 'src-tauri/Cargo.toml'], {
-      cwd: projectRoot,
-      stdio: 'inherit',
-    });
+    // Keep this PR version-only. Running `cargo update` can change unrelated
+    // dependency versions, so synchronize only Tuck's lockfile entry.
+    syncCargoLockVersion(projectRoot, decision.nextVersion);
 
     fs.writeFileSync(path.resolve(notesFile), `${notes}\n`, 'utf8');
     if (output) {

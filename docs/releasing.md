@@ -6,25 +6,29 @@ This document explains the release pipeline, the in-app update mechanism, signin
 
 ## 1. Automated Release Pipeline
 
-Tuck releases itself from [`.github/workflows/release.yml`](../.github/workflows/release.yml) on every push to `main`. The git and GitHub steps are in [`scripts/release-steps.sh`](../scripts/release-steps.sh), so [`tests/release-steps.test.ts`](../tests/release-steps.test.ts) can run the same commands against a local bare remote.
+Tuck releases itself from [`.github/workflows/release.yml`](../.github/workflows/release.yml) on every push to `main`. The version decision and synchronization checks are in [`scripts/release-plan.ts`](../scripts/release-plan.ts); git and GitHub steps are in [`scripts/release-steps.sh`](../scripts/release-steps.sh). The focused fixtures in [`tests/release-plan.test.ts`](../tests/release-plan.test.ts) and [`tests/release-steps.test.ts`](../tests/release-steps.test.ts) exercise those paths against temporary repositories and a local bare remote.
 
-### One build, then a publish of that build
+### Version PR, then one build and publish
 
 | Job | Runs on | Token | Signing key | What it does |
 |---|---|---|---|---|
 | `check` | Windows | read | no | Tests the commit: `bun test`, build, UI smoke, `cargo fmt`, `cargo test`, `clippy`. |
-| `build` | Windows | read | yes | Bumps the version in a **local** commit, builds and signs that commit, checks the signature against `tauri.conf.json`, writes `latest.json`, and uploads everything as the `release-assets` workflow artifact. |
-| `publish` | Ubuntu | write | no | Runs only for a live release. Steps below. |
+| `prepare` | Ubuntu | PR/write | no | Calculates the next version, opens an idempotent version-only PR, and dispatches Windows checks for that branch. |
+| `build` | Windows | read | yes | Runs after the version PR is merged; builds and signs that exact `main` commit, checks the signature, writes `latest.json`, and uploads the assets. |
+| `recover` | Ubuntu | release write | no | Finishes an earlier tagged draft after checks, even if no new build is needed. |
+| `publish` | Ubuntu | tag/release write | no | Creates a draft, pushes only the version tag, publishes the draft and confirms the feed. |
 
-`publish` does this, in this order:
+The workflow has two stages; recovery also runs independently after checks:
 
-1. Finishes any earlier release left as a draft (see [Recovery](#6-recovery)).
-2. Stops successfully if `main` is no longer the commit this run tested.
-3. Creates a **draft** release and uploads the installer, `.sig` and `latest.json`, with retries.
-4. Runs `git push --atomic origin HEAD:main vX.Y.Z`. The commit and tag land together or not at all.
-5. Publishes the draft and confirms `releases/latest/download/latest.json` serves the new version.
+1. Opens a version-only PR when feature/fix merges warrant a release. Review and merge it normally; automation does not approve or merge it.
+2. After that PR is merged, checks, builds and signs the merged `main` commit without changing it.
+3. Confirms no tracked files changed during the build.
+4. Creates a **draft** release and uploads the installer, `.sig` and `latest.json`, with retries.
+5. Pushes only `vX.Y.Z`, then publishes the draft and confirms the update feed.
 
-Installed copies only ever see a complete release, because `releases/latest` ignores drafts. The tag always points at the commit that was built, and that commit differs from the tested one only in `package.json`, `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml`, `src-tauri/Cargo.lock` and `CHANGELOG.md`. The script enforces this.
+The separate `recover` job can finish an already tagged draft on a no-release merge or full rerun, without rebuilding. Preparation, signing and publishing are restricted to their separate job permissions. Default repository token permissions stay read-only. GitHub Actions PR creation must be enabled in repository Actions settings; the release workflow never calls PR approval or merge. Windows checks are explicitly dispatched on each prepared branch.
+
+Installed copies only ever see a complete release, because `releases/latest` ignores drafts. The tag points at the already merged commit that was built. Protected `main` is never written by the release workflow.
 
 ### When main moves during a release
 
@@ -67,7 +71,7 @@ Actions > Release > Run workflow, with `dry_run` on (the default), or:
 gh workflow run release.yml --ref main -f dry_run=true
 ```
 
-This runs the checks and the real signed build, prints the version and notes, and uploads the `release-assets` artifact. The `publish` job does not run, and the `build` job's token cannot write. On any branch other than `main` every run is a dry run, whatever `dry_run` says. If the branch has no version tag, the job makes a **local** one at the merge base with `main`, so the range matches what a merge would release.
+This runs the checks and the real signed build for the checked-out `main` commit, prints the version and notes, and uploads the `release-assets` artifact. The `publish` job does not run, and the `build` job's token cannot write. A dry run is useful even when the current version is already tagged; it validates the synchronized version files and rebuilds the current release without creating a PR, tag or release. A live manual run (`dry_run=false`) on main uses the same prepare-or-build decision as a main push. On a feature branch, only dry runs are supported.
 
 ---
 
@@ -98,7 +102,7 @@ git tag v0.1.0 origin/main
 git push origin v0.1.0
 ```
 
-`v0.1.0` has no GitHub release, and the pipeline treats it as a baseline. The merge then releases `v0.2.0` with only that PR in its notes. Without the tag, the run stops with an error rather than releasing the whole history.
+`v0.1.0` has no GitHub release, and the pipeline treats it as a baseline. The merge then opens a version PR for `v0.2.0`; merging that PR triggers its checked, signed release. Without the tag, the run stops with an error rather than releasing the whole history.
 
 If you already merged, tag the commit before the merge, not `origin/main`, or the run finds nothing to release:
 
@@ -156,25 +160,26 @@ Re-running the failed workflow is safe and is the first thing to try. If a newer
 | What happened | State | What to do |
 |---|---|---|
 | `check` or `build` failed | Nothing pushed, no release | Fix it. The next merge, or a re-run, starts clean. |
-| Draft upload failed | A draft at most, no push | Re-run. Drafts whose tag never reached the remote are deleted, and a new one is created. |
+| Draft upload failed | A draft at most, no push | Re-run. Only the draft for the version being retried is replaced if its tag never reached the remote. |
 | Push rejected because `main` moved | Nothing pushed, draft removed, run is green | Nothing. The newer run releases it. |
-| Publish failed after the push | Commit and tag pushed, complete draft | Re-run, or merge anything. Either one publishes the draft without building again, before any newer version. |
+| Publish failed after the push | Only tag pushed, complete draft | Re-run, or merge anything. Either one publishes the draft without building again, before any newer version. |
 | `<tag> was released from CI but has no GitHub release` | Someone deleted the draft or release | Rebuild from the tag, below. |
 | `The <tag> draft is missing ...` | Someone edited the draft | Delete it, then rebuild from the tag, below. |
-| `Latest tag ... does not match package.json version` | A tag or version was changed by hand | Make the newest `vX.Y.Z` tag on `main` equal `package.json`, then re-run. |
+| Version files disagree, or package version is behind the latest tag | A version file or tag was changed by hand | Correct the version files through a PR. Do not move a published tag. |
 | `Merge commit ... has no PR title` | A merge message was edited or emptied, so history can't say what it contained | Release by hand once to move the range past it, below. |
-| `Tag <tag> already exists but main has no release commit` | A tag was pushed by hand | If it was a mistake, delete it with `git push origin :refs/tags/<tag>` and re-run. |
+| Existing tag points at a different commit | A version was reused or tagged separately | Stop and inspect provenance. Never replace a published tag; use a new version PR if necessary. |
 | Warning: `latest.json does not serve <version>` | The feed serves another version, because a release was pulled or marked as a pre-release, or the feed is stale | Nothing, if you pulled it: the warning doesn't block the next release. If you didn't, check which release is marked Latest. |
 
 ### Releasing by hand past a bad merge
 
-Set the new version in `package.json`, `src-tauri/tauri.conf.json` and `src-tauri/Cargo.toml`, add its section to `CHANGELOG.md`, and run `cargo update -p tuck --manifest-path src-tauri/Cargo.toml`. Then commit and push the commit and tag together, and rebuild from the tag as below:
+For a bad merge that cannot be described by the normal Conventional Commit rules, make a small version-only PR. Set the new version in `package.json`, `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml` and the root `tuck` entry in `src-tauri/Cargo.lock`, add its section to `CHANGELOG.md`, and merge it through the protected `main` branch. Do not run `cargo update` for this recovery: it can rewrite unrelated dependencies. The next release workflow builds that merged commit and pushes only its tag.
 
 ```powershell
 git add CHANGELOG.md package.json src-tauri/tauri.conf.json src-tauri/Cargo.toml src-tauri/Cargo.lock
-git commit -m "chore(release): vX.Y.Z [skip ci]"
-git tag vX.Y.Z
-git push --atomic origin HEAD:main vX.Y.Z
+git switch -c recovery/release-vX.Y.Z
+git commit -m "chore(release): vX.Y.Z"
+git push -u origin HEAD
+# Open a PR into main, wait for checks, and merge it. The release workflow does the build and tag.
 ```
 
 ### Rebuilding a release from its tag

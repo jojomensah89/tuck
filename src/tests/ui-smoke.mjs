@@ -162,7 +162,8 @@ try {
       if(command==='get_autostart'||command==='installed_usage_enabled'||command==='fullscreen_now')return false;
       if(command==='volume_step')return {kind:'volume',level:40+args.delta,muted:false};
       if(command==='volume_toggle_mute')return {kind:'volume',level:40,muted:true};
-      if(command==='get_hide_system_flyout')return {enabled:false,state:'off',message:null};
+      if(command==='get_hide_system_flyout')return {enabled:true,state:'waiting',message:null};
+      if(command==='set_hide_system_flyout'&&!args.enabled)return {enabled:false,state:'off',message:null};
       if(command==='set_hide_system_flyout')return {enabled:false,state:'unavailable',message:"Turned off: Windows showed its volume flyout several times, but Tuck couldn't find it on this version of Windows"};
       return null;
     }};
@@ -915,11 +916,13 @@ try {
   await native.getByText('Activity settings could not be saved',{exact:true}).waitFor();
   assert.equal(await native.locator('#ext-downloads').isChecked(),false);
   assert.equal(await native.evaluate(()=>window.__calls.findLast(call=>call.command==='extension_settings').args.settings.downloads),true);
-  // Hiding the Windows flyout is opt-in and reports when it turned itself off
+  // Hiding the Windows flyout defaults on and reports when it turned itself off
   await native.locator('#nav a[data-view="island"]').click();
   await native.locator('#row-hideSystemFlyout').waitFor({state:'visible'});
   assert.equal(await native.locator('#levelHud').isChecked(),true,'The HUD is on by default');
-  assert.equal(await native.locator('#hideSystemFlyout').isChecked(),false,'Off by default');
+  assert.equal(await native.locator('#hideSystemFlyout').isChecked(),true,'On by default');
+  await native.locator('#hideSystemFlyout').click();
+  assert.equal(await native.locator('#hideSystemFlyout').isChecked(),false,'Can be disabled');
   await native.locator('#hideSystemFlyout').click();
   await native.locator('#flyoutStatus').filter({hasText:'Turned off'}).waitFor({timeout:2000});
   assert.equal(await native.locator('#hideSystemFlyout').isChecked(),false,'An unavailable flyout turns the setting back off');
@@ -1019,6 +1022,6 @@ try {
   assert.equal(await idleClock.evaluate(() => window.__idleIntervals.size), 0, 'The minute clock does not start an interval');
   await idleClock.close();
 
-  console.log('UI smoke passed: geometry, tab rail (keys, wheel edges, swipe, memory), accessibility, keyboard seeking, timers, collapsed media text and its running animations, usage rings, section marks, icon buttons, persistence errors, volume/brightness HUD, wheel and middle-click volume, the pill-sized strip on the open island, queued flyout failure, return to open after HUD, HUD setting, charger-ramp brightness, flyout opt-in, shelf, drag hold and previews.');
+  console.log('UI smoke passed: geometry, tab rail (keys, wheel edges, swipe, memory), accessibility, keyboard seeking, timers, collapsed media text and its running animations, usage rings, section marks, icon buttons, persistence errors, volume/brightness HUD, wheel and middle-click volume, the pill-sized strip on the open island, queued flyout failure, return to open after HUD, HUD setting, charger-ramp brightness, flyout default-on, shelf, drag hold and previews.');
 } finally { await browser.close(); }
 

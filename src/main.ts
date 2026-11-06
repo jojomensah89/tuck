@@ -520,7 +520,7 @@ function renderMedia(): void {
   if (titleSpan) {
     titleSpan.textContent = mediaState.active ? mediaState.title : 'Nothing playing';
   }
-  $('artist').textContent = mediaState.active ? mediaState.artist : 'Play something in any app';
+  $('artist').textContent = mediaState.active ? mediaState.artist : '';
   renderMediaHeader();
   applyArtwork();
   fitTitle();
@@ -1504,16 +1504,16 @@ usageRefresh.innerHTML = SVG_ICONS.refresh;
 usageRefresh.onclick = async () => {
   if (usageRefresh.disabled) return;
   usageRefresh.disabled = true;
+  usageRefresh.title = 'Refresh AI usage';
   usageRefresh.setAttribute('aria-busy', 'true');
-  $('usageRefreshStatus').textContent = 'Refreshing...';
   const ticket = usageSnapshots.begin();
   try {
     const meters = await invokeCommand<Meter[]>('refresh_usage');
     if (!Array.isArray(meters)) throw new Error('Unavailable');
     if (usageSnapshots.accepts(ticket)) onUsageUpdate(meters);
-    $('usageRefreshStatus').textContent = rawMeters.some(m => m.stale || m.status === 'error') ? 'Some readings stale or unavailable' : 'Refresh finished';
+    usageRefresh.title = rawMeters.some(m => m.stale || m.status === 'error') ? 'Some readings are unavailable' : 'Refresh AI usage';
   } catch {
-    $('usageRefreshStatus').textContent = 'Refresh failed; keeping previous readings';
+    usageRefresh.title = 'Refresh failed. Try again';
   } finally {
     usageRefresh.disabled = false;
     usageRefresh.setAttribute('aria-busy', 'false');

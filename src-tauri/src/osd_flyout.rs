@@ -1,4 +1,4 @@
-//! Opt-in hiding of the Windows volume/brightness flyout ("OSD").
+//! Default-on hiding of the Windows volume/brightness flyout ("OSD").
 //!
 //! UNDOCUMENTED. Windows has no API to suppress its own flyout. This module uses the
 //! technique community tools such as HideVolumeOSD rely on: find the shell window that
@@ -17,7 +17,7 @@
 //!
 //! The same host draws the brightness and media-key flyouts, so those are hidden too.
 //! Safety rules:
-//! - Off by default; only applied while Tuck runs.
+//! - On by default; only applied while Tuck runs.
 //! - Explorer creates the host on the first flyout of a session, so a new host is only
 //!   accepted after a volume key changed the level (`flyout_evidence`); at autostart
 //!   another shell window could otherwise pass for it. Tuck's own changes, the Quick
@@ -520,7 +520,7 @@ impl Inner {
 /// Reads the preference and repairs a flyout left hidden by a crash. Nothing is looked
 /// up yet: the host only exists after the first flyout of the session.
 pub fn start(app: AppHandle) {
-    let enabled = crate::service_preferences::read(&app, PREFERENCE);
+    let enabled = crate::service_preferences::read_with_default(&app, PREFERENCE, true);
     let mut inner = state();
     inner.app = Some(app);
     inner.enabled = enabled;

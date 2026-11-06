@@ -687,7 +687,7 @@ pub fn start(app: AppHandle, hit_state: Arc<HitState>) {
 }
 
 /// Allowed quick action names opening actual Windows system URI.
-pub const ALLOWED_QUICK_ACTIONS: &[&str] = &["wifi", "bluetooth", "focus", "capture"];
+pub const ALLOWED_QUICK_ACTIONS: &[&str] = &["focus", "capture"];
 
 #[cfg(windows)]
 fn open_system_uri(uri: &str) -> Result<(), String> {
@@ -722,8 +722,6 @@ fn open_system_uri(_uri: &str) -> Result<(), String> {
 #[tauri::command]
 pub(crate) fn quick_action(name: String) -> Result<(), String> {
     match name.as_str() {
-        "wifi" => open_system_uri("ms-settings:network-wifi"),
-        "bluetooth" => open_system_uri("ms-settings:bluetooth"),
         "focus" => open_system_uri("ms-settings:quiethours"),
         "capture" => open_system_uri("ms-screenclip:"),
         other => Err(format!(

@@ -16,8 +16,8 @@ export interface TabDef {
 }
 
 export const TABS: readonly TabDef[] = [
-  { id: 'media', label: 'Media', icon: 'note', sections: ['media', 'visualizer'] },
-  { id: 'today', label: 'Today', icon: 'calendar', sections: ['today', 'activities', 'calendar'] },
+  { id: 'media', label: 'Media', icon: 'note', sections: ['media'] },
+  { id: 'today', label: 'Today', icon: 'calendar', sections: ['today', 'activities'] },
   { id: 'tools', label: 'Tools', icon: 'grid', sections: ['quick', 'clipboard', 'extensions', 'dictation'] },
   { id: 'usage', label: 'Usage', icon: 'gauge', sections: ['usage', 'stats'] },
 ];
@@ -27,10 +27,8 @@ export const DEFAULT_TAB: TabId = 'media';
 /** What each section is called on its indicator mark ("Go to AI usage") */
 const SECTION_LABELS: Readonly<Record<string, string>> = {
   media: 'now playing',
-  visualizer: 'visualizer',
   today: 'clock and battery',
   activities: 'timer',
-  calendar: 'calendar',
   quick: 'quick actions',
   clipboard: 'clipboard',
   extensions: 'files and devices',

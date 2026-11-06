@@ -1135,8 +1135,6 @@ window.addEventListener('storage', () => { renderUsage(); });
 /* ================= Quick Actions ================= */
 
 function setupQuickActions(): void {
-  $('icoWifi').innerHTML = SVG_ICONS.wifi;
-  $('icoBt').innerHTML = SVG_ICONS.bluetooth;
   $('icoFocus').innerHTML = SVG_ICONS.focus;
   $('icoCapture').innerHTML = SVG_ICONS.capture;
   $('prev').innerHTML = SVG_ICONS.prev;

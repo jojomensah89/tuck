@@ -109,11 +109,11 @@ export function ringMeters(meters: Meter[]): Meter[] {
 export function meterDetails(meter: Meter, nowSeconds = Date.now() / 1000, name = meterWindow(meter)): string {
   const parts: string[] = [];
   if (name) parts.push(name);
-  const left = remainingPct(displayUsedPct(meter));
+  const left = remainingPct(meter.usedPct);
   if (left != null) parts.push(`${left}% left`);
   if (meter.id === 'chatgpt' && meter.count != null && meter.cap != null) parts.push(`${Math.max(0, meter.cap - meter.count)} of ${meter.cap} messages left`);
   if (meter.spentUsd != null && Number.isFinite(meter.spentUsd)) parts.push(`$${meter.spentUsd.toFixed(2)} spent this month`);
-  const reset = meter.provider === 'claude' && displayUsedPct(meter) == null ? '' : resetSpan(meter.resetsAt, nowSeconds);
+  const reset = resetSpan(meter.resetsAt, nowSeconds);
   if (reset) parts.push(reset === 'now' ? 'resetting now' : meter.id === 'chatgpt' ? `next slot frees in ${reset}` : `resets in ${reset}`);
   if (meter.status && meter.status !== 'ok' && meter.status !== 'stale') parts.push(meter.status);
   if (meter.error) parts.push(meter.error);
@@ -122,17 +122,11 @@ export function meterDetails(meter: Meter, nowSeconds = Date.now() / 1000, name 
   return parts.join(', ');
 }
 
-/** Retained Claude status-line values are history, not currently available quota. */
-export function displayUsedPct(meter: Meter): number | null {
-  if (meter.provider === 'claude' && (meter.stale || meter.error || (meter.status && meter.status !== 'ok'))) return null;
-  return meter.usedPct;
-}
-
 export function valueText(meter: Meter): string {
   if (meter.id === 'chatgpt' && meter.count != null && meter.cap != null) return `${Math.max(0, meter.cap - meter.count)} left`;
   // Spend reads in dollars even with a budget: the ring shows what is left of that budget
   if (meter.spentUsd != null && Number.isFinite(meter.spentUsd)) return `$${meter.spentUsd.toFixed(2)}`;
-  const left = remainingPct(displayUsedPct(meter));
+  const left = remainingPct(meter.usedPct);
   if (left != null) return `${left}% left`;
   return '\u2013';
 }
@@ -151,7 +145,6 @@ function glyphFor(meter: Meter): { key: string; markup: string } {
 
 /** One word for a card that cannot be trusted right now; '' when its reading is fresh */
 export function usageStateWord(meters: Meter[]): string {
-  if (meters.some(meter => meter.provider === 'claude' && ['5h', '7d'].includes(meterWindow(meter)) && (displayUsedPct(meter) ?? -1) >= 100)) return 'Limit reached';
   if (meters.some(meter => meter.status === 'error' || meter.error)) return 'Error';
   if (meters.some(meter => meter.status === 'unavailable')) return 'Unavailable';
   return meters.some(meter => meter.stale || meter.status === 'stale') ? 'Stale' : '';
@@ -227,8 +220,7 @@ export function renderUsageRings(list: HTMLElement, meters: Meter[], onLog: () =
     if (cell.glyphKey !== key) { cell.glyph.innerHTML = markup; cell.glyphKey = key; }
     drawn.forEach((meter, meterIndex) => {
       // The ring drains as quota runs out; its colour still warns from how much is used
-      const used = displayUsedPct(meter);
-      rings[meterIndex].set(remainingPct(used), usageTone(used));
+      rings[meterIndex].set(remainingPct(meter.usedPct), usageTone(meter.usedPct));
       setIfChanged(lines[meterIndex].window, meterWindow(meter));
       setIfChanged(lines[meterIndex].value, valueText(meter));
       lines[meterIndex].value.dataset.out = String(isOut(meter));
@@ -236,7 +228,7 @@ export function renderUsageRings(list: HTMLElement, meters: Meter[], onLog: () =
 
     const word = usageStateWord(drawn);
     setIfChanged(cell.state, word);
-    root.dataset.stale = String(word !== '' && word !== 'Limit reached');
+    root.dataset.stale = String(word !== '');
     const others = group.meters.filter(meter => !drawn.includes(meter));
     const details = [
       group.label,

@@ -20,12 +20,6 @@ The Claude get_usage control method is experimental and can be unavailable in ol
 
 ## Local evidence
 
-### Claude unavailable readings (2026-11-06)
-
-Claude status-line percentages retained from a stale or unavailable reading are not current subscription quota. The card, ring and tooltip suppress those percentages, while retaining the status explaining that current limits are unavailable. A fresh general five-hour or weekly window at 100% shows `Limit reached`; exhaustion of a model-specific window does not imply all Claude models are blocked. Codex's existing retained-reading behavior is unchanged.
-
-The read-only installed Claude control probe reported `tokenSource:none` and `rate_limits_available:false` in this check. No prompt was sent and no login was changed. Being signed into Claude's website does not establish that this separate CLI connection is authenticated. Run `claude auth login --claudeai` interactively for the same subscription account, then refresh Tuck. Command availability was verified against the installed CLI's help. Current live quota remains unverified until that connection supplies limits.
-
 - Live installed Codex app-server probe returned two quota windows.
 - Installed Claude Code initialization and get_usage control requests succeeded. The connection reported tokenSource:none, no subscription metadata and no subscription quota windows; Tuck displays unavailable.
 - No actual quota percentages, account identifiers or credentials were printed during the smoke check.

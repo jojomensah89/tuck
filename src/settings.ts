@@ -1,7 +1,7 @@
 import './settings.css';
 import { mountExtensionSettings } from './extensions.js';
 import { mountLiveSettings } from './live-settings.js';
-import { isTauri, setSecret, invokeCommand, listenToEvent } from './ipc.js';
+import { isTauri, invokeCommand, listenToEvent } from './ipc.js';
 import { STORAGE_KEYS, getJson, saveJson } from './usage.js';
 import { describeResult, filterSettings, isRowHidden, navTarget, type SearchEntry } from './settings-search.js';
 import { clearSaved, confirmThen, markSaved, onCommit, setStatus } from './settings-ui.js';
@@ -16,7 +16,7 @@ function $<T extends HTMLElement = HTMLElement>(id: string): T | null {
 
 /* ================= Shell: views, search, keyboard ================= */
 
-const VIEWS = ['general', 'island', 'media', 'activities', 'tools', 'usage', 'keys', 'privacy', 'about'];
+const VIEWS = ['general', 'island', 'media', 'activities', 'tools', 'usage', 'privacy', 'about'];
 
 function navLinks(): HTMLAnchorElement[] {
   return [...document.querySelectorAll<HTMLAnchorElement>('#nav a[data-view]')];
@@ -170,8 +170,6 @@ function mountPrivacy(): void {
       window.setTimeout(() => $(id)?.focus(), 0);
     });
   }
-  const privacyLabel = document.querySelector<HTMLAnchorElement>('#row-privacy-api .mirror');
-  privacyLabel?.setAttribute('aria-label', 'API spend: change keys');
   document.addEventListener('change', refreshPrivacy);
   window.addEventListener('settings-loaded', refreshPrivacy);
 }
@@ -192,62 +190,6 @@ function setShape(style: ShapeStyle, control: HTMLElement | null): void {
   markSaved(control, 'Island shape saved');
   // Same-window listeners do not receive storage events, so dispatch one for them.
   window.dispatchEvent(new StorageEvent('storage', { key: STORAGE_KEYS.SHAPE, newValue: style }));
-}
-
-/* ================= Budgets: saved on change ================= */
-
-function initBudgets(): void {
-  const budgets = getJson<Record<string, number>>(STORAGE_KEYS.BUDGETS, {});
-  const fields: [HTMLInputElement, string][] = [[$<HTMLInputElement>('bAnthropic')!, 'anthropic-api'], [$<HTMLInputElement>('bOpenai')!, 'openai-api']];
-  for (const [input, key] of fields) if (budgets[key] != null) input.value = String(budgets[key]);
-
-  for (const [input] of fields) {
-    onCommit(input, () => {
-      const values = fields.map(([field]) => Number(field.value) || 0);
-      if (values.some(value => !Number.isFinite(value) || value < 0)) {
-        input.setAttribute('aria-invalid', 'true');
-        setStatus('budgetStatus', 'Budgets must be zero or a positive amount.', 'error'); return;
-      }
-      input.removeAttribute('aria-invalid');
-      const saved = saveJson(STORAGE_KEYS.BUDGETS, Object.fromEntries(fields.map(([, key], i) => [key, values[i]])));
-      if (saved) { setStatus('budgetStatus', ''); markSaved(input, 'Budget saved'); }
-      else { clearSaved(input); setStatus('budgetStatus', 'Could not save budgets. Check available storage and try again.', 'error'); }
-    });
-  }
-}
-
-/* ================= Admin keys: explicit save (Windows Credential Manager) ================= */
-
-function initAdminKeys(): void {
-  const status = $('settingsStatus')!;
-  const fields = ['kAnthropic', 'kOpenai'].map(id => $<HTMLInputElement>(id)!);
-  const controls = ['saveKeys', 'removeAnthropic', 'removeOpenai'].map(id => $<HTMLButtonElement>(id)!);
-  async function update(changes: [string, string][]): Promise<void> {
-    // Secrets never stay in the DOM and are never echoed back.
-    fields.forEach(field => { field.value = ''; });
-    controls.forEach(button => { button.disabled = true; });
-    setStatus(status, '');
-    try {
-      if (!isTauri()) throw new Error('Desktop app required');
-      for (const [name, value] of changes) await setSecret(name, value);
-      setStatus(status, changes.length ? (changes.every(([, value]) => value === '') ? 'Key removed.' : 'Keys saved to Credential Manager.') : 'Paste a key to save, or choose Remove.');
-    } catch {
-      setStatus(status, 'Credential update failed. Open the desktop app and try again. Some earlier updates may have succeeded.', 'error');
-    } finally {
-      controls.forEach(button => { button.disabled = false; });
-    }
-  }
-  $('saveKeys')?.addEventListener('click', () => {
-    const changes: [string, string][] = [];
-    for (let i = 0; i < fields.length; i++) {
-      const value = fields[i].value.trim();
-      if (value) changes.push([i === 0 ? 'anthropic-admin' : 'openai-admin', value]);
-    }
-    void update(changes);
-  });
-  for (const field of fields) field.addEventListener('keydown', event => { if (event.key === 'Enter') $('saveKeys')!.click(); });
-  confirmThen($<HTMLButtonElement>('removeAnthropic')!, 'Remove the saved Anthropic admin key? Claude API spend stops updating.', 'Remove key', () => update([['anthropic-admin', '']]));
-  confirmThen($<HTMLButtonElement>('removeOpenai')!, 'Remove the saved OpenAI admin key? OpenAI API spend stops updating.', 'Remove key', () => update([['openai-admin', '']]));
 }
 
 /* ================= ChatGPT estimate: saved on change ================= */
@@ -485,8 +427,6 @@ document.addEventListener('DOMContentLoaded', () => {
   initUpdates();
   mountExtensionSettings();
   mountLiveSettings();
-  initBudgets();
-  initAdminKeys();
   initChatGPT();
   mountPrivacy();
   mountShell();

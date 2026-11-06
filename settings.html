@@ -14,7 +14,6 @@
       <symbol id="i-activities" viewBox="0 0 16 16"><path d="M4 6.5a4 4 0 0 1 8 0c0 3 1.25 4.5 1.25 4.5H2.75S4 9.5 4 6.5Z"/><path d="M6.5 13.5h3"/></symbol>
       <symbol id="i-tools" viewBox="0 0 16 16"><rect x="3" y="2.5" width="10" height="11.5" rx="1.5"/><path d="M6 2.5V2h4v.5M5.5 7h5M5.5 10h3"/></symbol>
       <symbol id="i-usage" viewBox="0 0 16 16"><path d="M2.5 11a5.5 5.5 0 1 1 11 0"/><path d="M8 11l2.5-3.5"/><path d="M2.5 13.5h11"/></symbol>
-      <symbol id="i-keys" viewBox="0 0 16 16"><circle cx="5" cy="10.5" r="2.75"/><path d="M7 8.5l6-6M11 4.5l1.5 1.5M9.5 6l1.25 1.25"/></symbol>
       <symbol id="i-privacy" viewBox="0 0 16 16"><path d="M8 1.75l5 1.75v4c0 3.25-2.25 5.5-5 6.75-2.75-1.25-5-3.5-5-6.75v-4Z"/><path d="M6 8l1.5 1.5L10.25 6.5"/></symbol>
       <symbol id="i-about" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.25"/><path d="M8 7.25v4M8 4.75v.5"/></symbol>
       <symbol id="i-search" viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5l3 3"/></symbol>
@@ -41,7 +40,6 @@
             <li><a href="#activities" data-view="activities"><svg class="i" aria-hidden="true"><use href="#i-activities" /></svg><span>Activities</span></a></li>
             <li><a href="#tools" data-view="tools"><svg class="i" aria-hidden="true"><use href="#i-tools" /></svg><span>Dictation and clipboard</span></a></li>
             <li><a href="#usage" data-view="usage"><svg class="i" aria-hidden="true"><use href="#i-usage" /></svg><span>AI usage</span></a></li>
-            <li><a href="#keys" data-view="keys"><svg class="i" aria-hidden="true"><use href="#i-keys" /></svg><span>API keys</span></a></li>
             <li class="nav-gap"><a href="#privacy" data-view="privacy"><svg class="i" aria-hidden="true"><use href="#i-privacy" /></svg><span>Privacy</span></a></li>
             <li><a href="#about" data-view="about"><svg class="i" aria-hidden="true"><use href="#i-about" /></svg><span>About</span></a></li>
           </ul>
@@ -203,13 +201,7 @@
                 </div>
                 <input id="onlineLyrics" class="switch" type="checkbox" role="switch" disabled />
               </div>
-              <div class="set-row" id="row-audioVisualizer" data-keywords="spectrum visualiser audio analysis privacy">
-                <div class="row-text">
-                  <label class="row-title" for="audioVisualizer">Visualizer from system playback</label>
-                  <p class="row-desc">Analyzes playback in memory and never saves it. Reduced motion hides the spectrum.</p>
-                </div>
-                <input id="audioVisualizer" class="switch" type="checkbox" role="switch" disabled />
-              </div>
+
               <p class="group-status" id="mediaServiceStatus" role="status"></p>
             </div>
           </div>
@@ -228,13 +220,7 @@
                 </div>
                 <input id="ext-downloads" class="switch" type="checkbox" role="switch" />
               </div>
-              <div class="set-row" id="row-ext-calendar" data-keywords="calendar meeting reminder ics events">
-                <div class="row-text">
-                  <label class="row-title" for="ext-calendar">Calendar reminders</label>
-                  <p class="row-desc">Peek five minutes before events from an imported calendar.</p>
-                </div>
-                <input id="ext-calendar" class="switch" type="checkbox" role="switch" />
-              </div>
+
               <div class="set-row" id="row-ext-notifications" data-keywords="notification toast preview permission">
                 <div class="row-text">
                   <label class="row-title" for="ext-notifications">Notification previews</label>
@@ -242,26 +228,14 @@
                 </div>
                 <input id="ext-notifications" class="switch" type="checkbox" role="switch" />
               </div>
-              <div class="set-row" id="row-ext-radios" data-keywords="wifi wi-fi bluetooth radio wireless">
-                <div class="row-text">
-                  <label class="row-title" for="ext-radios">Wi-Fi and Bluetooth controls</label>
-                  <p class="row-desc">Read and switch radios from the island.</p>
-                </div>
-                <input id="ext-radios" class="switch" type="checkbox" role="switch" />
-              </div>
+
               <p class="group-status" id="extStatus" role="status"></p>
             </div>
           </div>
           <div class="group">
-            <h2>Calendar and notifications</h2>
+            <h2>Notification access</h2>
             <div class="panel">
-              <div class="set-row" id="row-calendarFile" data-keywords="ics import calendar file events">
-                <div class="row-text">
-                  <span class="row-title">Import calendar</span>
-                  <p class="row-desc">An ICS file up to 2 MB. Single, all-day and UTC events; recurring events are refused.</p>
-                </div>
-                <label class="button file-button">Choose file<input id="calendarFile" type="file" accept=".ics,text/calendar" aria-label="Import calendar ICS file" /></label>
-              </div>
+
               <div class="set-row" id="row-notificationAccess" data-keywords="notification permission listener access">
                 <div class="row-text">
                   <span class="row-title">Notification access</span>
@@ -382,26 +356,6 @@
             </div>
           </div>
           <div class="group">
-            <h2>Monthly API budgets</h2>
-            <div class="panel">
-              <div class="set-row" id="row-bAnthropic" data-keywords="budget anthropic claude api spend dollars usd">
-                <div class="row-text">
-                  <label class="row-title" for="bAnthropic">Claude API</label>
-                  <p class="row-desc">Month-to-date spend is shown against this amount.</p>
-                </div>
-                <span class="num-field"><input id="bAnthropic" type="number" min="0" step="1" placeholder="None" inputmode="decimal" /><span class="unit">USD a month</span></span>
-              </div>
-              <div class="set-row" id="row-bOpenai" data-keywords="budget openai api spend dollars usd">
-                <div class="row-text">
-                  <label class="row-title" for="bOpenai">OpenAI API</label>
-                  <p class="row-desc">Both budgets reset on the 1st of each month, UTC.</p>
-                </div>
-                <span class="num-field"><input id="bOpenai" type="number" min="0" step="1" placeholder="None" inputmode="decimal" /><span class="unit">USD a month</span></span>
-              </div>
-              <p class="group-status" id="budgetStatus" role="status"></p>
-            </div>
-          </div>
-          <div class="group">
             <h2>ChatGPT message estimate</h2>
             <div class="panel">
               <p class="panel-note">ChatGPT has no usage API for Plus and Pro. Tuck counts the messages you log and shows when the oldest one leaves the window.</p>
@@ -438,40 +392,7 @@
           </div>
         </section>
 
-        <!-- ============ API keys ============ -->
-        <section class="view" id="view-keys" data-view="keys" aria-labelledby="h-keys" hidden>
-          <h1 id="h-keys">API keys</h1>
-          <p class="lead">Admin keys read exact organization spend. They are stored in Windows Credential Manager, never in settings files, and are never shown again after saving.</p>
-          <div class="group">
-            <h2>Admin keys</h2>
-            <div class="panel">
-              <div class="set-row stack" id="row-kAnthropic" data-keywords="anthropic claude admin key secret credential">
-                <div class="row-text">
-                  <label class="row-title" for="kAnthropic">Anthropic admin key</label>
-                  <p class="row-desc">Starts with sk-ant-admin. Leave blank to keep the saved key.</p>
-                </div>
-                <div class="key-line">
-                  <input class="text-field" id="kAnthropic" type="password" autocomplete="off" spellcheck="false" placeholder="Paste to set or replace" />
-                  <button class="button danger" id="removeAnthropic" type="button">Remove</button>
-                </div>
-              </div>
-              <div class="set-row stack" id="row-kOpenai" data-keywords="openai admin key secret credential">
-                <div class="row-text">
-                  <label class="row-title" for="kOpenai">OpenAI admin key</label>
-                  <p class="row-desc">Starts with sk-admin. Leave blank to keep the saved key.</p>
-                </div>
-                <div class="key-line">
-                  <input class="text-field" id="kOpenai" type="password" autocomplete="off" spellcheck="false" placeholder="Paste to set or replace" />
-                  <button class="button danger" id="removeOpenai" type="button">Remove</button>
-                </div>
-              </div>
-              <div class="panel-foot">
-                <p class="group-status inline" id="settingsStatus" role="status" aria-live="polite"></p>
-                <button id="saveKeys" class="button primary" type="button">Save keys</button>
-              </div>
-            </div>
-          </div>
-        </section>
+
 
         <!-- ============ Privacy ============ -->
         <section class="view" id="view-privacy" data-view="privacy" aria-labelledby="h-privacy" hidden>
@@ -487,13 +408,7 @@
                 </div>
                 <a class="mirror" href="#media" data-mirror="onlineLyrics" data-focus="onlineLyrics"><span class="mirror-state"></span><svg class="i" aria-hidden="true"><use href="#i-chevron" /></svg></a>
               </div>
-              <div class="set-row" id="row-privacy-api" data-keywords="privacy api spend anthropic openai">
-                <div class="row-text">
-                  <span class="row-title">API spend</span>
-                  <p class="row-desc">Fetched directly from Anthropic and OpenAI with your admin keys.</p>
-                </div>
-                <a class="mirror" href="#keys" data-focus="kAnthropic"><span class="mirror-state">Keys</span><svg class="i" aria-hidden="true"><use href="#i-chevron" /></svg></a>
-              </div>
+
             </div>
           </div>
           <div class="group">
@@ -506,13 +421,7 @@
                 </div>
                 <a class="mirror" href="#tools" data-mirror="clipboardEnabled" data-focus="clipboardEnabled"><span class="mirror-state"></span><svg class="i" aria-hidden="true"><use href="#i-chevron" /></svg></a>
               </div>
-              <div class="set-row" id="row-privacy-audio" data-keywords="privacy audio visualizer dictation microphone">
-                <div class="row-text">
-                  <span class="row-title">Playback analysis</span>
-                  <p class="row-desc">Analyzed in memory for the visualizer, never recorded.</p>
-                </div>
-                <a class="mirror" href="#media" data-mirror="audioVisualizer" data-focus="audioVisualizer"><span class="mirror-state"></span><svg class="i" aria-hidden="true"><use href="#i-chevron" /></svg></a>
-              </div>
+
               <div class="set-row" id="row-privacy-notifications" data-keywords="privacy notifications">
                 <div class="row-text">
                   <span class="row-title">Notification previews</span>
@@ -527,12 +436,7 @@
                 </div>
                 <a class="mirror" href="#usage" data-mirror="installedUsage" data-focus="installedUsage"><span class="mirror-state"></span><svg class="i" aria-hidden="true"><use href="#i-chevron" /></svg></a>
               </div>
-              <div class="set-row" id="row-privacy-keys" data-keywords="privacy credential manager secret keys">
-                <div class="row-text">
-                  <span class="row-title">Admin keys</span>
-                  <p class="row-desc">Windows Credential Manager only. ChatGPT counts are a local estimate.</p>
-                </div>
-              </div>
+
             </div>
           </div>
         </section>

@@ -186,7 +186,7 @@
   user-select: text;
 }
 
-/* ================= Live pages (stats, dictation, clipboard, visualizer) ================= */
+/* ================= Live pages (stats, dictation, clipboard) ================= */
 
 .page.live-page {
   flex-direction: column;
@@ -395,62 +395,4 @@
   border-radius: var(--r-md);
   padding: var(--s-1) var(--s-2);
   min-width: 0;
-}
-
-/* ================= Measured spectrum ================= */
-
-.live-spectrum {
-  position: absolute;
-  height: var(--s-4);
-  left: 72px;
-  right: 72px;
-  bottom: 0;
-  display: flex;
-  gap: var(--s-half);
-  align-items: end;
-  opacity: 0.6;
-  pointer-events: none;
-}
-
-.with-lyrics .live-spectrum {
-  right: 55%;
-  left: var(--s-4);
-}
-
-.live-spectrum i {
-  flex: 1;
-  height: 100%;
-  background: var(--accent);
-  border-radius: var(--r-xs) var(--r-xs) 0 0;
-  transform: scaleY(var(--level, 0));
-  transform-origin: bottom;
-  transition: transform var(--d-instant) linear;
-}
-
-.wide-spectrum {
-  display: flex;
-  flex: 1;
-  min-height: 0;
-  align-items: center;
-  gap: var(--s-1);
-  padding: var(--s-2) 0;
-  mask-image: linear-gradient(to right, transparent, #000 5%, #000 95%, transparent);
-}
-
-.wide-spectrum i {
-  flex: 1;
-  height: 100%;
-  border-radius: var(--r-sm);
-  background: linear-gradient(to top, var(--art-wash, #ffffff30), var(--accent) 60%, white);
-  transform: scaleY(var(--level, 0));
-  transition: transform 120ms var(--ease-out);
-}
-
-@media (prefers-reduced-motion: reduce) {
-  /* Keep the meters on screen, but resting: a low, even level instead of live movement */
-  .live-spectrum i,
-  .wide-spectrum i {
-    transform: scaleY(0.15) !important;
-    opacity: 0.5;
-  }
 }

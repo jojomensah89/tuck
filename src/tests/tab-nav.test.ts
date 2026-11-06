@@ -25,7 +25,7 @@ const flat: ScrollMetrics = { scrollTop: 0, scrollHeight: 178, clientHeight: 178
 
 describe('tab and section mapping', () => {
   test('every section that existed as a page has exactly one tab', () => {
-    const pages = ['media', 'today', 'activities', 'usage', 'quick', 'extensions', 'calendar', 'stats', 'dictation', 'clipboard', 'visualizer'];
+    const pages = ['media', 'today', 'activities', 'usage', 'quick', 'extensions', 'stats', 'dictation', 'clipboard'];
     for (const page of pages) expect(tabForSection(page)).not.toBeNull();
     const all = TABS.flatMap(tab => tab.sections);
     expect(new Set(all).size).toBe(all.length);
@@ -33,8 +33,8 @@ describe('tab and section mapping', () => {
   });
   test('groups follow the roadmap', () => {
     expect(TABS.map(tab => tab.id)).toEqual(['media', 'today', 'tools', 'usage']);
-    expect(tabForSection('visualizer')).toBe('media');
-    expect(tabForSection('calendar')).toBe('today');
+    expect(tabForSection('visualizer')).toBeNull();
+    expect(tabForSection('calendar')).toBeNull();
     expect(tabForSection('activities')).toBe('today');
     expect(tabForSection('clipboard')).toBe('tools');
     expect(tabForSection('stats')).toBe('usage');

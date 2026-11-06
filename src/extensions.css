@@ -112,20 +112,6 @@
   margin: var(--s-1) 0;
 }
 
-.ext-call {
-  display: flex;
-  align-items: center;
-  gap: var(--s-3);
-  margin-top: var(--s-2);
-}
-
-.ext-time {
-  font-size: var(--t-xl);
-  font-weight: var(--w-regular);
-  font-variant-numeric: tabular-nums;
-  line-height: 1;
-}
-
 .ext-row {
   display: flex;
   align-items: center;
@@ -189,44 +175,6 @@
   height: 4px;
   margin: 0 var(--s-2);
   accent-color: var(--ink-2);
-}
-
-/* A switch for radios: the track is a tone step, the knob slides */
-.switch {
-  width: 44px;
-  height: var(--hit);
-  flex-shrink: 0;
-  border-radius: var(--r-md);
-}
-
-.switch i {
-  position: relative;
-  display: block;
-  width: 32px;
-  height: 18px;
-  border-radius: 9px;
-  background: var(--raise-active);
-  transition: background var(--d-fast) var(--ease-out);
-}
-
-.switch i::after {
-  content: "";
-  position: absolute;
-  top: 2px;
-  left: 2px;
-  width: 14px;
-  height: 14px;
-  border-radius: var(--r-round);
-  background: var(--ink);
-  transition: transform var(--d-base) var(--spring-enter);
-}
-
-.switch[aria-checked=true] i {
-  background: var(--ok);
-}
-
-.switch[aria-checked=true] i::after {
-  transform: translateX(14px);
 }
 
 .ext-status {

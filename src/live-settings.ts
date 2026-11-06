@@ -60,11 +60,11 @@ export function mountLiveSettings(): void {
   for (const id of numbers) onCommit(input(id), () => savePreferences(input(id)));
 
   /* ---------- Native media services ---------- */
-  for (const [id, family] of [['onlineLyrics', 'lyrics'], ['audioVisualizer', 'visualizer']] as const) {
+  for (const [id, family] of [['onlineLyrics', 'lyrics']] as const) {
     void nativeService<{ enabled: boolean }>(`${family}_settings`).then(data => {
       input(id).checked = data.enabled === true; input(id).disabled = false;
       window.dispatchEvent(new Event('settings-loaded'));
-    }).catch(() => setStatus('mediaServiceStatus', 'Lyrics lookup and the visualizer need the desktop app.'));
+    }).catch(() => setStatus('mediaServiceStatus', 'Lyrics lookup needs the desktop app.'));
     input(id).onchange = async () => {
       const enabled = input(id).checked; input(id).disabled = true;
       try { await nativeAction(`${family}_set_enabled`, { enabled }); setStatus('mediaServiceStatus', ''); markSaved(input(id)); }

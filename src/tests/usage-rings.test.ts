@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { groupUsageProviders, isOut, meterDetails, ringMeters, usageStateWord, valueText } from '../usage-rings.js';
+import { displayUsedPct, groupUsageProviders, isOut, meterDetails, ringMeters, usageStateWord, valueText } from '../usage-rings.js';
 import type { Meter } from '../types.js';
 
 const meter = (id: string, provider: string, label: string): Meter => ({
@@ -88,6 +88,37 @@ describe('windows from one quota', () => {
 });
 
 describe('card state', () => {
+  it('does not present retained Claude values as current remaining quota', () => {
+    for (const state of [
+      { stale: true, status: 'stale' },
+      { stale: true, status: 'unavailable' },
+      { stale: false, status: 'unavailable' },
+      { stale: true, status: 'error', error: 'Usage unavailable' },
+    ]) {
+      const old = { ...meter('claude-5h', 'claude', 'Claude 5 h'), usedPct: 20, resetsAt: 1000, ...state };
+      expect(displayUsedPct(old)).toBeNull();
+      expect(valueText(old)).toBe('\u2013');
+      expect(meterDetails(old)).not.toContain('% left');
+      expect(meterDetails(old)).not.toContain('resetting now');
+      expect(isOut({ ...old, usedPct: 100 })).toBe(false);
+    }
+  });
+
+  it('shows a current weekly Claude limit even when the session has quota left', () => {
+    const session = { ...meter('claude-5h', 'claude', 'Claude 5 h'), usedPct: 20 };
+    const week = { ...meter('claude-week', 'claude', 'Claude weekly'), usedPct: 100 };
+    expect(valueText(session)).toBe('80% left');
+    expect(valueText(week)).toBe('0% left');
+    expect(usageStateWord([session, week])).toBe('Limit reached');
+    expect(usageStateWord([{ ...week, stale: true, status: 'stale' }])).toBe('Stale');
+    expect(usageStateWord([{ ...week, label: 'Claude weekly Opus' }])).toBe('');
+  });
+
+  it('preserves the existing Codex retained-reading behavior', () => {
+    const codex = { ...meter('codex-primary', 'codex', 'Codex 5 h'), usedPct: 47, stale: true, status: 'error' };
+    expect(displayUsedPct(codex)).toBe(47);
+    expect(valueText(codex)).toBe('53% left');
+  });
   it('names a reading that cannot be trusted and stays quiet otherwise', () => {
     expect(usageStateWord([meter('a', 'claude', 'A')])).toBe('');
     expect(usageStateWord([{ ...meter('a', 'claude', 'A'), stale: true, status: 'stale' }])).toBe('Stale');

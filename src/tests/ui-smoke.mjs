@@ -261,6 +261,22 @@ try {
   await native.evaluate(meters => { window.__resolveUsage(meters); window.__holdUsage = false; }, usageFixture(12));
   await native.waitForTimeout(20);
   assert.ok((await native.locator('#uList .u-face').getAttribute('aria-label')).includes('28% left'),'A stale open response cannot overwrite a newer usage event');
+  const claudeSession = { ...usageFixture(20)[0], label:'Claude 5 h' };
+  const claudeWeek = { ...claudeSession, id:'claude-week', label:'Claude weekly', usedPct:100 };
+  const codexQuota = { ...claudeSession, id:'codex-primary', provider:'codex', label:'Codex 5 h', usedPct:47 };
+  await native.evaluate(meters => window.__emitNative('usage',meters), [
+    { ...claudeSession, stale:true, status:'unavailable' },
+    { ...claudeWeek, usedPct:null, stale:true, status:'unavailable' }, codexQuota,
+  ]);
+  const claudeCard = native.locator('#uList .u-provider').first();
+  assert.equal(await claudeCard.locator('.u-values').textContent(),'5h\u20137d\u2013Unavailable','Old partial Claude data is unknown, not 80% left');
+  assert.equal(await claudeCard.locator('.ring').evaluateAll(nodes=>nodes.every(node=>node.dataset.tone==='none')),true,'Unknown Claude quota has no green fill');
+  assert.match(await native.locator('#uList .u-provider').nth(1).textContent(),/53% left/,'Codex stays unchanged');
+  await native.evaluate(meters => window.__emitNative('usage',meters), [claudeSession, claudeWeek, codexQuota]);
+  assert.equal(await claudeCard.locator('.u-state').textContent(),'Limit reached','Weekly exhaustion blocks usage despite session quota');
+  assert.equal(await claudeCard.getAttribute('data-stale'),'false','An exhausted fresh quota is not styled as stale');
+  assert.equal(await claudeCard.locator('.u-val').nth(1).getAttribute('data-out'),'true');
+  await native.evaluate(meters => window.__emitNative('usage',meters), usageFixture(72));
   await native.keyboard.press('Escape');
   await native.evaluate(() => {
     document.querySelectorAll('.live-spectrum i, .wide-spectrum i').forEach(el=>el.style.setProperty('--level','1'));

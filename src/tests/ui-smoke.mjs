@@ -243,7 +243,8 @@ try {
   assert.equal(await native.evaluate(() => window.__calls.filter(c=>c.command==='refresh_usage').length),1);
   await native.evaluate(() => window.__refreshReject('Fixture failure'));
   await native.waitForFunction(() => !document.getElementById('usageRefresh').disabled);
-  assert.match(await native.locator('#usageRefreshStatus').textContent(),/failed/);
+  assert.match(await native.locator('#usageRefresh').getAttribute('title'),/failed/);
+  assert.equal(await native.locator('#usageRefreshStatus').count(),0,'Refresh has no visible status text');
   assert.ok((await native.locator('#uList .u-face').getAttribute('aria-label')).includes('69% left'),'Failure retains readings');
   const refreshBox = await native.locator('#usageRefresh').boundingBox();
   assert.ok(refreshBox.width>=32 && refreshBox.height>=32);
@@ -419,7 +420,7 @@ try {
   await native.getByRole('button',{name:'Start call timer',exact:true}).click();
   await native.getByRole('button',{name:'End call timer',exact:true}).waitFor({timeout:3000});
   assert.equal(await native.getByRole('button',{name:'End call timer',exact:true}).count(),1);
-  assert.equal(await native.locator('#extensionsPage .ext-note').textContent(),'Manual timer, it does not place calls or use the microphone');
+  assert.equal(await native.locator('#extensionsPage .ext-note').count(),0,'Calls shows the timer without explanatory filler');
   assert.equal(await native.getByRole('button',{name:'Calls',exact:true}).locator('.ext-badge.dot').isVisible(),true,'A running call timer badges its view');
   await native.keyboard.press('Escape');
   await native.evaluate(()=>window.__emitNative('hover',true));

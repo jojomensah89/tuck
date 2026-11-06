@@ -57,7 +57,7 @@ export function mountExtensions():void {
    const call=el('div','','ext-call');
    const time=el('strong',current.call?formatDuration(Date.now()-current.call.startedAt):'00:00','ext-time');if(current.call)time.id='extCallElapsed';
    const toggle=iconButton(current.call?'End call timer':'Start call timer',current.call?SVG_ICONS.stop:SVG_ICONS.play,()=>invoke('call_set_active',{active:!current.call}),'manual-call');toggle.classList.add('primary');
-   call.append(toggle,time);body.append(call,el('p','Manual timer, it does not place calls or use the microphone','ext-note'));
+   call.append(toggle,time);body.append(call);
   }else if(selected==='Files'){
    actions.append(iconButton('Add files',SVG_ICONS.plus,()=>invoke('shelf_pick'),'shelf-add'));
    const clear=iconButton('Clear shelf',SVG_ICONS.trash,()=>invoke('shelf_remove',{id:null}),'shelf-clear');clear.disabled=!current.shelf.length;actions.append(clear);

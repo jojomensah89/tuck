@@ -104,16 +104,17 @@ if (import.meta.main) {
   if (config.version !== version) throw new Error(`tauri.conf.json has ${config.version}, expected ${version}`);
 
   const tag = `v${version}`;
-  const installer = `${config.productName}_${version}_x64-setup.exe`;
+  const builtInstaller = `${config.productName}_${version}_x64-setup.exe`;
+  const installer = `Tuck_${version}_Setup.exe`;
   const bundleDir = path.join(projectRoot, 'src-tauri', 'target', 'release', 'bundle', 'nsis');
-  const installerBytes = fs.readFileSync(path.join(bundleDir, installer));
-  const signature = fs.readFileSync(path.join(bundleDir, `${installer}.sig`), 'utf8');
+  const installerBytes = fs.readFileSync(path.join(bundleDir, builtInstaller));
+  const signature = fs.readFileSync(path.join(bundleDir, `${builtInstaller}.sig`), 'utf8');
 
   verifyUpdaterSignature(installerBytes, signature, config.plugins.updater.pubkey);
   console.log(`[release-assets] ${installer}: signature verified against tauri.conf.json`);
 
   fs.mkdirSync(outDir, { recursive: true });
-  fs.copyFileSync(path.join(bundleDir, installer), path.join(outDir, installer));
+  fs.copyFileSync(path.join(bundleDir, builtInstaller), path.join(outDir, installer));
   fs.writeFileSync(path.join(outDir, `${installer}.sig`), signature, 'utf8');
   const notes = fs.readFileSync(notesFile, 'utf8').trim();
   fs.writeFileSync(path.join(outDir, 'release-notes.md'), `${notes}\n`, 'utf8');

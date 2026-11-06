@@ -58,9 +58,9 @@ describe('latest.json', () => {
       notes: '### Added\n- Thing',
       pubDate: new Date('2026-11-04T12:00:00.123Z'),
       signature: 'c2ln\n',
-      url: 'https://example.test/tuck_0.2.0_x64-setup.exe',
+      url: 'https://example.test/Tuck_0.2.0_Setup.exe',
     });
-    const platform = { signature: 'c2ln', url: 'https://example.test/tuck_0.2.0_x64-setup.exe' };
+    const platform = { signature: 'c2ln', url: 'https://example.test/Tuck_0.2.0_Setup.exe' };
     expect(latest).toEqual({
       version: '0.2.0',
       notes: '### Added\n- Thing',
@@ -70,8 +70,8 @@ describe('latest.json', () => {
   });
 
   it('builds the versioned asset URL from the configured endpoint', () => {
-    expect(assetUrl('https://github.com/o/r/releases/latest/download/latest.json', 'v0.2.0', 'tuck_0.2.0_x64-setup.exe'))
-      .toBe('https://github.com/o/r/releases/download/v0.2.0/tuck_0.2.0_x64-setup.exe');
+    expect(assetUrl('https://github.com/o/r/releases/latest/download/latest.json', 'v0.2.0', 'Tuck_0.2.0_Setup.exe'))
+      .toBe('https://github.com/o/r/releases/download/v0.2.0/Tuck_0.2.0_Setup.exe');
     expect(() => assetUrl('https://example.test/other.json', 'v1.0.0', 'x')).toThrow(/Unexpected updater endpoint/);
   });
 });

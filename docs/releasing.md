@@ -55,8 +55,8 @@ Use a non-release type in the PR title, or put `[skip ci]` in the merge commit m
 
 Tuck builds a single NSIS installer (`"bundle": { "targets": "nsis" }`, no MSI), so every update has one target and one install path. Each release holds:
 
-- `tuck_<version>_x64-setup.exe`
-- `tuck_<version>_x64-setup.exe.sig`
+- `Tuck_<version>_Setup.exe`
+- `Tuck_<version>_Setup.exe.sig`
 - `latest.json`, with `windows-x86_64` and `windows-x86_64-nsis` both pointing at the installer and carrying the contents of the `.sig`
 
 ### Rehearsing a release
@@ -195,7 +195,11 @@ bash scripts/release-steps.sh verify-cpu-baseline
 # Notes for the version, without its "## [X.Y.Z]" heading, in release-notes.md
 bun run scripts/release-assets.ts --version X.Y.Z --notes-file release-notes.md --out release-assets
 gh release create vX.Y.Z --verify-tag --title "Tuck vX.Y.Z" --notes-file release-assets/release-notes.md --latest `
-  release-assets/tuck_X.Y.Z_x64-setup.exe release-assets/tuck_X.Y.Z_x64-setup.exe.sig release-assets/latest.json
+  release-assets/Tuck_X.Y.Z_Setup.exe release-assets/Tuck_X.Y.Z_Setup.exe.sig release-assets/latest.json
 ```
 
 Close that terminal afterwards so the key leaves its environment.
+
+### Installer branding
+
+The NSIS installer and uninstaller use Tuck's folded-T icon. Release staging renames the built installer to `Tuck_<version>_Setup.exe` without changing its signed bytes. The signature filename and both updater platform URLs use the same public name. Recovery accepts the legacy `_x64-setup.exe` names for older drafts. Product name, app identifier and install path remain unchanged for existing users.

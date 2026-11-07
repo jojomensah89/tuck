@@ -1048,6 +1048,11 @@ try {
   await native.locator('#railSettings').click();
   assert.equal(await native.evaluate(()=>window.__calls.some(call=>call.command==='open_settings_cmd')),true,'The rail settings button opens the settings window');
   await native.goto('http://tuck.test/settings.html#tools');
+  await native.evaluate(()=>window.__emitNative('dictation_state',{status:'idle',modelInstalled:false,activeModelLabel:null,models:[{id:'ggml-base.bin',label:'Base',bytes:147951465,speed:'Very fast',accuracy:'Good',note:null,state:'found',foundIn:'podcli',active:false}]}));
+  assert.match(await native.locator('#dictationSetupStatus').textContent(),/Use an existing model or download/);
+  await native.setViewportSize({width:1000,height:850});
+  await native.screenshot({path:path.join(root,'docs/screens/model-reuse-settings.png')});
+  await native.setViewportSize({width:520,height:288});
   await native.evaluate(()=>window.__emitNative('dictation_state',{status:'review',modelInstalled:true,modelDownloadedBytes:0,activeModelLabel:'Tiny',models:[{id:'ggml-tiny.bin',label:'Tiny',bytes:77691713,speed:'Fastest',accuracy:'Lower',note:null,state:'installed',foundIn:null,active:true},{id:'ggml-base.bin',label:'Base (full size)',bytes:147951465,speed:'Very fast',accuracy:'Good',note:null,state:'found',foundIn:'podcli',active:false}]}));
   assert.equal(await native.locator('.model-row[data-id="ggml-tiny.bin"] button',{hasText:'Remove'}).isDisabled(),true,'Review must be discarded before model removal');
   assert.match(await native.locator('#dictationSetupStatus').textContent(),/In use: Tiny/);

@@ -15,7 +15,7 @@ Surface #000000; raised #1c1c1e / hover #2c2c2e / active #3a3a3c. Ink #ffffff, s
 - Type: Segoe UI Variable Text, Segoe UI, system-ui. Sizes 10, 11, 12, 13, 14, 20, 28, 40. Weights 400 and 500; 600 only for rare emphasis such as the track title and page headings. No negative tracking below 28px. Numbers use `tabular-nums`.
 - Icons: one hand-drawn line family (`src/icons.ts`) on a 20x20 grid: 1.5px stroke (`--stroke`, non-scaling so every size carries the same weight), round caps and joins, no icon fonts. Transport glyphs and small dots are filled with the same rounded outline. Sizes 10 (badge glyph), 14 (compact), 16, 20 (controls, chips, rail), 24 (play/pause).
 - Hit targets: 36px; 32px for the rail, the segmented switch and the actions beside it, media transport, the lyrics toggle, the lyrics timing steppers and inline row actions (grip, pin, remove); 56px for the record control. Nothing smaller.
-- Icon buttons (`.icon-btn`): one line icon, 36px, `--ink-2` at rest and `--ink` with a `--raise` step on hover; the name is both `title` and `aria-label`. The one primary control of a group (play, record) is a round `--raise` fill. Text labels stay only where an icon would be ambiguous (timer presets are numerals, row text is the content itself). Provider marks (`claude`, `anthropic`, `openai`) are the companies' own marks, unmodified and monochrome, for identification only (sources are in `src/icons.ts`); providers without one show their initial.
+- Icon buttons (`.icon-btn`): one line icon, 36px, `--ink-2` at rest and `--ink` with a `--raise` step on hover; the name is both `title` and `aria-label`. The one primary control of a group (play, record) is a round `--raise` fill. Text labels stay only where an icon would be ambiguous (timer presets are numerals, row text is the content itself). Provider artwork is the owner's explicit colour exception: official, unmodified colourful app icons for Claude and Antigravity, for identification only (sources in `src/icons.ts`). Codex retains its OpenAI mark until an official colour app-icon source is verified. Other providers show their existing mark or initial. No added gradients, glows or shadows. Colour artwork is 32px in a 72px ring, 20px in a dense 44px ring, and 32px in Settings rows; SVG preferred, PNG at least 3x. Stale/error artwork and rings retain 45% opacity. Refresh uses two circular arrows at the existing 1.5px stroke; Settings refresh is a 36px named icon button. Update restart uses a distinct power/restart glyph. All press actions use scale(0.96).
 
 ## Graphics instead of text
 
@@ -92,7 +92,7 @@ Saved `lastTab` values from older versions (`media`, `today`, `tools`, `usage`) 
 
 Dictation: a status row (dot, one status line that may wrap to two for an error, and the model name), the live transcript filling the room left on a `--raise-subtle` surface, then cancel, a 56px record control and insert. Live words follow the newest line and the text can be selected. A missing model disables record, says so and swaps the model name for a Model settings link to that page of Settings.
 
-Files: one dashed drop target, the only dashed element in the product. On an empty shelf it fills the content area with a folder icon and "Drop files here"; with files it is a slim 32px strip above the list. Clicking it picks files. A drag over the island highlights it (`--raise` fill, ink text and border).
+Files: one dashed drop target, the only dashed element in the product. It's a filled `--raise` well with a dashed edge, so it reads as somewhere to put things. On an empty shelf it fills the content area with a plus in a pill and "Drop files here to keep them handy"; with files it is a slim 32px strip above the list. Clicking it picks files. A file dragged over the island turns the edge and icon green, lifts the icon slightly and changes the text to "Release to add".
 
 ## Motion
 
@@ -145,6 +145,8 @@ Activities combines notification previews and access. About supplies exact allow
 
 Captures are browser fixtures, not live account readings or native hardware verification. Native focus/fullscreen interactions require manual Windows acceptance testing.
 
+Refresh feedback is shared by Usage and Settings: disabled and aria-busy until `refresh_usage` completes on success or failure, at least 500ms, ending on a complete 600ms transform-only turn. Reduced motion uses a brief opacity transition, no rotation. Nothing animates at rest. Settings uses the same completion-aware command as the island.
+
 ## Clipboard cards
 
 Tools > Clipboard uses a 32px category row above equal 128px cards, separated by 8px. Cards remain newest first, including pinned clips. All clips remains available; populated categories appear beside it. Only categories containing items appear; a filtered empty state remains until All clips is selected. Category buttons expose pressed state. The row scrolls horizontally; vertical wheel input follows the shared gesture/edge rules. Remove and pin occupy 32px targets, appear on hover/focus, and stay in the keyboard order; pinned state stays visible.
@@ -153,4 +155,4 @@ Fixed type strips: text #30d158, link #64d2ff, image #ff9f0a, video #bf8af7, fil
 
 Image cards fill with a real, once-generated thumbnail (at most 128px per side and 96 KiB encoded); full bitmap data never crosses IPC. Videos and files show their name and the existing video/folder line icons, plus a missing-file message when applicable. Native history holds full bitmaps in memory, with image sidecars written only when Keep after restart is on. Images are limited to 8192px per side and 32 MiB decoded; unpinned images evict oldest first under the image budget. All stored clipboard data is capped at 256 MiB including metadata. Turning history off clears all entries and stored media.
 
-The 207 MiB native image budget leaves space for a new 32 MiB image, both atomic metadata versions and settings within the 256 MiB disk cap. Copy-back offers alpha-preserving CF_DIBV5 and a flattened CF_DIB fallback. Interrupted-write temporary files are cleaned at startup and when deleting saved history.
+Images are held in memory while history is on, so their budget is 128 MiB, about four full-size 4K screenshots; oldest unpinned images go first. That also leaves room for both atomic metadata versions and settings within the 256 MiB disk cap. Copy-back offers alpha-preserving CF_DIBV5 and a flattened CF_DIB fallback. Interrupted-write temporary files are cleaned at startup and when deleting saved history.

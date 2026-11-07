@@ -6,7 +6,7 @@ pub const MAX_DECODED: usize = 32 * 1024 * 1024;
 pub const MAX_SIDE: u32 = 8192;
 pub const MAX_THUMBNAIL: usize = 96 * 1024;
 // Reserve space for the bounded JSON metadata and settings within the 256 MiB store.
-pub const MAX_IMAGES: usize = 207 * 1024 * 1024;
+pub const MAX_IMAGES: usize = 128 * 1024 * 1024;
 pub const MAX_CAPTURE: usize = MAX_DECODED + 1024 * 1024;
 #[derive(Debug, PartialEq)]
 pub enum Capture {

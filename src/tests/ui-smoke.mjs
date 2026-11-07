@@ -198,7 +198,7 @@ try {
     }};
   };
   // Every installed-provider combination, using fixtures without invoking clients.
-  for (const names of [[], ['claude'], ['codex'], ['claude','codex'], ['antigravity']]) {
+  for (const names of [[], ['claude'], ['codex'], ['claude','codex'], ['claude','codex','antigravity'], ['antigravity']]) {
     const settings = await context.newPage(); await settings.setViewportSize({width:1000,height:700}); await settings.addInitScript(nativeBridge);
     await settings.addInitScript(names => { window.__providers = ['claude','codex','antigravity'].map(provider => ({provider,installed:names.includes(provider),enabled:false})); }, names);
     await settings.goto('http://tuck.test/settings.html#usage');
@@ -214,7 +214,7 @@ try {
         await settings.screenshot({path:path.join(root,'docs/screens/antigravity-confirmation.png')});
         await settings.getByRole('button',{name:'Cancel',exact:true}).click();
         assert.equal(await toggle.isChecked(), false);
-        assert.equal(await settings.evaluate(() => window.__calls.filter(c=>c.command==='set_usage_provider').length),0);
+        assert.equal(await settings.evaluate(() => window.__calls.filter(c=>c.command==='set_usage_provider'&&c.args.provider==='antigravity').length),0);
         await toggle.check(); await settings.getByRole('button',{name:'Turn on',exact:true}).click();
         await settings.waitForTimeout(50);
         await settings.screenshot({path:path.join(root,'docs/screens/antigravity-settings.png')});
@@ -224,9 +224,42 @@ try {
     const calls = await settings.evaluate(() => window.__calls.filter(c=>c.command==='set_usage_provider'));
     assert.equal(calls.length, names.length * 2);
     if (names.length === 2) { await mkdir(path.join(root,'docs/screens'),{recursive:true}); await settings.screenshot({path:path.join(root,'docs/screens/usage-settings.png')}); }
+    if (names.length === 3) {
+      for (const theme of ['dark','light']) {
+        await settings.emulateMedia({colorScheme:theme});
+        await settings.screenshot({path:path.join(root,`docs/screens/logos-${process.env.LOGO_CAPTURE || 'after'}-settings-${theme}.png`)});
+      }
+    }
     await settings.close();
   }
 
+  for (const reduced of (process.env.LOGO_CAPTURE === 'before' ? [] : [false,true])) {
+    const feedback = await context.newPage();
+    await feedback.addInitScript(nativeBridge);
+    await feedback.addInitScript(()=>{window.__providers=[{provider:'claude',installed:true,enabled:true}];});
+    await feedback.emulateMedia({reducedMotion:reduced?'reduce':'no-preference'});
+    for (const surface of ['settings','island']) {
+      await feedback.goto(surface==='settings'?'http://tuck.test/settings.html#usage':'http://tuck.test/');
+      if(surface==='island') { await feedback.locator('#isl').focus(); await feedback.keyboard.press('Enter'); await feedback.locator('#tab-usage').click(); await feedback.evaluate(()=>{window.__usageSnapshot=[{id:'claude',provider:'claude',label:'Claude 5h',usedPct:30,source:'official',status:'ok'}];window.__emitNative('usage',window.__usageSnapshot);}); await feedback.getByRole('tab',{name:'AI',exact:true}).click(); }
+      const button = feedback.locator(surface==='settings'?'#refreshInstalledUsage':'#usageRefresh');
+      for (const fail of [false,true]) {
+        await button.click();
+        assert.equal(await button.getAttribute('aria-busy'),'true');
+        const look = await button.locator('svg').evaluate(n=>({animation:getComputedStyle(n).animationName,opacity:getComputedStyle(n).opacity}));
+        assert.equal(look.animation,reduced?'none':'refresh-turn');
+        if(reduced) { await feedback.waitForTimeout(150); assert.equal(await button.locator('svg').evaluate(n=>getComputedStyle(n).opacity),'0.45'); }
+        const count = await feedback.evaluate(()=>window.__calls.filter(c=>c.command==='refresh_usage').length);
+        await button.evaluate(n=>n.click());
+        assert.equal(await feedback.evaluate(()=>window.__calls.filter(c=>c.command==='refresh_usage').length),count);
+        await feedback.evaluate(fail=>fail?window.__refreshReject('Fixture failure'):window.__refreshResolve(window.__usageSnapshot || []),fail);
+        assert.equal(await button.getAttribute('aria-busy'),'true','Fast replies retain minimum feedback');
+        await feedback.waitForFunction(id=>document.getElementById(id).getAttribute('aria-busy')==='false',await button.getAttribute('id'));
+        assert.equal(await button.isDisabled(),false);
+        assert.equal(await button.locator('svg').evaluate(n=>getComputedStyle(n).animationName),'none');
+      }
+    }
+    await feedback.close();
+  }
   await context.addInitScript(nativeBridge);
   // Update screenshots and assertions use a mocked bridge, never a release installer.
   const updateFixtures = await context.newPage();
@@ -513,9 +546,10 @@ try {
   const dropBox = () => shelfDrop.evaluate(n=>{const r=n.getBoundingClientRect(),s=getComputedStyle(n);return {w:Math.round(r.width),h:Math.round(r.height),dashed:s.borderTopStyle,colour:s.borderTopColor};});
   const emptyDrop = await dropBox();
   assert.deepEqual([emptyDrop.w,emptyDrop.h,emptyDrop.dashed],[420,192,'dashed'],'An empty shelf fills the content box');
-  assert.equal(await native.locator('#extensionsPage').textContent().then(text=>text.trim()),'Drop files here');
+  assert.equal(await native.locator('#extensionsPage').textContent().then(text=>text.trim()),'Drop files here to keep them handy');
   await native.evaluate(()=>window.dispatchEvent(new CustomEvent('tuck-drop-active',{detail:true})));
   assert.notEqual((await dropBox()).colour,emptyDrop.colour,'A drag over the island highlights the box');
+  assert.equal(await native.locator('.shelf-drop .drop-text').textContent(),'Release to add','A drag says what happens next');
   await native.evaluate(()=>window.dispatchEvent(new CustomEvent('tuck-drop-active',{detail:false})));
   await shelfDrop.click();
   await native.locator('#extensionsPage .ext-row').waitFor();
@@ -793,7 +827,7 @@ try {
   });
   await native.locator('.page.usage').scrollIntoViewIfNeeded();
   assert.equal(await native.locator('#uList .u-provider').count(),2,'Two connected providers become two cards');
-  assert.equal(await native.locator('#uList .u-provider .brand-mark').count(),2,'Every provider shows its real mark');
+  assert.equal(await native.locator('#uList .u-provider .brand-mark, #uList .u-provider .provider-artwork').count(),2,'Every provider shows its real mark');
   assert.equal(await native.locator('#uList .u-ring-outer').count(),2);
   assert.equal(await native.locator('#uList .u-ring-inner').count(),2);
   await native.waitForTimeout(100);
@@ -841,6 +875,38 @@ try {
   }
   assert.equal(await native.locator('#uList .u-provider').count(),2);
 
+  // Review evidence uses only the mocked native bridge and synthetic quota readings.
+  for (const theme of ['dark','light']) {
+    await native.emulateMedia({colorScheme:theme});
+    for (const width of [440,500]) {
+      await setLive({openWidth:width});
+      const now = Math.round(Date.now()/1000);
+      const extra = ['antigravity','fixture-b','fixture-c'].map(provider=>({id:provider,provider,label:provider==='antigravity'?'Antigravity quota':provider,usedPct:35,resetsAt:now+3600,source:'official',stale:false,status:'ok'}));
+      for (const state of ['ai','five','stale']) {
+        const meters = [...quotaProviders(now), ...extra.slice(0,state==='five'?3:1)];
+        if(state==='stale') meters.forEach(m=>{m.stale=true;m.status='stale';});
+        await native.evaluate(m=>window.__emitNative('usage',m),meters);
+        await native.waitForTimeout(100);
+        assert.deepEqual(await usageFit(),{inside:true,clear:true,switchClear:true,fits:true});
+        if (process.env.LOGO_CAPTURE !== 'before') {
+          const session = await context.newCDPSession(native);
+          for (const scale of [1,1.5,2]) {
+            await session.send('Emulation.setDeviceMetricsOverride',{width:520,height:288,deviceScaleFactor:scale,mobile:false});
+            assert.deepEqual(await usageFit(),{inside:true,clear:true,switchClear:true,fits:true},`Fits at ${scale*100}%`);
+            assert.equal(await native.locator('.provider-artwork').evaluateAll(nodes=>nodes.every(n=>n.complete&&n.naturalWidth>0&&(n.naturalWidth>=96||n.currentSrc.endsWith('.svg')))),true,'Official artwork loads sharply');
+          }
+          await session.send('Emulation.clearDeviceMetricsOverride');
+          await session.detach();
+          await native.setViewportSize({width:520,height:288});
+          await native.evaluate(()=>window.scrollTo(0,0));
+        }
+        await native.evaluate(()=>document.activeElement?.blur());
+        await native.mouse.move(519,287);
+        await native.waitForTimeout(150);
+        await native.locator('#isl').screenshot({path:path.join(root,`docs/screens/logos-${process.env.LOGO_CAPTURE || 'after'}-${state}-${width}-${theme}.png`)});
+      }
+    }
+  }
   // Antigravity fixtures: five cards at both supported widths, then error/off.
   for (const width of [440,500]) {
     await setLive({openWidth:width});

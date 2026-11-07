@@ -1516,7 +1516,8 @@ body.fullscreen-hidden .island {
   height: 75%;
 }
 
-.u-face > .ring-glyph svg.ico {
+.u-face > .ring-glyph svg.ico,
+.u-face > .ring-glyph .provider-artwork {
   width: var(--u-mark, var(--s-8));
   height: var(--u-mark, var(--s-8));
 }
@@ -1701,3 +1702,5 @@ body:not(:has(#isl[data-state="open"])) .open-announcement { display: none; }
 .network-rates { display: flex; justify-content: center; gap: var(--s-6); margin-top: var(--s-2); font-size: var(--t-sm); font-variant-numeric: tabular-nums; color: var(--ink-2); }
 .network-rate { display: flex; align-items: center; gap: var(--s-1); }
 .network-rate[data-unavailable="true"] { opacity: .45; }
+
+.provider-artwork { display: block; object-fit: contain; }

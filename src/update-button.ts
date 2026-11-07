@@ -17,7 +17,7 @@ export function mountUpdateButton(host: HTMLElement, settings = false): void {
     button.setAttribute('aria-label', name); button.title = state.error || state.blocker || name;
     button.disabled = state.phase === 'downloading' || state.phase === 'installing';
     button.dataset.phase = state.phase; button.dataset.failed = String(!!state.error);
-    button.innerHTML = state.phase === 'restart' ? SVG_ICONS.refresh : SVG_ICONS.installUpdate;
+    button.innerHTML = state.phase === 'restart' ? SVG_ICONS.restart : SVG_ICONS.installUpdate;
     if (state.phase === 'downloading') { button.replaceChildren(ring.root); ring.set(state.progress); }
     if (settings) { label.textContent = name; button.append(label); }
   });

@@ -434,10 +434,24 @@ impl ClipboardHistoryService {
             .lock()
             .map_err(|_| "Clipboard history unavailable")?;
         let app = self.app()?;
-        self.remove_items_file(&app)?;
-        if let Ok(mut state) = self.inner.lock() {
-            state.items.clear();
+        let items = self
+            .inner
+            .lock()
+            .map_err(|_| "Clipboard history unavailable")?
+            .items
+            .iter()
+            .filter(|item| item.pinned)
+            .cloned()
+            .collect::<Vec<_>>();
+        if items.is_empty() {
+            self.remove_items_file(&app)?;
+        } else {
+            self.persist_current(&app, &items)?;
         }
+        self.inner
+            .lock()
+            .map_err(|_| "Clipboard history unavailable")?
+            .items = items.into_iter().collect();
         clipboard_updated();
         crate::lifecycle::request_refresh();
         self.emit_changed();

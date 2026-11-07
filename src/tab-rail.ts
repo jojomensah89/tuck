@@ -401,6 +401,9 @@ export function mountTabRail(options: TabRailOptions): TabRail {
     if (!panel.contains(target)) return [];
     const chain: ScrollMetrics[] = [];
     for (let el: Element | null = target; el && el !== panel; el = el.parentElement) {
+      if (el instanceof HTMLElement && el.hasAttribute('data-horizontal-scroll')) {
+        chain.push({ scrollTop: el.scrollLeft, scrollHeight: el.scrollWidth, clientHeight: el.clientWidth });
+      }
       if (el instanceof HTMLElement && el.scrollHeight > el.clientHeight + 1) {
         const style = getComputedStyle(el);
         if (/(auto|scroll)/.test(style.overflowY)) {
@@ -429,6 +432,10 @@ export function mountTabRail(options: TabRailOptions): TabRail {
     const action = result.action;
     // Only a list with room scrolls natively; the panel never free-scrolls under the wheel
     if (action.kind !== 'scroll') e.preventDefault();
+    const horizontalList = target.closest<HTMLElement>('[data-horizontal-scroll]');
+    if (action.kind === 'scroll' && horizontalList && Math.abs(e.deltaY) >= Math.abs(e.deltaX)) {
+      e.preventDefault(); horizontalList.scrollLeft += e.deltaY;
+    }
     if (action.kind === 'section') goToSection(visibleSection(panel) + action.delta);
     if (action.kind !== 'switch') return;
     const vertical = Math.abs(e.deltaY) >= Math.abs(e.deltaX);

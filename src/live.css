@@ -384,65 +384,25 @@
 /* ================= Clipboard ================= */
 
 
-.clipboard-list {
-  overflow-y: auto;
-  flex: 1;
-  scrollbar-width: none;
-  display: flex;
-  flex-direction: column;
-  gap: var(--s-half);
-}
-
-.clipboard-list:empty {
-  display: none;
-}
-
-/* Rows are tone steps, not ruled lines: the row lifts on hover */
-.clipboard-row {
-  display: flex;
-  align-items: center;
-  gap: var(--s-1);
-  border-radius: var(--r-md);
-  padding-left: var(--s-2);
-  transition: background var(--d-fast) var(--ease-out);
-}
-
-.clipboard-row:hover,
-.clipboard-row:focus-within {
-  background: var(--raise-subtle);
-}
-
-/* Block, not the button default flex, so a long entry ends in an ellipsis */
-.clipboard-text {
-  display: block;
-  line-height: var(--hit);
-  flex: 1;
-  min-width: 0;
-  min-height: var(--hit);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  justify-content: flex-start;
-  text-align: left;
-  font-size: var(--t-sm);
-  color: var(--ink);
-}
-
-.clipboard-text:hover {
-  color: var(--ink);
-}
-
-/* Row actions stay quiet until the row is in use; a pinned pin always shows */
-.clipboard-row .row-action {
-  width: var(--hit-sm);
-  height: var(--hit-sm);
-  color: var(--ink-3);
-}
-
-.clipboard-row:hover .row-action,
-.clipboard-row:focus-within .row-action {
-  color: var(--ink-2);
-}
+/* Clipboard cards use semantic strips, never coloured surfaces. */
+.clipboard-filters { display: flex; flex: none; gap: var(--s-1); overflow-x: auto; scrollbar-width: none; }
+.clipboard-filters[hidden] { display: none; }
+.clipboard-filters button { flex: none; min-height: var(--hit-sm); padding: 0 var(--s-3); border-radius: var(--r-lg); color: var(--ink-2); font-size: var(--t-sm); }
+.clipboard-filters button[aria-pressed="true"] { background: var(--raise); color: var(--ink); }
+.clipboard-list { display: flex; gap: var(--s-2); overflow-x: auto; overflow-y: hidden; scrollbar-width: none; flex: 1; min-height: 0; }
+.clipboard-list:empty { display: none; }
+.clipboard-row { --clip-color: var(--clip-text); position: relative; flex: 0 0 var(--clip-card-width); min-height: 0; overflow: hidden; border-radius: var(--r-md); background: var(--raise); border-bottom: var(--s-1) solid var(--clip-color); }
+.clipboard-row[data-kind="link"] { --clip-color: var(--clip-link); }
+.clipboard-row[data-kind="image"] { --clip-color: var(--clip-image); }
+.clipboard-row[data-kind="video"] { --clip-color: var(--clip-video); }
+.clipboard-row[data-kind="file"] { --clip-color: var(--clip-file); }
+.clipboard-text { display: block; width: 100%; height: 100%; padding: var(--s-2) var(--s-2) var(--s-8); overflow: hidden; text-align: left; white-space: pre-wrap; overflow-wrap: anywhere; font-size: var(--t-sm); color: var(--ink); transition: background var(--d-fast) var(--ease-out), transform var(--d-fast) var(--ease-out); }
+.clipboard-text:hover { background: var(--raise-hover); }
+.clipboard-text:active { transform: scale(0.96); }
+.clipboard-type { position: absolute; left: var(--s-2); bottom: var(--s-1); font-size: var(--t-2xs); color: var(--ink-2); pointer-events: none; }
+.clipboard-row .row-action { position: absolute; top: 0; right: 0; width: var(--hit-sm); height: var(--hit-sm); background: var(--raise); opacity: 0; }
+.clipboard-row .pin-btn { right: var(--hit-sm); }
+.clipboard-row:hover .row-action, .clipboard-row:focus-within .row-action, .clipboard-row .pin-btn[aria-pressed="true"] { opacity: 1; }
 
 .pin-btn[aria-pressed="true"] {
   color: var(--ink) !important;

@@ -1019,11 +1019,35 @@ try {
   assert.ok(await native.evaluate(()=>{const p=document.querySelector('.page.clipboard').getBoundingClientRect(),l=document.querySelector('.page.clipboard .empty-line').getBoundingClientRect();return Math.abs(p.top+p.height/2-(l.top+l.height/2))<=1;}),'Centred');
   await native.evaluate(()=>window.__emitNative('clipboard_history_changed',{enabled:true,items:[{id:'clip',text:'<img src=x>clipboard fixture',pinned:false,createdAt:Date.now()}]}));
   assert.equal(await native.locator('.clipboard-text img').count(),0);
-  assert.deepEqual(await native.locator('.clipboard-row .icon-btn').evaluateAll(n=>n.map(x=>x.getAttribute('aria-label'))),['Pin','Remove']);
+  assert.deepEqual(await native.locator('.clipboard-row .icon-btn').evaluateAll(n=>n.map(x=>x.getAttribute('aria-label'))),['Pin','Remove text']);
   const toolTargets = await native.locator('.page.clipboard .icon-btn, .section-actions .icon-btn:visible').evaluateAll(nodes => nodes.map(n => { const r = n.getBoundingClientRect(); return Math.min(r.width, r.height); }));
   assert.equal(toolTargets.every(size => size >= 32), true, 'Icon buttons are at least 32px');
   await native.locator('.clipboard-text').click();
   assert.equal(await native.evaluate(()=>window.__calls.some(call=>call.command==='clipboard_copy'&&call.args.id==='clip')),true);
+  for (const width of [440,500]) {
+    await setLive({openWidth:width});
+    await native.evaluate(()=>window.__emitNative('clipboard_history_changed',{enabled:true,items:[
+      {id:'clip',text:'Clipboard text fixture',pinned:true,createdAt:2},
+      {id:'link',text:'https://example.com/fixture',pinned:false,createdAt:1},
+    ]}));
+    assert.deepEqual(await native.locator('.clipboard-filters button').allTextContents(),['All clips','Text','Links']);
+    assert.equal(await native.locator('.clipboard-row').count(),2);
+    const sizes = await native.locator('.clipboard-row').evaluateAll(nodes=>nodes.map(n=>Math.round(n.getBoundingClientRect().width)));
+    assert.equal(new Set(sizes).size,1);
+    await native.getByRole('button',{name:'Links',exact:true}).click();
+    assert.equal(await native.locator('.clipboard-row').count(),1);
+    assert.equal(await native.locator('.clipboard-row').getAttribute('data-kind'),'link');
+    await native.getByRole('button',{name:'All clips',exact:true}).click();
+    assert.equal(await native.getByRole('button',{name:'Unpin',exact:true}).getAttribute('aria-pressed'),'true');
+    await native.getByRole('button',{name:'Unpin',exact:true}).click();
+    assert.ok(await native.evaluate(()=>window.__calls.some(c=>c.command==='clipboard_pin'&&c.args.id==='clip'&&c.args.pinned===false)));
+    await native.evaluate(()=>window.__emitNative('clipboard_history_changed',{enabled:true,items:[{id:'clip',text:'Clipboard fixture',pinned:false,createdAt:1}]}));
+    await native.getByRole('button',{name:'Remove text',exact:true}).focus();
+    await native.keyboard.press('Enter');
+    assert.ok(await native.evaluate(()=>window.__calls.some(c=>c.command==='clipboard_delete'&&c.args.id==='clip')));
+    await native.evaluate(()=>window.__emitNative('clipboard_history_changed',{enabled:true,items:[{id:'clip',text:'Clipboard fixture',pinned:false,createdAt:1}]}));
+  }
+  await setLive({openWidth:500});
   await native.locator('.clipboard-text').focus();
   await native.keyboard.press('ArrowRight');
   assert.equal(await native.locator('.tab-panel.on').getAttribute('data-tab'),'usage');

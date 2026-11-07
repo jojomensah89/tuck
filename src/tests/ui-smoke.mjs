@@ -183,6 +183,7 @@ try {
         return structuredClone(window.__usageSnapshot || []);
       }
       if(command==='clipboard_get_state')return {enabled:false,persistOnExit:false,items:[]};
+      if(command==='clipboard_copy' && window.__missingClipboardFile)throw 'File no longer exists';
       if(command==='clipboard_configure')throw 'Fixture atomic save failure';
       if(command==='plugin:updater|check')return null;
       if(command==='installed_usage_providers')return window.__providers || [];
@@ -1015,8 +1016,8 @@ try {
   await native.getByRole('tab',{name:'Clipboard',exact:true}).click();
   await native.waitForTimeout(100);
   await native.evaluate(()=>window.__emitNative('clipboard_history_changed',{enabled:true,items:[]}));
-  assert.equal((await native.locator('.page.clipboard').textContent()).trim(),'Nothing copied yet');
-  assert.ok(await native.evaluate(()=>{const p=document.querySelector('.page.clipboard').getBoundingClientRect(),l=document.querySelector('.page.clipboard .empty-line').getBoundingClientRect();return Math.abs(p.top+p.height/2-(l.top+l.height/2))<=1;}),'Centred');
+  assert.equal((await native.locator('.page.clipboard .empty-line').textContent()).trim(),'Nothing copied yet');
+  assert.ok(await native.evaluate(()=>{const p=document.querySelector('.page.clipboard').getBoundingClientRect(),l=document.querySelector('.page.clipboard .empty-line').getBoundingClientRect();return l.top>=p.top && l.bottom<=p.bottom;}),'Empty state fits below the category row');
   await native.evaluate(()=>window.__emitNative('clipboard_history_changed',{enabled:true,items:[{id:'clip',text:'<img src=x>clipboard fixture',pinned:false,createdAt:Date.now()}]}));
   assert.equal(await native.locator('.clipboard-text img').count(),0);
   assert.deepEqual(await native.locator('.clipboard-row .icon-btn').evaluateAll(n=>n.map(x=>x.getAttribute('aria-label'))),['Pin','Remove text']);
@@ -1047,6 +1048,54 @@ try {
     assert.ok(await native.evaluate(()=>window.__calls.some(c=>c.command==='clipboard_delete'&&c.args.id==='clip')));
     await native.evaluate(()=>window.__emitNative('clipboard_history_changed',{enabled:true,items:[{id:'clip',text:'Clipboard fixture',pinned:false,createdAt:1}]}));
   }
+  for (const width of [440,500]) {
+    await setLive({openWidth:width});
+    await native.evaluate(()=>{
+      const canvas=document.createElement('canvas'); canvas.width=128; canvas.height=128; const ctx=canvas.getContext('2d');
+      ctx.fillStyle='#163832';ctx.fillRect(0,0,128,128);ctx.fillStyle='#64d2ff';ctx.fillRect(16,16,96,56);ctx.fillStyle='#ff9f0a';ctx.beginPath();ctx.arc(88,88,24,0,Math.PI*2);ctx.fill();
+      window.__clipboardFixture={enabled:true,items:[
+        {id:'image-fixture',kind:'image',text:'Image',thumbnail:canvas.toDataURL(),pinned:true,createdAt:5},
+        {id:'text-fixture',kind:'text',text:'A small thought worth keeping\nSynthetic clipboard fixture',pinned:false,createdAt:4},
+        {id:'link-fixture',kind:'link',text:'https://example.com/notes',pinned:false,createdAt:3},
+        {id:'video-fixture',kind:'video',text:'Island walkthrough.mp4',paths:['Z:/Fixture/video.mp4'],pinned:false,createdAt:2},
+        {id:'file-fixture',kind:'file',text:'Project notes.txt',paths:['Z:/Fixture/notes.txt'],missing:true,pinned:false,createdAt:1},
+      ]}; window.__emitNative('clipboard_history_changed',window.__clipboardFixture);
+    });
+    assert.deepEqual(await native.locator('.clipboard-filters button').allTextContents(),['All clips','Text','Links','Images','Videos','Files']);
+    assert.equal(await native.locator('.clipboard-row').count(),5);
+    await native.locator('.clipboard-row img').evaluate(img=>img.decode());
+    assert.equal(await native.locator('.clipboard-row img').evaluate(img=>img.naturalWidth),128);
+    assert.equal(await native.locator('.clipboard-row').first().getAttribute('data-kind'),'image');
+    await native.locator('.clipboard-list').evaluate(el=>el.scrollLeft=0);
+    await native.locator('#panel-tools').screenshot({path:path.join(root,`docs/screens/clipboard-${width}.png`)});
+    const before=await native.locator('.clipboard-list').evaluate(el=>el.scrollLeft);
+    await native.locator('.clipboard-list').hover({position:{x:100,y:60}}); await native.mouse.wheel(0,120); await native.waitForTimeout(100);
+    assert.ok(await native.locator('.clipboard-list').evaluate(el=>el.scrollLeft)>before);
+    assert.equal(await native.locator('.tab-panel.on').getAttribute('data-tab'),'tools');
+    await native.getByRole('button',{name:'Images',exact:true}).click();
+    assert.equal(await native.locator('.clipboard-row').count(),1);
+    await native.getByRole('button',{name:'Copy image',exact:true}).click();
+    assert.ok(await native.evaluate(()=>window.__calls.some(c=>c.command==='clipboard_copy'&&c.args.id==='image-fixture')));
+    await native.getByRole('button',{name:'Remove image',exact:true}).focus(); await native.keyboard.press('Enter');
+    assert.ok(await native.evaluate(()=>window.__calls.some(c=>c.command==='clipboard_delete'&&c.args.id==='image-fixture')));
+    await native.evaluate(()=>window.__emitNative('clipboard_history_changed',{enabled:true,items:[]}));
+    assert.equal(await native.locator('.page.clipboard .empty-line').textContent(),'No images copied yet');
+    await native.getByRole('button',{name:'All clips',exact:true}).click();
+    await native.evaluate(()=>window.__emitNative('clipboard_history_changed',window.__clipboardFixture));
+    await native.getByRole('button',{name:'Videos',exact:true}).click(); assert.equal(await native.locator('.clipboard-file-name').textContent(),'Island walkthrough.mp4');
+    await native.getByRole('button',{name:'Files',exact:true}).click();
+    assert.equal(await native.locator('.clipboard-missing').textContent(),'File no longer exists');
+    await native.evaluate(()=>window.__missingClipboardFile=true);
+    await native.locator('.clipboard-text').click(); assert.equal(await native.locator('.page.clipboard .live-note').textContent(),'File no longer exists');
+    await native.evaluate(()=>window.__missingClipboardFile=false);
+    await native.getByRole('button',{name:'All clips',exact:true}).click();
+  }
+  await native.getByRole('tab',{name:'Media',exact:true}).click();
+  await native.evaluate(()=>{window.__clipboardMutations=0;window.__clipObserver=new MutationObserver(records=>window.__clipboardMutations+=records.length);window.__clipObserver.observe(document.querySelector('.clipboard-list'),{subtree:true,childList:true,attributes:true});window.__emitNative('clipboard_history_changed',{enabled:true,items:[{id:'clip',text:'Hidden fixture',pinned:false,createdAt:1}]});});
+  await native.waitForTimeout(30); assert.equal(await native.evaluate(()=>window.__clipboardMutations),0);
+  await native.evaluate(()=>window.__clipObserver.disconnect());
+  await native.getByRole('tab',{name:'Tools',exact:true}).click();
+  await native.getByRole('tab',{name:'Clipboard',exact:true}).click();
   await setLive({openWidth:500});
   await native.locator('.clipboard-text').focus();
   await native.keyboard.press('ArrowRight');

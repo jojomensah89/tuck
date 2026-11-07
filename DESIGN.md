@@ -145,10 +145,10 @@ Activities combines notification previews and access. About supplies exact allow
 
 Captures are browser fixtures, not live account readings or native hardware verification. Native focus/fullscreen interactions require manual Windows acceptance testing.
 
-## Clipboard card implementation (in progress)
+## Clipboard cards
 
-Tools > Clipboard uses a 32px category row above equal 128px cards, separated by 8px. Cards remain newest first, including pinned clips. All clips remains available; populated categories appear beside it. A selected category remains reachable after its last item is removed. Category buttons expose pressed state. The row scrolls horizontally; vertical wheel input follows the shared gesture/edge rules. Remove and pin occupy 32px targets, appear on hover/focus, and stay in the keyboard order; pinned state stays visible.
+Tools > Clipboard uses a 32px category row above equal 128px cards, separated by 8px. Cards remain newest first, including pinned clips. All clips remains available; populated categories appear beside it. Only categories containing items appear; a filtered empty state remains until All clips is selected. Category buttons expose pressed state. The row scrolls horizontally; vertical wheel input follows the shared gesture/edge rules. Remove and pin occupy 32px targets, appear on hover/focus, and stay in the keyboard order; pinned state stays visible.
 
 Fixed type strips: text #30d158, link #64d2ff, image #ff9f0a, video #bf8af7, file #a1a1a6. These colours identify types only; the black island and raised card surfaces remain neutral. No gradients, glows or shadows.
 
-Native image/file capture and persistence are still pending; this section describes the card UI, not completed native support.
+Image cards fill with a real, once-generated thumbnail (at most 128px per side and 96 KiB encoded); full bitmap data never crosses IPC. Videos and files show their name and the existing video/folder line icons, plus a missing-file message when applicable. Native history holds full bitmaps in memory, with image sidecars written only when Keep after restart is on. Images are limited to 8192px per side and 32 MiB decoded; unpinned images evict oldest first under the image budget. All stored clipboard data is capped at 256 MiB including metadata. Turning history off clears all entries and stored media.

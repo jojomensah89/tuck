@@ -422,3 +422,11 @@
   padding: var(--s-1) var(--s-2);
   min-width: 0;
 }
+
+.clipboard-text:has(img) { padding: 0; }
+.clipboard-text img { width: 100%; height: 100%; display: block; object-fit: cover; }
+.clipboard-row[data-kind="image"] .clipboard-type { background: var(--surface); border-radius: var(--r-xs); padding: 0 var(--s-1); color: var(--ink); }
+.clipboard-file-icon { display: block; margin-bottom: var(--s-2); }
+.clipboard-file-icon svg { width: var(--i-lg); height: var(--i-lg); }
+.clipboard-file-name { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; }
+.clipboard-missing { display: block; font-size: var(--t-xs); color: var(--warn-ink); margin-top: var(--s-1); }

@@ -38,6 +38,7 @@ export interface LyricsSnapshot {
 export interface TelemetrySnapshot {
   sampledAt: number; cpuPct: number | null; ramUsedBytes: number | null; ramTotalBytes: number | null;
   gpus: { id: string; name: string; usedPct: number | null; dedicatedUsedBytes?: number | null; dedicatedTotalBytes?: number | null }[];
+  networkDownBps?: number | null; networkUpBps?: number | null;
   stale?: boolean;
 }
 export interface DictationSnapshot {
@@ -73,8 +74,8 @@ export function normalizeDictation(value: unknown): DictationSnapshot {
 }
 export function normalizeTelemetry(value: unknown): TelemetrySnapshot {
   if (value && typeof value === 'object' && 'sampledAt' in value) return value as TelemetrySnapshot;
-  const data = value as { sampleTimeMs: number; status: string; cpu: {usagePercent: number} | null; ram: {usedBytes: number; totalBytes: number} | null; gpus: { name: string; usagePercent: number | null }[] };
-  return { sampledAt: data.sampleTimeMs, cpuPct: data.cpu?.usagePercent ?? null, ramUsedBytes: data.ram?.usedBytes ?? null, ramTotalBytes: data.ram?.totalBytes ?? null,
+  const data = value as { networkDownBps?: number | null; networkUpBps?: number | null; sampleTimeMs: number; status: string; cpu: {usagePercent: number} | null; ram: {usedBytes: number; totalBytes: number} | null; gpus: { name: string; usagePercent: number | null }[] };
+  return { networkDownBps: data.networkDownBps, networkUpBps: data.networkUpBps, sampledAt: data.sampleTimeMs, cpuPct: data.cpu?.usagePercent ?? null, ramUsedBytes: data.ram?.usedBytes ?? null, ramTotalBytes: data.ram?.totalBytes ?? null,
     stale: data.status === 'stale' || data.status === 'unavailable',
     gpus: (data.gpus || []).map((gpu, index) => ({ id: `${index}:${gpu.name}`, name: gpu.name, usedPct: gpu.usagePercent ?? null })) };
 }

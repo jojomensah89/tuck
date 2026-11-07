@@ -18,10 +18,8 @@ Source: supplied notch-island-build-guide.md. User confirmed on 2026-11-02: spec
 | Today clock/date, battery/AC, charging, low and unknown states | UI + Native / PRs 1 and 3 | Power parsing tests and native smoke |
 | Arrows, dots, wheel and keyboard navigation; accessible seek and hidden-layer handling | UI / PR 1 | Rendered interaction smoke |
 | Tray Open island, Settings and Quit; keyboard focus entry | Native / PR 3 | Native smoke |
-| Separate settings window; persistent budgets and style; opt-in startup | UI + Native / PRs 1 and 3 | Settings smoke and autostart native check |
-| Claude status-line limits, stale flags, UTC API costs, budgets and reset countdowns | Usage / PR 2 | Parser/cache tests and verified official schema |
-| Write-only Credential Manager keys, explicit removal, redacted errors | Usage + UI / PRs 1 and 2 | Allowlist/redaction tests and settings failure smoke |
-| ChatGPT manual rolling message estimate, configured cap/window, expiry, clear log | UI / PR 1 | Real module tests including corrupt storage and seven-day window |
+| Separate settings window; persistent style; opt-in startup | UI + Native / PRs 1 and 3 | Settings smoke and autostart native check |
+| Per-provider Claude and Codex limits, stale flags and reset countdowns | Usage / PR 2 | Parser/cache tests and verified official schema |
 | Priority activity registry, timer, stopwatch and Pomodoro | UI / PR 1 | Timer tests and rendered layout/control smoke |
 | Notification previews, permission request and unsupported access state | PR 5, integration PR 4 | WinRT compile; permission/native smoke with app identity constraints recorded |
 | Screen snip (Windows screen clip URI) | Native | Allowlisted command and mocked transport smoke; real desktop launch requires manual verification |

@@ -20,6 +20,8 @@ const WAVE_FAR = '<path d="M14.5 5.25a6.75 6.75 0 0 1 0 9.5"/>';
 const PAUSE = '<rect class="f" x="5.25" y="4.5" width="3" height="11" rx="1"/><rect class="f" x="11.75" y="4.5" width="3" height="11" rx="1"/>';
 
 export const SVG_ICONS = {
+  download: ico('<path d="M10 4v12m-5-5 5 5 5-5"/>'),
+  upload: ico('<path d="M10 16V4m-5 5 5-5 5 5"/>'),
   bolt: ico('<path class="f" d="M11 2.75 4.75 11H10l-1 6.25L15.25 9H10z"/>', 'bolt'),
   lyrics: ico('<path d="M4.75 3.75h10.5a1.5 1.5 0 0 1 1.5 1.5v7a1.5 1.5 0 0 1-1.5 1.5H9.5l-3.75 3v-3h-1a1.5 1.5 0 0 1-1.5-1.5v-7a1.5 1.5 0 0 1 1.5-1.5z"/><path d="M6.75 7.25h6.5M6.75 10.25h4"/>', 'lyrics-ico'),
   note: ico('<path d="M7.75 14.5V4.75l8.5-2v9.75"/><circle cx="5.75" cy="14.5" r="2"/><circle cx="14.25" cy="12.5" r="2"/>'),

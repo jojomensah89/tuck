@@ -31,35 +31,94 @@ pub fn snapshot() -> Vec<Meter> {
     }
     METERS.lock().unwrap_or_else(|p| p.into_inner()).clone()
 }
-#[tauri::command]
-pub fn installed_usage_enabled() -> bool {
-    ENABLED.load(Ordering::Relaxed)
+#[derive(serde::Serialize, serde::Deserialize, Default, Clone, Copy)]
+#[serde(default)]
+pub struct Preferences {
+    pub claude: bool,
+    pub codex: bool,
+}
+static PREFERENCES: Mutex<Preferences> = Mutex::new(Preferences {
+    claude: false,
+    codex: false,
+});
+pub fn provider_enabled(name: &str) -> bool {
+    let p = PREFERENCES.lock().unwrap_or_else(|p| p.into_inner());
+    match name {
+        "claude" => p.claude,
+        "codex" => p.codex,
+        _ => false,
+    }
+}
+fn migrate_preferences(bytes: &[u8]) -> Preferences {
+    if bytes == b"true" {
+        Preferences {
+            claude: true,
+            codex: true,
+        }
+    } else {
+        serde_json::from_slice(bytes).unwrap_or_default()
+    }
+}
+#[derive(serde::Serialize)]
+pub struct ProviderSetting {
+    provider: String,
+    installed: bool,
+    enabled: bool,
 }
 #[tauri::command]
-pub fn set_installed_usage_enabled(window: WebviewWindow, enabled: bool) -> Result<(), String> {
+pub fn installed_usage_providers() -> Vec<ProviderSetting> {
+    ["claude", "codex"]
+        .into_iter()
+        .map(|name| ProviderSetting {
+            provider: name.into(),
+            installed: executable(name).is_ok(),
+            enabled: provider_enabled(name),
+        })
+        .collect()
+}
+#[tauri::command]
+pub fn set_usage_provider(
+    window: WebviewWindow,
+    provider: String,
+    enabled: bool,
+) -> Result<(), String> {
     if window.label() != "settings" {
         return Err("Change usage sources in settings".into());
     }
+    if !["claude", "codex"].contains(&provider.as_str()) {
+        return Err("Unsupported provider".into());
+    }
+    if enabled && executable(&provider).is_err() {
+        return Err("App not found".into());
+    }
     let path = SETTINGS_PATH.get().ok_or("Usage settings unavailable")?;
+    let mut prefs = PREFERENCES.lock().unwrap_or_else(|p| p.into_inner());
+    let mut next = *prefs;
+    if provider == "claude" {
+        next.claude = enabled;
+    } else {
+        next.codex = enabled;
+    }
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|_| "Could not save usage settings")?;
     }
     std::fs::write(
         path,
-        if enabled {
-            b"true".as_slice()
-        } else {
-            b"false".as_slice()
-        },
+        serde_json::to_vec(&next).map_err(|_| "Could not save usage settings")?,
     )
     .map_err(|_| "Could not save usage settings")?;
-    let mut cache = METERS.lock().unwrap_or_else(|p| p.into_inner());
+    *prefs = next;
     EPOCH.fetch_add(1, Ordering::SeqCst);
-    ENABLED.store(enabled, Ordering::SeqCst);
+    ENABLED.store(next.claude || next.codex, Ordering::SeqCst);
+    METERS
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .retain(|m| m.provider != provider || enabled);
+    drop(prefs);
     request_refresh();
-    if !enabled {
-        cache.clear();
-    }
+    let _ = window
+        .app_handle()
+        .emit("usage", crate::usage::current_snapshot());
     Ok(())
 }
 #[tauri::command]
@@ -240,6 +299,7 @@ struct Client {
     messages: mpsc::Receiver<Result<Value, String>>,
     reader: Option<std::thread::JoinHandle<()>>,
     deadline: Instant,
+    epoch: u64,
 }
 impl Drop for Client {
     fn drop(&mut self) {
@@ -267,13 +327,15 @@ fn executable(name: &str) -> Result<PathBuf, String> {
                 .map(|dir| dir.join(format!("{name}.exe"))),
         );
     }
-    paths
-        .into_iter()
-        .find(|path| path.is_file())
+    detected_executable(paths)
         .ok_or_else(|| format!("Install {name} CLI and sign in before enabling its usage meter"))
+}
+fn detected_executable(paths: Vec<PathBuf>) -> Option<PathBuf> {
+    paths.into_iter().find(|path| path.is_file())
 }
 impl Client {
     fn start(name: &str) -> Result<Self, String> {
+        let epoch = EPOCH.load(Ordering::SeqCst);
         let path = executable(name)?;
         let mut command = Command::new(path);
         if name == "codex" {
@@ -351,9 +413,13 @@ impl Client {
             messages,
             reader: Some(reader),
             deadline: Instant::now() + Duration::from_secs(25),
+            epoch,
         })
     }
     fn send(&mut self, value: &Value) -> Result<(), String> {
+        if self.epoch != EPOCH.load(Ordering::SeqCst) {
+            return Err("Usage request cancelled".into());
+        }
         let mut bytes = serde_json::to_vec(value).map_err(|_| "Invalid control request")?;
         bytes.push(b'\n');
         self.stdin
@@ -378,10 +444,17 @@ impl Client {
             let remaining = request_deadline
                 .checked_duration_since(Instant::now())
                 .ok_or("Installed client usage request timed out")?;
-            let value = self
+            if self.epoch != EPOCH.load(Ordering::SeqCst) {
+                return Err("Usage request cancelled".into());
+            }
+            let value = match self
                 .messages
-                .recv_timeout(remaining)
-                .map_err(|_| "Installed client usage request timed out")??;
+                .recv_timeout(remaining.min(Duration::from_millis(50)))
+            {
+                Ok(value) => value?,
+                Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(_) => return Err("Client output closed".into()),
+            };
             if claude {
                 if value["type"] == "control_response"
                     && value["response"]["request_id"] == request_id
@@ -453,10 +526,22 @@ fn probe(name: &str) -> Result<Vec<Meter>, ProbeError> {
 }
 pub fn start(app: AppHandle) {
     if let Ok(dir) = app.path().app_data_dir() {
-        let path = dir.join("installed-usage-enabled.json");
-        if let Ok(bytes) = std::fs::read(&path) {
-            ENABLED.store(bytes == b"true", Ordering::Relaxed);
-        }
+        let path = dir.join("usage-providers.json");
+        let prefs = match std::fs::read(&path) {
+            Ok(bytes) => migrate_preferences(&bytes),
+            Err(_) => {
+                let prefs = std::fs::read(dir.join("installed-usage-enabled.json"))
+                    .map(|b| migrate_preferences(&b))
+                    .unwrap_or_default();
+                let _ = std::fs::create_dir_all(&dir);
+                if let Ok(bytes) = serde_json::to_vec(&prefs) {
+                    let _ = std::fs::write(&path, bytes);
+                }
+                prefs
+            }
+        };
+        *PREFERENCES.lock().unwrap_or_else(|p| p.into_inner()) = prefs;
+        ENABLED.store(prefs.claude || prefs.codex, Ordering::Relaxed);
         let _ = SETTINGS_PATH.set(path);
     }
     std::thread::spawn(move || {
@@ -473,6 +558,9 @@ pub fn start(app: AppHandle) {
                 let previous = METERS.lock().unwrap_or_else(|p| p.into_inner()).clone();
                 let mut meters = Vec::new();
                 for name in ["claude", "codex"] {
+                    if !provider_enabled(name) || executable(name).is_err() {
+                        continue;
+                    }
                     match probe(name) {
                         Ok(values) => meters.extend(values),
                         Err(ProbeError::NotConnected) => {}
@@ -515,6 +603,35 @@ pub fn start(app: AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn preference_migration_and_independent_opt_ins() {
+        let old = migrate_preferences(b"true");
+        assert!(old.claude && old.codex);
+        for bytes in [b"false".as_slice(), b"invalid", b"{}"] {
+            let p = migrate_preferences(bytes);
+            assert!(!p.claude && !p.codex);
+        }
+        let p = migrate_preferences(br#"{"claude":false,"codex":true}"#);
+        assert!(!p.claude && p.codex);
+    }
+    #[test]
+    fn detection_only_checks_executable_candidates() {
+        let dir = std::env::temp_dir().join(format!("tuck-detect-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let missing = dir.join("missing.exe");
+        let found = dir.join("fixture.exe");
+        assert_eq!(
+            detected_executable(vec![missing.clone(), dir.clone()]),
+            None
+        );
+        std::fs::write(&found, b"fixture, never executed").unwrap();
+        assert_eq!(
+            detected_executable(vec![missing, found.clone()]),
+            Some(found.clone())
+        );
+        std::fs::remove_file(found).unwrap();
+        std::fs::remove_dir(dir).unwrap();
+    }
     #[test]
     fn codex_only_subscription_and_valid_quota_fields() {
         let account = json!({"account":{"type":"chatgpt","email":"PRIVATE"}});

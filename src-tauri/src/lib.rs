@@ -48,7 +48,7 @@ pub fn run() {
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             let handle = app.clone();
             tauri::async_runtime::spawn(async move {
-                if let Err(error) = system::open_settings(&handle) {
+                if let Err(error) = system::open_settings_cmd(handle, None).await {
                     eprintln!("Single-instance settings focus: {error}");
                 }
             });

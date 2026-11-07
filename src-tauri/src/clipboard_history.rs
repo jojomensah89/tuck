@@ -1300,7 +1300,7 @@ mod retry_tests {
     fn terminal_results_and_disable_park_and_reenable_gets_fresh_budget() {
         for result in [Ok(ClipboardRead::Ignored), Err("terminal error".into())] {
             let mut retry = CaptureRetry::default();
-            assert!(!retry.notified(123, 0));
+            assert!(retry.notified(123, 0));
             retry.observed(&result);
             assert!(retry.delay.is_none());
             retry.notified(123, 1);

@@ -1,3 +1,5 @@
+> Historical plan or verification record. This is not the current feature list or setup guide. Some described features are being retired. Start with the [README](../README.md).
+
 # Live island phase two
 
 User approved development after the grill-me interview. Scope: Windows app only. Preserve existing working v1 features; do not add water reminders.

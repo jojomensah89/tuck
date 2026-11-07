@@ -1,3 +1,5 @@
+> Historical plan or verification record. This is not the current feature list or setup guide. Some described features are being retired. Start with the [README](../README.md).
+
 # Phase two integration verification
 
 Integration is in draft PR 6; main has not been changed. PR 7 supplies the original native media packet. Coordinator recovered the interrupted dictation/clipboard worker's files and completed native registration, compilation, frontend adapters, GPU counters, UI Automation target checks, WASAPI loopback, system peeks and build prerequisites on the integration branch.

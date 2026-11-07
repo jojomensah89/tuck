@@ -1,8 +1,11 @@
 [package]
 name = "tuck"
 version = "0.2.1"
-description = "A Tauri App"
-authors = ["you"]
+description = "A desktop island for Windows media controls, dictation, and local tools."
+authors = ["Tuck contributors"]
+license = "MIT"
+repository = "https://github.com/jojomensah89/tuck"
+homepage = "https://github.com/jojomensah89/tuck"
 edition = "2021"
 
 [lib]

@@ -1,5 +1,5 @@
 //! Read-only quota probes through installed client control protocols.
-//! No prompts, turns, login requests, credential reads or tool approvals.
+//! No prompts, turns, login requests or tool approvals. Antigravity is the explicit credential-file exception.
 use crate::usage::Meter;
 use serde_json::{json, Value};
 use std::{
@@ -36,16 +36,19 @@ pub fn snapshot() -> Vec<Meter> {
 pub struct Preferences {
     pub claude: bool,
     pub codex: bool,
+    pub antigravity: bool,
 }
 static PREFERENCES: Mutex<Preferences> = Mutex::new(Preferences {
     claude: false,
     codex: false,
+    antigravity: false,
 });
 pub fn provider_enabled(name: &str) -> bool {
     let p = PREFERENCES.lock().unwrap_or_else(|p| p.into_inner());
     match name {
         "claude" => p.claude,
         "codex" => p.codex,
+        "antigravity" => p.antigravity,
         _ => false,
     }
 }
@@ -54,6 +57,7 @@ fn migrate_preferences(bytes: &[u8]) -> Preferences {
         Preferences {
             claude: true,
             codex: true,
+            antigravity: false,
         }
     } else {
         serde_json::from_slice(bytes).unwrap_or_default()
@@ -67,11 +71,11 @@ pub struct ProviderSetting {
 }
 #[tauri::command]
 pub fn installed_usage_providers() -> Vec<ProviderSetting> {
-    ["claude", "codex"]
+    ["claude", "codex", "antigravity"]
         .into_iter()
         .map(|name| ProviderSetting {
             provider: name.into(),
-            installed: executable(name).is_ok(),
+            installed: detected(name),
             enabled: provider_enabled(name),
         })
         .collect()
@@ -85,10 +89,10 @@ pub fn set_usage_provider(
     if window.label() != "settings" {
         return Err("Change usage sources in settings".into());
     }
-    if !["claude", "codex"].contains(&provider.as_str()) {
+    if !["claude", "codex", "antigravity"].contains(&provider.as_str()) {
         return Err("Unsupported provider".into());
     }
-    if enabled && executable(&provider).is_err() {
+    if enabled && !detected(&provider) {
         return Err("App not found".into());
     }
     let path = SETTINGS_PATH.get().ok_or("Usage settings unavailable")?;
@@ -96,8 +100,10 @@ pub fn set_usage_provider(
     let mut next = *prefs;
     if provider == "claude" {
         next.claude = enabled;
-    } else {
+    } else if provider == "codex" {
         next.codex = enabled;
+    } else {
+        next.antigravity = enabled;
     }
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|_| "Could not save usage settings")?;
@@ -109,7 +115,10 @@ pub fn set_usage_provider(
     .map_err(|_| "Could not save usage settings")?;
     *prefs = next;
     EPOCH.fetch_add(1, Ordering::SeqCst);
-    ENABLED.store(next.claude || next.codex, Ordering::SeqCst);
+    ENABLED.store(
+        next.claude || next.codex || next.antigravity,
+        Ordering::SeqCst,
+    );
     METERS
         .lock()
         .unwrap_or_else(|p| p.into_inner())
@@ -164,6 +173,8 @@ fn after_failed_probe(provider: &str, previous: &[Meter], error: &str) -> Vec<Me
             provider: provider.into(),
             label: if provider == "codex" {
                 "ChatGPT / Codex"
+            } else if provider == "antigravity" {
+                "Antigravity"
             } else {
                 "Claude Code"
             }
@@ -498,7 +509,21 @@ fn claude_usage(value: &Value) -> Result<Vec<Meter>, ProbeError> {
     }
     Ok(parse_claude(value)?)
 }
+fn detected(name: &str) -> bool {
+    if name == "antigravity" {
+        crate::antigravity_usage::installed()
+    } else {
+        executable(name).is_ok()
+    }
+}
 fn probe(name: &str) -> Result<Vec<Meter>, ProbeError> {
+    if name == "antigravity" {
+        let epoch = EPOCH.load(Ordering::SeqCst);
+        return crate::antigravity_usage::probe(|| {
+            provider_enabled(name) && epoch == EPOCH.load(Ordering::SeqCst)
+        })
+        .map_err(|e| ProbeError::Failed(e.into()));
+    }
     executable(name).map_err(|_| ProbeError::NotConnected)?;
     let mut client = Client::start(name)?;
     if name == "codex" {
@@ -541,7 +566,10 @@ pub fn start(app: AppHandle) {
             }
         };
         *PREFERENCES.lock().unwrap_or_else(|p| p.into_inner()) = prefs;
-        ENABLED.store(prefs.claude || prefs.codex, Ordering::Relaxed);
+        ENABLED.store(
+            prefs.claude || prefs.codex || prefs.antigravity,
+            Ordering::Relaxed,
+        );
         let _ = SETTINGS_PATH.set(path);
     }
     std::thread::spawn(move || {
@@ -557,8 +585,8 @@ pub fn start(app: AppHandle) {
                 let epoch = EPOCH.load(Ordering::SeqCst);
                 let previous = METERS.lock().unwrap_or_else(|p| p.into_inner()).clone();
                 let mut meters = Vec::new();
-                for name in ["claude", "codex"] {
-                    if !provider_enabled(name) || executable(name).is_err() {
+                for name in ["claude", "codex", "antigravity"] {
+                    if !provider_enabled(name) || (name != "antigravity" && !detected(name)) {
                         continue;
                     }
                     match probe(name) {

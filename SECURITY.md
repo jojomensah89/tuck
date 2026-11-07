@@ -8,7 +8,7 @@ Only the latest published release receives security fixes. Upgrade before report
 
 Use [GitHub private vulnerability reporting](https://github.com/jojomensah89/tuck/security/advisories/new). If the form is unavailable, ask the maintainer in an issue to enable private reporting without describing the vulnerability. Do not post exploit details, credentials, private copied text, or signing material publicly.
 
-In scope: Tuck code, installer and updater integrity, unsafe local file access, permission boundaries, and dependency vulnerabilities reachable through Tuck. Provider account problems and vulnerabilities in Windows or third-party services belong with their owners.
+In scope: the opt-in Antigravity ACP sign-in file read, secret lifetime, host restrictions and cancellation; Tuck code, installer and updater integrity, unsafe local file access, permission boundaries, and dependency vulnerabilities reachable through Tuck. Provider account problems and vulnerabilities in Windows or third-party services belong with their owners.
 
 ## Updates
 

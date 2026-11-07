@@ -8,6 +8,7 @@ pub mod lifecycle;
 pub mod lyrics;
 mod lyrics_match;
 pub mod media;
+mod network_rates;
 pub mod osd_flyout;
 mod service_preferences;
 pub mod system;
@@ -105,8 +106,8 @@ pub fn run() {
             telemetry::telemetry_history,
             media::media_sessions,
             media::media_select_session,
-            installed_usage::installed_usage_enabled,
-            installed_usage::set_installed_usage_enabled,
+            installed_usage::installed_usage_providers,
+            installed_usage::set_usage_provider,
             installed_usage::refresh_installed_usage,
             extensions::extension_snapshot,
             extensions::extension_settings,

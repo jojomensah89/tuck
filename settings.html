@@ -325,62 +325,17 @@
           <div class="group">
             <h2>Installed apps</h2>
             <div class="panel">
-              <div class="set-row" id="row-installedUsage" data-keywords="claude code codex chatgpt plan limits installed">
-                <div class="row-text">
-                  <label class="row-title" for="installedUsage">Read limits from Claude Code and Codex</label>
-                  <p class="row-desc">Read-only requests to the signed-in apps. No prompts, no token copying, no login changes. Codex limits are your ChatGPT plan's Codex usage.</p>
-                </div>
-                <input id="installedUsage" class="switch" type="checkbox" role="switch" />
-              </div>
+              <div id="providerSwitches"></div>
+              <p class="panel-note" id="providersEmpty">No supported apps found</p>
               <div class="set-row" id="row-refreshInstalledUsage" data-keywords="refresh limits update">
                 <div class="row-text">
                   <span class="row-title">Refresh limits</span>
-                  <p class="row-desc">Limits also refresh every five minutes.</p>
+                  <p class="row-desc">Limits also refresh every five minutes</p>
                 </div>
                 <button class="button" id="refreshInstalledUsage" type="button">Refresh now</button>
               </div>
-              <div class="set-row" id="row-claudeStatus" data-keywords="claude subscription pro max status line session weekly">
-                <div class="row-text">
-                  <span class="row-title">Claude Pro and Max</span>
-                  <p class="row-desc">Session and weekly limits come from the Claude Code status line file, <code>%APPDATA%\Tuck\claude-status.json</code>. Marked stale after 10 minutes without an update.</p>
-                </div>
-              </div>
+              <div class="set-row" id="claudeSetup" hidden><span class="row-title">Claude status-line setup</span><button class="button" id="copyClaudeSetup" type="button">Copy setup link</button></div>
               <p class="group-status" id="installedUsageStatus" role="status"></p>
-            </div>
-          </div>
-          <div class="group">
-            <h2>ChatGPT message estimate</h2>
-            <div class="panel">
-              <p class="panel-note">ChatGPT has no usage API for Plus and Pro. Tuck counts the messages you log and shows when the oldest one leaves the window.</p>
-              <div class="set-row" id="row-cCap" data-keywords="chatgpt cap messages limit estimate">
-                <div class="row-text">
-                  <label class="row-title" for="cCap">Message cap</label>
-                  <p class="row-desc">Messages allowed in one window.</p>
-                </div>
-                <span class="num-field"><input id="cCap" type="number" min="1" step="1" placeholder="80" inputmode="numeric" /><span class="unit">messages</span></span>
-              </div>
-              <div class="set-row" id="row-cHours" data-keywords="chatgpt window hours rolling estimate">
-                <div class="row-text">
-                  <label class="row-title" for="cHours">Rolling window</label>
-                  <p class="row-desc">How long each message counts.</p>
-                </div>
-                <span class="num-field"><input id="cHours" type="number" min="1" step="any" placeholder="3" inputmode="decimal" /><span class="unit">hours</span></span>
-              </div>
-              <div class="set-row" id="row-cLabel" data-keywords="chatgpt label name meter">
-                <div class="row-text">
-                  <label class="row-title" for="cLabel">Meter label</label>
-                  <p class="row-desc">Name shown on the usage meter.</p>
-                </div>
-                <input class="text-field" id="cLabel" type="text" placeholder="ChatGPT (estimate)" />
-              </div>
-              <div class="set-row" id="row-clearChatLog" data-keywords="chatgpt clear reset log messages delete">
-                <div class="row-text">
-                  <span class="row-title">Message log</span>
-                  <p class="row-desc">Clearing resets the estimate to zero messages.</p>
-                </div>
-                <button class="button danger" id="clearChatLog" type="button">Clear log</button>
-              </div>
-              <p class="group-status" id="chatStatus" role="status"></p>
             </div>
           </div>
         </section>
@@ -425,9 +380,9 @@
               <div class="set-row" id="row-privacy-installed" data-keywords="privacy claude code codex installed">
                 <div class="row-text">
                   <span class="row-title">Installed app limits</span>
-                  <p class="row-desc">Read from Claude Code and Codex on this computer.</p>
+                  <p class="row-desc">Each enabled client may contact its provider for limits</p>
                 </div>
-                <a class="mirror" href="#usage" data-mirror="installedUsage" data-focus="installedUsage"><span class="mirror-state"></span><svg class="i" aria-hidden="true"><use href="#i-chevron" /></svg></a>
+                <a class="mirror" href="#usage" data-focus="providerSwitches"><span>Manage</span><svg class="i" aria-hidden="true"><use href="#i-chevron" /></svg></a>
               </div>
 
             </div>

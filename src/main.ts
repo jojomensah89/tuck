@@ -45,7 +45,6 @@ import {
   mergeMeters,
   connectedUsageMeters,
   checkResets,
-  logChatGPTMessage,
 } from './usage.js';
 import type {
   IslandState,
@@ -1105,10 +1104,7 @@ function announceReset(meter: Meter): void { showAnnouncement(`${meter.label} re
 
 function renderUsage(): void {
   const meters = connectedUsageMeters(mergeMeters(rawMeters));
-  const providers = renderUsageRings($('uList'), meters, () => {
-    logChatGPTMessage();
-    renderUsage();
-  });
+  const providers = renderUsageRings($('uList'), meters);
   rail.setSectionVisible('usage', providers > 0);
 }
 

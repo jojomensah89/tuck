@@ -3,7 +3,6 @@ import { SVG_ICONS } from './icons.js';
 import { islandModelLine } from './dictation-models.js';
 import { DictationUpdates, nativeAction, nativeService, normalizeClipboard, normalizeDictation, normalizeTelemetry, type ClipboardSnapshot, type DictationSnapshot, type LyricsSnapshot, type MediaSession, type TelemetrySnapshot } from './live-services.js';
 import { historyPath, heldLyric, lyricIndex, lyricOffsetFor, matchesLyricRequest, MAX_LYRIC_OFFSET_MS, measuredPercent, newRequestId, parseLrc, readPreferences, TelemetryGate, withLyricOffset, writePreferences, type LyricLine } from './live-state.js';
-import { formatClockTime } from './time-format.js';
 import { createRing, usageTone, type Ring } from './rings.js';
 import type { MediaState } from './types.js';
 
@@ -205,10 +204,22 @@ export function mountLivePages(onLayout: () => void): {
 
   // System stats: one ring per meter with the value inside, its name and a sparkline under it
   const stats = makePage('stats', 'System usage');
-  // The switch names this part; its status dot sits in the row where the part's actions go
-  const statsStatus = statusDot(); statsStatus.set('idle', 'Waiting for native samples');
-  statsStatus.el.dataset.sectionActions = 'stats'; stats.append(statsStatus.el);
   const statRows = node('div', 'stat-rings'); stats.append(statRows);
+  const rates = node('div', 'network-rates');
+  const down = node('span', 'network-rate'); const up = node('span', 'network-rate');
+  const rateValue = (parent: HTMLElement, upload: boolean) => {
+    parent.innerHTML = upload ? SVG_ICONS.upload : SVG_ICONS.download;
+    const value = node('span', '', '\u2013 MB/s'); parent.append(value); return value;
+  };
+  const downValue = rateValue(down, false); const upValue = rateValue(up, true);
+  rates.append(down, up); stats.append(rates);
+  function setRates(d: number | null | undefined, u: number | null | undefined): void {
+    for (const [value, parent, number, label] of [[downValue, down, d, 'Download'], [upValue, up, u, 'Upload']] as const) {
+      const valid = typeof number === 'number' && Number.isFinite(number) && number >= 0;
+      value.textContent = valid ? `${(number / 1000000).toFixed(1)} MB/s` : '\u2013 MB/s';
+      parent.dataset.unavailable = String(!valid); parent.setAttribute('aria-label', `${label} ${value.textContent}`);
+    }
+  }
   const histories = new Map<string, (number | null)[]>();
   const telemetryGate = new TelemetryGate();
   const rowNodes = new Map<string, { row: HTMLElement; face: HTMLElement; ring: Ring; value: HTMLElement; path: SVGPathElement; name: string; detail: string }>();
@@ -246,7 +257,7 @@ export function mountLivePages(onLayout: () => void): {
     if (!telemetryGate.accept(sampled)) return;
     const stale = data.stale || !sampled || Date.now() - sampled > 10000;
     if (stale) { invalidateTelemetry('Stale, warming up'); return; }
-    statsStatus.set('live', `Live, sampled ${formatClockTime(sampled)}`);
+    setRates(data.networkDownBps, data.networkUpBps);
     metric('cpu', 'CPU', measuredPercent(data.cpuPct));
     const validRam = typeof data.ramUsedBytes === 'number' && typeof data.ramTotalBytes === 'number' && data.ramTotalBytes > 0 && data.ramUsedBytes >= 0;
     metric('ram', 'Memory', validRam ? measuredPercent(data.ramUsedBytes! / data.ramTotalBytes! * 100) : null, validRam ? `${gb(data.ramUsedBytes!)} of ${gb(data.ramTotalBytes!)} GB` : '');
@@ -257,7 +268,8 @@ export function mountLivePages(onLayout: () => void): {
   }
   metric('cpu', 'CPU', null); metric('ram', 'Memory', null); metric('gpu-unknown', 'GPU', null);
   function invalidateTelemetry(label: string): void {
-    statsStatus.set(label.startsWith('Stale') ? 'idle' : 'warn', label);
+    setRates(null, null);
+    stats.title = label;
     for (const [id, view] of rowNodes) {
       paintMetric(view, null);
       const history = histories.get(id) || []; history.push(null); if (history.length > 45) history.shift();
@@ -406,14 +418,17 @@ export function mountLivePages(onLayout: () => void): {
     interval = undefined; sessionInterval = undefined;
     if (!visible()) return;
     if (mediaPage.closest('.tab-panel.on')) { void sessions(); sessionInterval = window.setInterval(() => { void sessions(); }, 5000); }
-    if (!stats.closest('.tab-panel.on')) return;
+    if (stats.inert || !stats.closest('.tab-panel.on')) return;
     void refreshTelemetry();
     interval = window.setInterval(() => {
-      if (stats.closest('.tab-panel.on')) void refreshTelemetry();
+      if (visible() && !stats.inert && stats.closest('.tab-panel.on')) void refreshTelemetry();
     }, 1000);
   };
+  const sectionObserver = new MutationObserver(syncTimers);
+  sectionObserver.observe(stats, {attributes: true, attributeFilter: ['inert']});
   window.addEventListener('tuck-visibility', syncTimers);
   window.addEventListener('pagehide', () => {
+    sectionObserver.disconnect();
     clearInterval(interval); clearInterval(sessionInterval);
     window.removeEventListener('tuck-visibility', syncTimers);
     unlisteners.forEach(unlisten => unlisten());

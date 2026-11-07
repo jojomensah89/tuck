@@ -43,13 +43,11 @@ const artwork = () => {
 
 const now = Math.round(Date.now() / 1000);
 const window5h = (id, provider, label, usedPct) => ({ id, provider, label, usedPct, spentUsd: null, resetsAt: now + 8130, source: 'official', stale: false, status: 'ok' });
-const fourProviders = [
+const quotaProviders = [
   window5h('claude-5h', 'claude', 'Claude session (5 h)', 42), window5h('claude-week', 'claude', 'Claude weekly', 18),
   window5h('codex-primary', 'codex', 'Codex 5 h', 72), window5h('codex-secondary', 'codex', 'Codex weekly', 9),
-  { id: 'anthropic-api', provider: 'anthropic-api', label: 'Claude API', usedPct: null, spentUsd: 12.4, resetsAt: now + 86400, source: 'api', stale: false, status: 'ok' },
-  { id: 'openai-api', provider: 'openai-api', label: 'OpenAI API', usedPct: null, spentUsd: 3.1, resetsAt: now + 86400, source: 'api', stale: false, status: 'ok' },
 ];
-const twoProviders = fourProviders.slice(0, 4);
+const twoProviders = quotaProviders.slice(0, 4);
 const shelf = [
   { id: 'a', name: 'Quarterly review notes.pdf', path: 'C:\\Fixture\\a.pdf', bytes: 2411724 },
   { id: 'b', name: 'A long file name that keeps going well past the width of the row.png', path: 'C:\\Fixture\\b.png', bytes: 845312 },
@@ -148,8 +146,8 @@ try {
     await tab('Usage');
     await part('AI');
     await shot('usage-ai-two');
-    await emit('usage', fourProviders);
-    await shot('usage-ai-four');
+    await emit('usage', quotaProviders);
+    await shot('usage-ai-two');
     await part('System');
     await emit('telemetry', { sampledAt: Date.now(), cpuPct: 43, ramUsedBytes: 8589934592, ramTotalBytes: 17179869184, gpus: [{ id: 'gpu0', name: 'Fixture GPU', usedPct: 12 }] });
     await shot('usage-system');

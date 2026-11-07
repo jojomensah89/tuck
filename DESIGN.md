@@ -92,7 +92,7 @@ Saved `lastTab` values from older versions (`media`, `today`, `tools`, `usage`) 
 
 Dictation: a status row (dot, one status line that may wrap to two for an error, and the model name), the live transcript filling the room left on a `--raise-subtle` surface, then cancel, a 56px record control and insert. Live words follow the newest line and the text can be selected. A missing model disables record, says so and swaps the model name for a Model settings link to that page of Settings.
 
-Files: one dashed drop target, the only dashed element in the product. On an empty shelf it fills the content area with a folder icon and "Drop files here"; with files it is a slim 32px strip above the list. Clicking it picks files. A drag over the island highlights it (`--raise` fill, ink text and border).
+Files: one dashed drop target, the only dashed element in the product. It's a filled `--raise` well with a dashed edge, so it reads as somewhere to put things. On an empty shelf it fills the content area with a plus in a pill and "Drop files here to keep them handy"; with files it is a slim 32px strip above the list. Clicking it picks files. A file dragged over the island turns the edge and icon green, lifts the icon slightly and changes the text to "Release to add".
 
 ## Motion
 

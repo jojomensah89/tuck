@@ -24,7 +24,7 @@ export function mountExtensions():void {
  // The tab rail moves the actions into the segmented row
  const actions=el('div');actions.dataset.sectionActions='extensions';
  // The one drop target: fills an empty shelf, a slim strip above a list
- const drop=button('',()=>invoke('shelf_pick'),'shelf-drop');drop.className='shelf-drop';drop.innerHTML=SVG_ICONS.folder+'<span>Drop files here</span>';drop.title='Pick files';drop.setAttribute('aria-label','Drop files here, or select to pick files');drop.dataset.noSwipe='';
+ const drop=button('',()=>invoke('shelf_pick'),'shelf-drop');drop.className='shelf-drop';drop.innerHTML=SVG_ICONS.addFiles+'<span class="drop-text">Drop files here to keep them handy</span>';drop.title='Pick files';drop.setAttribute('aria-label','Drop files here to keep them handy, or select to pick files');drop.dataset.noSwipe='';
  const body=el('div','','ext-body');status=el('p','','ext-status');status.setAttribute('role','status');
  page.append(actions,drop,body,status);container.append(page);
  render=()=>{
@@ -46,7 +46,7 @@ export function mountExtensions():void {
    (next??drop).focus();
   }
  };
- window.addEventListener('tuck-drop-active',event=>page.classList.toggle('drag-over',(event as CustomEvent).detail===true));
+ window.addEventListener('tuck-drop-active',event=>{const over=(event as CustomEvent).detail===true;page.classList.toggle('drag-over',over);drop.querySelector('.drop-text')!.textContent=over?'Release to add':'Drop files here to keep them handy';});
  render();
  if(isTauri()){
   void listen<ExtensionSnapshot>('extension-state',event=>{current=event.payload;render();}).catch(()=>{if(status)status.textContent='Could not subscribe to Windows state';});

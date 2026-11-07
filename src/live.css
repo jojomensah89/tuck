@@ -16,9 +16,7 @@
 /* ================= Media page additions ================= */
 
 .media-battery {
-  position: absolute;
-  top: 0;
-  right: 0;
+  flex-shrink: 0;
   display: inline-flex;
   align-items: center;
 }
@@ -52,6 +50,17 @@
   color: var(--accent);
 }
 
+/* No lyrics for this track: quiet, and its tooltip says why */
+.lyrics-toggle-btn[aria-disabled="true"],
+.lyrics-toggle-btn[aria-disabled="true"]:hover {
+  color: var(--ink-3);
+  cursor: default;
+}
+
+.lyrics-toggle-btn[aria-disabled="true"]:active {
+  transform: none;
+}
+
 .lyrics-toggle-btn svg {
   width: var(--i-md);
   height: var(--i-md);
@@ -71,11 +80,11 @@
   display: none;
 }
 
-.page.media.with-lyrics {
+.page.media.with-lyrics:not(.no-lyrics) {
   padding-right: calc(50% + var(--s-3));
 }
 
-.page.media.with-lyrics .lyrics-pane {
+.page.media.with-lyrics:not(.no-lyrics) .lyrics-pane {
   display: flex;
   position: absolute;
   top: 0;
@@ -194,28 +203,6 @@
   overflow: hidden;
 }
 
-.live-page h2 {
-  margin: 0;
-  font-size: var(--t-base);
-  font-weight: var(--w-strong);
-}
-
-.live-heading {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--s-2);
-  min-height: var(--hit);
-  flex-shrink: 0;
-}
-
-/* A heading with its status dot */
-.live-title {
-  display: flex;
-  align-items: center;
-  gap: var(--s-2);
-}
-
 .live-note {
   color: var(--ink-2);
   font-size: var(--t-xs);
@@ -245,13 +232,13 @@
 }
 
 .stat-face {
-  width: 56px;
-  height: 56px;
+  width: 72px;
+  height: 72px;
   margin-bottom: var(--s-1);
 }
 
 .stat-value {
-  font-size: var(--t-sm);
+  font-size: var(--t-base);
   font-weight: var(--w-medium);
   font-variant-numeric: tabular-nums;
 }
@@ -271,8 +258,8 @@
 }
 
 .stat-cell .spark {
-  width: 56px;
-  height: 16px;
+  width: 72px;
+  height: 20px;
   overflow: visible;
 }
 
@@ -285,44 +272,117 @@
   vector-effect: non-scaling-stroke;
 }
 
-.live-button {
-  min-height: var(--hit);
-  padding: var(--s-1) var(--s-3);
+/* ================= Dictation ================= */
+
+/* Status, then the transcript in all the room left, then the controls */
+.dictation-status {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  min-height: var(--hit-sm);
+  flex-shrink: 0;
+}
+
+.dictation-note {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  color: var(--ink);
+  font-size: var(--t-md);
+  line-height: var(--s-4);
+  /* An error can need a second line; the transcript gives up the room */
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+
+.dictation-model {
+  flex-shrink: 0;
+  max-width: 45%;
+  margin: 0;
+  color: var(--ink-2);
+  font-size: var(--t-xs);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dictation-model[hidden],
+.dictation-link[hidden] {
+  display: none;
+}
+
+.dictation-link {
+  flex-shrink: 0;
+  min-height: var(--hit-sm);
+  padding: 0 var(--s-3);
   border-radius: var(--r-md);
   background: var(--raise);
   font-size: var(--t-sm);
+  font-weight: var(--w-medium);
   transition:
     background var(--d-fast) var(--ease-out),
-    color var(--d-fast) var(--ease-out),
     transform var(--d-instant) var(--ease-out);
 }
 
-.live-button:hover {
+.dictation-link:hover {
   background: var(--raise-hover);
 }
 
-.live-button:active {
+.dictation-link:active {
   transform: scale(var(--press));
-}
-
-.live-actions {
-  display: flex;
-  gap: var(--s-1);
 }
 
 .transcript {
   flex: 1;
+  min-height: 0;
+  padding: var(--s-2) var(--s-3);
   overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+  border-radius: var(--r-md);
+  background: var(--raise-subtle);
   font-size: var(--t-base);
-  line-height: 1.4;
+  line-height: 20px;
   user-select: text;
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
   color: var(--ink);
 }
 
 .transcript.placeholder {
-  color: var(--ink-3);
+  display: grid;
+  place-items: center;
+  color: var(--ink-2);
+  font-size: var(--t-md);
+  user-select: none;
 }
+
+.dictation-controls {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s-6);
+  flex-shrink: 0;
+}
+
+.icon-btn.dictation-record {
+  width: 56px;
+  height: 56px;
+}
+
+.dictation-record svg.ico {
+  width: var(--i-lg);
+  height: var(--i-lg);
+}
+
+.icon-btn.dictation-record[aria-pressed="true"] {
+  background: var(--raise-active);
+}
+
+/* ================= Clipboard ================= */
+
 
 .clipboard-list {
   overflow-y: auto;
@@ -333,11 +393,15 @@
   gap: var(--s-half);
 }
 
+.clipboard-list:empty {
+  display: none;
+}
+
 /* Rows are tone steps, not ruled lines: the row lifts on hover */
 .clipboard-row {
   display: flex;
   align-items: center;
-  gap: var(--s-half);
+  gap: var(--s-1);
   border-radius: var(--r-md);
   padding-left: var(--s-2);
   transition: background var(--d-fast) var(--ease-out);
@@ -370,6 +434,8 @@
 
 /* Row actions stay quiet until the row is in use; a pinned pin always shows */
 .clipboard-row .row-action {
+  width: var(--hit-sm);
+  height: var(--hit-sm);
   color: var(--ink-3);
 }
 

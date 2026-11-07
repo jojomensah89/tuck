@@ -5,102 +5,62 @@
   gap: var(--s-2);
 }
 
-.ext-heading {
-  margin: 0;
-  font-size: var(--t-base);
-  font-weight: var(--w-medium);
-}
-
-.ext-button {
-  min-width: var(--hit);
-  min-height: var(--hit);
-  padding: var(--s-1) var(--s-2);
-  /* Literal colors: the island is always dark */
-  background: #1c1c1e;
-  color: #ffffff;
-  border-radius: var(--r-md);
-  font: inherit;
-  font-size: var(--t-xs);
-  cursor: pointer;
-  transition: background var(--d-fast) var(--ease-out), color var(--d-fast) var(--ease-out);
-}
-
-/* Views as icons on the left, the view's own actions on the right */
-.ext-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
+/* The product's one dashed element: it fills an empty shelf and is a slim strip above a list */
+.shelf-drop {
+  flex: 1;
+  width: 100%;
+  min-height: var(--hit-sm);
+  flex-direction: column;
   gap: var(--s-2);
-  flex-shrink: 0;
-}
-
-.ext-tabs,
-.ext-actions {
-  display: flex;
-  gap: var(--s-1);
-}
-
-.ext-tab {
-  position: relative;
-  width: var(--hit);
-  height: var(--hit);
-  border-radius: var(--r-md);
-  color: var(--ink-3);
+  border: 1px dashed var(--ink-3);
+  border-radius: var(--r-lg);
+  color: var(--ink-2);
+  font-size: var(--t-md);
   transition:
-    background var(--d-fast) var(--ease-out),
     color var(--d-fast) var(--ease-out),
+    background-color var(--d-fast) var(--ease-out),
+    border-color var(--d-fast) var(--ease-out),
     transform var(--d-instant) var(--ease-out);
 }
 
-.ext-tab:hover {
-  color: var(--ink-2);
-  background: var(--raise-subtle);
+.has-files .shelf-drop {
+  flex: 0 0 var(--hit-sm);
+  flex-direction: row;
+  border-radius: var(--r-md);
+  font-size: var(--t-sm);
 }
 
-.ext-tab:active {
-  transform: scale(var(--press));
+.has-files .shelf-drop svg.ico {
+  width: var(--i-sm);
+  height: var(--i-sm);
 }
 
-.ext-tab[aria-pressed=true] {
+.shelf-drop:hover {
+  color: var(--ink);
+  border-color: var(--ink-2);
+}
+
+.extensions.drag-over .shelf-drop {
   background: var(--raise);
   color: var(--ink);
+  border-color: var(--ink);
 }
 
-.ext-badge {
-  position: absolute;
-  top: 2px;
-  right: 2px;
-  min-width: 14px;
-  height: 14px;
-  padding: 0 var(--s-half);
-  border-radius: 7px;
-  background: var(--raise-active);
-  color: var(--ink);
-  font-size: var(--t-2xs);
-  font-weight: var(--w-medium);
-  line-height: 14px;
-  font-variant-numeric: tabular-nums;
-  text-align: center;
-}
-
-
-.ext-badge[hidden] {
-  display: none;
+.shelf-drop:active {
+  transform: scale(var(--press));
 }
 
 .ext-body {
   overflow: auto;
+  overscroll-behavior: contain;
   min-height: 0;
   flex: 1;
   font-size: var(--t-sm);
   scrollbar-width: none;
 }
 
-.ext-note {
-  color: var(--ink-2);
-  font-size: var(--t-xs);
-  line-height: 1.35;
-  margin: var(--s-1) 0;
+.ext-body:empty {
+  display: none;
 }
 
 .ext-row {
@@ -142,8 +102,12 @@
 }
 
 
-.ext-row .grip {
+.ext-row .icon-btn {
   width: var(--hit-sm);
+  height: var(--hit-sm);
+}
+
+.ext-row .grip {
   cursor: grab;
   color: var(--ink-3);
 }

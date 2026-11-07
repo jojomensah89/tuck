@@ -61,7 +61,7 @@ import type {
 const SIZES: Record<IslandState, [number, number]> = {
   idle: [212, 32],
   peek: [300, 38],
-  open: [440, 210],
+  open: [440, 264],
 };
 
 /** The width the idle pill last asked for; it changes with what owns the slots */
@@ -292,7 +292,7 @@ function setState(next: IslandState): void {
   syncFlyoutPause();
   if (next === 'idle') idleWidth = compactShellWidth(selectCompactActivity(compactCandidates()).primary, livePreferences.compactContent);
   const [w, h] = next === 'open'
-    ? [livePreferences.openWidth, 210]
+    ? [livePreferences.openWidth, SIZES.open[1]]
     : next === 'idle'
       ? [idleWidth, SIZES.idle[1]]
       : SIZES.peek;
@@ -520,6 +520,7 @@ function renderMedia(): void {
     titleSpan.textContent = mediaState.active ? mediaState.title : 'Nothing playing';
   }
   $('artist').textContent = mediaState.active ? mediaState.artist : '';
+  document.querySelector('.page.media')?.classList.toggle('nothing', !mediaState.active);
   renderMediaHeader();
   applyArtwork();
   fitTitle();
@@ -945,7 +946,7 @@ function renderToday(): void {
   });
 }
 
-const battRing = createRing(72, 6, 'batt-ring');
+const battRing = createRing(96, 6, 'batt-ring');
 $('battFace').prepend(battRing.root);
 $('battBolt').innerHTML = SVG_ICONS.bolt;
 
@@ -1108,7 +1109,6 @@ function renderUsage(): void {
     logChatGPTMessage();
     renderUsage();
   });
-  $('uList').classList.toggle('with-toolbar', providers > 2);
   rail.setSectionVisible('usage', providers > 0);
 }
 

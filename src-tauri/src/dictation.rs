@@ -213,9 +213,12 @@ pub struct DictationService {
 }
 
 #[cfg(test)]
+type FixtureNetwork = dyn Fn(&Path, &AtomicBool) -> Result<(), String> + Send + Sync;
+
+#[cfg(test)]
 struct AcquisitionFixture {
     entry: &'static model::CatalogEntry,
-    network: Arc<dyn Fn(&Path, &AtomicBool) -> Result<(), String> + Send + Sync>,
+    network: Arc<FixtureNetwork>,
 }
 
 impl Default for DictationService {

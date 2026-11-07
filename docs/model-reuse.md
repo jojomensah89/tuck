@@ -35,3 +35,11 @@ Only pinned compatible catalog artifacts in known Hex/Handy/Buzz/OpenWhispr/podc
 - Bun: 152 passed, 0 failed; production frontend build passed
 - UI contracts unchanged; no new UI smoke run or production app launch
 - Actual model files and user preferences were not changed; no real HTTP model download was performed in this fixture run
+
+## Main integration verification (2026-11-07)
+
+Merged main fd15d8d into the branch and retargeted PR #35 to main. Resolved the snapshot visibility conflict while retaining automatic restoration. Acquisition preflight hashes current bytes even when Windows metadata timestamps coalesce for a same-size rewrite; recording still uses the verification cache. Existing files remain in place, and discovery only opens catalog model files from known model locations.
+
+Required checks: Bun 225 passed; build and UI smoke passed; cargo fmt and all-target Clippy passed; Rust tests 248 library tests plus 16 integration tests passed (17 ignored live diagnostics). All final commands exited 0. An initial all-target Clippy run exited 101 for a test-only callback type; extracting a type alias resolved it. Native setup used scripts/prepare-native.ps1 -InstallBuildTools. The Git release-planning integration tests now use the same 60-second allowance as other release tests.
+
+UI smoke asserts the unselected-model guidance and saves docs/screens/model-reuse-settings.png. This is a browser fixture, not evidence of native model reuse. Live Tauri, real model downloads and transcription remain unverified. The installed Tuck was not stopped.

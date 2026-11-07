@@ -4,7 +4,7 @@ import type { ModelRow } from './dictation-models.js';
 /** Only desktop services may resolve native actions. Browser previews never fake them. */
 export async function nativeService<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   if (!isTauri()) throw new Error('Open Tuck on Windows to use this feature.');
-  const names: Record<string, string> = { lyrics_settings: 'lyrics_status', visualizer_settings: 'visualizer_status', telemetry_snapshot: 'telemetry_now', lyrics_lookup: 'lyrics_get', dictation_snapshot: 'dictation_get_state', clipboard_snapshot: 'clipboard_get_state', clipboard_settings: 'clipboard_get_state' };
+  const names: Record<string, string> = { lyrics_settings: 'lyrics_status', telemetry_snapshot: 'telemetry_now', lyrics_lookup: 'lyrics_get', dictation_snapshot: 'dictation_get_state', clipboard_snapshot: 'clipboard_get_state', clipboard_settings: 'clipboard_get_state' };
   let result: unknown = await invokeCommand(names[command] || command, args);
   if (result === null || result === undefined) throw new Error('This service is not available in this build.');
   if (command === 'telemetry_snapshot') result = normalizeTelemetry(result);

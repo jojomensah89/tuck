@@ -15,7 +15,6 @@ import {
   setHit,
   fetchUsageNow,
   openSettingsCmd,
-  triggerQuickAction,
   dispatchMockEvent,
   invokeCommand,
 } from './ipc.js';
@@ -732,7 +731,7 @@ function compactCandidates(): CompactActivityCandidate[] {
       id: 'media',
       kind: 'media',
       title: mediaState.title || 'Media',
-      // Playing media outranks timers and downloads; paused media yields to everything running
+      // Playing media outranks timers; paused media yields to everything running
       priority: mediaState.playing || pauseHold ? 85 : 40,
       // A paused track gives the idle pill back to time and battery; a peek can still name it
       active: mediaState.active && (mediaState.playing || pauseHold || state === 'peek'),
@@ -1132,27 +1131,14 @@ function onUsageUpdate(meters: Meter[]): void {
 window.addEventListener('storage', () => { renderUsage(); });
 
 
-/* ================= Quick Actions ================= */
+/* ================= Media controls ================= */
 
-function setupQuickActions(): void {
-  $('icoWifi').innerHTML = SVG_ICONS.wifi;
-  $('icoBt').innerHTML = SVG_ICONS.bluetooth;
-  $('icoFocus').innerHTML = SVG_ICONS.focus;
-  $('icoCapture').innerHTML = SVG_ICONS.capture;
+function setupMediaControls(): void {
   $('prev').innerHTML = SVG_ICONS.prev;
   $('next').innerHTML = SVG_ICONS.next;
 
   renderMediaHeader();
 
-  document.querySelectorAll<HTMLButtonElement>('.chip').forEach((chip) => {
-    chip.onclick = (e) => {
-      e.stopPropagation();
-      const action = chip.dataset.action;
-      if (action) {
-        runAction(triggerQuickAction(action), 'Open Windows action');
-      }
-    };
-  });
 
 }
 
@@ -1491,7 +1477,7 @@ void refreshUsageSnapshot();
 /* ================= Initialization ================= */
 
 setupActivitiesUI();
-setupQuickActions();
+setupMediaControls();
 renderToday();
 renderPower();
 renderUsage();

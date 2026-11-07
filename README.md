@@ -2,7 +2,7 @@
 
 ![Tuck showing media artwork](docs/screens/collapsed-artwork.png)
 
-Existing UI capture with test media data, not a live playback session.
+The screenshot uses test media data.
 
 Tuck is a desktop island for Windows that puts media controls, dictation, and small tools at the top of your screen.
 
@@ -31,9 +31,9 @@ Tuck checks for updates about 20 seconds after startup and every six hours. Sett
 
 Speech recognition runs on your computer. Dictation settings and downloaded models are stored locally. Clipboard history is saved locally; it can contain sensitive copied text. Treat your Windows account and local app data as sensitive.
 
-Tuck is not fully offline. Updates contact GitHub. Optional model downloads contact Hugging Face. Lyrics requests send track details to LRCLIB. Optional installed-client usage checks can contact provider services using the installed client's session. Legacy API-cost integrations in the current code can also contact OpenAI or Anthropic when configured. Do not enable a source unless you want it queried.
+Tuck is not fully offline. Updates contact GitHub. Optional model downloads contact Hugging Face. Lyrics requests send track details to LRCLIB. Optional installed-client usage checks can contact provider services using the installed client's session. Do not enable a source unless you want it queried.
 
-These statements follow `src-tauri/src/dictation.rs`, `dictation/model.rs`, `clipboard_history.rs`, `lyrics.rs`, `installed_usage.rs`, `usage.rs`, and `src/updater.ts`. Local processing does not mean local files are encrypted.
+Local processing does not mean local files are encrypted.
 
 ## Build from source
 

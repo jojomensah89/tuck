@@ -13,7 +13,6 @@ mod service_preferences;
 pub mod system;
 pub mod telemetry;
 pub mod usage;
-pub mod visualizer;
 
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -104,10 +103,6 @@ pub fn run() {
             lyrics::lyrics_clear_cache,
             telemetry::telemetry_now,
             telemetry::telemetry_history,
-            visualizer::visualizer_status,
-            visualizer::visualizer_set_enabled,
-            visualizer::visualizer_set_reduced_motion,
-            visualizer::visualizer_spectrum,
             media::media_sessions,
             media::media_select_session,
             installed_usage::installed_usage_enabled,
@@ -115,19 +110,14 @@ pub fn run() {
             installed_usage::refresh_installed_usage,
             extensions::extension_snapshot,
             extensions::extension_settings,
-            extensions::call_set_active,
-            extensions::calendar_import,
-            extensions::calendar_join,
             extensions::shelf_add,
             extensions::shelf_pick,
             extensions::shelf_remove,
             extensions::shelf_reveal,
             extensions::shelf_drag,
-            extensions::radio_set,
             extensions::notification_access,
             usage::usage_now,
             usage::refresh_usage,
-            usage::set_secret,
             desktop_signals::volume_step,
             desktop_signals::volume_toggle_mute,
             osd_flyout::get_hide_system_flyout,
@@ -340,7 +330,6 @@ pub fn run() {
             telemetry::start(handle.clone());
             osd_flyout::start(handle.clone());
             desktop_signals::start(handle.clone());
-            visualizer::start(handle.clone());
             system::start(handle, hit_state_setup);
 
             Ok(())

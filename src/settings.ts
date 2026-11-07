@@ -436,9 +436,9 @@ function mountWelcome(): void {
     welcome = document.createElement('section'); welcome.className = 'welcome'; welcome.id = 'welcome';
     welcome.innerHTML = '<span class="about-mark" aria-hidden="true"></span><h1 tabindex="-1">Welcome to Tuck</h1><p>A desktop island for Windows; hover over the pill at the top of your screen to open it</p>';
     const moved: { node: HTMLElement; placeholder: Comment }[] = [];
-    for (const [title, ids] of [['Start with Windows', ['row-autostart', 'autostartStatus']], ['Track AI usage', ['providerSwitches', 'providersEmpty', 'installedUsageStatus']], ['Dictation', ['row-dictationModel', 'modelRows', 'dictationStatus', 'dictationRetryRow']]] as [string, string[]][]) {
+    for (const [title, ids] of [['', ['row-autostart', 'autostartStatus']], ['Track AI usage', ['providerSwitches', 'providersEmpty', 'installedUsageStatus']], ['Dictation', ['row-dictationModel', 'modelRows', 'dictationStatus', 'dictationRetryRow']]] as [string, string[]][]) {
       const group = document.createElement('div'); group.className = 'group';
-      const heading = document.createElement('h2'); heading.textContent = title; group.append(heading);
+      if (title) { const heading = document.createElement('h2'); heading.textContent = title; group.append(heading); }
       const panel = document.createElement('div'); panel.className = 'panel'; group.append(panel);
       for (const id of ids) { const node = $(id); if (!node) continue; const placeholder = document.createComment(id); node.before(placeholder); moved.push({node, placeholder}); panel.append(node); }
       welcome.append(group);

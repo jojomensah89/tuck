@@ -3,6 +3,7 @@
  * moves the existing sections into their panels, and turns rail clicks, keys,
  * wheel and drag swipes into tab changes. The pure rules live in tab-nav.ts.
  */
+import { mountUpdateButton } from './update-button.js';
 import { SVG_ICONS } from './icons.js';
 import {
   clampTab,
@@ -110,6 +111,7 @@ export function mountTabRail(options: TabRailOptions): TabRail {
   updateSlot.hidden = true;
   rail.append(tablist, updateSlot, settings);
   full.insertBefore(rail, container);
+  mountUpdateButton(updateSlot);
 
   // Sections move into their tab's panel in the documented order. A section
   // without a mapping still stays reachable at the end of Tools.

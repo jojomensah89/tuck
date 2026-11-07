@@ -1,0 +1,18 @@
+.update-button { position: relative; color: var(--ink); transition: transform var(--d-fast), background-color var(--d-fast); }
+.update-button[hidden] { display: none; }
+.update-button:active { transform: scale(0.96); }
+.update-button::after { content: ''; position: absolute; width: 6px; height: 6px; border-radius: 50%; background: var(--ok, var(--on)); right: 3px; top: 3px; }
+.update-button[data-phase='downloading']::after, .update-button[data-phase='installing']::after { display: none; }
+.update-button > svg { width: 20px; height: 20px; flex-shrink: 0; }
+.update-sidebar { margin-top: auto; display: flex; align-items: center; gap: var(--s-2); background: transparent; border: 0; min-height: 36px; padding: var(--s-2); font: inherit; text-align: left; cursor: pointer; }
+.update-sidebar::after { display: none; }
+.update-button .ring-track, .update-button .ring-fill { fill: none; }
+.update-button .ring-track { stroke: var(--raise-hover, var(--control)); }
+.update-button .ring-fill { stroke: var(--ink); stroke-linecap: round; transition: stroke-dashoffset var(--d-fast); }
+.update-button [data-empty='true'] .ring-fill { visibility: hidden; }
+@media (prefers-reduced-motion: reduce) { .update-button, .update-button .ring-fill { transition: none; } }
+.rail-update .update-button, .rail-update .update-button:hover { color: var(--ink); }
+.rail-update .update-button:active { transform: scale(0.96); }
+.update-button svg.ico { fill: none; stroke: currentColor; stroke-width: var(--stroke, 1.5); stroke-linecap: round; stroke-linejoin: round; }
+.update-button svg.ico * { vector-effect: non-scaling-stroke; }
+.update-button:disabled { opacity: 1; cursor: default; }

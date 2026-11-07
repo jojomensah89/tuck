@@ -14,6 +14,7 @@ pub mod osd_flyout;
 mod service_preferences;
 pub mod system;
 pub mod telemetry;
+mod update;
 pub mod usage;
 
 use std::sync::atomic::Ordering;
@@ -68,8 +69,12 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(hit_state)
         .manage(system::PendingUpdateState::default())
+        .manage(update::UpdateService::default())
         .invoke_handler(tauri::generate_handler![
             set_hit,
+            update::update_check,
+            update::update_snapshot,
+            update::update_action,
             system::get_pending_update,
             system::set_pending_update,
             system::check_update_allowed,

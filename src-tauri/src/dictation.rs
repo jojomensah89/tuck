@@ -399,8 +399,11 @@ impl DictationService {
         if runtime.downloading_model.is_some() {
             return Some("Wait for the model download or cancel it before installing the update.");
         }
-        if runtime.removing_model || self.model_busy.load(Ordering::Acquire) {
+        if runtime.removing_model {
             return Some("Wait for the model change to finish before installing the update.");
+        }
+        if self.model_busy.load(Ordering::Acquire) {
+            return Some("Wait for dictation to finish before installing the update.");
         }
         let resting = matches!(runtime.status.as_str(), "idle" | "error" | "modelMissing");
         (runtime.active.is_some() || !resting)
@@ -2131,7 +2134,9 @@ mod tests {
         service.runtime.lock().unwrap().removing_model = false;
 
         service.model_busy.store(true, Ordering::Release);
-        assert!(service.update_blocker().unwrap().contains("model change"));
+        service.runtime.lock().unwrap().status = "transcribing".into();
+        assert!(service.update_blocker().unwrap().contains("dictation"));
+        service.runtime.lock().unwrap().status = "idle".into();
         service.model_busy.store(false, Ordering::Release);
 
         assert_eq!(service.update_blocker(), None);

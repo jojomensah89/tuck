@@ -48,6 +48,7 @@ export const SVG_ICONS = {
   calendar: ico('<rect x="3.25" y="4.25" width="13.5" height="12.5" rx="2.5"/><path d="M3.25 8.25h13.5M7 2.75v3M13 2.75v3"/><circle class="f" cx="7.25" cy="12.25" r=".75"/>'),
   gauge: ico('<path d="M4.4 15.25a7.25 7.25 0 1 1 11.2 0"/><path d="M10 11.5l3-3"/><circle class="f" cx="10" cy="11.5" r=".75"/>'),
   check: ico('<path d="m4.75 10.5 3.5 3.5 7-8"/>'),
+  installUpdate: ico('<path d="M10 2.75v9.5m-3.5-3.5 3.5 3.5 3.5-3.5M3.75 13.25v3.5h12.5v-3.5"/>'),
   refresh: ico('<path d="M16.25 10a6.25 6.25 0 1 1-1.85-4.45"/><path d="M15.25 2.75v3.5h-3.5"/>'),
   external: ico('<path d="M11.25 3.25h5.5v5.5M16.75 3.25 9.5 10.5"/><path d="M14.25 12.25v2.5a2 2 0 0 1-2 2h-7a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h2.5"/>'),
   sparkle: ico('<path d="M10 3q.9 6.1 7 7-6.1.9-7 7-.9-6.1-7-7 6.1-.9 7-7z"/>'),

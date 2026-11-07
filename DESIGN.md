@@ -117,4 +117,10 @@ Reduced motion: all durations and delays go to zero, nothing slides, scales or l
 
 Consistent SVG icons; overflow-only marquee; tabular times; visible focus; state-synchronized ARIA and inert hidden layers. Real system and provider state always wins over illustrative content. The browser demo is explicitly labeled, with a badge pinned to the bottom-right of the window, below the island, so it never covers content.
 
+## Update alerts
+
+The island owns the startup and six-hour one-shot check; Rust owns the update handle, verified downloaded bytes and serialized operation state. Both webviews subscribe to the same snapshot and events; opening Settings during a download reads its current progress. Checks cannot replace a downloaded package. Download and restart require separate clicks; Retries reuse downloaded bytes, including after an installer failure restarts the app to restore services. The package is saved in the app cache and verified again against current release metadata, signature and signed version before reuse; corrupt or obsolete cache is discarded.
+
+A version is claimed in island local storage once across restarts. Its one-line download-icon peek waits for dictation and the HUD. No update polling or idle animation is added. The reserved rail slot contains a 32px button outside the tablist, with ink line artwork and a 6px ok dot. Hidden means no space. Download progress uses the shared ring; unknown size is a resting track. Restart uses the refresh glyph. Press scale is 0.96; reduced motion disables transitions. The Settings sidebar ends with the same quiet action, while About retains release notes and full controls. Errors keep the action available, say `Update failed`, and retain details in the tooltip and console. Installation is announced through the polite status region.
+
 AI usage settings: one switch per detected installed provider, off by default. Empty detection shows one calm line. Claude and Codex migrate the old opt-in; Antigravity is deferred pending a credential-free reader. Provider initials are used without a sourced official mark.

@@ -327,6 +327,7 @@ struct SharedState {
 }
 static CACHE: OnceLock<Arc<Mutex<SharedState>>> = OnceLock::new();
 static MANUAL_BUSY: AtomicBool = AtomicBool::new(false);
+static USAGE_WAKE: (Mutex<()>, std::sync::Condvar) = (Mutex::new(()), std::sync::Condvar::new());
 static REQUESTED: AtomicU64 = AtomicU64::new(0);
 static COMPLETED: AtomicU64 = AtomicU64::new(0);
 fn get_cache() -> &'static Arc<Mutex<SharedState>> {
@@ -363,7 +364,12 @@ pub async fn refresh_usage() -> Result<Vec<Meter>, String> {
             }
         }
         let _guard = BusyGuard;
-        let ticket = REQUESTED.fetch_add(1, Ordering::SeqCst) + 1;
+        let ticket = {
+            let _gate = USAGE_WAKE.0.lock().unwrap_or_else(|p| p.into_inner());
+            let ticket = REQUESTED.fetch_add(1, Ordering::SeqCst) + 1;
+            USAGE_WAKE.1.notify_one();
+            ticket
+        };
         let installed = crate::installed_usage::request_manual_refresh();
         let started = Instant::now();
         while COMPLETED.load(Ordering::SeqCst) < ticket
@@ -406,7 +412,14 @@ pub fn start<R: Runtime>(app: AppHandle<R>) {
                 let _ = app.emit("usage", &snapshot);
                 emitted = Some(snapshot);
             }
-            std::thread::sleep(Duration::from_secs(1));
+            let gate = USAGE_WAKE.0.lock().unwrap_or_else(|p| p.into_inner());
+            let due = Duration::from_secs(60).saturating_sub(last_file.elapsed());
+            let _guard = USAGE_WAKE
+                .1
+                .wait_timeout_while(gate, due, |_| {
+                    REQUESTED.load(Ordering::SeqCst) <= COMPLETED.load(Ordering::SeqCst)
+                })
+                .unwrap_or_else(|p| p.into_inner());
         }
     });
 }

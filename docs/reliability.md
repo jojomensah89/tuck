@@ -7,6 +7,10 @@ Base: origin/main fd15d8d. Installed Tuck was not stopped. No runtime CPU measur
 | Worker | Before | After |
 | --- | --- | --- |
 | Cursor hit testing | 40 ms near / 60 ms far | Mouse events + 1 s safety; original polling if hook unavailable |
+| Local usage | 1 s wake / 60 s file refresh | 60 s or immediate manual request |
+| Installed-client usage | 300 s when enabled, parked otherwise; explicit refresh wakes it | Unchanged |
+| WebView trimming | One-shot 30 s after inactive | Unchanged |
+| Update check | 20 s after startup, then 6 h | Unchanged |
 | Telemetry | Request-driven, no idle timer | Unchanged |
 | Media | Events + 30 s safety; manager failure retry 2/5/10 s | Unchanged |
 | Clipboard | Event-driven; busy retries 20 ms to 1 s, ten attempts | Unchanged budget; duplicate notifications no longer force reads |

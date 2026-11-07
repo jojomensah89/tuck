@@ -118,8 +118,8 @@ try {
   assert.equal(await page.locator('#row-openDelay').isVisible(),true);
   // The update row is not on screen without an update, so search must not find or count it
   const searchSettings = async query => { await page.locator('#settingsSearch').fill(query); return (await page.locator('#searchSummary').textContent()).trim(); };
-  assert.equal(await searchSettings('update'),'3 settings match "update".');
-  assert.equal(await page.locator('.view .set-row:visible').count(),3,'The update count equals the rows on screen');
+  assert.equal(await searchSettings('update'),'1 setting matches "update".');
+  assert.equal(await page.locator('.view .set-row:visible').count(),1,'The update count equals the rows on screen');
   assert.equal(await page.locator('#row-update-check').isVisible(),true);
   assert.equal(await page.locator('#row-update-available').isVisible(),false,'Update row must stay hidden when no update is available');
   assert.equal(await searchSettings('changelog'),'No settings match "changelog".');
@@ -140,10 +140,6 @@ try {
   assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem('tuck.live.v2')).compactContent),'artwork');
   await page.locator('#row-compactContent label',{hasText:'Lyric'}).click();
   await page.locator('#nav a[data-view="usage"]').click();
-  await page.locator('#cCap').fill('-1');
-  await page.locator('#cHours').fill('3');
-  await page.locator('#cHours').press('Enter');
-  assert.match(await page.locator('#chatStatus').textContent(),/positive/);
   await page.locator('#nav a[data-view="general"]').click();
   await page.locator('#pickFloat').click();
   assert.equal(await page.evaluate(() => localStorage.getItem('notch.shape')),'float');
@@ -181,6 +177,8 @@ try {
       if(command==='clipboard_get_state')return {enabled:false,persistOnExit:false,items:[]};
       if(command==='clipboard_configure')throw 'Fixture atomic save failure';
       if(command==='plugin:updater|check')return null;
+      if(command==='installed_usage_providers')return window.__providers || [];
+      if(command==='set_usage_provider')return null;
       if(command==='get_autostart'||command==='installed_usage_enabled'||command==='fullscreen_now')return false;
       if(command==='volume_step')return {kind:'volume',level:40+args.delta,muted:false};
       if(command==='volume_toggle_mute')return {kind:'volume',level:40,muted:true};
@@ -190,6 +188,24 @@ try {
       return null;
     }};
   };
+  // Every installed-provider combination, using fixtures without invoking clients.
+  for (const names of [[], ['claude'], ['codex'], ['claude','codex']]) {
+    const settings = await context.newPage(); await settings.setViewportSize({width:1000,height:700}); await settings.addInitScript(nativeBridge);
+    await settings.addInitScript(names => { window.__providers = ['claude','codex'].map(provider => ({provider,installed:names.includes(provider),enabled:false})); }, names);
+    await settings.goto('http://tuck.test/settings.html#usage');
+    await settings.waitForTimeout(100);
+    assert.equal(await settings.locator('#providerSwitches input').count(), names.length);
+    assert.equal(await settings.locator('#providersEmpty').isVisible(), names.length === 0);
+    for (const name of names) {
+      const toggle = settings.locator(`#usage-${name}`); assert.equal(await toggle.isChecked(), false);
+      await toggle.check(); await toggle.uncheck();
+    }
+    const calls = await settings.evaluate(() => window.__calls.filter(c=>c.command==='set_usage_provider'));
+    assert.equal(calls.length, names.length * 2);
+    if (names.length === 2) { await mkdir(path.join(root,'docs/screens'),{recursive:true}); await settings.screenshot({path:path.join(root,'docs/screens/usage-settings.png')}); }
+    await settings.close();
+  }
+
   await context.addInitScript(nativeBridge);
   const native=await context.newPage();const nativeErrors=[];native.on('pageerror',error=>nativeErrors.push(error.message));
   await native.goto('http://tuck.test/');
@@ -672,8 +688,10 @@ try {
   await native.locator('.page.stats').scrollIntoViewIfNeeded();
   // Emit and read in one evaluate, so the page's one-second poll cannot land in between.
   const statsRead=()=>({text:document.querySelector('.page.stats').textContent,faces:[...document.querySelectorAll('.page.stats .stat-face')].map(face=>face.getAttribute('aria-label'))});
-  const measured=await native.evaluate(read=>{window.__emitNative('telemetry',{sampledAt:Date.now(),cpuPct:43,ramUsedBytes:8589934592,ramTotalBytes:17179869184,gpus:[{id:'gpu0',name:'Fixture GPU',usedPct:null}]});return new Function(`return (${read})()`)();},statsRead.toString());
+  const measured=await native.evaluate(read=>{window.__emitNative('telemetry',{sampledAt:Date.now(),cpuPct:43,networkDownBps:12400000,networkUpBps:1200000,ramUsedBytes:8589934592,ramTotalBytes:17179869184,gpus:[{id:'gpu0',name:'Fixture GPU',usedPct:null}]});return new Function(`return (${read})()`)();},statsRead.toString());
   assert.match(measured.text,/43%/);
+  assert.match(measured.text,/12.4 MB\/s/); assert.match(measured.text,/1.2 MB\/s/);
+
   assert.equal(measured.faces.length,3,'One ring each for CPU, memory and the GPU');
   assert.equal(measured.faces[1],'Memory 50%, 8.0 of 16.0 GB');
   assert.equal(measured.faces[2],'Fixture GPU unavailable');
@@ -684,18 +702,25 @@ try {
   assert.match(await native.locator('.page.stats').textContent(),/43%/,'One failed poll does not blank a valid metric');
   await native.waitForFunction(()=>/unavailable/.test(document.querySelector('.stat-face').getAttribute('aria-label')),null,{timeout:6000});
   assert.equal(await native.locator('.stat-value').first().textContent(),'\u2013','Repeated polling failures clear prior measurements');
+  for (const width of [440,500]) {
+    await native.evaluate(()=>window.__emitNative('telemetry',{sampledAt:Date.now(),cpuPct:43,networkDownBps:12400000,networkUpBps:1200000,ramUsedBytes:8589934592,ramTotalBytes:17179869184,gpus:[{id:'gpu0',name:'Fixture GPU',usedPct:null}]}));
+    await setLive({openWidth:width}); await native.waitForTimeout(60);
+    assert.equal(await native.locator('.network-rates').evaluate(n=>{ const r=n.getBoundingClientRect(),p=n.closest('.page').getBoundingClientRect(); return r.left>=p.left && r.right<=p.right && r.bottom<=p.bottom; }),true,'Network rates fit the System part');
+    await mkdir(path.join(root,'docs/screens'),{recursive:true});
+    await native.locator('#isl').screenshot({path:path.join(root,`docs/screens/usage-system-${width}.png`)});
+  }
+
   await native.evaluate(()=>window.__emitNative('media',{active:true,trackId:'other',title:'Other fixture',artist:'Test',playing:true,positionMs:0,durationMs:10000}));
   assert.equal(await native.locator('.tab-panel.on').getAttribute('data-tab'),'usage','Track changes must not steal a selected tool');
   // AI usage: one provider card, double rings for 5h + 7d, official marks, no unconnected cards
   await native.evaluate(()=>{
-    localStorage.removeItem('notch.chatgpt');
     const now=Math.round(Date.now()/1000);
     window.__emitNative('usage',[
       {id:'claude-5h',provider:'claude',label:'Claude session (5 h)',usedPct:42,spentUsd:null,resetsAt:now+8130,source:'official',stale:false,status:'ok'},
       {id:'claude-week',provider:'claude',label:'Claude weekly',usedPct:18,spentUsd:null,resetsAt:now+86400*2,source:'official',stale:false,status:'ok'},
       {id:'codex-installed-c-primary',provider:'codex',label:'Codex 5 h',usedPct:72,spentUsd:null,resetsAt:now+3630,source:'official',stale:false,status:'ok'},
       {id:'codex-installed-c-secondary',provider:'codex',label:'Codex weekly',usedPct:9,spentUsd:null,resetsAt:now+86400*5,source:'official',stale:true,status:'stale'},
-      {id:'openai-api',provider:'openai-api',label:'OpenAI API',usedPct:null,spentUsd:null,resetsAt:null,source:'api',stale:true,status:'unconfigured'}]);
+    ]);
   });
   await native.locator('.page.usage').scrollIntoViewIfNeeded();
   assert.equal(await native.locator('#uList .u-provider').count(),2,'Two connected providers become two cards');
@@ -714,13 +739,11 @@ try {
   assert.equal(ringTargets.every(size => size >= 72), true, 'Provider rings are larger than the old rings');
 
   // Every card fits, whatever the island width and however many providers are connected
-  const fiveProviders = now => [
+  const quotaProviders = now => [
     {id:'claude-5h',provider:'claude',label:'Claude session (5 h)',usedPct:100,spentUsd:null,resetsAt:now+8130,source:'official',stale:false,status:'ok'},
     {id:'claude-week',provider:'claude',label:'Claude weekly',usedPct:93,spentUsd:null,resetsAt:now+86400*2,source:'official',stale:false,status:'ok'},
     {id:'codex-primary',provider:'codex',label:'Codex 5 h',usedPct:72,spentUsd:null,resetsAt:now+3630,source:'official',stale:false,status:'ok'},
     {id:'codex-secondary',provider:'codex',label:'Codex weekly',usedPct:9,spentUsd:null,resetsAt:now+86400*5,source:'official',stale:true,status:'stale'},
-    {id:'anthropic-api',provider:'anthropic-api',label:'Claude API',usedPct:null,spentUsd:1234.5,resetsAt:now+86400,source:'api',stale:false,status:'ok'},
-    {id:'openai-api',provider:'openai-api',label:'OpenAI API',usedPct:null,spentUsd:null,resetsAt:now+86400,source:'api',stale:true,status:'error',error:'Credential Manager read failed'},
   ];
   const usageFit = () => native.evaluate(()=>{
     const list=document.getElementById('uList'),page=document.querySelector('.page.usage').getBoundingClientRect();
@@ -735,28 +758,17 @@ try {
     await setLive({openWidth:width});
     await native.waitForTimeout(50);
     assert.deepEqual(await usageFit(),{inside:true,clear:true,switchClear:true,fits:true},`Two provider cards fit at ${width}px`);
-    await native.evaluate(meters=>window.__emitNative('usage',meters),fiveProviders(Math.round(Date.now()/1000)));
+    await native.evaluate(meters=>window.__emitNative('usage',meters),quotaProviders(Math.round(Date.now()/1000)));
     await native.waitForTimeout(50);
-    assert.equal(await native.locator('#uList .u-provider').count(),4,'Each connected source is one card');
-    assert.deepEqual(await usageFit(),{inside:true,clear:true,switchClear:true,fits:true},`Four provider cards fit at ${width}px`);
-    // A used-up quota has an empty ring, so its number warns; anything still left, or dollars spent, does not
+    assert.equal(await native.locator('#uList .u-provider').count(),2,'Each connected source is one card');
+    assert.deepEqual(await usageFit(),{inside:true,clear:true,switchClear:true,fits:true},`Two provider cards fit at ${width}px`);
+    // A used-up quota has an empty ring, so its number warns; anything still left, does not
     const valueColours = await native.locator('#uList .u-val').evaluateAll(nodes=>nodes.map(n=>[n.textContent,n.dataset.out==='true',getComputedStyle(n).color]));
     const warnColour = await native.locator('#uList').evaluate(n=>{const probe=document.createElement('span');probe.style.color='var(--warn)';n.append(probe);const colour=getComputedStyle(probe).color;probe.remove();return colour;});
     assert.deepEqual(valueColours.filter(([,out])=>out).map(([text,,colour])=>[text,colour]),[['0% left',warnColour]],'Only the used-up quota reads as out, in the warning colour');
     assert.equal(valueColours.filter(([,out])=>!out).some(([,,colour])=>colour===warnColour),false,'Other values keep their normal colour');
-    if (width===440) await native.locator('.page.usage').screenshot({path:path.join(root,'artifacts','usage-out.png')});
-    await native.evaluate(()=>{localStorage.setItem('notch.chatgpt',JSON.stringify({label:'ChatGPT (estimate)',cap:10,hours:3}));localStorage.removeItem('notch.chatgpt.log');window.dispatchEvent(new StorageEvent('storage',{key:'notch.chatgpt'}));});
-    await native.waitForTimeout(50);
-    assert.equal(await native.locator('#uList .u-provider').count(),5);
-    assert.equal(await native.locator('#uList').evaluate(n=>n.classList.contains('dense')),true);
-    assert.deepEqual(await usageFit(),{inside:true,clear:true,switchClear:true,fits:true},`Five provider cards fit at ${width}px`);
-    // The ChatGPT estimate is logged by pressing its ring
-    const logButton = native.getByRole('button',{name:/^Log a ChatGPT message/});
-    await logButton.click();
-    assert.equal(await native.locator('#uList .u-provider').last().locator('.u-val').textContent(),'9 left');
-    assert.equal(await logButton.evaluate(n=>document.activeElement===n),true,'Logging keeps focus on the ring');
-    await native.evaluate(()=>{localStorage.removeItem('notch.chatgpt');localStorage.removeItem('notch.chatgpt.log');});
-    await native.evaluate(meters=>window.__emitNative('usage',meters),fiveProviders(Math.round(Date.now()/1000)).slice(0,4));
+    await native.locator('#isl').screenshot({path:path.join(root,`docs/screens/usage-providers-${width}.png`)});
+    await native.evaluate(meters=>window.__emitNative('usage',meters),quotaProviders(Math.round(Date.now()/1000)).slice(0,4));
   }
   assert.equal(await native.locator('#uList .u-provider').count(),2);
 
@@ -851,19 +863,20 @@ try {
   await native.locator('#uList .u-face').nth(1).focus();
   const codexWindows = now => [{id:'codex-primary',provider:'codex',label:'Codex 5 h',usedPct:72,spentUsd:null,resetsAt:now+3630,source:'official',stale:false,status:'ok'},{id:'codex-secondary',provider:'codex',label:'Codex weekly',usedPct:9,spentUsd:null,resetsAt:now+86400*5,source:'official',stale:false,status:'ok'}];
   const rebuildNow = Math.round(Date.now()/1000);
+  await native.evaluate(now=>{window.__realDateNow=Date.now;Date.now=()=>now*1000;},rebuildNow);
   await native.evaluate(meters=>window.__emitNative('usage',meters),[week(rebuildNow),...codexWindows(rebuildNow)]);
   assert.match(await native.evaluate(()=>document.activeElement.getAttribute('aria-label')),/^OpenAI/,'A rebuilt card keeps focus');
   await native.evaluate(()=>{window.__titleWrites=0;new MutationObserver(list=>{window.__titleWrites+=list.length;}).observe(document.querySelector('#uList .u-provider'),{attributes:true,attributeFilter:['title']});});
   await native.evaluate(meters=>window.__emitNative('usage',meters),[week(rebuildNow),...codexWindows(rebuildNow)]);
   await native.waitForTimeout(20);
   assert.equal(await native.evaluate(()=>window.__titleWrites),0,'An unchanged reading writes nothing');
+  await native.evaluate(()=>{Date.now=window.__realDateNow;});
     await native.evaluate(meter=>window.__emitNative('usage',[meter]),week(Math.round(Date.now()/1000)));
   assert.match(await native.evaluate(()=>document.activeElement.getAttribute('aria-label')),/^Claude/,'A removed card hands focus to the next one');
   await native.evaluate(()=>window.__emitNative('usage',[]));
   assert.equal(await native.evaluate(()=>document.activeElement.id),'panel-usage','The last card hands focus to its tab');
   await native.evaluate(meter=>window.__emitNative('usage',[meter]),week(Math.round(Date.now()/1000)));
-  await native.evaluate(()=>window.__emitNative('usage',[
-    {id:'openai-api',provider:'openai-api',label:'OpenAI API',usedPct:null,spentUsd:null,resetsAt:null,source:'api',stale:true,status:'unconfigured'}]));
+  await native.evaluate(()=>window.__emitNative('usage',[]));
   assert.equal(await native.locator('.page.usage').isHidden(),true,'No connected provider removes the AI section');
   assert.equal(await native.locator('.section-switch').isHidden(),true,'One remaining Usage section hides the index');
   await native.evaluate(()=>{const now=Math.round(Date.now()/1000);window.__emitNative('usage',[
@@ -1132,8 +1145,15 @@ try {
   await motion.evaluate(()=>{window.__calls.length=0;});
   await motion.waitForTimeout(1300);
   assert.deepEqual(await motion.evaluate(()=>window.__calls.filter(call=>['telemetry_now','media_sessions'].includes(call.command)).length),0,'Dictation polls nothing');
+  await motion.evaluate(m=>window.__emitNative('usage',m),usageFixture(20));
   await motion.getByRole('tab',{name:'Usage',exact:true}).click();
+  await motion.getByRole('tab',{name:'System',exact:true}).click();
   await motion.waitForFunction(()=>window.__calls.some(call=>call.command==='telemetry_now'),null,{timeout:3000});
+  await motion.getByRole('tab',{name:'AI',exact:true}).click();
+  await motion.waitForTimeout(150); await motion.evaluate(()=>{window.__calls.length=0;});
+  await motion.waitForTimeout(1200);
+  assert.equal(await motion.evaluate(()=>window.__calls.filter(c=>c.command==='telemetry_now').length),0,'System stops sampling on the AI part');
+
   await motion.evaluate(()=>localStorage.setItem('notch.shape','float'));
   await motion.reload(); await motion.waitForTimeout(150);
   await motion.locator('#isl').focus(); await motion.keyboard.press('Enter');

@@ -2,12 +2,12 @@ import './settings.css';
 import { mountExtensionSettings } from './extensions.js';
 import { mountLiveSettings } from './live-settings.js';
 import { isTauri, invokeCommand, listenToEvent } from './ipc.js';
-import { STORAGE_KEYS, getJson, saveJson } from './usage.js';
+import { STORAGE_KEYS } from './usage.js';
 import { describeResult, filterSettings, isRowHidden, navTarget, type SearchEntry } from './settings-search.js';
-import { clearSaved, confirmThen, markSaved, onCommit, setStatus } from './settings-ui.js';
+import { markSaved, setStatus } from './settings-ui.js';
 import { checkForUpdates, downloadAndInstallUpdate, type UpdateInfo } from './updater.js';
 import { parseReleaseNotes } from './update-notes.js';
-import type { ShapeStyle, ChatGPTConfig } from './types.js';
+import type { ShapeStyle } from './types.js';
 import pkg from '../package.json';
 
 function $<T extends HTMLElement = HTMLElement>(id: string): T | null {
@@ -56,10 +56,12 @@ function buildSearchIndex(): SearchEntry[] {
 
 const UPDATE_ROW = 'row-update-available';
 let updateAvailable = false;
+let claudeAvailable = false;
+let providersAvailable = false;
 
 /** Rows that exist in the document but have nothing to show right now. */
 function unavailableRows(): ReadonlySet<string> {
-  return new Set(updateAvailable ? [] : [UPDATE_ROW]);
+  return new Set([...(updateAvailable ? [] : [UPDATE_ROW]), ...(claudeAvailable ? [] : ['claudeSetup']), ...(providersAvailable ? [] : ['row-refreshInstalledUsage'])]);
 }
 
 function setUpdateAvailable(available: boolean): void {
@@ -192,40 +194,6 @@ function setShape(style: ShapeStyle, control: HTMLElement | null): void {
   window.dispatchEvent(new StorageEvent('storage', { key: STORAGE_KEYS.SHAPE, newValue: style }));
 }
 
-/* ================= ChatGPT estimate: saved on change ================= */
-
-function initChatGPT(): void {
-  const cfg = getJson<Partial<ChatGPTConfig>>(STORAGE_KEYS.CHATGPT, {});
-  const cCap = $<HTMLInputElement>('cCap')!;
-  const cHours = $<HTMLInputElement>('cHours')!;
-  const cLabel = $<HTMLInputElement>('cLabel')!;
-
-  if (cfg.cap != null) cCap.value = String(cfg.cap);
-  if (cfg.hours != null) cHours.value = String(cfg.hours);
-  if (cfg.label != null) cLabel.value = cfg.label;
-
-  const commit = (changed: HTMLInputElement) => {
-    const cap = Number(cCap.value) || 0;
-    const hours = Number(cHours.value) || 0;
-    const label = cLabel.value.trim() || 'ChatGPT (estimate)';
-    const capBad = cCap.value !== '' && (!Number.isInteger(cap) || cap <= 0);
-    const hoursBad = cHours.value !== '' && (!Number.isFinite(hours) || hours <= 0);
-    for (const [field, bad] of [[cCap, capBad], [cHours, hoursBad]] as const) {
-      if (bad) field.setAttribute('aria-invalid', 'true'); else field.removeAttribute('aria-invalid');
-    }
-    if (capBad || hoursBad) { clearSaved(changed); setStatus('chatStatus', 'Set a positive whole message cap and a positive window in hours.', 'error'); return; }
-    if (cap <= 0 || hours <= 0) { setStatus('chatStatus', cap > 0 ? 'Set the rolling window to start the estimate.' : 'Set the message cap to start the estimate.'); return; }
-    if (saveJson<ChatGPTConfig>(STORAGE_KEYS.CHATGPT, { cap, hours, label })) { setStatus('chatStatus', ''); markSaved(changed, 'Estimate saved'); }
-    else { clearSaved(changed); setStatus('chatStatus', 'Could not save estimate settings. Check available storage and try again.', 'error'); }
-  };
-  for (const input of [cCap, cHours, cLabel]) onCommit(input, () => commit(input));
-
-  confirmThen($<HTMLButtonElement>('clearChatLog')!, 'Clear every logged ChatGPT message? The estimate restarts from zero.', 'Clear log', () => {
-    if (saveJson(STORAGE_KEYS.CHATGPT_LOG, [])) { setStatus('chatStatus', 'Message log cleared.'); }
-    else setStatus('chatStatus', 'Could not clear the message log. Check available storage and try again.', 'error');
-  });
-}
-
 /* ================= Native toggles: startup and installed usage ================= */
 
 interface FlyoutStatus { enabled: boolean; state: 'off' | 'hidden' | 'waiting' | 'unavailable'; message: string | null }
@@ -260,12 +228,12 @@ function initFlyoutToggle(): void {
 function initNativeToggles(): void {
   initFlyoutToggle();
   const startup = $<HTMLInputElement>('autostart')!;
-  const installed = $<HTMLInputElement>('installedUsage')!;
+
   const refresh = $<HTMLButtonElement>('refreshInstalledUsage')!;
   if (!isTauri()) {
-    startup.disabled = true; installed.disabled = true; refresh.disabled = true;
+    startup.disabled = true; refresh.disabled = true;
     setStatus('autostartStatus', 'Available in the desktop app.');
-    setStatus('installedUsageStatus', 'Available in the desktop app.');
+    $('providersEmpty')!.textContent = 'Available in the desktop app';
     return;
   }
   void invokeCommand<boolean>('get_autostart').then(enabled => { startup.checked = enabled; refreshPrivacy(); })
@@ -288,16 +256,30 @@ function initNativeToggles(): void {
     }
   });
 
-  void invokeCommand<boolean>('installed_usage_enabled').then(value => { installed.checked = value; refreshPrivacy(); })
-    .catch(() => setStatus('installedUsageStatus', 'Could not read usage preference.', 'error'));
-  installed.addEventListener('change', async () => {
-    installed.disabled = true;
-    try {
-      await invokeCommand('set_installed_usage_enabled', { enabled: installed.checked });
-      markSaved(installed);
-      setStatus('installedUsageStatus', installed.checked ? 'Reading installed apps. Limits refresh every five minutes.' : '');
-    } catch { installed.checked = !installed.checked; setStatus('installedUsageStatus', 'Could not save usage preference.', 'error'); }
-    finally { installed.disabled = false; refreshPrivacy(); }
+  void invokeCommand<{provider: string; installed: boolean; enabled: boolean}[]>('installed_usage_providers').then(providers => {
+    const found = providers.filter(p => p.installed);
+    claudeAvailable = found.some(p => p.provider === 'claude');
+    providersAvailable = found.length > 0;
+    $('claudeSetup')!.hidden = !claudeAvailable;
+    $('providersEmpty')!.hidden = found.length > 0;
+    for (const provider of found) {
+      const row = document.createElement('div'); row.className = 'set-row'; row.id = `row-usage-${provider.provider}`;
+      const label = document.createElement('label'); label.className = 'row-title';
+      label.textContent = provider.provider === 'claude' ? 'Claude' : 'Codex';
+      const toggle = document.createElement('input'); toggle.type = 'checkbox'; toggle.className = 'switch'; toggle.setAttribute('role', 'switch');
+      toggle.id = `usage-${provider.provider}`; label.htmlFor = toggle.id; toggle.checked = provider.enabled;
+      row.append(label, toggle); $('providerSwitches')!.append(row);
+      toggle.addEventListener('change', async () => {
+        toggle.disabled = true;
+        try { await invokeCommand('set_usage_provider', {provider: provider.provider, enabled: toggle.checked}); markSaved(toggle); }
+        catch { toggle.checked = !toggle.checked; setStatus('installedUsageStatus', 'Could not save usage preference', 'error'); }
+        finally { toggle.disabled = false; }
+      });
+    }
+    searchIndex = buildSearchIndex(); applySearch($<HTMLInputElement>('settingsSearch')?.value ?? '');
+  }).catch(() => setStatus('installedUsageStatus', 'Could not check installed apps', 'error'));
+  $('copyClaudeSetup')!.addEventListener('click', () => {
+    void navigator.clipboard.writeText('https://github.com/jojomensah89/tuck/blob/main/docs/usage-setup.md').then(() => setStatus('installedUsageStatus', 'Setup link copied'));
   });
   refresh.addEventListener('click', () => {
     void invokeCommand('refresh_installed_usage')
@@ -427,7 +409,6 @@ document.addEventListener('DOMContentLoaded', () => {
   initUpdates();
   mountExtensionSettings();
   mountLiveSettings();
-  initChatGPT();
   mountPrivacy();
   mountShell();
   refreshPrivacy();

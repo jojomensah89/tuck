@@ -11,6 +11,8 @@ use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
 
+static SETTINGS_WAKE: Mutex<Option<std::sync::mpsc::Sender<()>>> = Mutex::new(None);
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Settings {
@@ -97,6 +99,13 @@ pub async fn extension_settings(
         state.settings = settings.clone();
         if !settings.notifications {
             state.notification_status = "Disabled".into();
+        }
+        if let Some(wake) = SETTINGS_WAKE
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_ref()
+        {
+            let _ = wake.send(());
         }
         Ok(settings)
     })
@@ -324,6 +333,8 @@ fn notifications() -> Result<(String, Vec<Preview>), String> {
     Ok(("Allowed".into(), previews))
 }
 pub fn start(app: AppHandle) {
+    let (wake, updates) = std::sync::mpsc::channel();
+    *SETTINGS_WAKE.lock().unwrap_or_else(|p| p.into_inner()) = Some(wake);
     if let Ok(dir) = app.path().app_data_dir() {
         let _ = STORAGE.set(dir.clone());
         if let Ok(bytes) = bounded_read(&dir.join("extensions.json"), 16384) {
@@ -386,7 +397,11 @@ pub fn start(app: AppHandle) {
                 let _ = app.emit("extension-state", current);
                 emitted = serialized;
             }
-            std::thread::sleep(Duration::from_secs(1));
+            if settings.notifications {
+                let _ = updates.recv_timeout(Duration::from_secs(1));
+            } else if updates.recv().is_err() {
+                break;
+            }
         }
     });
 }

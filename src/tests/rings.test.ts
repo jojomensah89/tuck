@@ -105,10 +105,7 @@ describe('one duration format', () => {
 describe('provider identity', () => {
   it('maps providers to a mark family, or an initial', () => {
     expect(providerMark('claude')).toBe('claude');
-    expect(providerMark('anthropic-api')).toBe('anthropic');
     expect(providerMark('codex')).toBe('openai');
-    expect(providerMark('chatgpt')).toBe('openai');
-    expect(providerMark('openai-api')).toBe('openai');
     expect(providerMark('gemini')).toBeNull();
     expect(providerInitial({ provider: 'gemini', label: 'gemini pro' })).toBe('G');
     expect(providerInitial({ provider: 'x', label: '  ' })).toBe('X');
@@ -121,10 +118,8 @@ describe('provider identity', () => {
     expect(meterWindow({ id: 'codex-installed-x-secondary', label: 'Codex weekly', source: 'official' })).toBe('7d');
     expect(meterWindow({ id: 'codex-installed-x-primary', label: 'Codex 30 min', source: 'official' })).toBe('30m');
     expect(meterWindow({ id: 'codex-5h', label: 'Codex 5-hour window', source: 'official' })).toBe('5h');
-    expect(meterWindow({ id: 'anthropic-api', label: 'Anthropic API', source: 'api' })).toBe('API');
     expect(meterWindow({ id: 'claude-week', label: 'Claude weekly', source: 'official' })).toBe('7d');
     expect(meterWindow({ id: 'opus', label: 'Claude weekly Opus', source: 'official' })).toBe('Opus');
-    expect(meterWindow({ id: 'chatgpt', label: 'ChatGPT (estimate)', source: 'manual' })).toBe('Est');
     expect(meterWindow({ id: 'claude-installed', label: 'Claude Code', source: 'official' })).toBe('');
   });
 });

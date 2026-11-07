@@ -4,10 +4,12 @@ pub mod dictation;
 pub mod extensions;
 mod idle_webview;
 pub mod installed_usage;
+mod legacy_credentials;
 pub mod lifecycle;
 pub mod lyrics;
 mod lyrics_match;
 pub mod media;
+mod network_rates;
 pub mod osd_flyout;
 mod service_preferences;
 pub mod system;
@@ -47,7 +49,7 @@ pub fn run() {
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             let handle = app.clone();
             tauri::async_runtime::spawn(async move {
-                if let Err(error) = system::open_settings(&handle) {
+                if let Err(error) = system::open_settings_cmd(handle, None).await {
                     eprintln!("Single-instance settings focus: {error}");
                 }
             });
@@ -105,8 +107,8 @@ pub fn run() {
             telemetry::telemetry_history,
             media::media_sessions,
             media::media_select_session,
-            installed_usage::installed_usage_enabled,
-            installed_usage::set_installed_usage_enabled,
+            installed_usage::installed_usage_providers,
+            installed_usage::set_usage_provider,
             installed_usage::refresh_installed_usage,
             extensions::extension_snapshot,
             extensions::extension_settings,
@@ -140,6 +142,7 @@ pub fn run() {
         ])
         .setup(move |app| {
             let handle = app.handle().clone();
+            legacy_credentials::run(&handle);
             // Missing shortcut availability must not prevent the island from launching.
             if let Err(error) = dictation::start(handle.clone(), &dictation_setup) {
                 eprintln!("Dictation startup: {error}");

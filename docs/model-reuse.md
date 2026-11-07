@@ -1,4 +1,4 @@
-# Reuse and automatic restoration
+# Reusing installed models
 
 A Download request first performs fresh bounded discovery in the existing known model folders on the model worker. Tuck verifies catalog size and SHA-256 using its file-identity cache before reusing an existing copy. No copy, hard link, deletion, or modification of another application's model is performed. A valid managed copy also skips HTTP. Only pinned compatible catalog artifacts qualify; Handy ONNX models remain unsupported.
 
@@ -35,6 +35,10 @@ Only pinned compatible catalog artifacts in known Hex/Handy/Buzz/OpenWhispr/podc
 - Bun: 152 passed, 0 failed; production frontend build passed
 - UI contracts unchanged; no new UI smoke run or production app launch
 - Actual model files and user preferences were not changed; no real HTTP model download was performed in this fixture run
+
+## Automatic restoration removed (2026-11-07)
+
+A missing selection no longer downloads by itself. Tuck still looks for another verified copy once per launch and uses it, but if none exists it says the model is missing and waits for a click on Download, because a model can be hundreds of MB. Older notes above that describe an automatic download no longer apply.
 
 ## Main integration verification (2026-11-07)
 

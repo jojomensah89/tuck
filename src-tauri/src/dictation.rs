@@ -311,7 +311,13 @@ impl DictationService {
             settings.active_model_path.as_deref(),
         ) {
             if !model::local_model_exists(path) {
-                return model::Resolution { active: None, notice: Some(format!("{} is missing; restoration may be running. Open Settings for progress or Download to retry.", model::entry(id).map_or(id, |e| e.label))) };
+                return model::Resolution {
+                    active: None,
+                    notice: Some(format!(
+                        "{} is missing. Open Settings to download it again.",
+                        model::entry(id).map_or(id, |e| e.label)
+                    )),
+                };
             }
         }
         model::resolve_active(
@@ -329,8 +335,8 @@ impl DictationService {
         )
     }
 
-    // One automatic attempt per selection generation and process. Cancel/failure
-    // stays suppressed until explicit Download or a new launch.
+    // Looks for another verified copy of a missing selection, once per selection generation
+    // and process. It never downloads: that takes a click, because a model can be hundreds of MB.
     fn repair_missing(self: &Arc<Self>) -> Result<(), String> {
         let settings = self.settings();
         let Some(id) = settings.active_model.as_deref() else {
@@ -1114,7 +1120,7 @@ impl DictationService {
             runtime.settings_notice = Some(format!(
                 "{} {}\u{2026}",
                 if restoring {
-                    "Restoring"
+                    "Looking for"
                 } else {
                     "Checking existing copies of"
                 },
@@ -1158,13 +1164,16 @@ impl DictationService {
                     catalog,
                 );
                 let reused_path = existing.as_ref().ok().and_then(|p| p.clone());
+                let needs_download = restoring && matches!(existing, Ok(None));
                 let result = match tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
                 {
                     Ok(runtime) => runtime
                         .block_on(model::acquire(existing, || async {
-                            if service.is_shutdown()
+                            if needs_download {
+                                Ok(())
+                            } else if service.is_shutdown()
                                 || cancel.load(Ordering::Acquire)
                                 || service
                                     .runtime
@@ -1205,7 +1214,11 @@ impl DictationService {
                 let mut superseded = false;
                 let mut cleanup_generation = generation;
                 // Only when the owner did not choose a model during the download.
-                if error.is_none() && !cancel.load(Ordering::Acquire) && !service.is_shutdown() {
+                if error.is_none()
+                    && !needs_download
+                    && !cancel.load(Ordering::Acquire)
+                    && !service.is_shutdown()
+                {
                     // A fallback model removed during the download is not worth pinning.
                     let still_there = selection_before.is_some()
                         || active_before
@@ -1248,11 +1261,11 @@ impl DictationService {
                     if runtime.selection_generation == cleanup_generation {
                         runtime.model_error = reported.clone();
                         runtime.settings_notice = Some(if cancel.load(Ordering::Acquire) {
-                            "Model restoration cancelled; use Download to retry, or restart Tuck"
-                                .into()
+                            "Model download cancelled; use Download to retry".into()
                         } else if error.is_some() {
-                            "Model restoration failed; use Download to retry, or restart Tuck"
-                                .into()
+                            "Model download failed; use Download to retry".into()
+                        } else if needs_download {
+                            format!("{} is missing; use Download to get it again", entry.label)
                         } else if superseded {
                             format!(
                                 "{} is available; the model selection was left unchanged",
@@ -1265,11 +1278,8 @@ impl DictationService {
                                 entry.label,
                                 model::app_for(&path, &service.locations).unwrap_or("Tuck")
                             )
-                        } else if error.is_none() {
-                            format!("{} is ready", entry.label)
                         } else {
-                            "Model restoration failed; use Download to retry, or restart Tuck"
-                                .into()
+                            format!("{} is ready", entry.label)
                         });
                     }
                 }
@@ -2428,7 +2438,9 @@ mod tests {
                 .recv_timeout(std::time::Duration::from_secs(10))
                 .unwrap();
         }));
-        f.service.repair_missing().unwrap();
+        f.service
+            .start_model_download(FIXTURE_ENTRY.id, false)
+            .unwrap();
         f.entered();
         // Candidate appears after acquisition preflight, before background discovery.
         std::fs::write(f.root.join("external").join(FIXTURE_ENTRY.id), b"bad").unwrap();
@@ -2465,7 +2477,9 @@ mod tests {
     fn service_worker_persistence_failure_remains_visible() {
         let f = ServiceFixture::new();
         let old = f.service.settings();
-        f.service.repair_missing().unwrap();
+        f.service
+            .start_model_download(FIXTURE_ENTRY.id, false)
+            .unwrap();
         f.entered();
         // A directory at the destination forces the real atomic replace to fail.
         std::fs::remove_file(f.root.join("dictation.json")).unwrap();
@@ -2495,7 +2509,9 @@ mod tests {
                 let mut r = f.service.runtime.lock().unwrap();
                 r.user_selection_check = Some(r.selection_generation);
             }
-            f.service.repair_missing().unwrap();
+            f.service
+                .start_model_download(FIXTURE_ENTRY.id, false)
+                .unwrap();
             f.entered();
             if !pending_check {
                 f.service.commit_selection(None, None).unwrap();
@@ -2520,10 +2536,12 @@ mod tests {
     }
 
     #[test]
-    fn service_worker_failure_cancel_suppress_loop_and_explicit_retry_works() {
+    fn service_worker_failure_or_cancel_never_downloads_again_until_a_click() {
         for cancel in [false, true] {
             let f = ServiceFixture::new();
-            f.service.repair_missing().unwrap();
+            f.service
+                .start_model_download(FIXTURE_ENTRY.id, false)
+                .unwrap();
             f.entered();
             if cancel {
                 f.service.cancel_download().unwrap();
@@ -2531,6 +2549,7 @@ mod tests {
             f.release.send(false).unwrap();
             f.wait();
             f.service.repair_missing().unwrap();
+            f.wait();
             assert_eq!(f.calls.load(Ordering::SeqCst), 1);
             f.service
                 .start_model_download(FIXTURE_ENTRY.id, false)
@@ -2581,24 +2600,53 @@ mod tests {
                 b"abc"
             };
             std::fs::write(&path, bytes).unwrap();
+            let selected = f.disk().active_model_path;
             f.service.repair_missing().unwrap();
-            f.entered();
-            f.release.send(true).unwrap();
             f.wait();
-            assert_eq!(f.calls.load(Ordering::SeqCst), 1);
-            assert_eq!(f.disk().active_model_path, None);
+            assert_eq!(f.calls.load(Ordering::SeqCst), 0);
+            assert_eq!(f.disk().active_model_path, selected);
+            assert!(f.service.resolve_model().active.is_none());
             assert_eq!(std::fs::read(path).unwrap(), bytes);
         }
     }
 
     #[test]
-    fn service_worker_fresh_service_retries_persisted_missing_selection() {
+    fn service_worker_asks_before_downloading_a_missing_model() {
+        let f = ServiceFixture::new();
+        let selected = f.disk().active_model_path;
+        f.service.repair_missing().unwrap();
+        f.wait();
+        assert_eq!(
+            f.calls.load(Ordering::SeqCst),
+            0,
+            "no download without a click"
+        );
+        assert_eq!(f.disk().active_model_path, selected);
+        {
+            let runtime = f.service.runtime.lock().unwrap();
+            assert_eq!(runtime.model_error, None);
+            let notice = runtime.settings_notice.as_deref().unwrap();
+            assert!(notice.contains("is missing"), "{notice}");
+        }
+        // The click: only now does the download run, and it makes the model usable.
+        f.service
+            .start_model_download(FIXTURE_ENTRY.id, false)
+            .unwrap();
+        f.entered();
+        f.release.send(true).unwrap();
+        f.wait();
+        assert_eq!(f.calls.load(Ordering::SeqCst), 1);
+        assert!(f.service.resolve_model().active.is_some());
+    }
+
+    #[test]
+    fn service_worker_fresh_service_looks_again_for_a_missing_selection() {
         let mut f = ServiceFixture::new();
         f.service.repair_missing().unwrap();
-        f.entered();
-        f.release.send(false).unwrap();
         f.wait();
         let previous = f.service.clone();
+        let copy = f.root.join("external").join(FIXTURE_ENTRY.id);
+        std::fs::write(&copy, b"abc").unwrap();
         let mut fresh = DictationService::new();
         fresh.storage_root = Some(f.root.clone());
         fresh.locations = previous.locations.clone();
@@ -2614,11 +2662,9 @@ mod tests {
         });
         f.service = Arc::new(fresh);
         f.service.repair_missing().unwrap();
-        f.entered();
-        f.release.send(true).unwrap();
         f.wait();
-        assert_eq!(f.calls.load(Ordering::SeqCst), 2);
-        assert!(f.service.resolve_model().active.is_some());
+        assert_eq!(f.calls.load(Ordering::SeqCst), 0);
+        assert_eq!(f.service.resolve_model().active.unwrap().path, copy);
     }
 
     fn recording_service() -> DictationService {

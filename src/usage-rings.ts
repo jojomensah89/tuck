@@ -52,9 +52,6 @@ function providerLabel(meter: Meter): string {
   const key = providerKey(meter);
   if (key === 'anthropic-subscription') return 'Claude';
   if (key === 'openai-subscription') return 'OpenAI';
-  if (meter.provider === 'anthropic-api') return 'Anthropic API';
-  if (meter.provider === 'openai-api') return 'OpenAI API';
-  if (meter.provider === 'chatgpt') return 'ChatGPT';
   return meter.label || meter.provider;
 }
 
@@ -65,10 +62,10 @@ function windowRank(meter: Meter): number {
   return 2;
 }
 
-/** Groups quota windows without merging API spend or manual estimates into subscriptions. */
+/** Groups subscription quota windows by provider. */
 export function groupUsageProviders(meters: Meter[]): UsageProviderGroup[] {
   const groups = new Map<string, UsageProviderGroup>();
-  for (const meter of meters) {
+  for (const meter of meters.filter(m => m.source === 'official')) {
     const key = providerKey(meter);
     let group = groups.get(key);
     if (!group) {
@@ -81,8 +78,8 @@ export function groupUsageProviders(meters: Meter[]): UsageProviderGroup[] {
   return [...groups.values()];
 }
 
-function sourceWord(meter: Meter): string {
-  return meter.source === 'manual' ? 'estimate' : meter.source === 'api' ? 'API' : 'official';
+function sourceWord(_meter: Meter): string {
+  return 'official';
 }
 
 /** Codex reports each quota bucket as `<bucket>-primary` and `<bucket>-secondary` */
@@ -111,10 +108,8 @@ export function meterDetails(meter: Meter, nowSeconds = Date.now() / 1000, name 
   if (name) parts.push(name);
   const left = remainingPct(meter.usedPct);
   if (left != null) parts.push(`${left}% left`);
-  if (meter.id === 'chatgpt' && meter.count != null && meter.cap != null) parts.push(`${Math.max(0, meter.cap - meter.count)} of ${meter.cap} messages left`);
-  if (meter.spentUsd != null && Number.isFinite(meter.spentUsd)) parts.push(`$${meter.spentUsd.toFixed(2)} spent this month`);
   const reset = resetSpan(meter.resetsAt, nowSeconds);
-  if (reset) parts.push(reset === 'now' ? 'resetting now' : meter.id === 'chatgpt' ? `next slot frees in ${reset}` : `resets in ${reset}`);
+  if (reset) parts.push(reset === 'now' ? 'resetting now' : `resets in ${reset}`);
   if (meter.status && meter.status !== 'ok' && meter.status !== 'stale') parts.push(meter.status);
   if (meter.error) parts.push(meter.error);
   if (meter.stale) parts.push(meter.provider === 'claude' ? 'stale, open Claude Code to refresh' : 'stale, waiting for the provider');
@@ -123,9 +118,6 @@ export function meterDetails(meter: Meter, nowSeconds = Date.now() / 1000, name 
 }
 
 export function valueText(meter: Meter): string {
-  if (meter.id === 'chatgpt' && meter.count != null && meter.cap != null) return `${Math.max(0, meter.cap - meter.count)} left`;
-  // Spend reads in dollars even with a budget: the ring shows what is left of that budget
-  if (meter.spentUsd != null && Number.isFinite(meter.spentUsd)) return `$${meter.spentUsd.toFixed(2)}`;
   const left = remainingPct(meter.usedPct);
   if (left != null) return `${left}% left`;
   return '\u2013';
@@ -154,25 +146,13 @@ function setIfChanged(node: HTMLElement, text: string): void {
   if (node.textContent !== text) node.textContent = text;
 }
 
-function buildCell(group: UsageProviderGroup, drawn: Meter[], onLog: () => void): Cell {
+function buildCell(drawn: Meter[]): Cell {
   const root = el('div', 'u-provider');
-  const isLog = group.meters.some(meter => meter.id === 'chatgpt');
-  const face = isLog ? el('button', 'u-face u-log') : el('div', 'u-face');
-  if (face instanceof HTMLButtonElement) {
-    face.type = 'button';
-    face.addEventListener('click', event => { event.stopPropagation(); onLog(); });
-  } else {
-    face.tabIndex = 0;
-    face.setAttribute('role', 'img');
-  }
+  const face = el('div', 'u-face');
+  face.tabIndex = 0; face.setAttribute('role', 'img');
   const rings = drawn.map((_, index) => createRing(index === 0 ? OUTER_SIZE : INNER_SIZE, RING_STROKE, index === 0 ? 'u-ring-outer' : 'u-ring-inner'));
   const glyph = el('span', 'ring-glyph');
   face.append(...rings.map(ring => ring.root), glyph);
-  if (isLog) {
-    const badge = el('span', 'u-log-badge');
-    badge.innerHTML = SVG_ICONS.plus;
-    face.append(badge);
-  }
   const values = el('div', 'u-values');
   const lines = drawn.map(() => {
     const line = el('span', 'u-value-line');
@@ -189,7 +169,7 @@ function buildCell(group: UsageProviderGroup, drawn: Meter[], onLog: () => void)
 }
 
 /** Renders connected meters and returns the number of provider cards. */
-export function renderUsageRings(list: HTMLElement, meters: Meter[], onLog: () => void, nowSeconds = Date.now() / 1000): number {
+export function renderUsageRings(list: HTMLElement, meters: Meter[], nowSeconds = Date.now() / 1000): number {
   const groups = groupUsageProviders(meters);
   const hadFocus = list.contains(document.activeElement);
   const focusedKey = [...cells].find(([, cell]) => cell.root.contains(document.activeElement))?.[0];
@@ -210,7 +190,7 @@ export function renderUsageRings(list: HTMLElement, meters: Meter[], onLog: () =
     let cell = cells.get(group.key);
     if (!cell || cell.rings.length !== drawn.length) {
       cell?.root.remove();
-      cell = buildCell(group, drawn, onLog);
+      cell = buildCell(drawn);
       cells.set(group.key, cell);
     }
     const { root, rings, lines } = cell;
@@ -237,7 +217,7 @@ export function renderUsageRings(list: HTMLElement, meters: Meter[], onLog: () =
     ].join('. ');
     if (root.title !== details) {
       root.title = details;
-      cell.face.setAttribute('aria-label', group.meters.some(meter => meter.id === 'chatgpt') ? `Log a ChatGPT message. ${details}` : details);
+      cell.face.setAttribute('aria-label', details);
     }
   });
 

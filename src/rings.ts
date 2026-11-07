@@ -84,7 +84,7 @@ export function providerMark(provider: string): ProviderMark | null {
   const p = provider.toLowerCase();
   if (p === 'claude') return 'claude';
   if (p.startsWith('anthropic')) return 'anthropic';
-  if (p === 'codex' || p === 'chatgpt' || p.startsWith('openai')) return 'openai';
+  if (p === 'codex' || p.startsWith('openai')) return 'openai';
   return null;
 }
 
@@ -94,10 +94,8 @@ export function providerInitial(meter: Pick<Meter, 'provider' | 'label'>): strin
   return (source[0] || '?').toUpperCase();
 }
 
-/** The short window name beside a ring: "5h", "7d", "API", "Est". */
+/** The short window name beside a ring: "5h", "7d". */
 export function meterWindow(meter: Pick<Meter, 'id' | 'label' | 'source'>): string {
-  if (meter.source === 'manual') return 'Est';
-  if (meter.source === 'api') return 'API';
   // The label is written for people; the id is the fallback
   for (const raw of [meter.label, meter.id]) {
     const text = raw.toLowerCase();

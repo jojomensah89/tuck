@@ -148,14 +148,19 @@ pub(crate) async fn update_action(
     } else {
         update.timeout = Some(Duration::from_secs(600));
         let mut downloaded = 0u64;
+        let mut last_percent = None;
         let result = update
             .download(
                 |chunk, total| {
                     downloaded += chunk as u64;
+                    let percent = whole_percent(downloaded, total);
+                    // Chunks arrive far faster than the ring can show them
+                    if percent == last_percent {
+                        return;
+                    }
+                    last_percent = percent;
                     let mut inner = state.inner.lock().unwrap();
-                    inner.snapshot.progress = total
-                        .filter(|v| *v > 0)
-                        .map(|v| (downloaded as f64 / v as f64 * 100.0).min(100.0));
+                    inner.snapshot.progress = percent.map(f64::from);
                     publish(&app, &inner);
                 },
                 || {},
@@ -177,6 +182,11 @@ pub(crate) async fn update_action(
         result?;
     }
     Ok(())
+}
+
+fn whole_percent(downloaded: u64, total: Option<u64>) -> Option<u8> {
+    let total = total.filter(|total| *total > 0)?;
+    Some((downloaded.saturating_mul(100) / total).min(100) as u8)
 }
 
 fn action_phase(downloaded: bool) -> &'static str {
@@ -207,6 +217,15 @@ impl Inner {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn progress_is_reported_once_per_whole_percent_and_never_invented() {
+        assert_eq!(whole_percent(1, None), None);
+        assert_eq!(whole_percent(1, Some(0)), None);
+        assert_eq!(whole_percent(0, Some(1000)), Some(0));
+        assert_eq!(whole_percent(9, Some(1000)), Some(0));
+        assert_eq!(whole_percent(420, Some(1000)), Some(42));
+        assert_eq!(whole_percent(2000, Some(1000)), Some(100));
+    }
     #[test]
     fn download_completion_requires_a_second_click_and_keeps_bytes_for_retries() {
         let mut inner = Inner::default();

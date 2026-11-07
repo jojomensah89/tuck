@@ -62,6 +62,8 @@ pub struct TelemetrySnapshot {
     pub gpus: Vec<GpuStats>,
     pub history: Vec<TelemetryHistoryPoint>,
     pub sample_time_ms: u64,
+    pub network_down_bps: Option<f64>,
+    pub network_up_bps: Option<f64>,
 }
 
 impl Default for TelemetrySnapshot {
@@ -73,6 +75,8 @@ impl Default for TelemetrySnapshot {
             gpus: Vec::new(),
             history: Vec::new(),
             sample_time_ms: now_ms(),
+            network_down_bps: None,
+            network_up_bps: None,
         }
     }
 }
@@ -400,6 +404,7 @@ pub fn start(_app: AppHandle) {
     std::thread::spawn(move || {
         let mut prev_times: Option<(u64, u64, u64)> = None;
         let mut first_cycle = true;
+        let mut network = crate::network_rates::Sampler::default();
         let mut last_sample = std::time::Instant::now();
         #[cfg(windows)]
         let mut gpu_counters = gpu_counters::GpuCounters::new();
@@ -466,6 +471,7 @@ pub fn start(_app: AppHandle) {
                 .and_then(|h| h.as_ref().map(|d| d.iter().cloned().collect()))
                 .unwrap_or_default();
 
+            let rates = network.sample();
             let snapshot = TelemetrySnapshot {
                 status,
                 cpu,
@@ -473,6 +479,8 @@ pub fn start(_app: AppHandle) {
                 gpus,
                 history: history_copy,
                 sample_time_ms: timestamp,
+                network_down_bps: rates.map(|r| r.0),
+                network_up_bps: rates.map(|r| r.1),
             };
 
             if let Ok(mut snap_guard) = SNAPSHOT.lock() {
@@ -561,6 +569,8 @@ mod tests {
             }],
             history: vec![],
             sample_time_ms: 123456789,
+            network_down_bps: None,
+            network_up_bps: None,
         };
 
         let json = serde_json::to_string(&snap).expect("serialize");

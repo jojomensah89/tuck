@@ -109,15 +109,9 @@ for (const width of [500, 440]) {
     await page.screenshot({ path: path.join(out, 'usage-none-connected.png') });
   }
   const stale = codex(now()).map(m => ({ ...m, stale: true, status: 'error', error: 'Installed client usage request timed out' }));
-  await page.evaluate(([a, b, n]) => window.__emitNative('usage', [...a, ...b,
-    { id: 'anthropic-api', provider: 'anthropic-api', label: 'Claude API', usedPct: null, spentUsd: 12.4, resetsAt: n + 86400, source: 'api', stale: false, status: 'ok' },
-    { id: 'openai-api', provider: 'openai-api', label: 'OpenAI API', usedPct: null, spentUsd: null, resetsAt: n + 86400, source: 'api', stale: true, status: 'error', error: 'Could not reach the provider' },
-  ]), [claude(now()), stale, now()]);
+  await page.evaluate(([a,b]) => window.__emitNative('usage', [...a,...b]), [claude(now()),stale]);
   await page.waitForTimeout(300);
-  await page.screenshot({ path: path.join(out, `usage-four-with-stale-${width}.png`) });
-  await page.evaluate(() => { localStorage.setItem('notch.chatgpt', JSON.stringify({ label: 'ChatGPT (estimate)', cap: 40, hours: 3 })); window.dispatchEvent(new StorageEvent('storage', { key: 'notch.chatgpt' })); });
-  await page.waitForTimeout(300);
-  await page.screenshot({ path: path.join(out, `usage-five-dense-${width}.png`) });
+  await page.screenshot({ path: path.join(out, `usage-two-with-stale-${width}.png`) });
   await context.close();
 }
 

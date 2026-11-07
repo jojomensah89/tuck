@@ -46,7 +46,6 @@ import {
   mergeMeters,
   connectedUsageMeters,
   checkResets,
-  logChatGPTMessage,
 } from './usage.js';
 import type {
   IslandState,
@@ -772,7 +771,7 @@ function renderCompact(): void {
   }
 
   if (announcement && announcement.until > Date.now() && state === 'peek') {
-    setCompactSlot(cl, 'announcement:leading', 'note', () => compactMarkup(announcement!.text.startsWith('Tuck ') ? SVG_ICONS.download : SVG_ICONS.note));
+    setCompactSlot(cl, 'announcement:leading', 'note', () => compactMarkup(announcement!.text.startsWith('Tuck ') ? SVG_ICONS.installUpdate : SVG_ICONS.note));
     const changed = setCompactSlot(cc, 'announcement:title', announcement.text, () => compactTitle(announcement!.text));
     setCompactSlot(cr, 'announcement:trailing', 'notification', () => compactIndicator(
       '<span class="peek-indicator"></span>',
@@ -1106,10 +1105,7 @@ function announceReset(meter: Meter): void { showAnnouncement(`${meter.label} re
 
 function renderUsage(): void {
   const meters = connectedUsageMeters(mergeMeters(rawMeters));
-  const providers = renderUsageRings($('uList'), meters, () => {
-    logChatGPTMessage();
-    renderUsage();
-  });
+  const providers = renderUsageRings($('uList'), meters);
   rail.setSectionVisible('usage', providers > 0);
 }
 

@@ -334,7 +334,11 @@ fn get_cache() -> &'static Arc<Mutex<SharedState>> {
 }
 pub fn current_snapshot() -> Vec<Meter> {
     let state = get_cache().lock().unwrap_or_else(|p| p.into_inner());
-    let mut meters = state.claude.clone();
+    let mut meters = if crate::installed_usage::provider_enabled("claude") {
+        state.claude.clone()
+    } else {
+        Vec::new()
+    };
     let installed = crate::installed_usage::snapshot();
     if installed
         .iter()
@@ -388,7 +392,11 @@ pub fn start<R: Runtime>(app: AppHandle<R>) {
             if manual_ticket > COMPLETED.load(Ordering::SeqCst)
                 || last_file.elapsed() >= Duration::from_secs(60)
             {
-                let mut claude = claude_meters();
+                let mut claude = if crate::installed_usage::provider_enabled("claude") {
+                    claude_meters()
+                } else {
+                    Vec::new()
+                };
                 let mut cache = get_cache().lock().unwrap_or_else(|p| p.into_inner());
                 for meter in &mut claude {
                     if meter.stale && meter.used_pct.is_none() {

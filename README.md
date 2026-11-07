@@ -31,7 +31,7 @@ Tuck checks for updates about 20 seconds after startup and every six hours. Sett
 
 Speech recognition runs on your computer. Dictation settings and downloaded models are stored locally. Clipboard history is saved locally; it can contain sensitive copied text. Treat your Windows account and local app data as sensitive.
 
-Tuck is not fully offline. Updates contact GitHub. Optional model downloads contact Hugging Face. Lyrics requests send track details to LRCLIB. Optional installed-client usage checks can contact provider services using the installed client's session. Do not enable a source unless you want it queried.
+Tuck is not fully offline. Updates contact GitHub. Optional model downloads contact Hugging Face. Lyrics requests send track details to LRCLIB. Claude and Codex each start off; switches appear only when their executable is found. With Claude on, Tuck asks Claude Code for limits and the client may contact Anthropic; the optional Tuck status-line file is local. With Codex on, Tuck asks its app-server for limits and the client may contact OpenAI. Turning either off cancels its reader and removes its rings. Tuck reads no other app's credential files and sends no prompts or login requests. Antigravity is deferred because the researched T3 Code reader requires a token file. Network speeds use local Windows interface counters only while System is visible in the open island, without network requests.
 
 Local processing does not mean local files are encrypted.
 

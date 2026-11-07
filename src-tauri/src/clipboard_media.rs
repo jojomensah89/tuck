@@ -525,6 +525,23 @@ mod tests {
         }
     }
     #[test]
+    fn alpha_and_indexed_bitmaps_round_trip() {
+        let pixels = vec![200, 100, 50, 64, 10, 20, 30, 0];
+        assert_eq!(
+            dib_pixels(&full_bitmap(2, 1, &pixels)).unwrap(),
+            (2, 1, pixels)
+        );
+        let mut dib = vec![0; 52];
+        dib[..4].copy_from_slice(&40u32.to_le_bytes());
+        dib[4..8].copy_from_slice(&1u32.to_le_bytes());
+        dib[8..12].copy_from_slice(&1u32.to_le_bytes());
+        dib[12..14].copy_from_slice(&1u16.to_le_bytes());
+        dib[14..16].copy_from_slice(&1u16.to_le_bytes());
+        dib[44..48].copy_from_slice(&[0, 0, 255, 0]);
+        dib[48] = 128;
+        assert_eq!(dib_pixels(&dib).unwrap(), (1, 1, vec![255, 0, 0, 255]));
+    }
+    #[test]
     fn noisy_png_thumbnail_is_small_and_created_only_once() {
         let (w, h) = (512, 256);
         let mut rgba = vec![0; (w * h * 4) as usize];

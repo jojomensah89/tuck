@@ -120,7 +120,9 @@ fn text_kind() -> String {
 impl ClipboardHistoryItem {
     fn new(text: String) -> Self {
         let kind = if !text.chars().any(char::is_whitespace)
-            && (text.starts_with("http://") || text.starts_with("https://"))
+            && text.split_once("://").is_some_and(|(scheme, _)| {
+                scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https")
+            })
             && reqwest::Url::parse(&text).is_ok_and(|url| url.host_str().is_some())
         {
             "link"
@@ -591,10 +593,32 @@ fn cleanup_images(dir: &std::path::Path, items: &[ClipboardHistoryItem]) -> Resu
     }
     Ok(())
 }
+fn cleanup_history_temps(dir: &std::path::Path) -> Result<(), String> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(_) => return Err("Could not clean clipboard temporary files".into()),
+    };
+    for entry in entries {
+        let entry = entry.map_err(|_| "Could not clean clipboard temporary files")?;
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name
+            .strip_prefix("items.json.")
+            .and_then(|name| name.strip_suffix(".tmp"))
+            .is_some_and(|id| Uuid::parse_str(id).is_ok())
+        {
+            remove_file_if_exists(&entry.path())
+                .map_err(|_| "Could not remove clipboard temporary file")?;
+        }
+    }
+    Ok(())
+}
 fn remove_history(dir: &std::path::Path) -> Result<(), String> {
     // Remove the index first: interrupted cleanup cannot resurrect removed content.
     remove_file_if_exists(&dir.join("items.json"))
         .map_err(|_| "Could not remove saved clipboard history")?;
+    cleanup_history_temps(dir)?;
     cleanup_images(dir, &[])
 }
 fn save_history(dir: &std::path::Path, items: &[ClipboardHistoryItem]) -> Result<(), String> {
@@ -602,15 +626,22 @@ fn save_history(dir: &std::path::Path, items: &[ClipboardHistoryItem]) -> Result
         return Err("Clipboard storage limit exceeded".into());
     }
     std::fs::create_dir_all(dir).map_err(|_| "Could not create clipboard directory")?;
+    cleanup_history_temps(dir)?;
     // Preserve the old manifest and its immutable blobs until the new index commits.
     // The image budget reserves 49 MiB for one new bitmap, both metadata versions,
     // and settings, including temporary files, inside the 256 MiB disk cap.
-    let previous = read_bounded(&dir.join("items.json"), MAX_STORE_BYTES)
-        .ok()
-        .and_then(|data| serde_json::from_slice::<PersistedItems>(&data).ok())
-        .filter(valid_persisted_items)
-        .map(|stored| stored.items)
-        .unwrap_or_default();
+    let previous = match read_bounded(&dir.join("items.json"), MAX_STORE_BYTES) {
+        Ok(data) => {
+            let stored: PersistedItems = serde_json::from_slice(&data)
+                .map_err(|_| "Could not read saved clipboard index")?;
+            if !valid_persisted_items(&stored) {
+                return Err("Invalid saved clipboard index".into());
+            }
+            stored.items
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(_) => return Err("Could not read saved clipboard index".into()),
+    };
     cleanup_images(dir, &previous)?;
     let images = dir.join("images");
     let existing = if images.exists() {
@@ -843,6 +874,7 @@ pub fn start(app: AppHandle, service: &Arc<ClipboardHistoryService>) -> Result<(
         .write()
         .map_err(|_| "Clipboard history service unavailable")? = Some(app.clone());
     let dir = service.directory(&app)?;
+    cleanup_history_temps(&dir)?;
     let mut load_items = false;
     match read_bounded(&dir.join("settings.json"), 4096) {
         Ok(bytes) => {
@@ -1672,17 +1704,43 @@ mod visual_tests {
         restore_images(&dir, &mut stored.items).unwrap();
         assert_eq!(stored.items[0].image, pinned.image);
         assert!(stored.items[0].pinned);
+        let temp = dir.join(format!("items.json.{}.tmp", Uuid::new_v4()));
+        std::fs::write(&temp, b"Synthetic private fixture").unwrap();
         remove_history(&dir).unwrap();
+        assert!(!temp.exists());
         update_enabled(&mut state, false);
         assert!(state.items.is_empty());
         assert!(!dir.join("items.json").exists());
         assert_eq!(std::fs::read_dir(dir.join("images")).unwrap().count(), 0);
         std::fs::remove_dir_all(dir).unwrap();
     }
+    #[cfg(windows)]
+    #[test]
+    fn failed_index_replacement_keeps_previous_image_and_removes_new_orphans() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let dir = std::env::temp_dir().join(format!("tuck-visual-atomic-{}", Uuid::new_v4()));
+        let previous = image();
+        save_history(&dir, std::slice::from_ref(&previous)).unwrap();
+        let locked = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(1)
+            .open(dir.join("items.json"))
+            .unwrap();
+        let next = image();
+        assert!(save_history(&dir, std::slice::from_ref(&next)).is_err());
+        assert!(dir
+            .join("images")
+            .join(format!("{}.dib", previous.id))
+            .exists());
+        assert!(!dir.join("images").join(format!("{}.dib", next.id)).exists());
+        drop(locked);
+        remove_history(&dir).unwrap();
+        std::fs::remove_dir_all(dir).unwrap();
+    }
     #[test]
     fn categories_and_links_are_unambiguous() {
         assert_eq!(
-            ClipboardHistoryItem::new("https://example.com/a".into()).kind,
+            ClipboardHistoryItem::new("HTTPS://example.com/a".into()).kind,
             "link"
         );
         for text in ["https://", "https://a.test more", "file:///C:/a", "hello"] {

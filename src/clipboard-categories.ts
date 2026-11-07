@@ -1,6 +1,6 @@
 export type ClipCategory = 'text' | 'link' | 'image' | 'video' | 'file';
 export function isClipboardLink(text: string): boolean {
-  if (text !== text.trim() || /\s/.test(text)) return false;
+  if (text !== text.trim() || /\s/.test(text) || !/^https?:\/\//i.test(text)) return false;
   try { const url = new URL(text); return (url.protocol === 'http:' || url.protocol === 'https:') && !!url.hostname; }
   catch { return false; }
 }

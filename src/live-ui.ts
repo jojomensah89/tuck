@@ -386,6 +386,7 @@ export function mountLivePages(onLayout: () => void): {
     const signature = category + data.enabled + JSON.stringify(data.items);
     if (signature === clipboardSignature) return; clipboardSignature = signature;
     const visible = data.items.filter(item => category === 'all' || clipCategory(item) === category);
+    const focusedCategory = (document.activeElement as HTMLElement)?.dataset.category;
     filters.hidden = !data.enabled;
     filters.replaceChildren();
     for (const [key, label] of (filters.hidden ? [] : CLIP_CATEGORIES)) {
@@ -419,6 +420,7 @@ export function mountLivePages(onLayout: () => void): {
       row.append(copy, label, pin, remove); clipList.append(row);
     }
     if (focus) [...clipList.querySelectorAll<HTMLElement>('[data-focus]')].find(el => el.dataset.focus === focus)?.focus();
+    if (focusedCategory) (filters.querySelector<HTMLButtonElement>(`[data-category="${focusedCategory}"]`) || filters.querySelector<HTMLButtonElement>('button'))?.focus();
   }
   async function refreshClipboard(): Promise<void> { renderClipboard(await nativeService<ClipboardSnapshot>('clipboard_snapshot')); }
 

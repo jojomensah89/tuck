@@ -1067,6 +1067,7 @@ try {
     assert.equal(await native.locator('.clipboard-row img').evaluate(img=>img.naturalWidth),128);
     assert.equal(await native.locator('.clipboard-row').first().getAttribute('data-kind'),'image');
     await native.locator('.clipboard-list').evaluate(el=>el.scrollLeft=0);
+    await native.locator('.clipboard-row[data-kind="image"]').hover();
     await native.locator('#panel-tools').screenshot({path:path.join(root,`docs/screens/clipboard-${width}.png`)});
     const before=await native.locator('.clipboard-list').evaluate(el=>el.scrollLeft);
     await native.locator('.clipboard-list').hover({position:{x:100,y:60}}); await native.mouse.wheel(0,120); await native.waitForTimeout(100);

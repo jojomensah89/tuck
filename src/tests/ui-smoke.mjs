@@ -440,7 +440,7 @@ try {
   assert.equal(await native.evaluate(()=>document.querySelector('.shelf-drop').getBoundingClientRect().bottom<=document.querySelector('.ext-row').getBoundingClientRect().top),true);
   assert.equal(await native.evaluate(()=>[...document.querySelectorAll('.full *')].filter(n=>getComputedStyle(n).borderTopStyle==='dashed').length),1,'The drop target is the one dashed element');
   await native.locator('.page.clipboard').evaluate(el=>{el.closest('.tab-panel').scrollTop=el.offsetTop;});
-  await native.waitForTimeout(50);
+  await native.getByRole('button',{name:'Clear unpinned history',exact:true}).waitFor({timeout:3000});
   const snipBox = await native.getByRole('button',{name:'Screen snip',exact:true}).boundingBox();
   assert.equal(snipBox.width,32);
   assert.equal(snipBox.height,32);
@@ -808,18 +808,16 @@ try {
   assert.equal(await sectionButtons.first().getAttribute('aria-selected'),'true');
 
   // Arrows, Home and End rove inside the switch and do not change the tab
+  const selectedSegment = name => native.locator('.section-switch-button[aria-selected="true"]',{hasText:name}).waitFor({timeout:3000});
   await sectionButtons.nth(1).focus();
   await native.keyboard.press('ArrowLeft');
-  await native.waitForTimeout(100);
+  await selectedSegment('AI');
   assert.equal(await native.locator('.tab-panel.on').getAttribute('data-tab'),'usage');
-  assert.equal(await sectionButtons.first().getAttribute('aria-selected'),'true');
   assert.equal(await sectionButtons.first().evaluate(n=>document.activeElement===n),true,'Focus follows the selected segment');
   await native.keyboard.press('End');
-  await native.waitForTimeout(100);
-  assert.equal(await sectionButtons.nth(1).getAttribute('aria-selected'),'true');
+  await selectedSegment('System');
   await native.keyboard.press('ArrowRight');
-  await native.waitForTimeout(100);
-  assert.equal(await sectionButtons.first().getAttribute('aria-selected'),'true','Switch arrows wrap');
+  await selectedSegment('AI'); // Switch arrows wrap
   // The switch belongs to the tab on screen, and tabs without parts have none
   await native.getByRole('tab',{name:'Media',exact:true}).click();
   assert.equal(await sectionButtons.count(),0);
@@ -1122,7 +1120,7 @@ try {
   await motion.getByRole('tab',{name:'Today',exact:true}).click();
   await motion.getByRole('tab',{name:'Timer',exact:true}).click();
   await motion.waitForFunction(()=>{const p=document.getElementById('panel-today');return Math.abs(p.scrollTop-p.clientHeight)<1;},null,{timeout:3000});
-  assert.equal(await motion.locator('.section-switch-button[aria-selected="true"]').textContent(),'Timer');
+  await motion.locator('.section-switch-button[aria-selected="true"]',{hasText:'Timer'}).waitFor({timeout:3000});
   assert.equal(await motion.locator('#actPause').evaluate(n=>!n.closest('[inert]')),true,'The part in view is interactive after a smooth move');
   // Hidden tabs do no polling
   await motion.getByRole('tab',{name:'Dictation',exact:true}).click();

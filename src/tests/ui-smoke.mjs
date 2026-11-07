@@ -189,16 +189,28 @@ try {
     }};
   };
   // Every installed-provider combination, using fixtures without invoking clients.
-  for (const names of [[], ['claude'], ['codex'], ['claude','codex']]) {
+  for (const names of [[], ['claude'], ['codex'], ['claude','codex'], ['antigravity']]) {
     const settings = await context.newPage(); await settings.setViewportSize({width:1000,height:700}); await settings.addInitScript(nativeBridge);
-    await settings.addInitScript(names => { window.__providers = ['claude','codex'].map(provider => ({provider,installed:names.includes(provider),enabled:false})); }, names);
+    await settings.addInitScript(names => { window.__providers = ['claude','codex','antigravity'].map(provider => ({provider,installed:names.includes(provider),enabled:false})); }, names);
     await settings.goto('http://tuck.test/settings.html#usage');
     await settings.waitForTimeout(100);
     assert.equal(await settings.locator('#providerSwitches input').count(), names.length);
     assert.equal(await settings.locator('#providersEmpty').isVisible(), names.length === 0);
     for (const name of names) {
       const toggle = settings.locator(`#usage-${name}`); assert.equal(await toggle.isChecked(), false);
-      await toggle.check(); await toggle.uncheck();
+      if (name === 'antigravity') {
+        await toggle.check();
+        await settings.getByRole('dialog').waitFor();
+        assert.match(await settings.getByRole('dialog').textContent(), /Tuck will read Antigravity's sign-in file/);
+        await settings.screenshot({path:path.join(root,'docs/screens/antigravity-confirmation.png')});
+        await settings.getByRole('button',{name:'Cancel',exact:true}).click();
+        assert.equal(await toggle.isChecked(), false);
+        assert.equal(await settings.evaluate(() => window.__calls.filter(c=>c.command==='set_usage_provider').length),0);
+        await toggle.check(); await settings.getByRole('button',{name:'Turn on',exact:true}).click();
+        await settings.waitForTimeout(50);
+        await settings.screenshot({path:path.join(root,'docs/screens/antigravity-settings.png')});
+        await toggle.uncheck();
+      } else { await toggle.check(); await toggle.uncheck(); }
     }
     const calls = await settings.evaluate(() => window.__calls.filter(c=>c.command==='set_usage_provider'));
     assert.equal(calls.length, names.length * 2);
@@ -771,6 +783,24 @@ try {
     await native.evaluate(meters=>window.__emitNative('usage',meters),quotaProviders(Math.round(Date.now()/1000)).slice(0,4));
   }
   assert.equal(await native.locator('#uList .u-provider').count(),2);
+
+  // Antigravity fixtures: five cards at both supported widths, then error/off.
+  for (const width of [440,500]) {
+    await setLive({openWidth:width});
+    const now = Math.round(Date.now()/1000);
+    const extra = ['antigravity','fixture-b','fixture-c'].map(provider => ({id:provider,provider,label:provider==='antigravity'?'Antigravity model quota':provider,usedPct:35,resetsAt:now+3600,source:'official',stale:false,status:'ok'}));
+    await native.evaluate(m=>window.__emitNative('usage',m),[...quotaProviders(now),...extra]);
+    await native.waitForTimeout(100);
+    assert.equal(await native.locator('#uList .u-provider').count(),5);
+    assert.deepEqual(await usageFit(),{inside:true,clear:true,switchClear:true,fits:true});
+    await native.locator('#isl').screenshot({path:path.join(root,`docs/screens/antigravity-five-${width}.png`)});
+    extra[0]={...extra[0],usedPct:null,stale:true,status:'error',error:'Antigravity quota unavailable'};
+    await native.evaluate(m=>window.__emitNative('usage',m),[...quotaProviders(now),extra[0]]);
+    assert.equal(await native.locator('#uList .u-state').last().textContent(),'Error');
+    if(width===440) await native.locator('#isl').screenshot({path:path.join(root,'docs/screens/antigravity-error.png')});
+    await native.evaluate(m=>window.__emitNative('usage',m),quotaProviders(now));
+    assert.equal(await native.locator('#uList .u-provider').count(),2);
+  }
 
   // The segmented switch is a real tablist and follows the same snap scroller.
   const sectionButtons = native.locator('.section-switch-button');

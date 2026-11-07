@@ -353,7 +353,7 @@ pub fn current_snapshot() -> Vec<Meter> {
 pub fn usage_now() -> Vec<Meter> {
     current_snapshot()
 }
-/// Refresh local subscription usage readers; no provider API credentials are used.
+/// Refresh enabled subscription readers, including the opt-in Antigravity credential-file exception.
 #[tauri::command]
 pub async fn refresh_usage() -> Result<Vec<Meter>, String> {
     if MANUAL_BUSY.swap(true, Ordering::SeqCst) {

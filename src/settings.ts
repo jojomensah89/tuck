@@ -265,12 +265,13 @@ function initNativeToggles(): void {
     for (const provider of found) {
       const row = document.createElement('div'); row.className = 'set-row'; row.id = `row-usage-${provider.provider}`;
       const label = document.createElement('label'); label.className = 'row-title';
-      label.textContent = provider.provider === 'claude' ? 'Claude' : 'Codex';
+      label.textContent = provider.provider === 'antigravity' ? 'Antigravity' : provider.provider === 'claude' ? 'Claude' : 'Codex';
       const toggle = document.createElement('input'); toggle.type = 'checkbox'; toggle.className = 'switch'; toggle.setAttribute('role', 'switch');
       toggle.id = `usage-${provider.provider}`; label.htmlFor = toggle.id; toggle.checked = provider.enabled;
       row.append(label, toggle); $('providerSwitches')!.append(row);
       toggle.addEventListener('change', async () => {
         toggle.disabled = true;
+        if (provider.provider === 'antigravity' && toggle.checked && !await confirmAntigravity()) { toggle.checked = false; toggle.disabled = false; return; }
         try { await invokeCommand('set_usage_provider', {provider: provider.provider, enabled: toggle.checked}); markSaved(toggle); }
         catch { toggle.checked = !toggle.checked; setStatus('installedUsageStatus', 'Could not save usage preference', 'error'); }
         finally { toggle.disabled = false; }
@@ -413,3 +414,18 @@ document.addEventListener('DOMContentLoaded', () => {
   mountShell();
   refreshPrivacy();
 });
+
+function confirmAntigravity(): Promise<boolean> {
+  return new Promise(resolve => {
+    const dialog = document.createElement('dialog');
+    dialog.setAttribute('aria-label', 'Turn on Antigravity usage');
+    const text = document.createElement('p');
+    text.textContent = "Tuck will read Antigravity's sign-in file and use it to ask Google for your quota. It's used only for this, kept in memory, and never saved or sent anywhere else.";
+    const on = document.createElement('button'); on.textContent = 'Turn on';
+    const cancel = document.createElement('button'); cancel.textContent = 'Cancel';
+    const finish = (value: boolean) => { dialog.close(); dialog.remove(); resolve(value); };
+    on.onclick = () => finish(true); cancel.onclick = () => finish(false);
+    dialog.oncancel = event => { event.preventDefault(); finish(false); };
+    dialog.append(text, cancel, on); document.body.append(dialog); dialog.showModal(); cancel.focus();
+  });
+}

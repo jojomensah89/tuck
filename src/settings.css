@@ -735,3 +735,11 @@ kbd {
 @media (prefers-reduced-motion: reduce) {
   .button:active, .shape-pick:active { transform: none; }
 }
+
+/* Credential-use confirmation follows the shared settings palette. */
+dialog[aria-label="Turn on Antigravity usage"] {
+  max-width: 440px; padding: var(--s-6); background: var(--panel); color: var(--ink);
+  border: 1px solid var(--rule); border-radius: var(--r-md); font: inherit;
+}
+dialog[aria-label="Turn on Antigravity usage"] p { margin: 0 0 var(--s-4); line-height: 1.5; }
+dialog[aria-label="Turn on Antigravity usage"] button { min-height: 36px; margin-right: var(--s-2); }

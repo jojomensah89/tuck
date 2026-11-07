@@ -360,7 +360,7 @@ impl DictationService {
         self.start_model_download(id, true)
     }
 
-    fn snapshot(&self) -> DictationSnapshot {
+    pub(crate) fn snapshot(&self) -> DictationSnapshot {
         let settings = self.settings.read().map(|s| s.clone()).unwrap_or_default();
         let resolution = self.resolve_model();
         let dir = self.models_dir().ok();
@@ -450,6 +450,26 @@ impl DictationService {
             shortcut_problems: problems,
             settings_notice,
         }
+    }
+
+    /// Why an update can't install right now. Installing stops every service, so anything
+    /// in progress would be lost. Resting states, including a missing model, don't block:
+    /// nothing could be finished or cancelled to get out of them.
+    pub(crate) fn update_blocker(&self) -> Option<&'static str> {
+        // A poisoned lock still holds readable state, and an update may be the cure
+        let runtime = self
+            .runtime
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if runtime.downloading_model.is_some() {
+            return Some("Wait for the model download or cancel it before installing the update.");
+        }
+        if runtime.removing_model || self.model_busy.load(Ordering::Acquire) {
+            return Some("Wait for the model change to finish before installing the update.");
+        }
+        let resting = matches!(runtime.status.as_str(), "idle" | "error" | "modelMissing");
+        (runtime.active.is_some() || !resting)
+            .then_some("Finish or cancel dictation before installing the update.")
     }
 
     fn emit_state(&self) {
@@ -2648,6 +2668,50 @@ mod tests {
             .store(true, Ordering::Release);
         service.publish_preview("stopped");
         assert!(service.snapshot().preview.is_none());
+    }
+
+    #[test]
+    fn update_waits_for_work_in_progress_but_not_for_resting_states() {
+        let service = DictationService::new();
+        for resting in ["idle", "error", "modelMissing"] {
+            service.runtime.lock().unwrap().status = resting.into();
+            assert_eq!(
+                service.update_blocker(),
+                None,
+                "{resting} must allow an update"
+            );
+        }
+        for busy in [
+            "starting",
+            "recording",
+            "transcribing",
+            "processing",
+            "review",
+            "inserting",
+            "cancelling",
+        ] {
+            service.runtime.lock().unwrap().status = busy.into();
+            assert!(
+                service.update_blocker().is_some(),
+                "{busy} must block an update"
+            );
+        }
+        service.runtime.lock().unwrap().status = "idle".into();
+
+        service.runtime.lock().unwrap().downloading_model = Some("ggml-tiny.bin");
+        assert!(service.update_blocker().unwrap().contains("download"));
+        service.runtime.lock().unwrap().downloading_model = None;
+
+        service.runtime.lock().unwrap().removing_model = true;
+        assert!(service.update_blocker().unwrap().contains("model change"));
+        service.runtime.lock().unwrap().removing_model = false;
+
+        service.model_busy.store(true, Ordering::Release);
+        assert!(service.update_blocker().unwrap().contains("model change"));
+        service.model_busy.store(false, Ordering::Release);
+
+        assert_eq!(service.update_blocker(), None);
+        assert!(recording_service().update_blocker().is_some());
     }
 
     #[test]

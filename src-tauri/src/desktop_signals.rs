@@ -807,7 +807,6 @@ mod native {
                     let next = subscribe_endpoint(watcher.as_ref(), &sender);
                     let next_device = next.as_ref().map(|value| value.device_id.clone());
                     if previous_device.is_some() && next_device != previous_device {
-                        crate::visualizer::notify_output_changed();
                         peek(&app, "Audio output", "Playback device changed");
                     }
                     previous_device = next_device;

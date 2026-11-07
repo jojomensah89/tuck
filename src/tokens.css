@@ -54,7 +54,10 @@
   --hit: 36px;
   --hit-sm: 32px;
   --open-w: 500px;
-  --open-h: 210px;
+  --open-h: 264px;
+  --content-left: 56px; /* the 8px gutter, the 32px rail and a 16px gap */
+  --content-right: var(--s-6);
+  --section-row: calc(var(--hit-sm) + var(--s-2)); /* the 32px row and the 8px gap under it */
 
   /* Motion: durations */
   --d-instant: 100ms;

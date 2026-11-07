@@ -197,7 +197,7 @@ export function renderUsageRings(list: HTMLElement, meters: Meter[], onLog: () =
     cells.clear();
     list.replaceChildren();
     list.classList.remove('dense');
-    if (hadFocus) list.closest<HTMLElement>('[role="tabpanel"]')?.focus({ preventScroll: true });
+    if (hadFocus) list.closest<HTMLElement>('.tab-panel')?.focus({ preventScroll: true });
     return 0;
   }
   // Two rows of two fit the section at full size; a fifth card needs a third column

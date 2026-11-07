@@ -3,6 +3,7 @@ import {mountExtensions} from './extensions.js';
 import { mountLivePages } from './live-ui.js';
 import { LIVE_SETTINGS_KEY, readPreferences, writePreferences } from './live-state.js';
 import { mountTabRail } from './tab-rail.js';
+import { startBackgroundUpdateScheduler } from './updater.js';
 import './live.css';
 import {
   isTauri,
@@ -14,7 +15,6 @@ import {
   setHit,
   fetchUsageNow,
   openSettingsCmd,
-  triggerQuickAction,
   dispatchMockEvent,
   invokeCommand,
 } from './ipc.js';
@@ -61,7 +61,7 @@ import type {
 const SIZES: Record<IslandState, [number, number]> = {
   idle: [212, 32],
   peek: [300, 38],
-  open: [440, 210],
+  open: [440, 264],
 };
 
 /** The width the idle pill last asked for; it changes with what owns the slots */
@@ -292,7 +292,7 @@ function setState(next: IslandState): void {
   syncFlyoutPause();
   if (next === 'idle') idleWidth = compactShellWidth(selectCompactActivity(compactCandidates()).primary, livePreferences.compactContent);
   const [w, h] = next === 'open'
-    ? [livePreferences.openWidth, 210]
+    ? [livePreferences.openWidth, SIZES.open[1]]
     : next === 'idle'
       ? [idleWidth, SIZES.idle[1]]
       : SIZES.peek;
@@ -519,7 +519,8 @@ function renderMedia(): void {
   if (titleSpan) {
     titleSpan.textContent = mediaState.active ? mediaState.title : 'Nothing playing';
   }
-  $('artist').textContent = mediaState.active ? mediaState.artist : 'Play something in any app';
+  $('artist').textContent = mediaState.active ? mediaState.artist : '';
+  document.querySelector('.page.media')?.classList.toggle('nothing', !mediaState.active);
   renderMediaHeader();
   applyArtwork();
   fitTitle();
@@ -731,7 +732,7 @@ function compactCandidates(): CompactActivityCandidate[] {
       id: 'media',
       kind: 'media',
       title: mediaState.title || 'Media',
-      // Playing media outranks timers and downloads; paused media yields to everything running
+      // Playing media outranks timers; paused media yields to everything running
       priority: mediaState.playing || pauseHold ? 85 : 40,
       // A paused track gives the idle pill back to time and battery; a peek can still name it
       active: mediaState.active && (mediaState.playing || pauseHold || state === 'peek'),
@@ -945,7 +946,7 @@ function renderToday(): void {
   });
 }
 
-const battRing = createRing(72, 6, 'batt-ring');
+const battRing = createRing(96, 6, 'batt-ring');
 $('battFace').prepend(battRing.root);
 $('battBolt').innerHTML = SVG_ICONS.bolt;
 
@@ -1108,7 +1109,6 @@ function renderUsage(): void {
     logChatGPTMessage();
     renderUsage();
   });
-  $('uList').classList.toggle('with-toolbar', providers > 2);
   rail.setSectionVisible('usage', providers > 0);
 }
 
@@ -1131,27 +1131,14 @@ function onUsageUpdate(meters: Meter[]): void {
 window.addEventListener('storage', () => { renderUsage(); });
 
 
-/* ================= Quick Actions ================= */
+/* ================= Media controls ================= */
 
-function setupQuickActions(): void {
-  $('icoWifi').innerHTML = SVG_ICONS.wifi;
-  $('icoBt').innerHTML = SVG_ICONS.bluetooth;
-  $('icoFocus').innerHTML = SVG_ICONS.focus;
-  $('icoCapture').innerHTML = SVG_ICONS.capture;
+function setupMediaControls(): void {
   $('prev').innerHTML = SVG_ICONS.prev;
   $('next').innerHTML = SVG_ICONS.next;
 
   renderMediaHeader();
 
-  document.querySelectorAll<HTMLButtonElement>('.chip').forEach((chip) => {
-    chip.onclick = (e) => {
-      e.stopPropagation();
-      const action = chip.dataset.action;
-      if (action) {
-        runAction(triggerQuickAction(action), 'Open Windows action');
-      }
-    };
-  });
 
 }
 
@@ -1339,12 +1326,45 @@ function holdDrag(active:boolean):void {
 }
 window.addEventListener('tuck-drop-active',event=>holdDrag((event as CustomEvent).detail===true));
 window.addEventListener('tuck-drag-active',event=>holdDrag((event as CustomEvent).detail===true));
-window.addEventListener('blur',()=>{keyboardMode=false;if(!nativeDragActive)onHover(hoverInside);});
+let lastBlurCloseTime = 0;
+
+window.addEventListener('blur', () => {
+  keyboardMode = false;
+  if (state === 'open' && !livePreferences.pinned && !nativeDragActive) {
+    lastBlurCloseTime = Date.now();
+    window.clearTimeout(closeTimer);
+    setState('idle');
+  }
+  if (!nativeDragActive) onHover(hoverInside);
+});
 
 /* ================= Subscriptions & Native Events ================= */
 
 void listenToEvent<{reason?: string}>('dictation_transcript', data => { if (data.reason === 'Copied') showAnnouncement('Copied'); });
-void listenToEvent<null>('open-island', () => { keyboardMode=true;window.clearTimeout(closeTimer);setState('open');isl.focus(); });
+void listenToEvent<null>('open-island', () => {
+  keyboardMode = true;
+  window.clearTimeout(closeTimer);
+  setState('open');
+  isl.focus();
+});
+
+void listenToEvent<null>('tray-toggle-island', () => {
+  const now = Date.now();
+  // If the island was just blurred and closed (e.g. mousedown on the tray icon), ignore the mouseup toggle
+  if (now - lastBlurCloseTime < 400) {
+    return;
+  }
+  if (state === 'open') {
+    keyboardMode = false;
+    window.clearTimeout(closeTimer);
+    setState('idle');
+  } else {
+    // Open via native command which focuses the window and removes WS_EX_NOACTIVATE
+    void invokeCommand('open_island_cmd').catch(() => {});
+  }
+});
+
+startBackgroundUpdateScheduler();
 void listenToEvent<boolean>('hover', (inside) => onHover(inside));
 void listenToEvent<boolean>('fullscreen', (hidden) => {
   document.body.classList.toggle('fullscreen-hidden', hidden);
@@ -1457,7 +1477,7 @@ void refreshUsageSnapshot();
 /* ================= Initialization ================= */
 
 setupActivitiesUI();
-setupQuickActions();
+setupMediaControls();
 renderToday();
 renderPower();
 renderUsage();
@@ -1470,16 +1490,16 @@ usageRefresh.innerHTML = SVG_ICONS.refresh;
 usageRefresh.onclick = async () => {
   if (usageRefresh.disabled) return;
   usageRefresh.disabled = true;
+  usageRefresh.title = 'Refresh AI usage';
   usageRefresh.setAttribute('aria-busy', 'true');
-  $('usageRefreshStatus').textContent = 'Refreshing...';
   const ticket = usageSnapshots.begin();
   try {
     const meters = await invokeCommand<Meter[]>('refresh_usage');
     if (!Array.isArray(meters)) throw new Error('Unavailable');
     if (usageSnapshots.accepts(ticket)) onUsageUpdate(meters);
-    $('usageRefreshStatus').textContent = rawMeters.some(m => m.stale || m.status === 'error') ? 'Some readings stale or unavailable' : 'Refresh finished';
+    usageRefresh.title = rawMeters.some(m => m.stale || m.status === 'error') ? 'Some readings are unavailable' : 'Refresh AI usage';
   } catch {
-    $('usageRefreshStatus').textContent = 'Refresh failed; keeping previous readings';
+    usageRefresh.title = 'Refresh failed. Try again';
   } finally {
     usageRefresh.disabled = false;
     usageRefresh.setAttribute('aria-busy', 'false');

@@ -33,13 +33,16 @@
                  which moves these sections into their tabs (see TABS in src/tab-nav.ts) -->
             <div class="pages-container">
               <!-- Media tab: now playing -->
-              <section class="page media" data-page="media" aria-label="Now Playing">
+              <section class="page media nothing" data-page="media" aria-label="Now Playing">
+                <p class="empty-line media-empty">Nothing playing</p>
                 <div class="now">
                   <div class="art" id="art" aria-label="Album Artwork"></div>
                   <div class="meta">
-                    <span class="media-battery" id="mediaBattBadge"></span>
                     <div class="title" id="title"><span>Nothing playing</span></div>
-                    <div class="artist" id="artist">Play something in any app</div>
+                    <div class="meta-sub">
+                      <div class="artist" id="artist"></div>
+                      <span class="media-battery" id="mediaBattBadge"></span>
+                    </div>
                   </div>
                 </div>
 
@@ -100,19 +103,10 @@
 
               <!-- Usage tab: AI usage meters -->
               <section class="page usage" data-page="usage" aria-label="AI Usage Meters">
-                <div class="usage-actions"><span id="usageRefreshStatus" role="status"></span><button class="icon-btn" id="usageRefresh" aria-label="Refresh AI usage" title="Refresh AI usage"></button></div>
+                <button class="icon-btn" id="usageRefresh" data-section-actions="usage" aria-label="Refresh AI usage" title="Refresh AI usage"></button>
                 <div class="u-list" id="uList"></div>
               </section>
 
-              <!-- Tools tab: quick actions -->
-              <section class="page quick" data-page="quick" aria-label="Quick Actions">
-                <div class="quick-grid">
-                  <button class="chip" id="chipWifi" data-action="wifi" aria-label="Wi-Fi settings" title="Wi-Fi settings"><span id="icoWifi"></span></button>
-                  <button class="chip" id="chipBt" data-action="bluetooth" aria-label="Bluetooth settings" title="Bluetooth settings"><span id="icoBt"></span></button>
-                  <button class="chip" id="chipFocus" data-action="focus" aria-label="Focus settings" title="Focus settings"><span id="icoFocus"></span></button>
-                  <button class="chip" id="chipCapture" data-action="capture" aria-label="Screen snip" title="Screen snip"><span id="icoCapture"></span></button>
-                </div>
-              </section>
             </div>
           </div>
 

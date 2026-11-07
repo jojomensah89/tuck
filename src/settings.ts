@@ -1,10 +1,12 @@
 import './settings.css';
 import { mountExtensionSettings } from './extensions.js';
 import { mountLiveSettings } from './live-settings.js';
-import { isTauri, setSecret, invokeCommand, listenToEvent } from './ipc.js';
+import { isTauri, invokeCommand, listenToEvent } from './ipc.js';
 import { STORAGE_KEYS, getJson, saveJson } from './usage.js';
-import { describeResult, filterSettings, navTarget, type SearchEntry } from './settings-search.js';
+import { describeResult, filterSettings, isRowHidden, navTarget, type SearchEntry } from './settings-search.js';
 import { clearSaved, confirmThen, markSaved, onCommit, setStatus } from './settings-ui.js';
+import { checkForUpdates, downloadAndInstallUpdate, type UpdateInfo } from './updater.js';
+import { parseReleaseNotes } from './update-notes.js';
 import type { ShapeStyle, ChatGPTConfig } from './types.js';
 import pkg from '../package.json';
 
@@ -14,7 +16,7 @@ function $<T extends HTMLElement = HTMLElement>(id: string): T | null {
 
 /* ================= Shell: views, search, keyboard ================= */
 
-const VIEWS = ['general', 'island', 'media', 'activities', 'tools', 'usage', 'keys', 'privacy', 'about'];
+const VIEWS = ['general', 'island', 'media', 'activities', 'tools', 'usage', 'privacy', 'about'];
 
 function navLinks(): HTMLAnchorElement[] {
   return [...document.querySelectorAll<HTMLAnchorElement>('#nav a[data-view]')];
@@ -52,14 +54,28 @@ function buildSearchIndex(): SearchEntry[] {
   return entries;
 }
 
+const UPDATE_ROW = 'row-update-available';
+let updateAvailable = false;
+
+/** Rows that exist in the document but have nothing to show right now. */
+function unavailableRows(): ReadonlySet<string> {
+  return new Set(updateAvailable ? [] : [UPDATE_ROW]);
+}
+
+function setUpdateAvailable(available: boolean): void {
+  updateAvailable = available;
+  applySearch($<HTMLInputElement>('settingsSearch')?.value ?? '');
+}
+
 function applySearch(query: string): void {
   const searching = query.trim() !== '';
   document.body.classList.toggle('searching', searching);
-  const result = filterSettings(searchIndex, query);
+  const unavailable = unavailableRows();
+  const result = filterSettings(searchIndex, query, unavailable);
   const matched = new Set(result.ids);
   for (const entry of searchIndex) {
     const row = document.getElementById(entry.id);
-    if (row) row.hidden = searching && !matched.has(entry.id);
+    if (row) row.hidden = isRowHidden(entry.id, searching, matched, unavailable);
   }
   for (const group of document.querySelectorAll<HTMLElement>('.group')) {
     group.hidden = searching && !group.querySelector('.set-row:not([hidden])');
@@ -154,8 +170,6 @@ function mountPrivacy(): void {
       window.setTimeout(() => $(id)?.focus(), 0);
     });
   }
-  const privacyLabel = document.querySelector<HTMLAnchorElement>('#row-privacy-api .mirror');
-  privacyLabel?.setAttribute('aria-label', 'API spend: change keys');
   document.addEventListener('change', refreshPrivacy);
   window.addEventListener('settings-loaded', refreshPrivacy);
 }
@@ -176,62 +190,6 @@ function setShape(style: ShapeStyle, control: HTMLElement | null): void {
   markSaved(control, 'Island shape saved');
   // Same-window listeners do not receive storage events, so dispatch one for them.
   window.dispatchEvent(new StorageEvent('storage', { key: STORAGE_KEYS.SHAPE, newValue: style }));
-}
-
-/* ================= Budgets: saved on change ================= */
-
-function initBudgets(): void {
-  const budgets = getJson<Record<string, number>>(STORAGE_KEYS.BUDGETS, {});
-  const fields: [HTMLInputElement, string][] = [[$<HTMLInputElement>('bAnthropic')!, 'anthropic-api'], [$<HTMLInputElement>('bOpenai')!, 'openai-api']];
-  for (const [input, key] of fields) if (budgets[key] != null) input.value = String(budgets[key]);
-
-  for (const [input] of fields) {
-    onCommit(input, () => {
-      const values = fields.map(([field]) => Number(field.value) || 0);
-      if (values.some(value => !Number.isFinite(value) || value < 0)) {
-        input.setAttribute('aria-invalid', 'true');
-        setStatus('budgetStatus', 'Budgets must be zero or a positive amount.', 'error'); return;
-      }
-      input.removeAttribute('aria-invalid');
-      const saved = saveJson(STORAGE_KEYS.BUDGETS, Object.fromEntries(fields.map(([, key], i) => [key, values[i]])));
-      if (saved) { setStatus('budgetStatus', ''); markSaved(input, 'Budget saved'); }
-      else { clearSaved(input); setStatus('budgetStatus', 'Could not save budgets. Check available storage and try again.', 'error'); }
-    });
-  }
-}
-
-/* ================= Admin keys: explicit save (Windows Credential Manager) ================= */
-
-function initAdminKeys(): void {
-  const status = $('settingsStatus')!;
-  const fields = ['kAnthropic', 'kOpenai'].map(id => $<HTMLInputElement>(id)!);
-  const controls = ['saveKeys', 'removeAnthropic', 'removeOpenai'].map(id => $<HTMLButtonElement>(id)!);
-  async function update(changes: [string, string][]): Promise<void> {
-    // Secrets never stay in the DOM and are never echoed back.
-    fields.forEach(field => { field.value = ''; });
-    controls.forEach(button => { button.disabled = true; });
-    setStatus(status, '');
-    try {
-      if (!isTauri()) throw new Error('Desktop app required');
-      for (const [name, value] of changes) await setSecret(name, value);
-      setStatus(status, changes.length ? (changes.every(([, value]) => value === '') ? 'Key removed.' : 'Keys saved to Credential Manager.') : 'Paste a key to save, or choose Remove.');
-    } catch {
-      setStatus(status, 'Credential update failed. Open the desktop app and try again. Some earlier updates may have succeeded.', 'error');
-    } finally {
-      controls.forEach(button => { button.disabled = false; });
-    }
-  }
-  $('saveKeys')?.addEventListener('click', () => {
-    const changes: [string, string][] = [];
-    for (let i = 0; i < fields.length; i++) {
-      const value = fields[i].value.trim();
-      if (value) changes.push([i === 0 ? 'anthropic-admin' : 'openai-admin', value]);
-    }
-    void update(changes);
-  });
-  for (const field of fields) field.addEventListener('keydown', event => { if (event.key === 'Enter') $('saveKeys')!.click(); });
-  confirmThen($<HTMLButtonElement>('removeAnthropic')!, 'Remove the saved Anthropic admin key? Claude API spend stops updating.', 'Remove key', () => update([['anthropic-admin', '']]));
-  confirmThen($<HTMLButtonElement>('removeOpenai')!, 'Remove the saved OpenAI admin key? OpenAI API spend stops updating.', 'Remove key', () => update([['openai-admin', '']]));
 }
 
 /* ================= ChatGPT estimate: saved on change ================= */
@@ -319,6 +277,17 @@ function initNativeToggles(): void {
     finally { startup.disabled = false; }
   });
 
+  void listenToEvent<boolean>('autostart-changed', enabled => {
+    startup.checked = enabled;
+    refreshPrivacy();
+  });
+  void listenToEvent<string>('navigate-settings-view', view => {
+    if (VIEWS.includes(view)) {
+      showView(view);
+      location.hash = `#${view}`;
+    }
+  });
+
   void invokeCommand<boolean>('installed_usage_enabled').then(value => { installed.checked = value; refreshPrivacy(); })
     .catch(() => setStatus('installedUsageStatus', 'Could not read usage preference.', 'error'));
   installed.addEventListener('change', async () => {
@@ -337,6 +306,115 @@ function initNativeToggles(): void {
   });
 }
 
+function renderReleaseNotes(container: HTMLElement, body: string | undefined): void {
+  container.replaceChildren();
+  let list: HTMLUListElement | null = null;
+  for (const block of parseReleaseNotes(body ?? '')) {
+    if (block.kind === 'item') {
+      if (!list) list = container.appendChild(document.createElement('ul'));
+      list.appendChild(document.createElement('li')).textContent = block.text;
+      continue;
+    }
+    list = null;
+    container.appendChild(document.createElement(block.kind === 'heading' ? 'h3' : 'p')).textContent = block.text;
+  }
+  if (!container.hasChildNodes()) container.appendChild(document.createElement('p')).textContent = 'No release notes provided.';
+}
+
+function initUpdates(): void {
+  const btnCheck = $<HTMLButtonElement>('btnCheckUpdates')!;
+  const btnInstall = $<HTMLButtonElement>('btnInstallUpdate')!;
+  const statusText = $('updateStatusText')!;
+  const versionBadge = $('updateVersionBadge')!;
+  const updateNotes = $('updateNotes')!;
+  const progressWrap = $('updateProgressWrap')!;
+  const progressBar = $<HTMLElement>('updateProgressBar')!;
+  const progressLabel = $('updateProgressLabel')!;
+
+  let installing = false;
+
+  function showPendingUpdate(info: UpdateInfo | null): void {
+    if (installing) return;
+    if (info) {
+      statusText.textContent = `Update available: v${info.version}.`;
+      versionBadge.textContent = `v${info.version}`;
+      renderReleaseNotes(updateNotes, info.body);
+    } else if (updateAvailable) {
+      statusText.textContent = 'Check for updates.';
+    }
+    setUpdateAvailable(info !== null);
+  }
+
+  if (!isTauri()) {
+    btnCheck.disabled = true;
+    statusText.textContent = 'Updates are available in the desktop app.';
+    return;
+  }
+
+  // The background check runs in the island window and reports through Rust
+  void listenToEvent<UpdateInfo | null>('pending-update-changed', showPendingUpdate);
+  invokeCommand<UpdateInfo | null>('get_pending_update').then(showPendingUpdate).catch(() => {});
+
+  btnCheck.addEventListener('click', async () => {
+    btnCheck.disabled = true;
+    const originalText = btnCheck.textContent;
+    btnCheck.textContent = 'Checking...';
+    statusText.textContent = 'Checking for updates...';
+
+    try {
+      const update = await checkForUpdates(true);
+      showPendingUpdate(update);
+      if (!update) statusText.textContent = `Tuck v${pkg.version} is up to date.`;
+      markSaved(btnCheck);
+    } catch (err) {
+      console.warn('[updater] Manual check failed:', err);
+      statusText.textContent = 'Could not reach update server. Check your connection.';
+    } finally {
+      btnCheck.disabled = false;
+      btnCheck.textContent = originalText;
+    }
+  });
+
+  // The tray item opens or focuses this window and asks for a fresh check
+  void listenToEvent<null>('check-for-updates-requested', () => {
+    showView('about');
+    location.hash = '#about';
+    btnCheck.click();
+  });
+  if (new URLSearchParams(window.location.search).get('check') === '1') btnCheck.click();
+
+  btnInstall.addEventListener('click', async () => {
+    installing = true;
+    btnInstall.disabled = true;
+    btnInstall.textContent = 'Downloading...';
+    progressWrap.hidden = false;
+    progressLabel.textContent = 'Downloading...';
+    progressBar.style.width = '0%';
+
+    try {
+      await downloadAndInstallUpdate((downloaded, total) => {
+        const mbDl = (downloaded / (1024 * 1024)).toFixed(1);
+        if (total && total > 0) {
+          const pct = Math.min(100, Math.round((downloaded / total) * 100));
+          progressBar.style.width = `${pct}%`;
+          progressLabel.textContent = `Downloading... ${pct}% (${mbDl} / ${(total / (1024 * 1024)).toFixed(1)} MB)`;
+        } else {
+          progressLabel.textContent = `Downloading... ${mbDl} MB`;
+        }
+      }, () => {
+        btnInstall.textContent = 'Installing...';
+        progressLabel.textContent = 'Installing update. Tuck will restart.';
+      });
+    } catch (err) {
+      console.error('[updater] Download/install error:', err);
+      installing = false;
+      btnInstall.disabled = false;
+      btnInstall.textContent = 'Download and install';
+      progressLabel.textContent = typeof err === 'string' ? err : (err instanceof Error ? err.message : 'Installation failed. Please try again.');
+    }
+  });
+}
+
 /* ================= Boot ================= */
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -346,10 +424,9 @@ document.addEventListener('DOMContentLoaded', () => {
   $('pickFloat')?.addEventListener('click', event => setShape('float', event.currentTarget as HTMLElement));
   markShape();
   initNativeToggles();
+  initUpdates();
   mountExtensionSettings();
   mountLiveSettings();
-  initBudgets();
-  initAdminKeys();
   initChatGPT();
   mountPrivacy();
   mountShell();

@@ -13,14 +13,13 @@ mod service_preferences;
 pub mod system;
 pub mod telemetry;
 pub mod usage;
-pub mod visualizer;
 
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use tauri::{
-    menu::{Menu, MenuItem},
+    menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem},
     tray::TrayIconBuilder,
-    AppHandle, Manager, State, WindowEvent,
+    AppHandle, Emitter, Manager, State, WindowEvent,
 };
 
 #[cfg(windows)]
@@ -64,9 +63,16 @@ pub fn run() {
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             Some(vec![]),
         ))
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(hit_state)
+        .manage(system::PendingUpdateState::default())
         .invoke_handler(tauri::generate_handler![
             set_hit,
+            system::get_pending_update,
+            system::set_pending_update,
+            system::check_update_allowed,
+            system::prepare_update_install,
+            system::restart_after_failed_update,
             idle_webview::island_activity,
             dictation::dictation_get_state,
             dictation::dictation_set_settings,
@@ -97,10 +103,6 @@ pub fn run() {
             lyrics::lyrics_clear_cache,
             telemetry::telemetry_now,
             telemetry::telemetry_history,
-            visualizer::visualizer_status,
-            visualizer::visualizer_set_enabled,
-            visualizer::visualizer_set_reduced_motion,
-            visualizer::visualizer_spectrum,
             media::media_sessions,
             media::media_select_session,
             installed_usage::installed_usage_enabled,
@@ -108,19 +110,14 @@ pub fn run() {
             installed_usage::refresh_installed_usage,
             extensions::extension_snapshot,
             extensions::extension_settings,
-            extensions::call_set_active,
-            extensions::calendar_import,
-            extensions::calendar_join,
             extensions::shelf_add,
             extensions::shelf_pick,
             extensions::shelf_remove,
             extensions::shelf_reveal,
             extensions::shelf_drag,
-            extensions::radio_set,
             extensions::notification_access,
             usage::usage_now,
             usage::refresh_usage,
-            usage::set_secret,
             desktop_signals::volume_step,
             desktop_signals::volume_toggle_mute,
             osd_flyout::get_hide_system_flyout,
@@ -151,16 +148,62 @@ pub fn run() {
                 eprintln!("Clipboard startup: {error}");
             }
 
-            // Setup System Tray Menu (Open island / Settings... / Quit Tuck)
+            // Setup System Tray Menu:
+            // 1. Open island
+            // 2. Settings...
+            // 3. Separator
+            // 4. Launch at sign-in (checkable, synchronized with autostart)
+            // 5. Check for updates (reads 'Update available (vX.Y.Z)' when one is found)
+            // 6. Separator
+            // 7. About Tuck (shows the version)
+            // 8. Quit Tuck
+            use tauri_plugin_autostart::ManagerExt;
+            let autostart_enabled = app.autolaunch().is_enabled().unwrap_or(false);
+
             let open_island_item =
                 MenuItem::with_id(app, "open_island", "Open island", true, None::<&str>)?;
             let settings_item =
                 MenuItem::with_id(app, "settings", "Settings...", true, None::<&str>)?;
+            let sep1 = PredefinedMenuItem::separator(app)?;
+            let autostart_item = CheckMenuItem::with_id(
+                app,
+                "autostart",
+                "Launch at sign-in",
+                true,
+                autostart_enabled,
+                None::<&str>,
+            )?;
+            let check_updates_item = MenuItem::with_id(
+                app,
+                "check_updates",
+                "Check for updates",
+                true,
+                None::<&str>,
+            )?;
+            let sep2 = PredefinedMenuItem::separator(app)?;
+            let about_item = MenuItem::with_id(app, "about", "About Tuck", true, None::<&str>)?;
             let quit_item = MenuItem::with_id(app, "quit", "Quit Tuck", true, None::<&str>)?;
-            let tray_menu =
-                Menu::with_items(app, &[&open_island_item, &settings_item, &quit_item])?;
 
-            let tray_builder = TrayIconBuilder::new()
+            let tray_menu = Menu::with_items(
+                app,
+                &[
+                    &open_island_item,
+                    &settings_item,
+                    &sep1,
+                    &autostart_item,
+                    &check_updates_item,
+                    &sep2,
+                    &about_item,
+                    &quit_item,
+                ],
+            )?;
+
+            app.manage(system::TrayItems {
+                autostart: autostart_item.clone(),
+                check_updates: check_updates_item.clone(),
+            });
+
+            let tray_builder = TrayIconBuilder::with_id("main")
                 .tooltip("Tuck")
                 .menu(&tray_menu)
                 .show_menu_on_left_click(false)
@@ -172,6 +215,19 @@ pub fn run() {
                 .icon_as_template(true);
 
             let _tray = tray_builder
+                .on_tray_icon_event(|tray, event| {
+                    if let tauri::tray::TrayIconEvent::Click {
+                        button: tauri::tray::MouseButton::Left,
+                        button_state: tauri::tray::MouseButtonState::Up,
+                        ..
+                    } = event
+                    {
+                        let app = tray.app_handle();
+                        if let Some(win) = app.get_webview_window("main") {
+                            let _ = win.emit("tray-toggle-island", ());
+                        }
+                    }
+                })
                 .on_menu_event(|app: &AppHandle, event| match event.id.as_ref() {
                     "open_island" => {
                         if let Some(win) = app.get_webview_window("main") {
@@ -184,6 +240,39 @@ pub fn run() {
                             let _ = system::open_settings(&a);
                         });
                     }
+                    "autostart" => {
+                        let a = app.clone();
+                        tauri::async_runtime::spawn(async move {
+                            use tauri_plugin_autostart::ManagerExt;
+                            let autolaunch = a.autolaunch();
+                            let current = autolaunch.is_enabled().unwrap_or(false);
+                            let next = !current;
+                            let res = if next {
+                                autolaunch.enable()
+                            } else {
+                                autolaunch.disable()
+                            };
+                            if res.is_ok() {
+                                system::update_tray_autostart(&a, next);
+                                let _ = a.emit("autostart-changed", next);
+                            } else {
+                                system::update_tray_autostart(&a, current);
+                            }
+                        });
+                    }
+                    "check_updates" => {
+                        let a = app.clone();
+                        tauri::async_runtime::spawn(async move {
+                            let _ = system::open_settings_view(&a, "about", true);
+                        });
+                    }
+                    "about" => {
+                        let a = app.clone();
+                        tauri::async_runtime::spawn(async move {
+                            let _ = system::open_settings_view(&a, "about", false);
+                        });
+                    }
+
                     "quit" => {
                         app.exit(0);
                     }
@@ -241,7 +330,6 @@ pub fn run() {
             telemetry::start(handle.clone());
             osd_flyout::start(handle.clone());
             desktop_signals::start(handle.clone());
-            visualizer::start(handle.clone());
             system::start(handle, hit_state_setup);
 
             Ok(())
@@ -250,14 +338,21 @@ pub fn run() {
         .expect("error while building tauri application")
         .run(|app, event| {
             if matches!(event, tauri::RunEvent::Exit) {
-                lifecycle::stop();
-                media::stop();
-                desktop_signals::stop();
-                osd_flyout::shutdown();
-                app.state::<Arc<dictation::DictationService>>().shutdown();
-                clipboard_history::stop(
-                    &app.state::<Arc<clipboard_history::ClipboardHistoryService>>(),
-                );
+                run_shutdown_cleanup(app);
             }
         });
+}
+
+/// Central shutdown cleanup: cancels signals, un-hides native OS flyout, and shuts down dictation & clipboard.
+pub fn run_shutdown_cleanup(app: &AppHandle) {
+    lifecycle::stop();
+    media::stop();
+    desktop_signals::stop();
+    osd_flyout::shutdown();
+    if let Some(dictation) = app.try_state::<Arc<dictation::DictationService>>() {
+        dictation.shutdown();
+    }
+    if let Some(cb) = app.try_state::<Arc<clipboard_history::ClipboardHistoryService>>() {
+        clipboard_history::stop(&cb);
+    }
 }

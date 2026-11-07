@@ -1,5 +1,7 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
+use std::sync::{Arc, Mutex};
+use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 static HIT_GEOMETRY_DIRTY: AtomicBool = AtomicBool::new(true);
 pub(crate) fn invalidate_hit_geometry() {
     HIT_GEOMETRY_DIRTY.store(true, Ordering::Release);
@@ -21,8 +23,6 @@ static CURSOR_GATE: std::sync::LazyLock<(std::sync::Mutex<()>, std::sync::Condva
 pub(crate) const CURSOR_PAUSE_FULLSCREEN: u8 = 1;
 pub(crate) const CURSOR_PAUSE_SESSION: u8 = 2;
 pub(crate) const CURSOR_PAUSE_SUSPEND: u8 = 4;
-use std::sync::Arc;
-use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 
 #[cfg(windows)]
 use windows::{
@@ -151,10 +151,11 @@ pub struct HitBounds {
     pub bottom: f64,
 }
 
-/// Clamps logical CSS hit dimensions to stay within the 520x230 window canvas.
+/// Clamps logical CSS hit dimensions to stay within the 520x288 window canvas: the 500x264
+/// open island, the 10px floating gap and the shell spring's overshoot.
 pub fn clamp_hit_size(w: u32, h: u32) -> (u32, u32) {
     let bounded_w = w.clamp(10, 520);
-    let bounded_h = h.clamp(10, 230);
+    let bounded_h = h.clamp(10, 288);
     (bounded_w, bounded_h)
 }
 
@@ -687,7 +688,7 @@ pub fn start(app: AppHandle, hit_state: Arc<HitState>) {
 }
 
 /// Allowed quick action names opening actual Windows system URI.
-pub const ALLOWED_QUICK_ACTIONS: &[&str] = &["wifi", "bluetooth", "focus", "capture"];
+pub const ALLOWED_QUICK_ACTIONS: &[&str] = &["capture"];
 
 #[cfg(windows)]
 fn open_system_uri(uri: &str) -> Result<(), String> {
@@ -722,9 +723,6 @@ fn open_system_uri(_uri: &str) -> Result<(), String> {
 #[tauri::command]
 pub(crate) fn quick_action(name: String) -> Result<(), String> {
     match name.as_str() {
-        "wifi" => open_system_uri("ms-settings:network-wifi"),
-        "bluetooth" => open_system_uri("ms-settings:bluetooth"),
-        "focus" => open_system_uri("ms-settings:quiethours"),
         "capture" => open_system_uri("ms-screenclip:"),
         other => Err(format!(
             "Unknown quick action: '{other}'. Allowed: {}",
@@ -753,10 +751,44 @@ pub fn open_settings(app: &AppHandle) -> Result<(), String> {
     }
 }
 
+/// Opens or focuses settings.html and navigates to the specified view.
+/// If `check` is true, sets a query parameter `?check=1` and triggers an update check.
+pub fn open_settings_view(app: &AppHandle, view: &str, check: bool) -> Result<(), String> {
+    let url_str = if check {
+        format!("settings.html?check=1#{view}")
+    } else {
+        format!("settings.html#{view}")
+    };
+    if let Some(win) = app.get_webview_window("settings") {
+        let _ = win.unminimize();
+        let _ = win.show();
+        let _ = win.set_focus();
+        let _ = win.emit("navigate-settings-view", view);
+        if check {
+            let _ = win.emit("check-for-updates-requested", ());
+        }
+        Ok(())
+    } else {
+        WebviewWindowBuilder::new(app, "settings", WebviewUrl::App(url_str.into()))
+            .title("Tuck Settings")
+            .inner_size(760.0, 600.0)
+            .min_inner_size(640.0, 440.0)
+            .resizable(true)
+            .focused(true)
+            .build()
+            .map_err(|e| e.to_string())
+            .map(|_| ())
+    }
+}
+
 /// Frontend command to open settings window without phantom successes.
 #[tauri::command]
-pub(crate) async fn open_settings_cmd(app: AppHandle) -> Result<(), String> {
-    open_settings(&app)
+pub(crate) async fn open_settings_cmd(app: AppHandle, view: Option<String>) -> Result<(), String> {
+    match view.as_deref() {
+        // The island's missing-model link goes straight to the model picker.
+        Some("tools") => open_settings_view(&app, "tools", false),
+        _ => open_settings(&app),
+    }
 }
 
 /// Autostart status check.
@@ -766,15 +798,109 @@ pub(crate) async fn get_autostart(app: AppHandle) -> Result<bool, String> {
     app.autolaunch().is_enabled().map_err(|e| e.to_string())
 }
 
+/// Handle to dynamic tray items for state synchronization.
+pub struct TrayItems {
+    pub autostart: tauri::menu::CheckMenuItem<tauri::Wry>,
+    pub check_updates: tauri::menu::MenuItem<tauri::Wry>,
+}
+
+/// Synchronizes the tray menu checkmark with the autostart setting.
+pub fn update_tray_autostart(app: &AppHandle, enabled: bool) {
+    if let Some(tray) = app.try_state::<TrayItems>() {
+        let _ = tray.autostart.set_checked(enabled);
+    }
+}
+
 /// Autostart enable/disable toggle.
 #[tauri::command]
 pub(crate) async fn set_autostart(app: AppHandle, enable: bool) -> Result<(), String> {
     use tauri_plugin_autostart::ManagerExt;
-    if enable {
+    let res = if enable {
         app.autolaunch().enable().map_err(|e| e.to_string())
     } else {
         app.autolaunch().disable().map_err(|e| e.to_string())
+    };
+    if res.is_ok() {
+        update_tray_autostart(&app, enable);
     }
+    res
+}
+
+/// Pending update metadata stored centrally in Rust.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingUpdateInfo {
+    pub version: String,
+    pub current_version: String,
+    pub body: Option<String>,
+    pub date: Option<String>,
+}
+
+#[derive(Default)]
+pub struct PendingUpdateState(pub Mutex<Option<PendingUpdateInfo>>);
+
+/// Retrieves currently pending update info if available.
+#[tauri::command]
+pub(crate) fn get_pending_update(
+    state: State<'_, PendingUpdateState>,
+) -> Option<PendingUpdateInfo> {
+    state.0.lock().ok()?.clone()
+}
+
+/// Stores the update found by a check, relabels the tray item and tells an open Settings window.
+#[tauri::command]
+pub(crate) fn set_pending_update(
+    app: AppHandle,
+    state: State<'_, PendingUpdateState>,
+    update: Option<PendingUpdateInfo>,
+) -> Result<(), String> {
+    if let Ok(mut lock) = state.0.lock() {
+        *lock = update.clone();
+    }
+    set_tray_update_title(&app, update.as_ref().map(|u| u.version.as_str()));
+    let _ = app.emit_to("settings", "pending-update-changed", update);
+    Ok(())
+}
+
+fn set_tray_update_title(app: &AppHandle, version: Option<&str>) {
+    if let Some(tray) = app.try_state::<TrayItems>() {
+        let text = match version {
+            Some(v) => format!("Update available (v{v})"),
+            None => "Check for updates".to_string(),
+        };
+        let _ = tray.check_updates.set_text(text);
+    }
+}
+
+fn ensure_update_allowed(app: &AppHandle) -> Result<(), String> {
+    if let Some(dictation) = app.try_state::<Arc<crate::dictation::DictationService>>() {
+        if let Some(reason) = dictation.update_blocker() {
+            return Err(reason.into());
+        }
+    }
+    Ok(())
+}
+
+/// Refuses to start downloading an update while dictation is busy.
+#[tauri::command]
+pub(crate) fn check_update_allowed(app: AppHandle) -> Result<(), String> {
+    ensure_update_allowed(&app)
+}
+
+/// Last check before the installer takes over: stops every service, so a later failure
+/// must call `restart_after_failed_update`.
+#[tauri::command]
+pub(crate) fn prepare_update_install(app: AppHandle) -> Result<(), String> {
+    ensure_update_allowed(&app)?;
+    crate::run_shutdown_cleanup(&app);
+    Ok(())
+}
+
+/// `prepare_update_install` stopped the services and the installer did not run. A restart
+/// brings them all back.
+#[tauri::command]
+pub(crate) fn restart_after_failed_update(app: AppHandle) {
+    app.restart();
 }
 
 #[cfg(test)]

@@ -497,6 +497,16 @@ pub(super) fn verify(
     cache: &Mutex<VerifyCache>,
     low_priority: bool,
 ) -> Result<(), String> {
+    verify_current(path, entry, cache, low_priority, false)
+}
+
+fn verify_current(
+    path: &Path,
+    entry: &CatalogEntry,
+    cache: &Mutex<VerifyCache>,
+    low_priority: bool,
+    fresh: bool,
+) -> Result<(), String> {
     let identity = file_identity(path)?;
     if identity.size != entry.bytes {
         return Err(format!(
@@ -509,7 +519,9 @@ pub(super) fn verify(
         .lock()
         .ok()
         .and_then(|c| c.lookup(path, &key, &identity).map(str::to_owned));
-    let actual = match cached {
+    // Acquisition must confirm current bytes even when Windows coalesces metadata
+    // timestamps for an immediate same-size rewrite. Recording retains its cache.
+    let actual = match cached.filter(|_| !fresh) {
         Some(sha256) => sha256,
         None => {
             let sha256 = hash_file(path, low_priority)?;
@@ -670,7 +682,8 @@ fn verify_candidates(
         if cancel.load(Ordering::Acquire) {
             return Err("Model operation cancelled".into());
         }
-        if local_model_exists(&path) && verify(&path, entry, cache, external).is_ok() {
+        if local_model_exists(&path) && verify_current(&path, entry, cache, external, true).is_ok()
+        {
             if cancel.load(Ordering::Acquire) {
                 return Err("Model operation cancelled".into());
             }

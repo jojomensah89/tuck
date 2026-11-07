@@ -110,33 +110,20 @@ export async function fetchUsageNow(): Promise<Meter[]> {
   return [];
 }
 
-/**
- * Stores or clears a secret in Windows Credential Manager.
- * Never persists secrets into localStorage.
- */
-export async function setSecret(name: string, value: string): Promise<void> {
+export async function openSettingsCmd(view?: 'tools'): Promise<void> {
   if (isTauri()) {
-    await invokeCommand('set_secret', { name, value });
-  } else {
-    // In browser preview, simulate without storing sensitive key
-    console.info(`[IPC Demo] set_secret invoked for ${name} (cleared or updated in memory demo)`);
-  }
-}
-
-export async function openSettingsCmd(): Promise<void> {
-  if (isTauri()) {
-    await invokeCommand('open_settings_cmd');
+    await invokeCommand('open_settings_cmd', view ? { view } : undefined);
   } else {
     // In browser demo, open settings.html in a new tab/window
-    window.open('settings.html', '_blank', 'width=460,height=700');
+    window.open(view ? `settings.html#${view}` : 'settings.html', '_blank', 'width=460,height=700');
   }
 }
 
 /**
- * Native quick action to open corresponding Windows settings page or tool.
+ * Native screen snip action; never navigates the webview.
  */
 export async function triggerQuickAction(actionName: string): Promise<void> {
-  if (!['wifi', 'bluetooth', 'focus', 'capture'].includes(actionName)) throw new Error('Unknown action');
+  if (!['capture'].includes(actionName)) throw new Error('Unknown action');
   if (!isTauri()) throw new Error('Windows actions are available in the desktop app');
   await invokeCommand('quick_action', { name: actionName });
 }

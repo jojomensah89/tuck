@@ -126,11 +126,11 @@ for (const width of [500, 440]) {
   const { context, page } = await open({ pinned: true, lastTab: 'usage' });
   await showUsage(page);
   await page.evaluate(a => window.__emitNative('usage', a), claude(now())); await page.waitForTimeout(200);
-  await page.locator('.section-index-button').first().focus();
+  await page.locator('.section-switch-button').first().focus();
   await page.keyboard.press('Tab'); await page.waitForTimeout(200);
   await page.screenshot({ path: path.join(out, 'indicator-focused.png') });
   await page.locator('#tab-tools').click(); await page.waitForTimeout(300);
-  await page.locator('.section-index-button').nth(1).hover(); await page.waitForTimeout(200);
+  await page.locator('.section-switch-button').nth(1).hover(); await page.waitForTimeout(200);
   await page.screenshot({ path: path.join(out, 'indicator-hover-tools.png') });
   await context.close();
 }

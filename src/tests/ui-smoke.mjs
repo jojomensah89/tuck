@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 const root = process.cwd();
 const browser = await chromium.launch({channel:'msedge',headless:true});
 try {
-  const context = await browser.newContext({viewport:{width:520,height:230}, reducedMotion:'reduce'});
+  const context = await browser.newContext({viewport:{width:520,height:288}, reducedMotion:'reduce'});
   const serveDist = async route => {
     const pathname = new URL(route.request().url()).pathname;
     const file = path.join(root, 'dist', pathname === '/' ? 'index.html' : pathname);
@@ -33,16 +33,37 @@ try {
   assert.equal(await page.locator('#isl').getAttribute('data-state'),'open');
   assert.equal(await page.locator('.full').getAttribute('aria-hidden'),'false');
   const box = await page.locator('#isl').boundingBox();
-  assert.equal(Math.round(box.width),500); assert.equal(Math.round(box.height),210);
+  assert.equal(Math.round(box.width),500); assert.equal(Math.round(box.height),264);
   await page.locator('#track').focus();
   await page.keyboard.press('ArrowRight');
   assert.equal(await page.locator('.tab-panel.on').getAttribute('data-tab'),'media');
-  // Rail: four tabs with roving tabindex plus a settings button, no arrows or dots
-  assert.equal(await page.locator('[role=tablist] [role=tab]').count(),4);
+  // Rail: five tabs with roving tabindex plus a settings button, no arrows or dots
+  assert.equal(await page.locator('.rail-tabs [role=tab]').count(),5);
   assert.equal(await page.locator('#prevPage, #nextPage, #dots').count(),0);
-  assert.deepEqual(await page.locator('[role=tab]').evaluateAll(tabs => tabs.map(t => [t.getAttribute('aria-selected'), t.tabIndex])),[['true',0],['false',-1],['false',-1],['false',-1]]);
+  assert.deepEqual(await page.locator('.rail-tabs [role=tab]').evaluateAll(tabs => tabs.map(t => [t.getAttribute('aria-selected'), t.tabIndex])),[['true',0],['false',-1],['false',-1],['false',-1],['false',-1]]);
   const railGeometry = await page.locator('.rail-tab').evaluateAll(nodes => nodes.map(n => { const r = n.getBoundingClientRect(); return [r.width, r.height]; }));
-  assert.equal(railGeometry.every(([w,h]) => w >= 36 && h >= 36),true,'Rail hit targets are at least 36px');
+  assert.equal(railGeometry.every(([w,h]) => w === 32 && h === 32),true,'Rail hit targets are 32px');
+  assert.deepEqual(await page.locator('.rail-tabs [role=tab]').evaluateAll(tabs => tabs.map(t => t.getAttribute('aria-label'))),['Media','Today','Dictation','Tools','Usage'],'Rail order');
+  assert.equal(await page.locator('.section-index, .section-index-button').count(),0,'The old section marks are gone');
+  // The rail holds seven items: tabs, the reserved update slot and the gear pinned at the bottom
+  const railFit = () => page.evaluate(() => {
+    const rect = el => el.getBoundingClientRect();
+    const isl = rect(document.getElementById('isl')), tabs = rect(document.querySelector('.rail-tabs'));
+    const gear = rect(document.getElementById('railSettings')), slot = rect(document.getElementById('railUpdate'));
+    return { gearPinned: Math.round(gear.bottom - isl.top), tabsTop: Math.round(tabs.top - isl.top), tabsBottom: Math.round(tabs.bottom - isl.top), slotHeight: slot.height, slotTop: Math.round(slot.top - isl.top), gearTop: Math.round(gear.top - isl.top), clearOfContent: rect(document.querySelector('.rail')).right <= rect(document.querySelector('.pages-container')).left };
+  });
+  assert.deepEqual(await railFit(),{gearPinned:252,tabsTop:12,tabsBottom:172,slotHeight:0,slotTop:0,gearTop:220,clearOfContent:true},'An empty update slot leaves no gap');
+  await page.evaluate(() => { document.getElementById('railUpdate').hidden = false; });
+  const railWithUpdate = await railFit();
+  assert.equal(railWithUpdate.slotHeight,32);
+  assert.equal(railWithUpdate.slotTop,188,'A filled slot sits right above the gear');
+  assert.equal(railWithUpdate.gearPinned,252);
+  assert.ok(railWithUpdate.slotTop >= railWithUpdate.tabsBottom,'Seven items fit without overlapping');
+  await page.evaluate(() => { document.getElementById('railUpdate').hidden = true; });
+  // The real content box, with and without the row
+  const contentBox = () => page.locator('.tab-panel.on').evaluate(el => { const r = el.getBoundingClientRect(); return [Math.round(r.width), Math.round(r.height)]; });
+  assert.deepEqual(await contentBox(),[420,232],'A tab with one part has the whole content box');
+  assert.equal(await page.locator('.section-row').isHidden(),true,'Media has no switch');
   await page.locator('#tab-media').focus();
   await page.keyboard.press('End');
   assert.equal(await page.locator('#tab-usage').getAttribute('aria-selected'),'true');
@@ -53,8 +74,9 @@ try {
   await page.keyboard.press('ArrowDown');
   assert.equal(await page.locator('.tab-panel.on').getAttribute('data-tab'),'today');
   assert.equal(await page.locator('#panel-today').getAttribute('aria-labelledby'),'tab-today');
-  // Today holds clock and battery, then the timer, then the calendar
-  assert.deepEqual(await page.locator('#panel-today > .page').evaluateAll(n => n.map(x => x.dataset.page)),['today','activities','calendar']);
+  assert.deepEqual(await contentBox(),[420,192],'The row takes 40px from a tab with two parts');
+  // Today holds clock and battery, then the timer
+  assert.deepEqual(await page.locator('#panel-today > .page').evaluateAll(n => n.map(x => x.dataset.page)),['today','activities']);
   await page.locator('.page.activities').scrollIntoViewIfNeeded();
   const overflow = await page.locator('.page.activities').evaluate(el => {
     const box = el.getBoundingClientRect();
@@ -84,7 +106,7 @@ try {
   await page.goto('http://tuck.test/settings.html');
   // Sidebar: one view at a time, arrow keys move between sections.
   assert.equal(await page.locator('#view-general').isVisible(),true);
-  assert.equal(await page.locator('#view-keys').isVisible(),false);
+  assert.equal(await page.locator('#view-keys').count(),0);
   await page.locator('#nav a[data-view="general"]').focus();
   await page.keyboard.press('ArrowDown');
   await page.locator('#view-island').waitFor({state:'visible'});
@@ -92,10 +114,16 @@ try {
   // Search filters rows across every view, and clears with Escape.
   await page.keyboard.press('Control+f');
   assert.equal(await page.evaluate(() => document.activeElement.id),'settingsSearch');
-  await page.keyboard.type('anthropic key');
-  assert.equal(await page.locator('#row-kAnthropic').isVisible(),true);
-  assert.equal(await page.locator('#row-kOpenai').isVisible(),false);
-  assert.equal(await page.locator('#row-openDelay').isVisible(),false);
+  await page.keyboard.type('expand delay');
+  assert.equal(await page.locator('#row-openDelay').isVisible(),true);
+  // The update row is not on screen without an update, so search must not find or count it
+  const searchSettings = async query => { await page.locator('#settingsSearch').fill(query); return (await page.locator('#searchSummary').textContent()).trim(); };
+  assert.equal(await searchSettings('update'),'3 settings match "update".');
+  assert.equal(await page.locator('.view .set-row:visible').count(),3,'The update count equals the rows on screen');
+  assert.equal(await page.locator('#row-update-check').isVisible(),true);
+  assert.equal(await page.locator('#row-update-available').isVisible(),false,'Update row must stay hidden when no update is available');
+  assert.equal(await searchSettings('changelog'),'No settings match "changelog".');
+  assert.equal(await page.locator('#searchEmpty').isVisible(),true,'A search for the hidden row shows the empty state, not a blank page');
   await page.keyboard.press('Escape');
   await page.locator('#view-island').waitFor({state:'visible'});
   // A default profile (180ms expand delay) must save a switch change straight away
@@ -111,16 +139,6 @@ try {
   await page.locator('#row-compactContent label',{hasText:'Artwork'}).click();
   assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem('tuck.live.v2')).compactContent),'artwork');
   await page.locator('#row-compactContent label',{hasText:'Lyric'}).click();
-  await page.locator('#nav a[data-view="keys"]').click();
-  await page.locator('#kAnthropic').fill('test-placeholder-not-a-key');
-  await page.locator('#saveKeys').click();
-  assert.equal(await page.locator('#kAnthropic').inputValue(),'');
-  assert.match(await page.locator('#settingsStatus').textContent(),/failed/);
-  // Removing a key asks first, inline.
-  await page.locator('#removeOpenai').click();
-  assert.doesNotMatch(await page.locator('#settingsStatus').textContent(),/Key removed/);
-  await page.locator('#row-kOpenai').getByRole('button',{name:'Remove key',exact:true}).click();
-  assert.match(await page.locator('#settingsStatus').textContent(),/failed/);
   await page.locator('#nav a[data-view="usage"]').click();
   await page.locator('#cCap').fill('-1');
   await page.locator('#cHours').fill('3');
@@ -136,27 +154,23 @@ try {
   assert.equal(await page.locator('#row-openDelay').evaluate(el => el.classList.contains('saved')),true);
   await page.evaluate(() => { Storage.prototype.setItem = () => { throw new Error('Storage disabled'); }; });
   await page.locator('#nav a[data-view="usage"]').click();
-  await page.locator('#bAnthropic').fill('50');
-  await page.locator('#bAnthropic').press('Enter');
-  assert.match(await page.locator('#budgetStatus').textContent(),/Could not save budgets/);
-  assert.equal(await page.locator('#row-bAnthropic').evaluate(el => el.classList.contains('saved')),false);
+  await page.setViewportSize({width:1000,height:850});
   await page.screenshot({path:path.join(root,'artifacts','settings-usage.png')});
+  await page.setViewportSize({width:520,height:288});
   assert.deepEqual(errors,[]);
 
   // A mocked native bridge exercises the actual controllers; this is not a hardware smoke.
   const nativeBridge = () => {
     window.isTauri=true;
     let serial=0;const callbacks=new Map();const listeners=new Map();
-    const state={settings:{downloads:false,calendar:false,notifications:false,radios:true},downloads:[],call:null,calendar:[],shelf:[],radios:[{kind:'wifi',name:'Test Wi-Fi',state:'On'}],notificationStatus:'Disabled',errors:[]};
+    const state={settings:{notifications:false},shelf:[],notificationStatus:'Disabled',errors:[]};
     window.__nativeState=state;window.__calls=[];
     window.__emitNative=(event,payload)=>{for(const id of listeners.get(event)||[])callbacks.get(id)?.({event,id,payload});};
     window.__TAURI_INTERNALS__={metadata:{currentWindow:{label:'main'},currentWebview:{label:'main'}},transformCallback(callback){const id=++serial;callbacks.set(id,callback);return id;},async invoke(command,args={}){
       window.__calls.push({command,args});
       if(command==='plugin:event|listen'){const ids=listeners.get(args.event)||[];ids.push(args.handler);listeners.set(args.event,ids);return ++serial;}
       if(command==='extension_snapshot')return structuredClone(state);
-      if(command==='call_set_active'){state.call=args.active?{title:'Manual call timer',startedAt:Date.now()}:null;return;}
       if(command==='shelf_pick'){state.shelf=[{id:'fixture-file',name:'sample.txt',path:'C:\\\\Fixture\\\\sample.txt',bytes:20}];return;}
-      if(command==='radio_set'){state.radios[0].state=args.enabled?'On':'Off';return;}
       if(command==='extension_settings')throw 'Activity settings could not be saved';
       if(command==='media_now')return {active:false,trackId:'',title:'',artist:'',playing:false,positionMs:0,durationMs:0,artwork:null};
       if(command==='refresh_usage') return new Promise((resolve,reject) => { window.__refreshResolve = resolve; window.__refreshReject = reject; });
@@ -166,10 +180,12 @@ try {
       }
       if(command==='clipboard_get_state')return {enabled:false,persistOnExit:false,items:[]};
       if(command==='clipboard_configure')throw 'Fixture atomic save failure';
+      if(command==='plugin:updater|check')return null;
       if(command==='get_autostart'||command==='installed_usage_enabled'||command==='fullscreen_now')return false;
       if(command==='volume_step')return {kind:'volume',level:40+args.delta,muted:false};
       if(command==='volume_toggle_mute')return {kind:'volume',level:40,muted:true};
-      if(command==='get_hide_system_flyout')return {enabled:false,state:'off',message:null};
+      if(command==='get_hide_system_flyout')return {enabled:true,state:'waiting',message:null};
+      if(command==='set_hide_system_flyout'&&!args.enabled)return {enabled:false,state:'off',message:null};
       if(command==='set_hide_system_flyout')return {enabled:false,state:'unavailable',message:"Turned off: Windows showed its volume flyout several times, but Tuck couldn't find it on this version of Windows"};
       return null;
     }};
@@ -180,6 +196,30 @@ try {
   await native.waitForFunction(() => window.__calls?.some(call => call.command === 'plugin:event|listen' && call.args.event === 'open-island') && window.__calls.some(call => call.command === 'usage_now'));
   assert.equal(await native.evaluate(() => window.__idleIntervals.size), 0, 'No intervals while collapsed without running activities');
   assert.equal(await native.locator('.page.todos').count(), 0, 'Todos feature must be completely removed');
+  // Settings hears about an update from the background check, shows notes as text, and counts the row
+  const updates=await context.newPage();
+  await updates.goto('http://tuck.test/settings.html#about');
+  assert.equal(await updates.locator('#row-update-available').isVisible(),false);
+  await updates.evaluate(()=>window.__emitNative('pending-update-changed',{version:'9.9.9',currentVersion:'0.1.0',body:'### Added\n- <img src=x>One\n- Two\n\n### Fixed\n- Three'}));
+  await updates.locator('#row-update-available').waitFor({state:'visible'});
+  assert.equal(await updates.locator('#updateVersionBadge').textContent(),'v9.9.9');
+  assert.match(await updates.locator('#updateStatusText').textContent(),/Update available: v9\.9\.9/);
+  assert.deepEqual(await updates.locator('#updateNotes h3').allTextContents(),['Added','Fixed']);
+  assert.deepEqual(await updates.locator('#updateNotes li').allTextContents(),['<img src=x>One','Two','Three']);
+  assert.equal(await updates.locator('#updateNotes img').count(),0,'Release notes never become HTML');
+  await updates.locator('#settingsSearch').fill('changelog');
+  assert.equal((await updates.locator('#searchSummary').textContent()).trim(),'1 setting matches "changelog".');
+  assert.equal(await updates.locator('#row-update-available').isVisible(),true);
+  await updates.locator('#settingsSearch').fill('');
+  // A failed install explains itself and does not stop services unless it got that far
+  await updates.locator('#btnInstallUpdate').click();
+  await updates.locator('#updateProgressLabel').filter({hasText:'No update available to install'}).waitFor({timeout:2000});
+  assert.equal(await updates.locator('#btnInstallUpdate').isEnabled(),true);
+  assert.equal(await updates.evaluate(()=>window.__calls.some(call=>call.command==='check_update_allowed')),true,'Dictation is checked before any download');
+  assert.equal(await updates.evaluate(()=>window.__calls.some(call=>call.command==='prepare_update_install')),false);
+  await updates.evaluate(()=>window.__emitNative('pending-update-changed',null));
+  await updates.locator('#row-update-available').waitFor({state:'hidden'});
+  await updates.close();
   // A missed event is recovered by the pull on open; a racing newer event wins.
   const usageFixture = pct => [{id:'claude-5h',provider:'claude',label:'Claude session',usedPct:pct,spentUsd:null,resetsAt:null,source:'official',stale:false,status:'ok'}];
   await native.evaluate(meters => { window.__usageSnapshot = meters; window.__emitNative('open-island',null); }, usageFixture(31));
@@ -210,7 +250,8 @@ try {
   assert.equal(await native.evaluate(() => window.__calls.filter(c=>c.command==='refresh_usage').length),1);
   await native.evaluate(() => window.__refreshReject('Fixture failure'));
   await native.waitForFunction(() => !document.getElementById('usageRefresh').disabled);
-  assert.match(await native.locator('#usageRefreshStatus').textContent(),/failed/);
+  assert.match(await native.locator('#usageRefresh').getAttribute('title'),/failed/);
+  assert.equal(await native.locator('#usageRefreshStatus').count(),0,'Refresh has no visible status text');
   assert.ok((await native.locator('#uList .u-face').getAttribute('aria-label')).includes('69% left'),'Failure retains readings');
   const refreshBox = await native.locator('#usageRefresh').boundingBox();
   assert.ok(refreshBox.width>=32 && refreshBox.height>=32);
@@ -229,10 +270,8 @@ try {
   assert.ok((await native.locator('#uList .u-face').getAttribute('aria-label')).includes('28% left'),'A stale open response cannot overwrite a newer usage event');
   await native.keyboard.press('Escape');
   await native.evaluate(() => {
-    document.querySelectorAll('.live-spectrum i, .wide-spectrum i').forEach(el=>el.style.setProperty('--level','1'));
     window.__emitNative('open-island',null);
   });
-  assert.equal(await native.locator('.live-spectrum i, .wide-spectrum i').evaluateAll(nodes=>nodes.every(el=>el.style.getPropertyValue('--level')==='0')),true,'Opening clears old bars immediately, before the one-second stale timer');
   await native.keyboard.press('Escape');
   // Volume/brightness HUD from a mocked native level event
   const hudState = () => native.locator('#isl').evaluate(el => [el.dataset.state, el.dataset.hud ?? null]);
@@ -312,7 +351,14 @@ try {
   assert.match(await native.locator('#openAnnouncement').textContent(),/Caps Lock/);
   await native.evaluate(()=>window.__emitNative('system-level',{kind:'volume',level:55,muted:false}));
   assert.deepEqual(await hudState(),['open',null],'Notifications and HUD keep the pinned island open');
+  // Losing focus does not close a pinned island.
+  await native.evaluate(()=>window.dispatchEvent(new Event('blur')));
+  assert.equal(await native.locator('#isl').getAttribute('data-state'),'open','Blur does not close a pinned island');
   await setLive({pinned:false});
+  await native.evaluate(()=>window.dispatchEvent(new CustomEvent('tuck-drag-active',{detail:true})));
+  await native.evaluate(()=>window.dispatchEvent(new Event('blur')));
+  assert.equal(await native.locator('#isl').getAttribute('data-state'),'open','Blur does not close the island during a drag');
+  await native.evaluate(()=>window.dispatchEvent(new CustomEvent('tuck-drag-active',{detail:false})));
   assert.deepEqual(await flyoutPause(),[false,false]);
   await native.evaluate(()=>window.__emitNative('hover',false));
   await toIdle();
@@ -348,12 +394,7 @@ try {
   await native.mouse.move(stripX, stripY);
   await native.mouse.wheel(0,-100);
   await native.locator('#levelStrip[data-on]').waitFor({timeout:2000});
-  const radios = await native.getByRole('button',{name:'Radios',exact:true}).boundingBox();
-  const radiosX = radios.x + radios.width / 2;
-  const radiosY = Math.min(radios.y + radios.height / 2, openBox.y + 30);
-  assert.ok(radios.y < openBox.y + 32 && Math.abs(radiosX - stripX) < 106,'A view button sits under the strip');
-  await native.mouse.click(radiosX, radiosY);
-  await native.getByRole('switch',{name:'Test Wi-Fi',exact:true}).waitFor({timeout:2000});
+  assert.equal(await native.getByRole('button',{name:'Downloads',exact:true}).count(),0);
   await native.getByRole('tab',{name:'Media',exact:true}).click();
   await native.locator('#levelStrip:not([data-on])').waitFor({state:'attached',timeout:3000});
   // Scrolling anywhere else switches tabs and leaves the volume alone
@@ -365,7 +406,7 @@ try {
   await native.waitForTimeout(400);
   await native.mouse.move(stripX, openBox.y + 120);
   await native.mouse.wheel(100,0);
-  await native.waitForFunction(()=>document.querySelector('.tab-panel.on').dataset.tab==='tools',null,{timeout:2000});
+  await native.waitForFunction(()=>document.querySelector('.tab-panel.on').dataset.tab==='dictation',null,{timeout:2000});
   assert.equal((await volumeCalls()).length,callsBeforeElsewhere,'Scrolling outside the strip never changes the volume');
   await native.getByRole('tab',{name:'Media',exact:true}).click();
   await native.evaluate(()=>window.__emitNative('hover',false));
@@ -375,27 +416,45 @@ try {
   await native.evaluate(()=>window.__emitNative('open-island',null));
   await native.getByRole('tab',{name:'Tools',exact:true}).click();
   assert.equal(await native.locator('.tab-panel.on').getAttribute('data-tab'),'tools');
-  await native.getByRole('button',{name:'Calls',exact:true}).click();
-  await native.getByRole('button',{name:'Start call timer',exact:true}).click();
-  await native.getByRole('button',{name:'End call timer',exact:true}).waitFor({timeout:3000});
-  assert.equal(await native.getByRole('button',{name:'End call timer',exact:true}).count(),1);
-  assert.equal(await native.locator('#extensionsPage .ext-note').textContent(),'Manual timer, it does not place calls or use the microphone');
-  assert.equal(await native.getByRole('button',{name:'Calls',exact:true}).locator('.ext-badge.dot').isVisible(),true,'A running call timer badges its view');
   await native.keyboard.press('Escape');
   await native.evaluate(()=>window.__emitNative('hover',true));
   await native.waitForTimeout(250);
   assert.equal(await native.locator('#isl').getAttribute('data-state'),'open','Hover expands after the configured delay');
   assert.equal(await native.evaluate(()=>window.__calls.some(call=>call.command==='deactivate_island')),true);
   await native.evaluate(()=>window.__emitNative('open-island',null));
-  await native.getByRole('button',{name:'Files',exact:true}).click();
-  await native.getByRole('button',{name:'Add files',exact:true}).click();
+  await native.getByRole('tab',{name:'Files',exact:true}).click();
+  // The empty shelf is one large dashed box; a drag highlights it, a click picks files
+  const shelfDrop = native.getByRole('button',{name:/^Drop files here/});
+  const dropBox = () => shelfDrop.evaluate(n=>{const r=n.getBoundingClientRect(),s=getComputedStyle(n);return {w:Math.round(r.width),h:Math.round(r.height),dashed:s.borderTopStyle,colour:s.borderTopColor};});
+  const emptyDrop = await dropBox();
+  assert.deepEqual([emptyDrop.w,emptyDrop.h,emptyDrop.dashed],[420,192,'dashed'],'An empty shelf fills the content box');
+  assert.equal(await native.locator('#extensionsPage').textContent().then(text=>text.trim()),'Drop files here');
+  await native.evaluate(()=>window.dispatchEvent(new CustomEvent('tuck-drop-active',{detail:true})));
+  assert.notEqual((await dropBox()).colour,emptyDrop.colour,'A drag over the island highlights the box');
+  await native.evaluate(()=>window.dispatchEvent(new CustomEvent('tuck-drop-active',{detail:false})));
+  await shelfDrop.click();
+  await native.locator('#extensionsPage .ext-row').waitFor();
   assert.match(await native.locator('#extensionsPage .ext-body').textContent(),/sample.txt/);
-  await native.getByRole('button',{name:'Radios',exact:true}).click();
-  assert.equal(await native.getByRole('switch',{name:'Test Wi-Fi',exact:true}).getAttribute('aria-checked'),'true');
-  await native.getByRole('switch',{name:'Test Wi-Fi',exact:true}).focus();
-  await native.evaluate(()=>{window.__nativeState.radios[0].state='Off';window.__emitNative('extension-state',structuredClone(window.__nativeState));});
-  assert.equal(await native.getByRole('switch',{name:'Test Wi-Fi',exact:true}).getAttribute('aria-checked'),'false');
-  assert.equal(await native.evaluate(()=>document.activeElement.dataset.actionKey),'radio-wifi-Test Wi-Fi');
+  const stripDrop = await dropBox();
+  assert.deepEqual([stripDrop.w,stripDrop.h,stripDrop.dashed],[420,32,'dashed'],'With files it is a slim strip above the list');
+  assert.equal(await native.evaluate(()=>document.querySelector('.shelf-drop').getBoundingClientRect().bottom<=document.querySelector('.ext-row').getBoundingClientRect().top),true);
+  assert.equal(await native.evaluate(()=>[...document.querySelectorAll('.full *')].filter(n=>getComputedStyle(n).borderTopStyle==='dashed').length),1,'The drop target is the one dashed element');
+  await native.locator('.page.clipboard').evaluate(el=>{el.closest('.tab-panel').scrollTop=el.offsetTop;});
+  await native.getByRole('button',{name:'Clear unpinned history',exact:true}).waitFor({timeout:3000});
+  const snipBox = await native.getByRole('button',{name:'Screen snip',exact:true}).boundingBox();
+  assert.equal(snipBox.width,32);
+  assert.equal(snipBox.height,32);
+  assert.equal(await native.getByRole('button',{name:'Screen snip',exact:true}).count(),1,'One Screen snip');
+  assert.equal(await native.evaluate(()=>document.querySelector('.section-actions').lastElementChild.getAttribute('aria-label')),'Screen snip','Screen snip is at the right end of the row');
+  assert.equal(Math.round(snipBox.x+snipBox.width),Math.round((await native.locator('.section-row').boundingBox()).x+(await native.locator('.section-row').boundingBox()).width));
+  assert.equal(await native.getByRole('button',{name:'Clear unpinned history',exact:true}).isVisible(),true,'Clipboard actions sit beside it');
+  assert.equal(await native.getByRole('button',{name:'Clear shelf',exact:true}).isVisible(),false,'Only the part on screen shows its actions');
+  assert.equal(await native.locator('#extensionsPage').evaluate(n=>n.inert),true,'The part off screen cannot take focus');
+  await native.getByRole('button',{name:'Screen snip',exact:true}).click();
+  assert.equal(await native.evaluate(()=>window.__calls.some(c=>c.command==='quick_action'&&c.args.name==='capture')),true);
+  assert.equal(await native.locator('.page.quick').count(),0);
+  assert.equal(await native.getByRole('button',{name:'Calls',exact:true}).count(),0);
+  assert.equal(await native.getByRole('button',{name:'Radios',exact:true}).count(),0);
   await native.evaluate(()=>window.dispatchEvent(new CustomEvent('tuck-drop-active',{detail:true})));
   assert.equal(await native.locator('#isl').getAttribute('data-state'),'open');
   assert.equal(await native.locator('.tab-panel.on').getAttribute('data-tab'),'tools','A file drag reveals the file shelf');
@@ -403,6 +462,7 @@ try {
   await native.evaluate(()=>window.__emitNative('hover',false));await native.waitForTimeout(1750);
   assert.equal(await native.locator('#isl').getAttribute('data-state'),'open','Native drag must hold the island open');
   await native.evaluate(()=>window.dispatchEvent(new CustomEvent('tuck-drop-active',{detail:false})));
+  await native.mouse.move(0,400);
   await native.keyboard.press('Escape');
   await native.evaluate(()=>window.__emitNative('notification-preview',{title:'Fixture notification',body:'Preview text'}));
   assert.equal(await native.locator('#isl').getAttribute('data-state'),'peek');
@@ -422,11 +482,12 @@ try {
   assert.match(await native.locator('#isl').getAttribute('style'),/--art-wash: rgba/);
   await native.locator('.lyric-line').last().click();
   assert.equal(await native.evaluate(()=>window.__calls.some(call=>call.command==='media_seek'&&call.args.ms===5000)),true);
+  await native.getByRole('tab',{name:'Today',exact:true}).click();
+  await native.getByRole('tab',{name:'Media',exact:true}).click();
   await native.screenshot({path:path.join(root,'artifacts','island-phase-two-media.png')});
 
   // Closed media content stays present while playing and uses one stable width per track.
   await native.evaluate(()=>document.getElementById('actReset').click());
-  await native.evaluate(()=>window.dispatchEvent(new CustomEvent('tuck-activity',{detail:{id:'native-call',type:'call',title:'Manual call timer',text:'',priority:95,active:false}})));
   await native.evaluate(()=>window.__emitNative('media',{active:true,trackId:'fixture-track',title:'Artwork color fixture',artist:'Synthetic test data',playing:true,positionMs:3000,durationMs:120000,artwork:null}));
   await setLive({compactContent:'lyrics'});
   await native.keyboard.press('Escape');
@@ -501,12 +562,31 @@ try {
   assert.match(await native.locator('.compact').getAttribute('aria-label'),/^Time /);
   assert.equal(await native.locator('#cr .battery-glyph').count(),1);
   await native.evaluate(()=>window.__emitNative('open-island',null));
+  // An exact match stays quiet; only an approximate match offers timing, and the correction sticks to the track.
+  const lyricEvent=extra=>native.evaluate(extra=>window.__emitNative('lyrics',{trackId:'fixture-track',requestId:window.__calls.findLast(call=>call.command==='lyrics_get').args.requestId,syncedLyrics:'[00:01]Previous fixture line\n[00:03]Current fixture line\n[00:05]Next fixture line',...extra}),extra);
+  const lyricTrackEvent=trackId=>native.evaluate(trackId=>window.__emitNative('lyrics',{trackId,requestId:window.__calls.findLast(call=>call.command==='lyrics_get').args.requestId,status:'synced',approximate:true,syncedLyrics:'[00:01]Fixture line'}),trackId);
   for (const width of [440, 500]) {
     await native.evaluate(width => {
       const key = 'tuck.live.v2';
       localStorage.setItem(key, JSON.stringify({...JSON.parse(localStorage.getItem(key) || '{}'), openWidth: width}));
       window.dispatchEvent(new StorageEvent('storage', {key}));
     }, width);
+    // No lyrics: the player takes the full width, the toggle is quiet and says why
+    await lyricEvent({status:'unavailable',syncedLyrics:''});
+    const bare = await native.evaluate(() => {
+      const rect = selector => document.querySelector(selector).getBoundingClientRect();
+      const toggle = document.querySelector('.lyrics-toggle-btn');
+      return {
+        paneHidden: getComputedStyle(document.querySelector('.lyrics-pane')).display === 'none',
+        fullWidth: Math.abs(rect('.page.media .bar').right - rect('.page.media').right) <= 1,
+        disabled: toggle.getAttribute('aria-disabled'), why: toggle.title, quiet: getComputedStyle(toggle).color === getComputedStyle(document.querySelector('.page.media .art')).color,
+        titleRowClear: rect('#mediaBattBadge').top >= rect('#title').bottom - 1,
+      };
+    });
+    assert.deepEqual(bare,{paneHidden:true,fullWidth:true,disabled:'true',why:'No lyrics for this track',quiet:true,titleRowClear:true},`Without lyrics the player fills ${width}px`);
+    await native.locator('.lyrics-toggle-btn').click({force:true});
+    assert.equal(await native.locator('.lyrics-pane').isVisible(),false,'The quiet toggle does not open an empty pane');
+    await lyricEvent({status:'synced'});
     const geometry = await native.evaluate(() => {
       const rect = selector => document.querySelector(selector).getBoundingClientRect();
       const title = rect('#title'), lyrics = rect('.lyrics-pane');
@@ -524,9 +604,6 @@ try {
     assert.equal(geometry.titleClear && geometry.togglePresent && geometry.toggleClear && geometry.controlsFit, true, `Media regions must fit at ${width}px`);
     await native.screenshot({path:path.join(root,'artifacts',`island-unslop-${width}.png`)});
   }
-  // An exact match stays quiet; only an approximate match offers timing, and the correction sticks to the track.
-  const lyricEvent=extra=>native.evaluate(extra=>window.__emitNative('lyrics',{trackId:'fixture-track',requestId:window.__calls.findLast(call=>call.command==='lyrics_get').args.requestId,syncedLyrics:'[00:01]Previous fixture line\n[00:03]Current fixture line\n[00:05]Next fixture line',...extra}),extra);
-  const lyricTrackEvent=trackId=>native.evaluate(trackId=>window.__emitNative('lyrics',{trackId,requestId:window.__calls.findLast(call=>call.command==='lyrics_get').args.requestId,status:'synced',approximate:true,syncedLyrics:'[00:01]Fixture line'}),trackId);
   await lyricEvent({status:'synced'});
   assert.equal(await native.locator('.lyrics-offset-controls').isVisible(),false,'An exact match shows no timing control');
   assert.equal(await native.locator('.lyrics-header').isVisible(),false,'An exact match leaves no empty header above the lyrics');
@@ -651,17 +728,17 @@ try {
     const inside=r=>r.left>=container.left-1&&r.right<=container.right+1&&r.top>=page.top-1&&r.bottom<=page.bottom+1;
     const parts=[...list.querySelectorAll('.u-face,.u-values,.u-value-line,.u-state')].filter(n=>n.getBoundingClientRect().height>0);
     const clear=[...list.querySelectorAll('.u-provider')].every(card=>card.querySelector('.u-face').getBoundingClientRect().right<=card.querySelector('.u-values').getBoundingClientRect().left&&card.querySelector('.u-values').scrollWidth<=card.querySelector('.u-values').clientWidth+1);
-    const marks=[...document.querySelectorAll('.section-index-button')].map(n=>n.getBoundingClientRect());
-    return {inside:parts.every(n=>inside(n.getBoundingClientRect())),clear,marksClear:marks.every(r=>r.left>=container.right-0.5),fits:list.scrollHeight<=page.height+1};
+    const segments=[...document.querySelectorAll('.section-switch-button')].map(n=>n.getBoundingClientRect());
+    return {inside:parts.every(n=>inside(n.getBoundingClientRect())),clear,switchClear:segments.every(r=>r.bottom<=page.top+0.5),fits:list.scrollHeight<=page.height+1};
   });
   for (const width of [440,500]) {
     await setLive({openWidth:width});
     await native.waitForTimeout(50);
-    assert.deepEqual(await usageFit(),{inside:true,clear:true,marksClear:true,fits:true},`Two provider cards fit at ${width}px`);
+    assert.deepEqual(await usageFit(),{inside:true,clear:true,switchClear:true,fits:true},`Two provider cards fit at ${width}px`);
     await native.evaluate(meters=>window.__emitNative('usage',meters),fiveProviders(Math.round(Date.now()/1000)));
     await native.waitForTimeout(50);
     assert.equal(await native.locator('#uList .u-provider').count(),4,'Each connected source is one card');
-    assert.deepEqual(await usageFit(),{inside:true,clear:true,marksClear:true,fits:true},`Four provider cards fit at ${width}px`);
+    assert.deepEqual(await usageFit(),{inside:true,clear:true,switchClear:true,fits:true},`Four provider cards fit at ${width}px`);
     // A used-up quota has an empty ring, so its number warns; anything still left, or dollars spent, does not
     const valueColours = await native.locator('#uList .u-val').evaluateAll(nodes=>nodes.map(n=>[n.textContent,n.dataset.out==='true',getComputedStyle(n).color]));
     const warnColour = await native.locator('#uList').evaluate(n=>{const probe=document.createElement('span');probe.style.color='var(--warn)';n.append(probe);const colour=getComputedStyle(probe).color;probe.remove();return colour;});
@@ -672,7 +749,7 @@ try {
     await native.waitForTimeout(50);
     assert.equal(await native.locator('#uList .u-provider').count(),5);
     assert.equal(await native.locator('#uList').evaluate(n=>n.classList.contains('dense')),true);
-    assert.deepEqual(await usageFit(),{inside:true,clear:true,marksClear:true,fits:true},`Five provider cards fit at ${width}px`);
+    assert.deepEqual(await usageFit(),{inside:true,clear:true,switchClear:true,fits:true},`Five provider cards fit at ${width}px`);
     // The ChatGPT estimate is logged by pressing its ring
     const logButton = native.getByRole('button',{name:/^Log a ChatGPT message/});
     await logButton.click();
@@ -683,18 +760,27 @@ try {
   }
   assert.equal(await native.locator('#uList .u-provider').count(),2);
 
-  // The section indicator is an actual control and follows the same snap scroller.
-  const sectionButtons = native.locator('.section-index-button');
+  // The segmented switch is a real tablist and follows the same snap scroller.
+  const sectionButtons = native.locator('.section-switch-button');
   assert.equal(await sectionButtons.count(),2);
-  assert.equal(await sectionButtons.first().getAttribute('aria-label'),'Go to AI usage');
-  assert.equal(await sectionButtons.first().getAttribute('aria-current'),'true');
+  assert.deepEqual(await sectionButtons.allTextContents(),['AI','System']);
+  assert.equal(await sectionButtons.first().getAttribute('aria-selected'),'true');
+  assert.equal(await native.locator('.section-switch').getAttribute('role'),'tablist');
+  assert.equal(await sectionButtons.first().getAttribute('role'),'tab');
+  assert.equal(await native.locator(`#${await sectionButtons.first().getAttribute('aria-controls')}`).getAttribute('role'),'tabpanel');
+  assert.deepEqual(await sectionButtons.evaluateAll(nodes=>nodes.map(n=>n.tabIndex)),[0,-1],'Roving tabindex');
   const sectionTargets = await sectionButtons.evaluateAll(nodes=>nodes.map(node=>{const r=node.getBoundingClientRect();return [r.width,r.height];}));
-  assert.equal(sectionTargets.every(([w,h])=>w>=24&&h>=24),true,'Section controls have 24px hit targets');
+  assert.equal(sectionTargets.every(([w,h])=>w>=32&&h===32),true,'Segments are 32px tall');
+  assert.equal(sectionTargets[0][0],sectionTargets[1][0],'Segments are equal widths');
+  // Refresh belongs to AI and stays quiet
+  const refreshLook = await native.locator('#usageRefresh').evaluate(n=>{const s=getComputedStyle(n);const probe=document.createElement('i');probe.style.color='var(--ink-2)';document.body.append(probe);const ink=getComputedStyle(probe).color;probe.remove();return {background:s.backgroundColor,ink:s.color===ink};});
+  assert.deepEqual(refreshLook,{background:'rgba(0, 0, 0, 0)',ink:true},'Refresh is an ink-2 icon without a filled tile');
   await sectionButtons.nth(1).focus();
   assert.equal(await sectionButtons.nth(1).evaluate(node=>document.activeElement===node),true,'Section controls are keyboard focusable');
   await sectionButtons.nth(1).click();
   await native.waitForTimeout(400);
-  assert.equal(await sectionButtons.nth(1).getAttribute('aria-current'),'true');
+  assert.equal(await sectionButtons.nth(1).getAttribute('aria-selected'),'true');
+  assert.equal(await native.locator('#usageRefresh').isVisible(),false,'Refresh leaves with AI');
   assert.equal(await native.locator('#isl').getAttribute('data-state'),'open','Section clicks do not collapse the island');
   const usageTop = () => native.locator('#panel-usage').evaluate(el => el.scrollTop);
   assert.ok(await usageTop() > 0,'A click snaps the panel to its section');
@@ -704,36 +790,45 @@ try {
   await native.waitForTimeout(400);
   assert.equal(await usageTop(),0,'The keyboard reaches the same navigation');
   assert.equal(await sectionButtons.first().evaluate(n=>getComputedStyle(n).outlineStyle),'solid','A focused mark shows its focus ring');
-  // The wheel over the marks moves between sections, like over the page, and only then between tabs
+  // The wheel over the switch moves between parts, like over the page, and only then between tabs
   await native.waitForTimeout(400);
   await sectionButtons.first().hover();
   await native.mouse.wheel(0,120); await native.waitForTimeout(400);
-  assert.equal(await sectionButtons.nth(1).getAttribute('aria-current'),'true','Wheel over the marks scrolls to the next section');
+  assert.equal(await sectionButtons.nth(1).getAttribute('aria-selected'),'true','Wheel over the switch moves to the next part');
   assert.equal(await native.locator('.tab-panel.on').getAttribute('data-tab'),'usage');
   // The section count can change while the tab is open
   await native.evaluate(()=>window.__emitNative('usage',[]));
-  assert.equal(await native.locator('.section-index').isHidden(),true);
-  assert.equal(await native.evaluate(()=>document.querySelector('.tab-panel.on').contains(document.activeElement)||document.activeElement===document.querySelector('.tab-panel.on')),true,'Focus does not fall out of the island when the marks leave');
+  assert.equal(await native.locator('.section-switch').isHidden(),true);
+  assert.equal(await native.evaluate(()=>document.querySelector('.tab-panel.on').contains(document.activeElement)||document.activeElement===document.querySelector('.tab-panel.on')),true,'Focus does not fall out of the island when the switch leaves');
   await native.evaluate(()=>{const now=Math.round(Date.now()/1000);window.__emitNative('usage',[
     {id:'claude-5h',provider:'claude',label:'Claude session (5 h)',usedPct:42,spentUsd:null,resetsAt:now+8130,source:'official',stale:false,status:'ok'}]);});
-  assert.equal(await sectionButtons.nth(1).getAttribute('aria-current'),'true','A section the reader moved to stays in view when another returns above it');
+  assert.equal(await sectionButtons.nth(1).getAttribute('aria-selected'),'true','A section the reader moved to stays in view when another returns above it');
   assert.ok(await usageTop() > 0);
   await sectionButtons.first().click(); await native.waitForTimeout(400);
-  assert.equal(await sectionButtons.first().getAttribute('aria-current'),'true');
-  assert.deepEqual(await sectionButtons.evaluateAll(n=>n.map(x=>getComputedStyle(x).color)),['rgb(161, 161, 166)','rgb(99, 99, 102)'],'Inactive marks are --ink-3, the active one --ink-2');
-  assert.deepEqual(await sectionButtons.first().evaluate(n=>[getComputedStyle(n,'::before').left,getComputedStyle(n,'::before').right]),['4px','4px'],'The hover fill keeps a gap from the page beside it');
-  // ArrowLeft from a mark moves into the tab, as anywhere else in the open island
+  assert.equal(await sectionButtons.first().getAttribute('aria-selected'),'true');
+
+  // Arrows, Home and End rove inside the switch and do not change the tab
+  const selectedSegment = name => native.locator('.section-switch-button[aria-selected="true"]',{hasText:name}).waitFor({timeout:3000});
   await sectionButtons.nth(1).focus();
   await native.keyboard.press('ArrowLeft');
-  assert.equal(await native.locator('.tab-panel.on').getAttribute('data-tab'),'tools');
-  assert.equal(await native.evaluate(()=>document.querySelector('.tab-panel.on').contains(document.activeElement)||document.activeElement===document.querySelector('.tab-panel.on')),true,'Focus moves into the new tab');
-  // Marks belong to the tab on screen, even when two tabs have the same number of sections
+  await selectedSegment('AI');
+  assert.equal(await native.locator('.tab-panel.on').getAttribute('data-tab'),'usage');
+  assert.equal(await sectionButtons.first().evaluate(n=>document.activeElement===n),true,'Focus follows the selected segment');
+  await native.keyboard.press('End');
+  await selectedSegment('System');
+  await native.keyboard.press('ArrowRight');
+  await selectedSegment('AI'); // Switch arrows wrap
+  // The switch belongs to the tab on screen, and tabs without parts have none
   await native.getByRole('tab',{name:'Media',exact:true}).click();
-  assert.deepEqual(await sectionButtons.evaluateAll(n=>n.map(x=>x.getAttribute('aria-label'))),['Go to now playing','Go to visualizer']);
+  assert.equal(await sectionButtons.count(),0);
+  await native.getByRole('tab',{name:'Dictation',exact:true}).click();
+  assert.equal(await sectionButtons.count(),0);
   await native.getByRole('tab',{name:'Today',exact:true}).click();
-  assert.equal(await sectionButtons.count(),3);
+  assert.deepEqual(await sectionButtons.allTextContents(),['Clock','Timer']);
+  await native.getByRole('tab',{name:'Tools',exact:true}).click();
+  assert.deepEqual(await sectionButtons.allTextContents(),['Files','Clipboard']);
   await native.getByRole('tab',{name:'Usage',exact:true}).click();
-  assert.deepEqual(await sectionButtons.evaluateAll(n=>n.map(x=>x.getAttribute('aria-label'))),['Go to AI usage','Go to system']);
+  assert.deepEqual(await sectionButtons.allTextContents(),['AI','System']);
 
   // One provider keeps one card; no connected providers remove AI usage and its index mark.
   await native.evaluate(()=>{const now=Math.round(Date.now()/1000);window.__emitNative('usage',[
@@ -770,7 +865,7 @@ try {
   await native.evaluate(()=>window.__emitNative('usage',[
     {id:'openai-api',provider:'openai-api',label:'OpenAI API',usedPct:null,spentUsd:null,resetsAt:null,source:'api',stale:true,status:'unconfigured'}]));
   assert.equal(await native.locator('.page.usage').isHidden(),true,'No connected provider removes the AI section');
-  assert.equal(await native.locator('.section-index').isHidden(),true,'One remaining Usage section hides the index');
+  assert.equal(await native.locator('.section-switch').isHidden(),true,'One remaining Usage section hides the index');
   await native.evaluate(()=>{const now=Math.round(Date.now()/1000);window.__emitNative('usage',[
     {id:'claude-5h',provider:'claude',label:'Claude session (5 h)',usedPct:42,spentUsd:null,resetsAt:now+8130,source:'official',stale:false,status:'ok'},
     {id:'claude-week',provider:'claude',label:'Claude weekly',usedPct:18,spentUsd:null,resetsAt:now+86400*2,source:'official',stale:false,status:'ok'},
@@ -778,7 +873,7 @@ try {
     {id:'codex-secondary',provider:'codex',label:'Codex weekly',usedPct:9,spentUsd:null,resetsAt:now+86400*5,source:'official',stale:false,status:'ok'}]);});
   await setLive({openWidth:500});
   await native.getByRole('tab',{name:'Tools',exact:true}).click();
-  await native.locator('.page.dictation').scrollIntoViewIfNeeded();
+  await native.getByRole('tab',{name:'Dictation',exact:true}).click();
   await native.evaluate(()=>window.__emitNative('dictation_state',{status:'starting',modelReady:true}));
   await native.evaluate(()=>window.__emitNative('dictation_state',{status:'recording',modelReady:true}));
   await native.evaluate(()=>window.__emitNative('dictation_partial',{status:'recording',preview:'Provisional words',modelReady:true}));
@@ -804,11 +899,29 @@ try {
   assert.equal(await native.locator('.transcript b').count(),0);
   await native.evaluate(()=>window.__emitNative('dictation_state',{status:'review',transcript:'Partial insertion fixture',modelReady:true,canInsert:false,message:'Automatic retry disabled; check the target manually.'}));
   assert.equal(await native.getByRole('button',{name:'Insert',exact:true}).isDisabled(),true,'Partial insertions never offer a whole-transcript retry');
-  await native.locator('.page.clipboard').scrollIntoViewIfNeeded();
+  // Dictation has the full content height: status, transcript, a large record control
+  const dictationBoxes = await native.evaluate(()=>{const r=s=>document.querySelector(s).getBoundingClientRect();return {page:Math.round(r('.page.dictation').height),record:Math.round(r('.dictation-record').height),cancel:Math.round(r('.dictation-controls .icon-btn').height),fit:r('.dictation-controls').bottom<=r('.page.dictation').bottom+1&&r('.transcript').height>=96};});
+  assert.deepEqual(dictationBoxes,{page:232,record:56,cancel:36,fit:true});
+  assert.equal(await native.getByRole('button',{name:'Model settings',exact:true}).isVisible(),false,'A ready model needs no settings link');
+  await native.evaluate(()=>window.__emitNative('dictation_state',{status:'idle',modelInstalled:false,activeModelLabel:null}));
+  assert.match(await native.locator('.dictation-status').textContent(),/No speech model yet/);
+  assert.equal(await native.getByRole('button',{name:'Record',exact:true}).isDisabled(),true,'No model, no recording');
+  await native.getByRole('button',{name:'Model settings',exact:true}).click();
+  assert.deepEqual(await native.evaluate(()=>window.__calls.findLast(c=>c.command==='open_settings_cmd').args),{view:'tools'},'The link goes to the model settings');
+  await native.evaluate(()=>window.__emitNative('dictation_state',{status:'error',message:'Fixture microphone error',modelInstalled:true}));
+  assert.match(await native.locator('.dictation-status').textContent(),/Fixture microphone error/);
+  assert.equal(await native.locator('.dictation-status .status-dot').getAttribute('data-status'),'warn');
+  // Clipboard's empty state is one calm line in the middle
+  await native.getByRole('tab',{name:'Tools',exact:true}).click();
+  await native.getByRole('tab',{name:'Clipboard',exact:true}).click();
+  await native.waitForTimeout(100);
+  await native.evaluate(()=>window.__emitNative('clipboard_history_changed',{enabled:true,items:[]}));
+  assert.equal((await native.locator('.page.clipboard').textContent()).trim(),'Nothing copied yet');
+  assert.ok(await native.evaluate(()=>{const p=document.querySelector('.page.clipboard').getBoundingClientRect(),l=document.querySelector('.page.clipboard .empty-line').getBoundingClientRect();return Math.abs(p.top+p.height/2-(l.top+l.height/2))<=1;}),'Centred');
   await native.evaluate(()=>window.__emitNative('clipboard_history_changed',{enabled:true,items:[{id:'clip',text:'<img src=x>clipboard fixture',pinned:false,createdAt:Date.now()}]}));
   assert.equal(await native.locator('.clipboard-text img').count(),0);
   assert.deepEqual(await native.locator('.clipboard-row .icon-btn').evaluateAll(n=>n.map(x=>x.getAttribute('aria-label'))),['Pin','Remove']);
-  const toolTargets = await native.locator('.page.clipboard .icon-btn, .page.dictation .icon-btn').evaluateAll(nodes => nodes.map(n => { const r = n.getBoundingClientRect(); return Math.min(r.width, r.height); }));
+  const toolTargets = await native.locator('.page.clipboard .icon-btn, .section-actions .icon-btn:visible').evaluateAll(nodes => nodes.map(n => { const r = n.getBoundingClientRect(); return Math.min(r.width, r.height); }));
   assert.equal(toolTargets.every(size => size >= 32), true, 'Icon buttons are at least 32px');
   await native.locator('.clipboard-text').click();
   assert.equal(await native.evaluate(()=>window.__calls.some(call=>call.command==='clipboard_copy'&&call.args.id==='clip')),true);
@@ -826,16 +939,23 @@ try {
   await native.mouse.wheel(0,-120); await native.waitForTimeout(400);
   assert.equal(await activeTab(),'media','Wheel up on the first tab stays put');
   await native.mouse.wheel(0,120); await native.waitForTimeout(400);
-  assert.equal(await activeTab(),'media','Wheel scrolls to the next section before switching');
-  assert.ok(await panelTop() > 0);
-  await native.mouse.wheel(0,120); await native.waitForTimeout(400);
   assert.equal(await activeTab(),'today','Wheel past the last section switches to the next tab');
   assert.equal(await panelTop(),0,'Moving forward lands on the first section');
   await native.mouse.wheel(0,-120); await native.waitForTimeout(400);
   assert.equal(await activeTab(),'media');
-  assert.ok(await panelTop() > 0,'Moving back lands on the last section');
+  assert.equal(await panelTop(),0,'Media has one section');
   await native.mouse.wheel(120,0); await native.waitForTimeout(400);
   assert.equal(await activeTab(),'today','Horizontal wheel switches tabs');
+  // Vertical wheel visits the tab's parts, then moves on; going back lands on the last part
+  const selectedPart = () => native.locator('.section-switch-button[aria-selected="true"]').textContent();
+  await native.mouse.wheel(0,120); await native.waitForTimeout(400);
+  assert.deepEqual([await activeTab(),await selectedPart()],['today','Timer'],'Wheel moves to the next part first');
+  await native.mouse.wheel(0,120); await native.waitForTimeout(400);
+  assert.equal(await activeTab(),'dictation','Past the last part the wheel moves to the next tab');
+  await native.mouse.wheel(0,-120); await native.waitForTimeout(400);
+  assert.deepEqual([await activeTab(),await selectedPart()],['today','Timer'],'Going back lands on the last part');
+  await native.mouse.wheel(0,-120); await native.waitForTimeout(400);
+  assert.deepEqual([await activeTab(),await selectedPart()],['today','Clock']);
   // Two calls since then: the wheel over the far edge of the wider pill, collapsed and open
   assert.equal((await volumeCalls()).length,volumeCallsBeforeOpen + 2,'Wheel outside the strip never changes the volume');
   // Pointer drag swipe: dragging left moves to the next tab
@@ -845,16 +965,23 @@ try {
   await native.mouse.move(area.x + area.width - 120, area.y + 62, {steps:4});
   await native.mouse.move(area.x + area.width - 200, area.y + 64, {steps:4});
   await native.mouse.up();
-  assert.equal(await activeTab(),'tools','A left drag swipes to the next tab');
+  assert.equal(await activeTab(),'dictation','A left drag swipes to the next tab');
   // The last tab is remembered across sessions
   await native.getByRole('tab',{name:'Usage',exact:true}).click();
   assert.equal(await native.evaluate(() => JSON.parse(localStorage.getItem('tuck.live.v2')).lastTab),'usage');
+  // Every tab an older version could have saved still opens
+  for (const old of ['media','today','tools']) {
+    await native.evaluate(old=>{const key='tuck.live.v2';localStorage.setItem(key,JSON.stringify({...JSON.parse(localStorage.getItem(key)),lastTab:old}));},old);
+    await native.reload(); await native.waitForTimeout(150);
+    assert.equal(await native.locator('.tab-panel.on').getAttribute('data-tab'),old,'An older saved tab is restored');
+  }
+  await native.evaluate(()=>{const key='tuck.live.v2';localStorage.setItem(key,JSON.stringify({...JSON.parse(localStorage.getItem(key)),lastTab:'usage'}));});
   await native.reload(); await native.waitForTimeout(150);
   assert.equal(await native.locator('.tab-panel.on').getAttribute('data-tab'),'usage','The last tab is restored');
   // A fresh session has no chosen section, so the first reading to arrive is what shows
   await native.evaluate(()=>window.__emitNative('usage',[{id:'claude-5h',provider:'claude',label:'Claude session (5 h)',usedPct:42,spentUsd:null,resetsAt:Math.round(Date.now()/1000)+8130,source:'official',stale:false,status:'ok'}]));
   await native.waitForTimeout(50);
-  assert.equal(await native.locator('.section-index-button').first().getAttribute('aria-current'),'true');
+  assert.equal(await native.locator('.section-switch-button').first().getAttribute('aria-selected'),'true');
   assert.equal(await native.locator('#panel-usage').evaluate(el=>el.scrollTop),0);
   await native.evaluate(()=>window.__emitNative('open-island',null));
   await native.locator('#railSettings').click();
@@ -885,56 +1012,28 @@ try {
   assert.deepEqual(await native.evaluate(()=>window.__calls.filter(call=>['clipboard_configure','clipboard_set_persistence','clipboard_set_enabled'].includes(call.command)).map(call=>call.command)),['clipboard_configure'],'Both clipboard flags use a single native mutation');
   // Activity switches save immediately and revert when the native save fails.
   await native.locator('#nav a[data-view="activities"]').click();
-  await native.locator('#ext-downloads').click();
-  await native.getByText('Activity settings could not be saved',{exact:true}).waitFor();
-  assert.equal(await native.locator('#ext-downloads').isChecked(),false);
-  assert.equal(await native.evaluate(()=>window.__calls.findLast(call=>call.command==='extension_settings').args.settings.downloads),true);
+  await native.setViewportSize({width:1000,height:850});
   await native.screenshot({path:path.join(root,'artifacts','settings-activities.png')});
-  // Hiding the Windows flyout is opt-in and reports when it turned itself off
+  await native.setViewportSize({width:520,height:288});
+  await native.locator('#ext-notifications').click();
+  await native.getByText('Activity settings could not be saved',{exact:true}).waitFor();
+  assert.equal(await native.locator('#ext-notifications').isChecked(),false);
+  assert.equal(await native.evaluate(()=>window.__calls.findLast(call=>call.command==='extension_settings').args.settings.notifications),true);
+  // Hiding the Windows flyout defaults on and reports when it turned itself off
   await native.locator('#nav a[data-view="island"]').click();
   await native.locator('#row-hideSystemFlyout').waitFor({state:'visible'});
   assert.equal(await native.locator('#levelHud').isChecked(),true,'The HUD is on by default');
-  assert.equal(await native.locator('#hideSystemFlyout').isChecked(),false,'Off by default');
+  assert.equal(await native.locator('#hideSystemFlyout').isChecked(),true,'On by default');
+  await native.locator('#hideSystemFlyout').click();
+  assert.equal(await native.locator('#hideSystemFlyout').isChecked(),false,'Can be disabled');
   await native.locator('#hideSystemFlyout').click();
   await native.locator('#flyoutStatus').filter({hasText:'Turned off'}).waitFor({timeout:2000});
   assert.equal(await native.locator('#hideSystemFlyout').isChecked(),false,'An unavailable flyout turns the setting back off');
   assert.equal(await native.locator('#flyoutStatus').getAttribute('data-kind'),'error');
   assert.deepEqual(nativeErrors,[]);
 
-  // Isolate spectrum navigation from the HUD suite's announcement timing.
-  const spectraContext = await browser.newContext({viewport:{width:520,height:230}, reducedMotion:'reduce'});
-  await spectraContext.route('http://tuck.test/**', serveDist);
-  await spectraContext.addInitScript(nativeBridge);
-  const spectra = await spectraContext.newPage();
-  await spectra.goto('http://tuck.test/');
-  await spectra.waitForFunction(() => window.__calls?.some(call => call.command === 'plugin:event|listen' && call.args.event === 'open-island'));
-  await spectra.evaluate(() => window.__emitNative('open-island',null));
-  await spectra.getByRole('tab',{name:'Media',exact:true}).click();
-  await spectra.getByRole('button',{name:'Go to now playing',exact:true}).click();
-  await spectra.waitForTimeout(400);
-  await spectra.evaluate(() => window.__emitNative('visualizer',{bins:[1,1,1],isSilent:false}));
-  assert.equal(await spectra.locator('.live-spectrum i').first().evaluate(el=>el.style.getPropertyValue('--level')),'1');
-  assert.equal(await spectra.locator('.wide-spectrum i').first().evaluate(el=>el.style.getPropertyValue('--level')),'0','Hidden visualizer group is not updated');
-  await spectra.getByRole('button',{name:'Go to visualizer',exact:true}).click();
-  await spectra.waitForTimeout(400);
-  await spectra.evaluate(() => window.__emitNative('visualizer',{bins:[0.5,0.5],isSilent:false}));
-  assert.equal(await spectra.locator('.wide-spectrum i').first().evaluate(el=>el.style.getPropertyValue('--level')),'0.5');
-  await spectra.getByRole('tab',{name:'Usage',exact:true}).click();
-  await spectra.waitForTimeout(100); // Allow IntersectionObserver to deliver the visibility change.
-  const hiddenLevels = await spectra.locator('.live-spectrum i, .wide-spectrum i').evaluateAll(nodes=>nodes.map(el=>el.style.getPropertyValue('--level')));
-  await spectra.evaluate(() => window.__emitNative('visualizer',{bins:[0.3,0.3],isSilent:false}));
-  assert.deepEqual(await spectra.locator('.live-spectrum i, .wide-spectrum i').evaluateAll(nodes=>nodes.map(el=>el.style.getPropertyValue('--level'))),hiddenLevels,'Inactive-tab groups are not updated');
-  await spectra.keyboard.press('Escape');
-  await spectra.evaluate(() => window.__emitNative('visualizer',{bins:[0.2,0.2],isSilent:false}));
-  assert.equal(await spectra.locator('.wide-spectrum i').first().evaluate(el=>el.style.getPropertyValue('--level')),'0.5','Collapsed full-page spectra are not updated');
-  await spectra.evaluate(() => window.__emitNative('open-island',null));
-  assert.equal(await spectra.locator('.live-spectrum i, .wide-spectrum i').evaluateAll(nodes=>nodes.every(el=>el.style.getPropertyValue('--level')==='0')),true,'Opening clears old bars immediately, before the one-second stale timer');
-  await spectra.keyboard.press('Escape');
-  await spectra.mouse.move(0, 220);
-  await spectraContext.close();
-
   // Versioned native snapshots drive collapsed and expanded previews together.
-  await native.setViewportSize({width:520,height:230});
+  await native.setViewportSize({width:520,height:288});
   await native.goto('http://tuck.test/');
   await native.locator('#isl').waitFor();
   await native.keyboard.press('Escape');
@@ -975,7 +1074,7 @@ try {
   assert.deepEqual(nativeErrors,[]);
 
   // With motion on: what actually keeps running while the island is collapsed
-  const motionContext = await browser.newContext({viewport:{width:520,height:230}, reducedMotion:'no-preference'});
+  const motionContext = await browser.newContext({viewport:{width:520,height:288}, reducedMotion:'no-preference'});
   await motionContext.route('http://tuck.test/**', serveDist);
   await motionContext.addInitScript(nativeBridge);
   await motionContext.addInitScript(instrumentTimers);
@@ -1013,6 +1112,30 @@ try {
   await motion.waitForTimeout(1600);
   assert.deepEqual(await running(),[],'The equalizer stops on pause and nothing else runs');
   assert.equal(await motion.evaluate(() => window.__idleIntervals.size), 0, 'Pausing collapsed media parks all intervals');
+  // Native bounds and the smooth part switch, in both shapes
+  await motion.locator('#isl').focus(); await motion.keyboard.press('Enter');
+  await motion.waitForTimeout(600);
+  const lastHitBox = () => motion.evaluate(()=>{const {w,h}=window.__calls.findLast(call=>call.command==='set_hit').args;return [w,h];});
+  assert.deepEqual(await lastHitBox(),[500,264],'The open hit area matches the notch island');
+  await motion.getByRole('tab',{name:'Today',exact:true}).click();
+  await motion.getByRole('tab',{name:'Timer',exact:true}).click();
+  await motion.waitForFunction(()=>{const p=document.getElementById('panel-today');return Math.abs(p.scrollTop-p.clientHeight)<1;},null,{timeout:3000});
+  await motion.locator('.section-switch-button[aria-selected="true"]',{hasText:'Timer'}).waitFor({timeout:3000});
+  assert.equal(await motion.locator('#actPause').evaluate(n=>!n.closest('[inert]')),true,'The part in view is interactive after a smooth move');
+  // Hidden tabs do no polling
+  await motion.getByRole('tab',{name:'Dictation',exact:true}).click();
+  await motion.evaluate(()=>{window.__calls.length=0;});
+  await motion.waitForTimeout(1300);
+  assert.deepEqual(await motion.evaluate(()=>window.__calls.filter(call=>['telemetry_now','media_sessions'].includes(call.command)).length),0,'Dictation polls nothing');
+  await motion.getByRole('tab',{name:'Usage',exact:true}).click();
+  await motion.waitForFunction(()=>window.__calls.some(call=>call.command==='telemetry_now'),null,{timeout:3000});
+  await motion.evaluate(()=>localStorage.setItem('notch.shape','float'));
+  await motion.reload(); await motion.waitForTimeout(150);
+  await motion.locator('#isl').focus(); await motion.keyboard.press('Enter');
+  await motion.waitForTimeout(600);
+  assert.deepEqual(await lastHitBox(),[500,274],'A floating island adds its gap to the hit area');
+  const floatBox = await motion.locator('#isl').boundingBox();
+  assert.ok(floatBox.y===10&&floatBox.y+floatBox.height<=288&&floatBox.height===264,'A floating island fits the native canvas');
   assert.deepEqual(motionErrors,[]);
   // The compact clock stays accurate with one minute-aligned timeout, without an interval.
   const idleClock = await context.newPage();
@@ -1026,6 +1149,6 @@ try {
   assert.equal(await idleClock.evaluate(() => window.__idleIntervals.size), 0, 'The minute clock does not start an interval');
   await idleClock.close();
 
-  console.log('UI smoke passed: geometry, tab rail (keys, wheel edges, swipe, memory), accessibility, keyboard seeking, timers, collapsed media text and its running animations, usage rings, section marks, icon buttons, persistence errors, volume/brightness HUD, wheel and middle-click volume, the pill-sized strip on the open island, queued flyout failure, return to open after HUD, HUD setting, charger-ramp brightness, flyout opt-in, native-bridge call priority, shelf, focused radio updates, drag hold and previews.');
+  console.log('UI smoke passed: geometry, tab rail (keys, wheel edges, swipe, memory), accessibility, keyboard seeking, timers, collapsed media text and its running animations, usage rings, segmented switch, dictation tab, empty states, icon buttons, persistence errors, volume/brightness HUD, wheel and middle-click volume, the pill-sized strip on the open island, queued flyout failure, return to open after HUD, HUD setting, charger-ramp brightness, flyout default-on, shelf, drag hold and previews.');
 } finally { await browser.close(); }
 

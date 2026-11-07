@@ -1,7 +1,7 @@
 {
   "name": "tuck",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.1",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -13,7 +13,8 @@
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
-    "@tauri-apps/plugin-opener": "^2"
+    "@tauri-apps/plugin-opener": "^2",
+    "@tauri-apps/plugin-updater": "^2.14.1"
   },
   "devDependencies": {
     "@playwright/test": "^1.64.1",
@@ -22,5 +23,13 @@
     "@types/node": "^26.6.6",
     "typescript": "~6.0.3",
     "vite": "^8.0.16"
-  }
+  },
+  "license": "MIT",
+  "description": "A desktop island for Windows media controls, dictation, and local tools.",
+  "author": "Tuck contributors",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jojomensah89/tuck.git"
+  },
+  "homepage": "https://github.com/jojomensah89/tuck"
 }

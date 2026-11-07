@@ -7,7 +7,6 @@ import { SVG_ICONS } from './icons.js';
 import {
   clampTab,
   DRAG_SLOP,
-  GESTURE_GAP_MS,
   INITIAL_WHEEL_STATE,
   rovingTarget,
   sectionIndexAt,
@@ -42,7 +41,7 @@ export interface TabRail {
   step(delta: number, via: 'key' | 'wheel' | 'swipe', landing?: Landing): void;
   /** Show the tab holding a section and scroll the section into view */
   reveal(section: string): void;
-  /** Include or remove a section from scroll-snap navigation. */
+  /** Include or remove a section from the tab's parts */
   setSectionVisible(section: string, visible: boolean): void;
 }
 
@@ -104,7 +103,12 @@ export function mountTabRail(options: TabRailOptions): TabRail {
     e.stopPropagation();
     options.openSettings();
   });
-  rail.append(tablist, settings);
+  // Reserved for the update item. Hidden, it takes no room and the gear stays pinned
+  const updateSlot = document.createElement('div');
+  updateSlot.className = 'rail-update';
+  updateSlot.id = 'railUpdate';
+  updateSlot.hidden = true;
+  rail.append(tablist, updateSlot, settings);
   full.insertBefore(rail, container);
 
   // Sections move into their tab's panel in the documented order. A section
@@ -120,34 +124,63 @@ export function mountTabRail(options: TabRailOptions): TabRail {
   for (const section of sections) if (!section.parentElement?.classList.contains('tab-panel')) fallback.append(section);
   container.replaceChildren(...panels);
 
-  /* ---------- Section position ---------- */
-  const sectionIndex = document.createElement('div');
-  sectionIndex.className = 'section-index';
-  sectionIndex.setAttribute('role', 'group');
-  sectionIndex.setAttribute('aria-label', 'Sections');
-  full.append(sectionIndex);
+  /* ---------- A tab's parts: the segmented switch and the part's actions ---------- */
+  const sectionRow = document.createElement('div');
+  sectionRow.className = 'section-row';
+  const sectionSwitch = document.createElement('div');
+  sectionSwitch.className = 'section-switch';
+  sectionSwitch.setAttribute('role', 'tablist');
+  sectionSwitch.setAttribute('aria-label', 'Sections');
+  const sectionActions = document.createElement('div');
+  sectionActions.className = 'section-actions';
+  // Each group names the sections it serves. It moves here once, and is only shown
+  // or hidden after that, so focus survives. Groups shared by a tab's parts come last.
+  const servedBy = (group: HTMLElement) => (group.dataset.sectionActions ?? '').split(' ');
+  const actionGroups = [...container.querySelectorAll<HTMLElement>('[data-section-actions]')]
+    .sort((a, b) => servedBy(a).length - servedBy(b).length);
+  sectionActions.append(...actionGroups);
+  sectionRow.append(sectionSwitch, sectionActions);
+  full.insertBefore(sectionRow, container);
 
   const sectionsOf = (panel: HTMLElement) => [...panel.querySelectorAll<HTMLElement>(':scope > .page:not([hidden])')];
   const visibleSection = (panel: HTMLElement): number =>
     sectionIndexAt(panel.scrollTop, panel.clientHeight, sectionsOf(panel).length);
 
-  /** The same snap scroller the wheel and swipes use */
+  /** Two parts need the switch; one part still needs the row if it has actions */
+  function syncPanelRow(panel: HTMLElement): void {
+    const parts = sectionsOf(panel);
+    const name = parts[0]?.dataset.page ?? '';
+    panel.classList.toggle('has-row', parts.length > 1 || actionGroups.some(group => servedBy(group).includes(name)));
+  }
+  panels.forEach(syncPanelRow);
+
+  /** The same snap scroller the wheel uses */
   function goToSection(index: number): void {
     const panel = panels[current];
     const target = sectionsOf(panel)[index];
     if (target) panel.scrollTo({ top: target.offsetTop, behavior: reducedMotion.matches ? 'auto' : 'smooth' });
   }
 
-  function buildMark(name: string, index: number): HTMLButtonElement {
+  function buildSegment(name: string, index: number): HTMLButtonElement {
     const button = document.createElement('button');
-    const label = `Go to ${sectionLabel(name)}`;
     button.type = 'button';
-    button.className = 'section-index-button';
-    button.setAttribute('aria-label', label);
-    button.title = label;
-    const mark = document.createElement('i');
-    mark.setAttribute('aria-hidden', 'true');
-    button.append(mark);
+    button.className = 'section-switch-button';
+    button.id = `section-tab-${name}`;
+    button.textContent = sectionLabel(name);
+    button.setAttribute('role', 'tab');
+    const section = sections.find(s => s.dataset.page === name);
+    if (section) {
+      section.id ||= `section-${name}`;
+      button.setAttribute('aria-controls', section.id);
+    }
+    button.addEventListener('keydown', event => {
+      const target = rovingTarget(event.key, index, sectionsOf(panels[current]).length);
+      if (target === null) return;
+      event.preventDefault();
+      event.stopPropagation();
+      goToSection(target);
+      (sectionSwitch.children[target] as HTMLElement | undefined)?.focus();
+    });
     button.addEventListener('click', event => {
       event.stopPropagation();
       goToSection(index);
@@ -156,26 +189,46 @@ export function mountTabRail(options: TabRailOptions): TabRail {
     return button;
   }
 
-  let indexKey: string | null = null;
-  function renderSectionIndex(): void {
+  let switchKey: string | null = null;
+  function renderSectionSwitch(): void {
     const panel = panels[current];
-    const names = sectionsOf(panel).map(section => section.dataset.page ?? 'section');
+    const parts = sectionsOf(panel);
+    const names = parts.map(section => section.dataset.page ?? 'section');
     const count = names.length;
     const at = visibleSection(panel);
-    // Tabs can have the same number of sections, so the marks are keyed by name
+    sectionRow.hidden = !panel.classList.contains('has-row');
+    sectionSwitch.hidden = count < 2;
+    // Tabs can have the same number of parts, so the segments are keyed by name
     const key = names.join(' ');
-    if (key !== indexKey) {
-      const hadFocus = sectionIndex.contains(document.activeElement);
-      indexKey = key;
-      sectionIndex.replaceChildren(...names.map(buildMark));
-      sectionIndex.hidden = count < 2;
-      if (hadFocus) (count > 1 ? sectionIndex.children[at] as HTMLElement : panel).focus({ preventScroll: true });
+    if (key !== switchKey) {
+      const hadFocus = sectionSwitch.contains(document.activeElement);
+      switchKey = key;
+      sectionSwitch.replaceChildren(...(count > 1 ? names.map(buildSegment) : []));
+      for (const section of sections) {
+        if (count > 1 && parts.includes(section)) {
+          section.setAttribute('role', 'tabpanel');
+          section.setAttribute('aria-labelledby', `section-tab-${section.dataset.page}`);
+        } else if (panel.contains(section)) {
+          section.removeAttribute('role');
+          section.removeAttribute('aria-labelledby');
+        }
+      }
+      if (hadFocus) (count > 1 ? sectionSwitch.children[at] as HTMLElement : panel).focus({ preventScroll: true });
     }
-    [...sectionIndex.children].forEach((button, index) => {
+    [...sectionSwitch.children].forEach((button, index) => {
       button.classList.toggle('on', index === at);
-      if (index === at) button.setAttribute('aria-current', 'true');
-      else button.removeAttribute('aria-current');
+      button.setAttribute('aria-selected', String(index === at));
+      (button as HTMLElement).tabIndex = index === at ? 0 : -1;
     });
+    // Only the part on screen can take focus or show its actions
+    parts.forEach((section, index) => { section.inert = index !== at; });
+    let lostFocus = false;
+    for (const group of actionGroups) {
+      const hidden = !servedBy(group).includes(names[at]);
+      if (hidden && group.contains(document.activeElement)) lostFocus = true;
+      group.hidden = hidden;
+    }
+    if (lostFocus) (sectionSwitch.children[at] as HTMLElement | undefined)?.focus({ preventScroll: true });
   }
   /** The section the reader last moved to by hand this session, per panel */
   const readerSection = new WeakMap<HTMLElement, string>();
@@ -185,13 +238,13 @@ export function mountTabRail(options: TabRailOptions): TabRail {
   full.addEventListener('pointerdown', noteReader, { capture: true, passive: true });
   full.addEventListener('keydown', noteReader, { capture: true });
 
-  let indexFrame = 0;
+  let switchFrame = 0;
   for (const panel of panels) {
     panel.addEventListener('scroll', () => {
-      if (panel !== panels[current] || indexFrame) return;
-      indexFrame = requestAnimationFrame(() => {
-        indexFrame = 0;
-        renderSectionIndex();
+      if (panel !== panels[current] || switchFrame) return;
+      switchFrame = requestAnimationFrame(() => {
+        switchFrame = 0;
+        renderSectionSwitch();
         const name = sectionsOf(panel)[visibleSection(panel)]?.dataset.page;
         if (readerMoving && name) readerSection.set(panel, name);
       });
@@ -239,7 +292,7 @@ export function mountTabRail(options: TabRailOptions): TabRail {
     const changed = next !== previous;
     const focused = document.activeElement;
     const focusOnRail = focused instanceof HTMLElement && tablist.contains(focused);
-    const focusInPanel = focused instanceof HTMLElement && (panels[previous].contains(focused) || sectionIndex.contains(focused));
+    const focusInPanel = focused instanceof HTMLElement && (panels[previous].contains(focused) || sectionRow.contains(focused));
     const dir = next >= previous ? 1 : -1;
     current = next;
 
@@ -278,7 +331,7 @@ export function mountTabRail(options: TabRailOptions): TabRail {
       tab.classList.toggle('on', selected);
     });
     rail.style.setProperty('--tab-index', String(current));
-    renderSectionIndex();
+    renderSectionSwitch();
 
     if (changed && options.isOpen()) {
       if (focusOnRail) tabs[current].focus({ preventScroll: true });
@@ -302,7 +355,7 @@ export function mountTabRail(options: TabRailOptions): TabRail {
     const panel = panels[tabIndex(id)];
     const target = sectionsOf(panel).find(s => s.dataset.page === section);
     if (target) panel.scrollTop = target.offsetTop;
-    renderSectionIndex();
+    renderSectionSwitch();
   }
 
   function setSectionVisible(section: string, visible: boolean): void {
@@ -311,9 +364,10 @@ export function mountTabRail(options: TabRailOptions): TabRail {
     if (!target || target.hidden === !visible) return;
     const panel = target.parentElement as HTMLElement;
     target.hidden = !visible;
+    syncPanelRow(panel);
     if (panel === panels[current]) placeReader(panel);
     else placeOnShow.add(panel);
-    renderSectionIndex();
+    renderSectionSwitch();
   }
 
   /* ---------- Rail input ---------- */
@@ -321,7 +375,7 @@ export function mountTabRail(options: TabRailOptions): TabRail {
     tab.addEventListener('click', e => {
       e.stopPropagation();
       if (i === current) {
-        // Re-selecting the active tab returns to its first section
+        // Re-selecting the active tab returns to its first part
         panels[i].scrollTo({ top: 0, behavior: reducedMotion.matches ? 'auto' : 'smooth' });
         return;
       }
@@ -337,48 +391,44 @@ export function mountTabRail(options: TabRailOptions): TabRail {
     tabs[current].focus();
   });
 
-  /* ---------- Wheel: scroll content first, switch at the edge ---------- */
+  /* ---------- Wheel: scroll lists first, then parts, then tabs ---------- */
   let wheel: WheelState = { ...INITIAL_WHEEL_STATE };
-  function scrollChain(target: Element | null): ScrollMetrics[] {
+  /** Lists under the pointer, innermost first. The panel itself moves part by part */
+  function scrollChain(target: Element): ScrollMetrics[] {
     const panel = panels[current];
-    if (!target || !panel.contains(target)) return [];
+    if (!panel.contains(target)) return [];
     const chain: ScrollMetrics[] = [];
-    for (let el: Element | null = target; el; el = el.parentElement) {
+    for (let el: Element | null = target; el && el !== panel; el = el.parentElement) {
       if (el instanceof HTMLElement && el.scrollHeight > el.clientHeight + 1) {
         const style = getComputedStyle(el);
-        if (el === panel || /(auto|scroll)/.test(style.overflowY)) {
+        if (/(auto|scroll)/.test(style.overflowY)) {
           chain.push({ scrollTop: el.scrollTop, scrollHeight: el.scrollHeight, clientHeight: el.clientHeight });
           // Contained scrollers never hand the wheel to their ancestors
           if (style.overscrollBehaviorY === 'contain' || style.overscrollBehaviorY === 'none') break;
         }
       }
-      if (el === panel) break;
     }
     return chain;
   }
   full.addEventListener('wheel', e => {
     if (!options.isOpen()) return;
-    if ((e.target as Element).closest('input, select, textarea')) return;
-    // The marks sit outside the panel, so the browser would not scroll it for them
-    const overIndex = sectionIndex.contains(e.target as Node);
-    const now = performance.now();
-    const freshGesture = now - wheel.lastWheelAt > GESTURE_GAP_MS;
+    const target = e.target as Element;
+    if (target.closest('input, select, textarea')) return;
+    const panel = panels[current];
     const result = wheelStep(wheel, {
       deltaX: e.deltaX,
       deltaY: e.deltaY,
-      now,
-      chain: scrollChain(overIndex ? panels[current] : e.target as Element),
+      now: performance.now(),
+      chain: scrollChain(target),
+      // Over the rail the wheel means tabs; everywhere else it visits the parts first
+      part: rail.contains(target) ? undefined : { index: visibleSection(panel), count: sectionsOf(panel).length },
     });
     wheel = result.state;
     const action = result.action;
-    if (action.kind === 'block') e.preventDefault();
-    if (overIndex && action.kind === 'scroll') {
-      e.preventDefault();
-      if (freshGesture) goToSection(visibleSection(panels[current]) + (e.deltaY > 0 ? 1 : -1));
-      return;
-    }
+    // Only a list with room scrolls natively; the panel never free-scrolls under the wheel
+    if (action.kind !== 'scroll') e.preventDefault();
+    if (action.kind === 'section') goToSection(visibleSection(panel) + action.delta);
     if (action.kind !== 'switch') return;
-    e.preventDefault();
     const vertical = Math.abs(e.deltaY) >= Math.abs(e.deltaX);
     // Continuing a vertical scroll lands where the motion would have gone
     step(action.delta, 'wheel', vertical ? (action.delta > 0 ? 'start' : 'end') : 'keep');

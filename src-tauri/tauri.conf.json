@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "tuck",
-  "version": "0.1.0",
+  "version": "0.2.1",
   "identifier": "com.jojo.tuck",
   "build": {
     "beforeDevCommand": "bun run dev",
@@ -16,7 +16,7 @@
         "label": "main",
         "title": "Tuck",
         "width": 520,
-        "height": 230,
+        "height": 288,
         "x": 0,
         "y": 0,
         "decorations": false,
@@ -35,7 +35,14 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": "nsis",
+    "createUpdaterArtifacts": true,
+    "windows": {
+      "nsis": {
+        "installerIcon": "icons/icon.ico",
+        "uninstallerIcon": "icons/icon.ico"
+      }
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -43,5 +50,13 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ]
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IENCRDgyNTk0N0I5NjY4RUQKUldUdGFKWjdsQ1hZeTFGQzhadW5WcVBvcUN4TnZvMFdvVGNOdDYwdUVFRWN2NURETFJ5YlUzK1IK",
+      "endpoints": [
+        "https://github.com/jojomensah89/tuck/releases/latest/download/latest.json"
+      ]
+    }
   }
 }

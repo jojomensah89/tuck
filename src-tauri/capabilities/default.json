@@ -1,11 +1,12 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capability for Tuck windows",
+  "description": "Base capability for Tuck windows",
   "windows": ["main", "settings"],
   "permissions": [
     "core:default",
     "opener:default",
-    "autostart:default"
+    "autostart:default",
+    "updater:allow-check"
   ]
 }

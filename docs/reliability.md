@@ -6,7 +6,7 @@ Base: origin/main fd15d8d. Installed Tuck was not stopped. No runtime CPU measur
 
 | Worker | Before | After |
 | --- | --- | --- |
-| Cursor hit testing | 40 ms near / 60 ms far | Mouse events + 1 s safety; original polling if hook unavailable |
+| Cursor hit testing | 40 ms near / 60 ms far | Moving: 40 ms near / 60 ms far. Resting: 100 ms near / 250 ms far. No global mouse hook |
 | Local usage | 1 s wake / 60 s file refresh | 60 s or immediate manual request |
 | Installed-client usage | 300 s when enabled, parked otherwise; explicit refresh wakes it | Unchanged |
 | WebView trimming | One-shot 30 s after inactive | Unchanged |
@@ -25,7 +25,7 @@ Base: origin/main fd15d8d. Installed Tuck was not stopped. No runtime CPU measur
 | Animation frames | One-shot transitions / style application | Unchanged, no continuous idle loop |
 | Dictation | Capture / shortcut pause timers only in active sessions | Unchanged idle |
 
-Live hover, fast approach-and-click, native credential migration and CPU usage still require Windows runtime validation. Mouse hooks signal the existing hit-test worker without reading clipboard or credentials. The hook falls back to original polling if installation fails.
+Live hover, fast approach-and-click, native credential migration and CPU usage still require Windows runtime validation.
 
 Preview preparation checks stop before mel conversion and before language detection. Individual native calls cannot be interrupted; cancellation occurs at their nearest safe boundary. Preview failure logs a generic line and pauses previews, preserving final transcription. Final model-load errors already propagate through the session into the dictation error status. Settings already renders synchronous action failures, model notices, and asynchronous error status.
 

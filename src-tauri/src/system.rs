@@ -7,64 +7,16 @@ pub(crate) fn invalidate_hit_geometry() {
     HIT_GEOMETRY_DIRTY.store(true, Ordering::Release);
 }
 
-pub(crate) fn cursor_poll_ms(near: bool) -> u64 {
-    if near {
-        40
-    } else {
-        60
+/// How long to sleep before the next cursor sample. A resting cursor is sampled rarely, which
+/// is what makes an idle Tuck cheap; the first sample that sees movement returns to the fast
+/// rate. Near the island the resting rate stays quick enough for a short move and click.
+pub(crate) fn cursor_poll_ms(near: bool, moved: bool) -> u64 {
+    match (near, moved) {
+        (true, true) => 40,
+        (false, true) => 60,
+        (true, false) => 100,
+        (false, false) => 250,
     }
-}
-
-// A mouse hook wakes hit testing immediately on movement and clicks. The timed
-// fallback only repairs missed notifications; it does not drive hover response.
-static CURSOR_MOVED: std::sync::LazyLock<(Mutex<bool>, std::sync::Condvar)> =
-    std::sync::LazyLock::new(|| (Mutex::new(false), std::sync::Condvar::new()));
-static CURSOR_HOOK_READY: AtomicBool = AtomicBool::new(false);
-#[cfg(windows)]
-fn start_cursor_hook() {
-    std::thread::spawn(|| unsafe {
-        use windows::Win32::UI::WindowsAndMessaging::*;
-        unsafe extern "system" fn moved(
-            code: i32,
-            w: windows::Win32::Foundation::WPARAM,
-            l: windows::Win32::Foundation::LPARAM,
-        ) -> windows::Win32::Foundation::LRESULT {
-            if code >= 0 {
-                let (lock, wake) = &*CURSOR_MOVED;
-                *lock.lock().unwrap_or_else(|p| p.into_inner()) = true;
-                wake.notify_one();
-            }
-            unsafe { CallNextHookEx(None, code, w, l) }
-        }
-        let Ok(hook) = SetWindowsHookExW(WH_MOUSE_LL, Some(moved), None, 0) else {
-            return;
-        };
-        CURSOR_HOOK_READY.store(true, Ordering::Release);
-        let mut message = MSG::default();
-        while GetMessageW(&mut message, None, 0, 0).0 > 0 {
-            let _ = TranslateMessage(&message);
-            DispatchMessageW(&message);
-        }
-        CURSOR_HOOK_READY.store(false, Ordering::Release);
-        let _ = UnhookWindowsHookEx(hook);
-    });
-}
-fn wait_for_cursor(near: bool) {
-    let delay = if CURSOR_HOOK_READY.load(Ordering::Acquire) {
-        1000
-    } else {
-        cursor_poll_ms(near)
-    };
-    let (lock, wake) = &*CURSOR_MOVED;
-    let pending = lock.lock().unwrap_or_else(|p| p.into_inner());
-    let (mut pending, _) = wake
-        .wait_timeout_while(
-            pending,
-            std::time::Duration::from_millis(delay),
-            |pending| !*pending,
-        )
-        .unwrap_or_else(|p| p.into_inner());
-    *pending = false;
 }
 
 static FULLSCREEN: AtomicBool = AtomicBool::new(false);
@@ -660,11 +612,9 @@ pub(crate) fn deactivate_island(app: AppHandle) -> Result<(), String> {
         .map_err(|_| "Could not restore click-through".to_string())
 }
 
-/// Starts mouse-event-driven hit testing (one-second safety refresh; 40/60 ms fallback). Native lifecycle, display, power and
+/// Starts adaptive cursor hit testing (see `cursor_poll_ms`). Native lifecycle, display, power and
 /// fullscreen events are handled by the hidden window in `lifecycle`.
 pub fn start(app: AppHandle, hit_state: Arc<HitState>) {
-    #[cfg(windows)]
-    start_cursor_hook();
     let app_cursor = app.clone();
     let hit_cursor = hit_state.clone();
 
@@ -677,11 +627,16 @@ pub fn start(app: AppHandle, hit_state: Arc<HitState>) {
 
         let was_hovered = Arc::new(AtomicBool::new(false));
         let mut near = true;
+        let mut moved = true;
+        #[cfg(windows)]
+        let mut last_cursor: Option<(i32, i32)> = None;
         #[cfg(windows)]
         let mut geometry = None;
 
         loop {
-            wait_for_cursor(near);
+            std::thread::sleep(std::time::Duration::from_millis(cursor_poll_ms(
+                near, moved,
+            )));
 
             let Some(win) = app_cursor.get_webview_window("main") else {
                 continue;
@@ -702,6 +657,7 @@ pub fn start(app: AppHandle, hit_state: Arc<HitState>) {
             unsafe {
                 let mut pt = POINT::default();
                 if GetCursorPos(&mut pt).is_ok() {
+                    moved = last_cursor.replace((pt.x, pt.y)) != Some((pt.x, pt.y));
                     if geometry.is_none() || HIT_GEOMETRY_DIRTY.swap(false, Ordering::AcqRel) {
                         geometry = win
                             .outer_position()
@@ -1017,12 +973,19 @@ mod idle_cursor_tests {
         assert!(!cursor_near(&bounds, -1600.1, 640.0, 1.5));
         assert!(!cursor_near(&bounds, -1000.0, 641.0, 1.5));
         assert_eq!(
-            cursor_poll_ms(cursor_near(&bounds, -1200.0, 200.0, 1.5)),
+            cursor_poll_ms(cursor_near(&bounds, -1200.0, 200.0, 1.5), true),
             40
         );
         assert_eq!(
-            cursor_poll_ms(cursor_near(&bounds, -1700.0, 200.0, 1.5)),
+            cursor_poll_ms(cursor_near(&bounds, -1700.0, 200.0, 1.5), true),
             60
         );
+    }
+    #[test]
+    fn a_resting_cursor_is_sampled_less_and_never_slower_near_the_island() {
+        assert_eq!(cursor_poll_ms(false, false), 250);
+        assert_eq!(cursor_poll_ms(true, false), 100);
+        assert!(cursor_poll_ms(true, false) < cursor_poll_ms(false, false));
+        assert!(cursor_poll_ms(true, true) < cursor_poll_ms(true, false));
     }
 }

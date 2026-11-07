@@ -1,3 +1,5 @@
+import { beginRefresh } from './refresh-feedback.js';
+import { SVG_ICONS, providerArtwork } from './icons.js';
 import './settings.css';
 import { mountExtensionSettings } from './extensions.js';
 import { mountLiveSettings } from './live-settings.js';
@@ -269,6 +271,8 @@ function initNativeToggles(): void {
       const row = document.createElement('div'); row.className = 'set-row'; row.id = `row-usage-${provider.provider}`;
       const label = document.createElement('label'); label.className = 'row-title';
       label.textContent = provider.provider === 'antigravity' ? 'Antigravity' : provider.provider === 'claude' ? 'Claude' : 'Codex';
+      const artwork = providerArtwork(provider.provider) ?? (provider.provider === 'codex' ? SVG_ICONS.openai : '');
+      label.insertAdjacentHTML('afterbegin', artwork);
       const toggle = document.createElement('input'); toggle.type = 'checkbox'; toggle.className = 'switch'; toggle.setAttribute('role', 'switch');
       toggle.id = `usage-${provider.provider}`; label.htmlFor = toggle.id; toggle.checked = provider.enabled;
       row.append(label, toggle); $('providerSwitches')!.append(row);
@@ -285,10 +289,16 @@ function initNativeToggles(): void {
   $('copyClaudeSetup')!.addEventListener('click', () => {
     void navigator.clipboard.writeText('https://github.com/jojomensah89/tuck/blob/main/docs/usage-setup.md').then(() => setStatus('installedUsageStatus', 'Setup link copied'));
   });
-  refresh.addEventListener('click', () => {
-    void invokeCommand('refresh_installed_usage')
-      .then(() => setStatus('installedUsageStatus', 'Refresh requested.'))
-      .catch(() => setStatus('installedUsageStatus', 'Refresh request failed.', 'error'));
+  refresh.innerHTML = SVG_ICONS.refresh;
+  refresh.addEventListener('click', async () => {
+    const finish = beginRefresh(refresh);
+    if (!finish) return;
+    try {
+      await invokeCommand('refresh_usage');
+      setStatus('installedUsageStatus', 'Limits refreshed');
+    } catch {
+      setStatus('installedUsageStatus', 'Refresh request failed', 'error');
+    } finally { await finish(); }
   });
 }
 

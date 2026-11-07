@@ -763,3 +763,14 @@ body.welcoming .sidebar { visibility: hidden; }
 
 .welcome .model-rows { max-height: 160px; overflow-y: auto; }
 .welcome h1:focus { outline: none; }
+
+/* Product artwork is the owner's colour exception; no added effects. */
+#providerSwitches .row-title { display: flex; align-items: center; gap: var(--s-3); }
+#providerSwitches .provider-artwork, #providerSwitches svg.ico { width: 32px; height: 32px; object-fit: contain; flex: none; }
+#providerSwitches svg.ico { fill: currentColor; }
+.provider-refresh { display: grid; place-items: center; width: 36px; height: 36px; padding: 8px; border: 0; border-radius: 8px; background: transparent; color: var(--ink-2); cursor: pointer; }
+.provider-refresh:hover { background: var(--control-hover); color: var(--ink); }
+.provider-refresh:active { transform: scale(0.96); }
+.provider-refresh svg.ico { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.5px; stroke-linecap: round; stroke-linejoin: round; }
+.provider-refresh svg.ico path { vector-effect: non-scaling-stroke; }
+#providerSwitches svg.ico.brand-mark { background: none; }

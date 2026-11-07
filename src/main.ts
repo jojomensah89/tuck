@@ -1,3 +1,4 @@
+import { beginRefresh } from './refresh-feedback.js';
 import { hadSavedPreferences } from './welcome-decision.js';
 import { UsageSnapshotGate } from './usage-snapshot.js';
 import {mountExtensions} from './extensions.js';
@@ -1500,8 +1501,8 @@ setState('idle');
 const usageRefresh = $('usageRefresh') as HTMLButtonElement;
 usageRefresh.innerHTML = SVG_ICONS.refresh;
 usageRefresh.onclick = async () => {
-  if (usageRefresh.disabled) return;
-  usageRefresh.disabled = true;
+  const finish = beginRefresh(usageRefresh);
+  if (!finish) return;
   usageRefresh.title = 'Refresh AI usage';
   usageRefresh.setAttribute('aria-busy', 'true');
   const ticket = usageSnapshots.begin();
@@ -1513,8 +1514,7 @@ usageRefresh.onclick = async () => {
   } catch {
     usageRefresh.title = 'Refresh failed. Try again';
   } finally {
-    usageRefresh.disabled = false;
-    usageRefresh.setAttribute('aria-busy', 'false');
+    await finish();
   }
 };
 

@@ -57,6 +57,7 @@ export const SVG_ICONS = {
   pin: ico('<path class="pin-head" d="M7.25 2.75h5.5l-.75 5 2.75 3v1.5h-9.5v-1.5l2.75-3z"/><path d="M10 12.25v5"/>'),
   close: ico('<path d="m5.25 5.25 9.5 9.5M14.75 5.25l-9.5 9.5"/>'),
   trash: ico('<path d="M3.75 5.75h12.5M8 5.75v-2h4v2M5.5 5.75l.75 10.5a1.5 1.5 0 0 0 1.5 1.25h4.5a1.5 1.5 0 0 0 1.5-1.25l.75-10.5"/><path d="M8.5 8.75v5.5M11.5 8.75v5.5"/>'),
+  addFiles: ico('<rect x="2" y="4.75" width="16" height="10.5" rx="5.25"/><path d="M10 7.5v5M7.5 10h5"/>'),
   plus: ico('<path d="M10 4.25v11.5M4.25 10h11.5"/>'),
   minus: ico('<path d="M4.25 10h11.5"/>'),
   folder: ico('<path d="M2.75 6.25v-1a1.5 1.5 0 0 1 1.5-1.5h3.5l2 2h6a1.5 1.5 0 0 1 1.5 1.5v7.5a1.5 1.5 0 0 1-1.5 1.5H4.25a1.5 1.5 0 0 1-1.5-1.5z"/><path d="M2.75 8.25h14.5"/>'),

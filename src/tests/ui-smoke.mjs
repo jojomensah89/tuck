@@ -891,7 +891,7 @@ try {
           for (const scale of [1,1.5,2]) {
             await session.send('Emulation.setDeviceMetricsOverride',{width:520,height:288,deviceScaleFactor:scale,mobile:false});
             assert.deepEqual(await usageFit(),{inside:true,clear:true,switchClear:true,fits:true},`Fits at ${scale*100}%`);
-            assert.equal(await native.locator('.provider-artwork').evaluateAll(nodes=>nodes.every(n=>n.complete&&n.naturalWidth>=96)),true,'Official artwork loads sharply');
+            assert.equal(await native.locator('.provider-artwork').evaluateAll(nodes=>nodes.every(n=>n.complete&&n.naturalWidth>0&&(n.naturalWidth>=96||n.currentSrc.endsWith('.svg')))),true,'Official artwork loads sharply');
           }
           await session.send('Emulation.clearDeviceMetricsOverride');
           await session.detach();

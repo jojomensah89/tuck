@@ -271,7 +271,7 @@ function initNativeToggles(): void {
       const row = document.createElement('div'); row.className = 'set-row'; row.id = `row-usage-${provider.provider}`;
       const label = document.createElement('label'); label.className = 'row-title';
       label.textContent = provider.provider === 'antigravity' ? 'Antigravity' : provider.provider === 'claude' ? 'Claude' : 'Codex';
-      const artwork = providerArtwork(provider.provider) ?? (provider.provider === 'codex' ? SVG_ICONS.openai : '');
+      const artwork = providerArtwork(provider.provider) ?? '';
       label.insertAdjacentHTML('afterbegin', artwork);
       const toggle = document.createElement('input'); toggle.type = 'checkbox'; toggle.className = 'switch'; toggle.setAttribute('role', 'switch');
       toggle.id = `usage-${provider.provider}`; label.htmlFor = toggle.id; toggle.checked = provider.enabled;

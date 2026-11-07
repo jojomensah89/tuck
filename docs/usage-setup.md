@@ -1,3 +1,5 @@
+> Historical plan or verification record. This is not the current feature list or setup guide. Some described features are being retired. Start with the [README](../README.md).
+
 # Tuck AI Usage Backend Setup & Architecture Guide
 
 This document describes the design, configuration, official API references, and native wiring instructions for the Tuck AI Usage Backend.

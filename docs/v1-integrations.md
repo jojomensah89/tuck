@@ -1,3 +1,5 @@
+> Historical plan or verification record. This is not the current feature list or setup guide. Some described features are being retired. Start with the [README](../README.md).
+
 # Windows v1 integrations
 
 Implemented using real Windows calls and a local activity store. Optional monitoring defaults off. Settings and imported calendar files live in the app data directory; shelf references and manual calls live in memory. No account logins or OS permission settings are changed automatically.

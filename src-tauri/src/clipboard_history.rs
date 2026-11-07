@@ -44,14 +44,15 @@ struct CaptureRetry {
     remaining: u8,
 }
 impl CaptureRetry {
-    fn notified(&mut self, sequence: u32, generation: u64) {
+    fn notified(&mut self, sequence: u32, generation: u64) -> bool {
         // Duplicate notifications cannot renew an exhausted sequence's budget.
         if self.sequence == Some((sequence, generation)) {
-            return;
+            return false;
         }
         self.sequence = Some((sequence, generation));
         self.remaining = CAPTURE_ATTEMPTS;
         self.delay = Some(std::time::Duration::from_millis(20));
+        true
     }
     fn completed(&mut self) {
         self.delay = None;
@@ -725,8 +726,8 @@ pub fn start(app: AppHandle, service: &Arc<ClipboardHistoryService>) -> Result<(
                     retry.completed();
                     continue;
                 }
-                if notified {
-                    retry.notified(current_clipboard_sequence(), generation);
+                if notified && !retry.notified(current_clipboard_sequence(), generation) {
+                    continue;
                 }
                 if retry.delay.is_none() {
                     continue;
@@ -1250,7 +1251,7 @@ mod retry_tests {
         let mut total_delay = std::time::Duration::ZERO;
         for attempt in 0..CAPTURE_ATTEMPTS {
             assert!(retry.delay.is_some());
-            retry.notified(123, 0);
+            assert!(!retry.notified(123, 0));
             retry.observed(&Ok(ClipboardRead::Busy));
             if attempt + 1 < CAPTURE_ATTEMPTS {
                 total_delay += retry.delay.unwrap();
@@ -1299,7 +1300,7 @@ mod retry_tests {
     fn terminal_results_and_disable_park_and_reenable_gets_fresh_budget() {
         for result in [Ok(ClipboardRead::Ignored), Err("terminal error".into())] {
             let mut retry = CaptureRetry::default();
-            retry.notified(123, 0);
+            assert!(!retry.notified(123, 0));
             retry.observed(&result);
             assert!(retry.delay.is_none());
             retry.notified(123, 1);

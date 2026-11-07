@@ -55,6 +55,7 @@ features = [
   "Media_Control",
   "Storage_Streams",
   "Win32_Foundation",
+  "Win32_Security_Credentials",
   "Win32_Graphics_Dwm",
   "Win32_Graphics_Gdi",
   "Win32_System_Com",

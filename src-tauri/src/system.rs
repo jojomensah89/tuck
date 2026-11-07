@@ -15,6 +15,58 @@ pub(crate) fn cursor_poll_ms(near: bool) -> u64 {
     }
 }
 
+// A mouse hook wakes hit testing immediately on movement and clicks. The timed
+// fallback only repairs missed notifications; it does not drive hover response.
+static CURSOR_MOVED: std::sync::LazyLock<(Mutex<bool>, std::sync::Condvar)> =
+    std::sync::LazyLock::new(|| (Mutex::new(false), std::sync::Condvar::new()));
+static CURSOR_HOOK_READY: AtomicBool = AtomicBool::new(false);
+#[cfg(windows)]
+fn start_cursor_hook() {
+    std::thread::spawn(|| unsafe {
+        use windows::Win32::UI::WindowsAndMessaging::*;
+        unsafe extern "system" fn moved(
+            code: i32,
+            w: windows::Win32::Foundation::WPARAM,
+            l: windows::Win32::Foundation::LPARAM,
+        ) -> windows::Win32::Foundation::LRESULT {
+            if code >= 0 {
+                let (lock, wake) = &*CURSOR_MOVED;
+                *lock.lock().unwrap_or_else(|p| p.into_inner()) = true;
+                wake.notify_one();
+            }
+            unsafe { CallNextHookEx(None, code, w, l) }
+        }
+        let Ok(hook) = SetWindowsHookExW(WH_MOUSE_LL, Some(moved), None, 0) else {
+            return;
+        };
+        CURSOR_HOOK_READY.store(true, Ordering::Release);
+        let mut message = MSG::default();
+        while GetMessageW(&mut message, None, 0, 0).0 > 0 {
+            let _ = TranslateMessage(&message);
+            DispatchMessageW(&message);
+        }
+        CURSOR_HOOK_READY.store(false, Ordering::Release);
+        let _ = UnhookWindowsHookEx(hook);
+    });
+}
+fn wait_for_cursor(near: bool) {
+    let delay = if CURSOR_HOOK_READY.load(Ordering::Acquire) {
+        1000
+    } else {
+        cursor_poll_ms(near)
+    };
+    let (lock, wake) = &*CURSOR_MOVED;
+    let pending = lock.lock().unwrap_or_else(|p| p.into_inner());
+    let (mut pending, _) = wake
+        .wait_timeout_while(
+            pending,
+            std::time::Duration::from_millis(delay),
+            |pending| !*pending,
+        )
+        .unwrap_or_else(|p| p.into_inner());
+    *pending = false;
+}
+
 static FULLSCREEN: AtomicBool = AtomicBool::new(false);
 static FULLSCREEN_AUTO_HIDE: AtomicBool = AtomicBool::new(true);
 static CURSOR_PAUSE_REASONS: AtomicU8 = AtomicU8::new(0);
@@ -608,9 +660,11 @@ pub(crate) fn deactivate_island(app: AppHandle) -> Result<(), String> {
         .map_err(|_| "Could not restore click-through".to_string())
 }
 
-/// Starts adaptive cursor hit testing (40 ms near, 60 ms far). Native lifecycle, display, power and
+/// Starts mouse-event-driven hit testing (one-second safety refresh; 40/60 ms fallback). Native lifecycle, display, power and
 /// fullscreen events are handled by the hidden window in `lifecycle`.
 pub fn start(app: AppHandle, hit_state: Arc<HitState>) {
+    #[cfg(windows)]
+    start_cursor_hook();
     let app_cursor = app.clone();
     let hit_cursor = hit_state.clone();
 
@@ -627,7 +681,7 @@ pub fn start(app: AppHandle, hit_state: Arc<HitState>) {
         let mut geometry = None;
 
         loop {
-            std::thread::sleep(std::time::Duration::from_millis(cursor_poll_ms(near)));
+            wait_for_cursor(near);
 
             let Some(win) = app_cursor.get_webview_window("main") else {
                 continue;
@@ -784,11 +838,20 @@ pub fn open_settings_view(app: &AppHandle, view: &str, check: bool) -> Result<()
 /// Frontend command to open settings window without phantom successes.
 #[tauri::command]
 pub(crate) async fn open_settings_cmd(app: AppHandle, view: Option<String>) -> Result<(), String> {
-    match view.as_deref() {
-        // The island's missing-model link goes straight to the model picker.
-        Some("tools") => open_settings_view(&app, "tools", false),
-        _ => open_settings(&app),
-    }
+    // Tray and startup callbacks already run on the event loop. Queue command
+    // callers there too, so lookup plus creation is one serialized operation.
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let handle = app.clone();
+    app.run_on_main_thread(move || {
+        let result = match view.as_deref() {
+            Some("tools") => open_settings_view(&handle, "tools", false),
+            _ => open_settings(&handle),
+        };
+        let _ = tx.send(result);
+    })
+    .map_err(|e| e.to_string())?;
+    rx.await
+        .map_err(|_| "Settings window unavailable".to_owned())?
 }
 
 /// Autostart status check.

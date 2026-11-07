@@ -76,8 +76,8 @@ trait Engine {
         None
     }
     /// Runs once before previews. Its language hint is reused only by previews.
-    /// This pass cannot be interrupted and is separate from the preview budget.
-    fn prepare(&mut self, _audio: &[f32]) {}
+    /// Check stop at each safe boundary in the language preparation pass.
+    fn prepare(&mut self, _audio: &[f32], _abort: &AbortSignal<'_>) {}
     fn preview(&mut self, audio: &[f32], abort: &AbortSignal<'_>) -> Result<String, String>;
     fn finish(&mut self, audio: &[f32], abort: &AbortSignal<'_>) -> Result<String, String>;
 }
@@ -468,7 +468,14 @@ fn engine_thread<E: Engine>(
                 }
                 if !prepared {
                     prepared = true;
-                    engine.prepare(&audio);
+                    engine.prepare(
+                        &audio,
+                        &AbortSignal {
+                            cancel,
+                            stop: Some(&flags.preview_stop),
+                            deadline: None,
+                        },
+                    );
                 }
                 let started = Instant::now();
                 let deadline = started + limits.preview_budget;
@@ -477,7 +484,16 @@ fn engine_thread<E: Engine>(
                     stop: Some(&flags.preview_stop),
                     deadline: Some(deadline),
                 };
-                let outcome = engine.preview(&audio, &abort);
+                let outcome = if abort.requested() {
+                    Err("Preview interrupted".into())
+                } else {
+                    engine.preview(&audio, &abort)
+                };
+                if outcome.is_err() && !abort.requested() {
+                    eprintln!("Dictation preview failed; final transcription remains available");
+                    flags.previews_off.store(true, Ordering::Release);
+                    events.previews_paused();
+                }
                 audio.zeroize();
                 let took = started.elapsed();
                 flags
@@ -567,18 +583,27 @@ impl WhisperEngine {
 }
 
 impl Engine for WhisperEngine {
-    fn prepare(&mut self, audio: &[f32]) {
+    fn prepare(&mut self, audio: &[f32], abort: &AbortSignal<'_>) {
         if !self._context.is_multilingual() {
             self.preview_language = Some("en");
+            return;
+        }
+        if abort.requested() {
             return;
         }
         let threads = inference_threads() as usize;
         let state = self.state.as_mut().expect("preview state");
         if state.pcm_to_mel(audio, threads).is_err() {
+            eprintln!("Dictation preview language preparation failed");
+            return;
+        }
+        if abort.requested() {
             return;
         }
         if let Ok((id, _)) = state.lang_detect(0, threads) {
             self.preview_language = whisper_rs::get_lang_str(id);
+        } else {
+            eprintln!("Dictation preview language preparation failed");
         }
     }
 
@@ -933,8 +958,11 @@ mod tests {
     }
 
     impl Engine for SlowEngine {
-        fn prepare(&mut self, _audio: &[f32]) {
-            std::thread::sleep(self.prepare_cost);
+        fn prepare(&mut self, _audio: &[f32], abort: &AbortSignal<'_>) {
+            let started = Instant::now();
+            while started.elapsed() < self.prepare_cost && !abort.requested() {
+                std::thread::sleep(Duration::from_millis(1));
+            }
         }
         fn preview(&mut self, _audio: &[f32], abort: &AbortSignal<'_>) -> Result<String, String> {
             self.previews.fetch_add(1, Ordering::SeqCst);
@@ -1049,7 +1077,7 @@ mod tests {
     fn stopped_or_cancelled_preview_jobs_skip_language_preparation() {
         struct NeverPrepare;
         impl Engine for NeverPrepare {
-            fn prepare(&mut self, _: &[f32]) {
+            fn prepare(&mut self, _: &[f32], _abort: &AbortSignal<'_>) {
                 panic!("stopped preview prepared");
             }
             fn preview(&mut self, _: &[f32], _: &AbortSignal<'_>) -> Result<String, String> {
@@ -1222,6 +1250,32 @@ mod tests {
         player.join().unwrap();
         assert_eq!(result.unwrap(), "done");
         assert!(harness.previews.load(Ordering::SeqCst) >= 1);
+        assert!(started.elapsed() < Duration::from_secs(10), "did not wait");
+    }
+
+    #[test]
+    fn stopping_abandons_language_preparation() {
+        let harness = Harness::new();
+        let stop = Arc::new(AtomicBool::new(false));
+        let cancel = AtomicBool::new(false);
+        let events = RecordedEvents::default();
+        let (capture, player) = capture_with(150, Duration::from_millis(2), &stop);
+        // A preview that would take a minute if nothing stopped it.
+        let mut engine = harness.engine(Duration::ZERO, true);
+        engine.prepare_cost = Duration::from_secs(60);
+        let started = Instant::now();
+        let result = run_session(
+            move || Ok(engine),
+            &events,
+            capture,
+            true,
+            limits(5, 120_000),
+            &stop,
+            &cancel,
+        );
+        player.join().unwrap();
+        assert_eq!(result.unwrap(), "done");
+        assert_eq!(harness.previews.load(Ordering::SeqCst), 0);
         assert!(started.elapsed() < Duration::from_secs(10), "did not wait");
     }
 
@@ -1443,7 +1497,7 @@ mod tests {
             started.elapsed()
         );
         let started = Instant::now();
-        engine.prepare(clip);
+        engine.prepare(clip, &abort);
         println!(
             "preview language pass: {:?}: preview {:?}",
             started.elapsed(),
@@ -1576,6 +1630,7 @@ enum LocalEngine {
 impl LocalEngine {
     fn load(path: &std::path::Path) -> Result<Self, String> {
         if is_parakeet_path(path) {
+            ensure_cpu_supports_whisper()?;
             initialize_cpu_backend()?;
             let model = transcribe_cpp::Model::load_with(
                 path,
@@ -1619,9 +1674,9 @@ impl Engine for LocalEngine {
         Some(buffered_session(session, jobs, events, flags, cancel))
     }
 
-    fn prepare(&mut self, audio: &[f32]) {
+    fn prepare(&mut self, audio: &[f32], abort: &AbortSignal<'_>) {
         if let Self::Whisper(e) = self {
-            e.prepare(audio);
+            e.prepare(audio, abort);
         }
     }
     fn preview(&mut self, audio: &[f32], abort: &AbortSignal<'_>) -> Result<String, String> {

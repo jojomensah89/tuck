@@ -4,6 +4,7 @@ pub mod dictation;
 pub mod extensions;
 mod idle_webview;
 pub mod installed_usage;
+mod legacy_credentials;
 pub mod lifecycle;
 pub mod lyrics;
 mod lyrics_match;
@@ -140,6 +141,7 @@ pub fn run() {
         ])
         .setup(move |app| {
             let handle = app.handle().clone();
+            legacy_credentials::run(&handle);
             // Missing shortcut availability must not prevent the island from launching.
             if let Err(error) = dictation::start(handle.clone(), &dictation_setup) {
                 eprintln!("Dictation startup: {error}");

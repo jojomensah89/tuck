@@ -1,3 +1,5 @@
+> Historical plan or verification record. This is not the current feature list or setup guide. Some described features are being retired. Start with the [README](../README.md).
+
 # Phase two dictation and clipboard native contracts
 
 This packet implements the native dictation and clipboard-history services. It preserves the existing v1 flows. The coordinator-owned `src-tauri/src/lib.rs` already registers both services, commands, global shortcuts, startup and shutdown; this patch leaves `lib.rs` and capabilities unchanged.

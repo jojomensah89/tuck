@@ -1,3 +1,5 @@
+> Historical plan or verification record. This is not the current feature list or setup guide. Some described features are being retired. Start with the [README](../README.md).
+
 # Live Island Phase Two Native Media, Lyrics, Telemetry & Visualizer Architecture
 
 ## 1. Overview & Architecture

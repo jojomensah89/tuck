@@ -7,11 +7,15 @@ pub(crate) fn invalidate_hit_geometry() {
     HIT_GEOMETRY_DIRTY.store(true, Ordering::Release);
 }
 
-pub(crate) fn cursor_poll_ms(near: bool) -> u64 {
-    if near {
-        40
-    } else {
-        60
+/// How long to sleep before the next cursor sample. A resting cursor is sampled rarely, which
+/// is what makes an idle Tuck cheap; the first sample that sees movement returns to the fast
+/// rate. Near the island the resting rate stays quick enough for a short move and click.
+pub(crate) fn cursor_poll_ms(near: bool, moved: bool) -> u64 {
+    match (near, moved) {
+        (true, true) => 40,
+        (false, true) => 60,
+        (true, false) => 100,
+        (false, false) => 250,
     }
 }
 
@@ -608,7 +612,7 @@ pub(crate) fn deactivate_island(app: AppHandle) -> Result<(), String> {
         .map_err(|_| "Could not restore click-through".to_string())
 }
 
-/// Starts adaptive cursor hit testing (40 ms near, 60 ms far). Native lifecycle, display, power and
+/// Starts adaptive cursor hit testing (see `cursor_poll_ms`). Native lifecycle, display, power and
 /// fullscreen events are handled by the hidden window in `lifecycle`.
 pub fn start(app: AppHandle, hit_state: Arc<HitState>) {
     let app_cursor = app.clone();
@@ -623,11 +627,16 @@ pub fn start(app: AppHandle, hit_state: Arc<HitState>) {
 
         let was_hovered = Arc::new(AtomicBool::new(false));
         let mut near = true;
+        let mut moved = true;
+        #[cfg(windows)]
+        let mut last_cursor: Option<(i32, i32)> = None;
         #[cfg(windows)]
         let mut geometry = None;
 
         loop {
-            std::thread::sleep(std::time::Duration::from_millis(cursor_poll_ms(near)));
+            std::thread::sleep(std::time::Duration::from_millis(cursor_poll_ms(
+                near, moved,
+            )));
 
             let Some(win) = app_cursor.get_webview_window("main") else {
                 continue;
@@ -648,6 +657,7 @@ pub fn start(app: AppHandle, hit_state: Arc<HitState>) {
             unsafe {
                 let mut pt = POINT::default();
                 if GetCursorPos(&mut pt).is_ok() {
+                    moved = last_cursor.replace((pt.x, pt.y)) != Some((pt.x, pt.y));
                     if geometry.is_none() || HIT_GEOMETRY_DIRTY.swap(false, Ordering::AcqRel) {
                         geometry = win
                             .outer_position()
@@ -784,11 +794,20 @@ pub fn open_settings_view(app: &AppHandle, view: &str, check: bool) -> Result<()
 /// Frontend command to open settings window without phantom successes.
 #[tauri::command]
 pub(crate) async fn open_settings_cmd(app: AppHandle, view: Option<String>) -> Result<(), String> {
-    match view.as_deref() {
-        // The island's missing-model link goes straight to the model picker.
-        Some("tools") => open_settings_view(&app, "tools", false),
-        _ => open_settings(&app),
-    }
+    // Tray and startup callbacks already run on the event loop. Queue command
+    // callers there too, so lookup plus creation is one serialized operation.
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let handle = app.clone();
+    app.run_on_main_thread(move || {
+        let result = match view.as_deref() {
+            Some("tools") => open_settings_view(&handle, "tools", false),
+            _ => open_settings(&handle),
+        };
+        let _ = tx.send(result);
+    })
+    .map_err(|e| e.to_string())?;
+    rx.await
+        .map_err(|_| "Settings window unavailable".to_owned())?
 }
 
 /// Autostart status check.
@@ -954,12 +973,19 @@ mod idle_cursor_tests {
         assert!(!cursor_near(&bounds, -1600.1, 640.0, 1.5));
         assert!(!cursor_near(&bounds, -1000.0, 641.0, 1.5));
         assert_eq!(
-            cursor_poll_ms(cursor_near(&bounds, -1200.0, 200.0, 1.5)),
+            cursor_poll_ms(cursor_near(&bounds, -1200.0, 200.0, 1.5), true),
             40
         );
         assert_eq!(
-            cursor_poll_ms(cursor_near(&bounds, -1700.0, 200.0, 1.5)),
+            cursor_poll_ms(cursor_near(&bounds, -1700.0, 200.0, 1.5), true),
             60
         );
+    }
+    #[test]
+    fn a_resting_cursor_is_sampled_less_and_never_slower_near_the_island() {
+        assert_eq!(cursor_poll_ms(false, false), 250);
+        assert_eq!(cursor_poll_ms(true, false), 100);
+        assert!(cursor_poll_ms(true, false) < cursor_poll_ms(false, false));
+        assert!(cursor_poll_ms(true, true) < cursor_poll_ms(true, false));
     }
 }

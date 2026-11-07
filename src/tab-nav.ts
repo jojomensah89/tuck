@@ -4,8 +4,8 @@
  * changes. No DOM access, so it is unit tested directly.
  */
 
-export type TabId = 'media' | 'today' | 'tools' | 'usage';
-export type TabIcon = 'note' | 'calendar' | 'grid' | 'gauge';
+export type TabId = 'media' | 'today' | 'dictation' | 'tools' | 'usage';
+export type TabIcon = 'note' | 'calendar' | 'mic' | 'grid' | 'gauge';
 
 export interface TabDef {
   id: TabId;
@@ -18,7 +18,8 @@ export interface TabDef {
 export const TABS: readonly TabDef[] = [
   { id: 'media', label: 'Media', icon: 'note', sections: ['media'] },
   { id: 'today', label: 'Today', icon: 'calendar', sections: ['today', 'activities'] },
-  { id: 'tools', label: 'Tools', icon: 'grid', sections: ['clipboard', 'extensions', 'dictation'] },
+  { id: 'dictation', label: 'Dictation', icon: 'mic', sections: ['dictation'] },
+  { id: 'tools', label: 'Tools', icon: 'grid', sections: ['extensions', 'clipboard'] },
   { id: 'usage', label: 'Usage', icon: 'gauge', sections: ['usage', 'stats'] },
 ];
 

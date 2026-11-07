@@ -61,7 +61,7 @@ import type {
 const SIZES: Record<IslandState, [number, number]> = {
   idle: [212, 32],
   peek: [300, 38],
-  open: [440, 210],
+  open: [440, 264],
 };
 
 /** The width the idle pill last asked for; it changes with what owns the slots */
@@ -292,7 +292,7 @@ function setState(next: IslandState): void {
   syncFlyoutPause();
   if (next === 'idle') idleWidth = compactShellWidth(selectCompactActivity(compactCandidates()).primary, livePreferences.compactContent);
   const [w, h] = next === 'open'
-    ? [livePreferences.openWidth, 210]
+    ? [livePreferences.openWidth, 264]
     : next === 'idle'
       ? [idleWidth, SIZES.idle[1]]
       : SIZES.peek;

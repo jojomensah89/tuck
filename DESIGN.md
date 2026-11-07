@@ -31,7 +31,7 @@ Copy: no trailing period on labels, notes or empty states; one sentence at most.
 
 ## Geometry
 
-Idle is 212x32, or a stable 300x32 while playing media shows its title or lyric; peek is 300x38; open is `openWidth` x 210 (default 500, setting range 440-500). The notch is flush with the top edge with 14px concave ears; float has a 10px top gap. Open content sits inside `16px 24px 16px 56px` insets: the left inset clears the 36px tab rail at 8px from the edge, the right inset holds the section marks, so they never cover content. At 500 wide that leaves 420x178 for content.
+Idle is 212x32, or a stable 300x32 while playing media; peek is 300x38; open is `openWidth` x 264 (default 500, range 440-500). Notch ears remain 14px; float has a 10px top gap. Content insets are 16px top/bottom, 56px left and 24px right. The real content box is 420x232 at 500px width and 360x232 at 440px. Tabs with two parts reserve a 36px segmented row and 4px gap, leaving 420x192 or 360x192. The rail occupies x=8..40, y=12..252: five 32px tabs, an optional 32px update item (hidden and taking no space when empty), and a 32px Settings gear pinned at the bottom. Seven targets fit with 16px spare. Native shell bounds and hit areas use the same 264px open height.
 
 ### Idle and peek
 
@@ -51,28 +51,31 @@ Brightness is noisier than volume, so it has three gates. It shows within 10s of
 
 The idle pill keeps its job when the island grows: over a strip at the top centre of the island with the size the pill would have if it closed now, the wheel changes system volume by 2% per notch (Shift: 10%, values snap to that grid, raising the volume unmutes) and middle click toggles mute, in the idle, peek and open states, including an island that opened by hover. On the collapsed island all of it counts as the strip. Inside the strip the wheel always means volume, even over a list that could scroll, and a plain horizontal swipe does nothing. Elsewhere on the open island the wheel keeps switching tabs and middle click does nothing. Brightness is read from internal panels only; external monitors (DDC/CI) do not show the HUD. Settings > Island > Peeks can hide the Windows flyout (off by default). The flyout comes back while the HUD switch is off, while a fullscreen app hides the island, and while the island is pinned open (there both the flyout and the in-strip level show). See `src-tauri/src/osd_flyout.rs` for the undocumented method and its safeguards.
 
-The open media header contains only the battery glyph beside its existing metadata. Date, clock, and duplicate equalizer chrome are omitted so the track title cannot clip. An overflowing title marquees with its edges faded by a mask instead of a hard cut. Artwork has no shadow. The lyrics toggle is in the transport row's flow at its start; the transport group centres in the remaining room (mirrored by an empty slot while lyrics are closed) and tightens its gaps to 12px with lyrics open, so the toggle never touches the previous-track button at the 440px minimum.
+The open media header puts battery beside the artist, below the title, giving the title its full row. Date, clock, and duplicate equalizer chrome are omitted so the track title cannot clip. An overflowing title marquees with its edges faded by a mask instead of a hard cut. Artwork has no shadow. The lyrics toggle is in the transport row's flow at its start; the transport group centres in the remaining room (mirrored by an empty slot while lyrics are closed) and tightens its gaps to 12px with lyrics open, so the toggle never touches the previous-track button at the 440px minimum.
 
-Tools: Clipboard rows are the text itself (select to copy) with pin and remove icons that brighten with the row; a pinned pin stays solid. Clear history and Screen snip are 36px icon buttons in the heading, with Screen snip at the right end. Dictation's heading carries its status dot and record, cancel and insert icons. Files use a folder icon with a count badge; shelf rows have a grip to drag out, show-in-folder and remove icons.
+Without lyrics the player uses the full width; its quiet lyrics toggle explains the reason in a tooltip.
+
+Tools: Clipboard rows are the text itself (select to copy) with pin and remove icons that brighten with the row; a pinned pin stays solid. Clear history and Screen snip are 36px icon buttons in the segmented row, with Screen snip at the right end. Dictation's heading carries its status dot and record, cancel and insert icons. Files use a folder icon with a count badge; shelf rows have a grip to drag out, show-in-folder and remove icons.
 
 ### Open navigation
 
-The open island has four tabs on a vertical icon rail at its left edge, and a settings button pinned to the bottom of the rail that opens the settings window (it is not a tab). Tabs group the former pages into sections, top to bottom (`TABS` in `src/tab-nav.ts`):
+The open island has five tabs, in order (`TABS` in `src/tab-nav.ts`):
 
-- Media: now playing with lyrics
-- Today: clock and battery, timer and pomodoro
-- Tools: clipboard (with screen snip), file shelf, dictation
-- Usage: AI usage meters, system stats
+- Media: player and available lyrics, no switch
+- Today: Clock (clock and battery) | Timer (timer and pomodoro)
+- Dictation: microphone icon, full-height transcript, status, large record control, cancel, insert and Model settings when needed; no switch
+- Tools: Files | Clipboard, with the section's actions and Screen snip at the right end of the segmented row
+- Usage: AI | System; refresh belongs only to AI and uses a quiet ink-2 icon
 
-Inside a tab the sections scroll vertically and snap one section per view, each the full 178px content height, so no section is restyled to fit. A 2px section mark at the right edge sits inside a 24x24 button named for its section ("Go to AI usage"): clicking it snaps to that section, `aria-current` follows the snap position, the wheel over the marks moves between sections like the wheel over the page, and the marks are hidden when a tab has one section. Inactive marks are `--ink-3`, the active one `--ink-2`; the hover fill stops short of the 24px target, which keeps a gap from the page beside it. The count can change while the tab is open: a section the reader moved to by hand this session stays in view, otherwise the tab lands on its first section.
+The segmented switch replaces all right-edge section marks. It is a horizontal tablist with named tabs, aria-selected, aria-controls, roving tabindex, arrows and Home/End. Click or keyboard activation moves the existing section scroller, preserving section memory. With only one available section the switch hides and content uses the full box. The section scroller snaps at the content height below the row. Sections remain in their tab's panel; changing tabs makes hidden panels inert.
 
-The rail is the leftover strip from the old previous-page arrow, so it costs no content space; the right arrow strip and the bottom dot row are reclaimed (content grew from 412x170 to 420x178). Its vertical order matches the vertical sections: scrolling past the last section of a tab continues into the next tab.
+Rail: 20px icons in 32px targets, title and aria-label, vertical tablist with roving focus and aria-selected/controls. Arrows wrap; Home/End jump. Elsewhere ArrowLeft/Right switch tabs. Inactive ink-3, active ink over raise; the indicator slides using transform.
 
-- Rail: 20px icons, 36x36 hit targets, `title` and `aria-label` on each. `role="tablist"` (vertical), `role="tab"` with `aria-selected`, `aria-controls` and roving `tabindex`; each panel is a focusable `role="tabpanel"` so sections without controls can be scrolled from the keyboard. Icons: Media a pair of notes, Today a calendar, Tools a 2x2 grid, Usage a gauge, Settings a gear. Inactive icons are `--ink-3`; the active tab is one `--raise` tone step (no outline, no glow) with white ink that slides between tabs on `--spring-enter`; hover lifts the ink to `--ink-2` on a half step (`--raise-subtle`).
-- Keys: on the rail, arrows move and wrap, Home and End jump. Elsewhere in the open island, ArrowLeft/Right switch tabs and move focus into the new tab.
-- Wheel, outside the pill-sized strip (which is volume, see the HUD above): vertical wheel scrolls the innermost scroller that still has room (a list, then the tab's sections). Only a fresh gesture that starts at the edge switches tabs, so momentum never flips a tab. Moving forward lands on the first section, moving back on the last. Horizontal wheel (trackpad swipe, wheel tilt) switches directly. A switch locks further switching for 350ms. Wheel and swipe stop at the first and last tab.
-- Drag: a horizontal pointer drag of 56px, or a 20px flick faster than 0.35px/ms, switches tabs (drag left for the next tab) and never also clicks what it started on. Vertical drags scroll. The seek bar, inputs and file drag-out are excluded.
-- The last tab chosen by the user is stored in the live preferences (`lastTab`) and restored on launch; Media is the default. A file drag reveals Tools on the files section without changing the stored tab.
+Outside the volume strip, vertical wheel scrolls the innermost list, then between parts, then switches tabs on a fresh gesture at the edge. Backward entry lands on the last part, forward on the first. Horizontal wheel and horizontal pointer swipes switch tabs directly. Gestures stop at the first/last tab, with a 350ms switch lock and momentum suppression. The segmented row's wheel navigates parts before tabs. Swipe thresholds remain 56px, or a 20px flick above 0.35px/ms; inputs, seek and file drag-out remain excluded.
+
+String lastTab values from older versions remain valid. Media is the default. File drag reveals Tools / Files without changing the saved tab. No new polling or animation runs while collapsed; hidden tabs do no polling.
+
+Files: one dashed drop target, filling the empty shelf with a folder icon and "Drop files here"; clicking picks files. With files it becomes a slim strip above the list. Island drag highlights it. Empty clipboard reads "Nothing copied yet" centred in the content area.
 
 ## Motion
 
@@ -85,7 +88,7 @@ Springs are sampled into CSS `linear()`:
 
 Durations: 100 (instant/exit), 160 (fast), 280 (base), 300 (close), 420 (shell). Press feedback is `scale(0.96)` everywhere.
 
-Shell morph: only the shell box animates width/height/radius. Its layers sit in `.island-clip`; the open layer is laid out once at the open size (`contain: strict`) and clipped, so the morph never relayouts page content. On open, compact content fades and scales out within 100ms, and the open layer fades and scales in (0.96 to 1) starting at 90ms, when the shell is ~65% open; the rail and section index follow 80ms later. On close the order reverses. No blur, no shadow, no permanent `will-change`.
+Shell morph: only the shell box animates width/height/radius. Its layers sit in `.island-clip`; the open layer is laid out once at the open size (`contain: strict`) and clipped, so the morph never relayouts page content. On open, compact content fades and scales out within 100ms, and the open layer fades and scales in (0.96 to 1) starting at 90ms, when the shell is ~65% open; the rail and segmented switch follow 80ms later. On close the order reverses. No blur, no shadow, no permanent `will-change`.
 
 Tabs cross-fade vertically, matching the rail: the outgoing tab slides 8px opposite to the travel direction and fades in 100ms while the incoming tab slides 12px in on `--spring-enter`. Panels share one absolutely positioned box, so the content area never changes height. The rail is built once; only its state changes.
 

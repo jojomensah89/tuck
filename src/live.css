@@ -71,11 +71,11 @@
   display: none;
 }
 
-.page.media.with-lyrics {
+.page.media.with-lyrics:not(.no-lyrics) {
   padding-right: calc(50% + var(--s-3));
 }
 
-.page.media.with-lyrics .lyrics-pane {
+.page.media.with-lyrics:not(.no-lyrics) .lyrics-pane {
   display: flex;
   position: absolute;
   top: 0;
@@ -396,3 +396,15 @@
   padding: var(--s-1) var(--s-2);
   min-width: 0;
 }
+
+.meta .title { padding-right: 0; }
+.media-battery { top: auto; bottom: 0; }
+.meta .artist { padding-right: 32px; }
+.lyrics-toggle-btn[aria-disabled=true] { color: var(--ink-3); }
+.clipboard .live-note:not(:empty) { flex: 1; display: grid; place-items: center; }
+
+.meta { padding-right: 0; }
+.dictation .primary { width: 56px; height: 56px; }
+.section-actions { position: absolute; top: var(--s-4); right: var(--s-6); display: flex; align-items: center; gap: var(--s-1); }
+.clipboard .live-heading { display: none; }
+#usageRefresh { color: var(--ink-2); background: transparent; }

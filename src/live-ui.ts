@@ -40,6 +40,7 @@ export function mountLivePages(onLayout: () => void): {
   compactLyric: () => string;
 } {
   const mediaPage = document.querySelector<HTMLElement>('.page.media')!;
+  mediaPage.classList.add('no-lyrics');
   const ctl = mediaPage.querySelector<HTMLElement>('.ctl')!;
   const toolbar = node('div', 'media-tools');
   const message = node('p', 'live-note'); message.setAttribute('role', 'status');
@@ -55,6 +56,7 @@ export function mountLivePages(onLayout: () => void): {
   lyricToggle.innerHTML = SVG_ICONS.lyrics;
   lyricToggle.onclick = e => {
     e.stopPropagation();
+    if (lyricToggle.getAttribute('aria-disabled') === 'true') return;
     mediaPage.classList.toggle('with-lyrics');
     lyricToggle.setAttribute('aria-pressed', String(mediaPage.classList.contains('with-lyrics')));
     onLayout();
@@ -134,6 +136,10 @@ export function mountLivePages(onLayout: () => void): {
     } else if (snapshot.plainLyrics) {
       const plain = node('p', 'plain-lyrics', snapshot.plainLyrics.slice(0, 250000)); lyricList.append(plain);
     }
+    const available = !!(baseLines.length || snapshot.plainLyrics);
+    mediaPage.classList.toggle('no-lyrics', !available);
+    lyricToggle.setAttribute('aria-disabled', String(!available));
+    lyricToggle.title = available ? 'Show or hide lyrics' : lyricsStatus.textContent || 'Lyrics unavailable';
     retimeLyrics();
   }
   function adjustLyrics(deltaMs: number): void {
@@ -278,10 +284,12 @@ export function mountLivePages(onLayout: () => void): {
   const cancel = iconButton('Cancel', SVG_ICONS.close, () => { void act(nativeAction('dictation_cancel'), speechStatus); });
   const insert = iconButton('Insert', SVG_ICONS.insert, () => { void act(nativeAction('dictation_insert'), speechStatus); }); insert.disabled = true;
   speechActions.append(record, cancel, insert); speechHead.append(speechTitleRow, speechActions);
-  speech.append(speechHead, transcript, speechModel, speechStatus);
+  const modelSettings = button('Model settings', () => document.getElementById('railSettings')?.click());
+  speech.append(speechHead, transcript, speechModel, speechStatus, modelSettings);
   function dictation(data: DictationSnapshot): void {
     if (!data || typeof data.status !== 'string' || !dictationUpdates.accept(data)) return;
     dictationPhase = data.status;
+    modelSettings.hidden = data.modelReady === true;
     previewsPaused = data.previewsPaused === true;
     // Explain engine work and a paused preview without implying the microphone is live.
     speechStatus.textContent = data.error || (data.status === 'cancelling' ? 'Cancelling\u2026' : data.status === 'processing' ? 'Microphone closed. Waiting for the speech engine\u2026' : data.status === 'transcribing' ? 'Transcribing\u2026' : previewsPaused && data.status === 'recording' ? 'Live transcript paused for this recording.' : data.modelNotice || '');
@@ -368,12 +376,13 @@ export function mountLivePages(onLayout: () => void): {
     window.clearInterval(interval); window.clearInterval(sessionInterval);
     interval = undefined; sessionInterval = undefined;
     if (!visible()) return;
-    void sessions();
-    if (stats.closest('.tab-panel.on')) void refreshTelemetry();
+    if (mediaPage.closest('.tab-panel.on')) { void sessions(); sessionInterval = window.setInterval(() => { void sessions(); }, 5000); }
+    if (!stats.closest('.tab-panel.on')) return;
+    void refreshTelemetry();
     interval = window.setInterval(() => {
       if (stats.closest('.tab-panel.on')) void refreshTelemetry();
     }, 1000);
-    sessionInterval = window.setInterval(() => { void sessions(); }, 5000);
+
   };
   window.addEventListener('tuck-visibility', syncTimers);
   window.addEventListener('pagehide', () => {

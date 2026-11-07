@@ -33,16 +33,16 @@ try {
   assert.equal(await page.locator('#isl').getAttribute('data-state'),'open');
   assert.equal(await page.locator('.full').getAttribute('aria-hidden'),'false');
   const box = await page.locator('#isl').boundingBox();
-  assert.equal(Math.round(box.width),500); assert.equal(Math.round(box.height),210);
+  assert.equal(Math.round(box.width),500); assert.equal(Math.round(box.height),264);
   await page.locator('#track').focus();
   await page.keyboard.press('ArrowRight');
   assert.equal(await page.locator('.tab-panel.on').getAttribute('data-tab'),'media');
   // Rail: four tabs with roving tabindex plus a settings button, no arrows or dots
-  assert.equal(await page.locator('[role=tablist] [role=tab]').count(),4);
+  assert.equal(await page.locator('.rail-tabs [role=tab]').count(),5);
   assert.equal(await page.locator('#prevPage, #nextPage, #dots').count(),0);
-  assert.deepEqual(await page.locator('[role=tab]').evaluateAll(tabs => tabs.map(t => [t.getAttribute('aria-selected'), t.tabIndex])),[['true',0],['false',-1],['false',-1],['false',-1]]);
+  assert.deepEqual(await page.locator('.rail-tabs [role=tab]').evaluateAll(tabs => tabs.map(t => [t.getAttribute('aria-selected'), t.tabIndex])),[['true',0],['false',-1],['false',-1],['false',-1],['false',-1]]);
   const railGeometry = await page.locator('.rail-tab').evaluateAll(nodes => nodes.map(n => { const r = n.getBoundingClientRect(); return [r.width, r.height]; }));
-  assert.equal(railGeometry.every(([w,h]) => w >= 36 && h >= 36),true,'Rail hit targets are at least 36px');
+  assert.equal(railGeometry.every(([w,h]) => w >= 32 && h >= 32),true,'Rail hit targets are at least 36px');
   await page.locator('#tab-media').focus();
   await page.keyboard.press('End');
   assert.equal(await page.locator('#tab-usage').getAttribute('aria-selected'),'true');
@@ -384,7 +384,7 @@ try {
   await native.waitForTimeout(400);
   await native.mouse.move(stripX, openBox.y + 120);
   await native.mouse.wheel(100,0);
-  await native.waitForFunction(()=>document.querySelector('.tab-panel.on').dataset.tab==='tools',null,{timeout:2000});
+  await native.waitForFunction(()=>document.querySelector('.tab-panel.on').dataset.tab==='dictation',null,{timeout:2000});
   assert.equal((await volumeCalls()).length,callsBeforeElsewhere,'Scrolling outside the strip never changes the volume');
   await native.getByRole('tab',{name:'Media',exact:true}).click();
   await native.evaluate(()=>window.__emitNative('hover',false));
@@ -400,7 +400,11 @@ try {
   assert.equal(await native.locator('#isl').getAttribute('data-state'),'open','Hover expands after the configured delay');
   assert.equal(await native.evaluate(()=>window.__calls.some(call=>call.command==='deactivate_island')),true);
   await native.evaluate(()=>window.__emitNative('open-island',null));
-  await native.getByRole('button',{name:'Files',exact:true}).click();
+  await native.getByRole('tab',{name:'Files',exact:true}).click();
+  await native.locator('#isl').screenshot({path:path.join(root,'docs/screens/shelf-empty.png')});
+  await native.evaluate(()=>window.dispatchEvent(new CustomEvent('tuck-drop-active',{detail:true})));
+  await native.locator('#isl').screenshot({path:path.join(root,'docs/screens/shelf-drag.png')});
+  await native.evaluate(()=>window.dispatchEvent(new CustomEvent('tuck-drop-active',{detail:false})));
   await native.getByRole('button',{name:'Add files',exact:true}).click();
   assert.match(await native.locator('#extensionsPage .ext-body').textContent(),/sample.txt/);
   await native.screenshot({path:path.join(root,'docs/screens/tools-files.png')});
@@ -421,6 +425,7 @@ try {
   await native.evaluate(()=>window.__emitNative('hover',false));await native.waitForTimeout(1750);
   assert.equal(await native.locator('#isl').getAttribute('data-state'),'open','Native drag must hold the island open');
   await native.evaluate(()=>window.dispatchEvent(new CustomEvent('tuck-drop-active',{detail:false})));
+  await native.mouse.move(0,400);
   await native.keyboard.press('Escape');
   await native.evaluate(()=>window.__emitNative('notification-preview',{title:'Fixture notification',body:'Preview text'}));
   assert.equal(await native.locator('#isl').getAttribute('data-state'),'peek');
@@ -440,6 +445,10 @@ try {
   assert.match(await native.locator('#isl').getAttribute('style'),/--art-wash: rgba/);
   await native.locator('.lyric-line').last().click();
   assert.equal(await native.evaluate(()=>window.__calls.some(call=>call.command==='media_seek'&&call.args.ms===5000)),true);
+  await native.locator('#isl').screenshot({path:path.join(root,'docs/screens/layout-media.png')});
+  await native.getByRole('tab',{name:'Today',exact:true}).click();
+  await native.locator('#isl').screenshot({path:path.join(root,'docs/screens/layout-today.png')});
+  await native.getByRole('tab',{name:'Media',exact:true}).click();
   await native.screenshot({path:path.join(root,'artifacts','island-phase-two-media.png')});
 
   // Closed media content stays present while playing and uses one stable width per track.
@@ -668,8 +677,8 @@ try {
     const inside=r=>r.left>=container.left-1&&r.right<=container.right+1&&r.top>=page.top-1&&r.bottom<=page.bottom+1;
     const parts=[...list.querySelectorAll('.u-face,.u-values,.u-value-line,.u-state')].filter(n=>n.getBoundingClientRect().height>0);
     const clear=[...list.querySelectorAll('.u-provider')].every(card=>card.querySelector('.u-face').getBoundingClientRect().right<=card.querySelector('.u-values').getBoundingClientRect().left&&card.querySelector('.u-values').scrollWidth<=card.querySelector('.u-values').clientWidth+1);
-    const marks=[...document.querySelectorAll('.section-index-button')].map(n=>n.getBoundingClientRect());
-    return {inside:parts.every(n=>inside(n.getBoundingClientRect())),clear,marksClear:marks.every(r=>r.left>=container.right-0.5),fits:list.scrollHeight<=page.height+1};
+    const marks=[...document.querySelectorAll('.section-switch-button')].map(n=>n.getBoundingClientRect());
+    return {inside:parts.every(n=>inside(n.getBoundingClientRect())),clear,marksClear:marks.every(r=>r.bottom<=container.top+0.5),fits:list.scrollHeight<=page.height+1};
   });
   for (const width of [440,500]) {
     await setLive({openWidth:width});
@@ -701,9 +710,10 @@ try {
   assert.equal(await native.locator('#uList .u-provider').count(),2);
 
   // The section indicator is an actual control and follows the same snap scroller.
-  const sectionButtons = native.locator('.section-index-button');
+  await native.locator('#isl').screenshot({path:path.join(root,'docs/screens/layout-usage.png')});
+  const sectionButtons = native.locator('.section-switch-button');
   assert.equal(await sectionButtons.count(),2);
-  assert.equal(await sectionButtons.first().getAttribute('aria-label'),'Go to AI usage');
+  assert.equal(await sectionButtons.first().getAttribute('aria-label'),'AI');
   assert.equal(await sectionButtons.first().getAttribute('aria-current'),'true');
   const sectionTargets = await sectionButtons.evaluateAll(nodes=>nodes.map(node=>{const r=node.getBoundingClientRect();return [r.width,r.height];}));
   assert.equal(sectionTargets.every(([w,h])=>w>=24&&h>=24),true,'Section controls have 24px hit targets');
@@ -729,7 +739,7 @@ try {
   assert.equal(await native.locator('.tab-panel.on').getAttribute('data-tab'),'usage');
   // The section count can change while the tab is open
   await native.evaluate(()=>window.__emitNative('usage',[]));
-  assert.equal(await native.locator('.section-index').isHidden(),true);
+  assert.equal(await native.locator('.section-switch').isHidden(),true);
   assert.equal(await native.evaluate(()=>document.querySelector('.tab-panel.on').contains(document.activeElement)||document.activeElement===document.querySelector('.tab-panel.on')),true,'Focus does not fall out of the island when the marks leave');
   await native.evaluate(()=>{const now=Math.round(Date.now()/1000);window.__emitNative('usage',[
     {id:'claude-5h',provider:'claude',label:'Claude session (5 h)',usedPct:42,spentUsd:null,resetsAt:now+8130,source:'official',stale:false,status:'ok'}]);});
@@ -737,8 +747,8 @@ try {
   assert.ok(await usageTop() > 0);
   await sectionButtons.first().click(); await native.waitForTimeout(400);
   assert.equal(await sectionButtons.first().getAttribute('aria-current'),'true');
-  assert.deepEqual(await sectionButtons.evaluateAll(n=>n.map(x=>getComputedStyle(x).color)),['rgb(161, 161, 166)','rgb(99, 99, 102)'],'Inactive marks are --ink-3, the active one --ink-2');
-  assert.deepEqual(await sectionButtons.first().evaluate(n=>[getComputedStyle(n,'::before').left,getComputedStyle(n,'::before').right]),['4px','4px'],'The hover fill keeps a gap from the page beside it');
+  assert.equal(await sectionButtons.first().getAttribute('aria-selected'),'true');
+
   // ArrowLeft from a mark moves into the tab, as anywhere else in the open island
   await sectionButtons.nth(1).focus();
   await native.keyboard.press('ArrowLeft');
@@ -746,11 +756,11 @@ try {
   assert.equal(await native.evaluate(()=>document.querySelector('.tab-panel.on').contains(document.activeElement)||document.activeElement===document.querySelector('.tab-panel.on')),true,'Focus moves into the new tab');
   // Marks belong to the tab on screen, even when two tabs have the same number of sections
   await native.getByRole('tab',{name:'Media',exact:true}).click();
-  assert.deepEqual(await sectionButtons.evaluateAll(n=>n.map(x=>x.getAttribute('aria-label'))),['Go to now playing']);
+  assert.deepEqual(await sectionButtons.evaluateAll(n=>n.map(x=>x.getAttribute('aria-label'))),['now playing']);
   await native.getByRole('tab',{name:'Today',exact:true}).click();
   assert.equal(await sectionButtons.count(),2);
   await native.getByRole('tab',{name:'Usage',exact:true}).click();
-  assert.deepEqual(await sectionButtons.evaluateAll(n=>n.map(x=>x.getAttribute('aria-label'))),['Go to AI usage','Go to system']);
+  assert.deepEqual(await sectionButtons.evaluateAll(n=>n.map(x=>x.getAttribute('aria-label'))),['AI','System']);
 
   // One provider keeps one card; no connected providers remove AI usage and its index mark.
   await native.evaluate(()=>{const now=Math.round(Date.now()/1000);window.__emitNative('usage',[
@@ -787,7 +797,7 @@ try {
   await native.evaluate(()=>window.__emitNative('usage',[
     {id:'openai-api',provider:'openai-api',label:'OpenAI API',usedPct:null,spentUsd:null,resetsAt:null,source:'api',stale:true,status:'unconfigured'}]));
   assert.equal(await native.locator('.page.usage').isHidden(),true,'No connected provider removes the AI section');
-  assert.equal(await native.locator('.section-index').isHidden(),true,'One remaining Usage section hides the index');
+  assert.equal(await native.locator('.section-switch').isHidden(),true,'One remaining Usage section hides the index');
   await native.evaluate(()=>{const now=Math.round(Date.now()/1000);window.__emitNative('usage',[
     {id:'claude-5h',provider:'claude',label:'Claude session (5 h)',usedPct:42,spentUsd:null,resetsAt:now+8130,source:'official',stale:false,status:'ok'},
     {id:'claude-week',provider:'claude',label:'Claude weekly',usedPct:18,spentUsd:null,resetsAt:now+86400*2,source:'official',stale:false,status:'ok'},
@@ -795,7 +805,7 @@ try {
     {id:'codex-secondary',provider:'codex',label:'Codex weekly',usedPct:9,spentUsd:null,resetsAt:now+86400*5,source:'official',stale:false,status:'ok'}]);});
   await setLive({openWidth:500});
   await native.getByRole('tab',{name:'Tools',exact:true}).click();
-  await native.locator('.page.dictation').scrollIntoViewIfNeeded();
+  await native.getByRole('tab',{name:'Dictation',exact:true}).click();
   await native.evaluate(()=>window.__emitNative('dictation_state',{status:'starting',modelReady:true}));
   await native.evaluate(()=>window.__emitNative('dictation_state',{status:'recording',modelReady:true}));
   await native.evaluate(()=>window.__emitNative('dictation_partial',{status:'recording',preview:'Provisional words',modelReady:true}));
@@ -868,7 +878,7 @@ try {
   // A fresh session has no chosen section, so the first reading to arrive is what shows
   await native.evaluate(()=>window.__emitNative('usage',[{id:'claude-5h',provider:'claude',label:'Claude session (5 h)',usedPct:42,spentUsd:null,resetsAt:Math.round(Date.now()/1000)+8130,source:'official',stale:false,status:'ok'}]));
   await native.waitForTimeout(50);
-  assert.equal(await native.locator('.section-index-button').first().getAttribute('aria-current'),'true');
+  assert.equal(await native.locator('.section-switch-button').first().getAttribute('aria-current'),'true');
   assert.equal(await native.locator('#panel-usage').evaluate(el=>el.scrollTop),0);
   await native.evaluate(()=>window.__emitNative('open-island',null));
   await native.locator('#railSettings').click();

@@ -17,45 +17,41 @@ async function refresh():Promise<void>{if(isTauri()){current=await invoke<Extens
 let render: (force?:boolean)=>void=()=>{};
 /** An icon button from the line family; its name is the tooltip and the accessible name */
 function iconButton(label:string,icon:string,action:()=>Promise<unknown>|void,key=label):HTMLButtonElement{const node=button('',action,key);node.className='icon-btn';node.innerHTML=icon;node.title=label;node.setAttribute('aria-label',label);return node;}
-const VIEWS=[{name:'Files',icon:SVG_ICONS.folder}] as const;
-type View=typeof VIEWS[number]['name'];
 export function mountExtensions():void {
  const container=document.querySelector('#isl .pages-container');if(!container||document.getElementById('extensionsPage'))return;
  // File shelf in the Tools section.
  const page=el('section','','page extensions');page.id='extensionsPage';page.dataset.page='extensions';page.setAttribute('aria-label','Files');
- const head=el('div','','ext-head');const tabs=el('div','','ext-tabs');tabs.setAttribute('role','group');tabs.setAttribute('aria-label','Windows activity views');const actions=el('div','','ext-actions');head.append(tabs,actions);
+ const head=el('div','','ext-head');const actions=el('div','','ext-actions');head.append(actions);
  const body=el('div','','ext-body');status=el('p','','ext-status');status.setAttribute('role','status');
- const buttons=new Map<View,HTMLButtonElement>();
- const show=(name:View)=>{for(const [view,node] of buttons)node.setAttribute('aria-pressed',String(view===name));render();};
- for(const view of VIEWS){const tab=el('button','','ext-tab');tab.type='button';tab.innerHTML=`${view.icon}<span class="ext-badge" hidden></span>`;tab.title=view.name;tab.setAttribute('aria-label',view.name);tab.addEventListener('click',event=>{event.stopPropagation();show(view.name);});buttons.set(view.name,tab);tabs.append(tab);}
- // Count badges keep each view accessible by its name.
- const badge=(view:View,count:number)=>{const tab=buttons.get(view)!;const node=tab.querySelector<HTMLElement>('.ext-badge')!;node.hidden=count<=0;node.textContent=count<=0?'':count>9?'9+':String(count);};
  page.append(head,body,status);container.append(page);
  render=(_force=false)=>{
   // User-triggered refresh updates controls and restores the corresponding focus target.
   const focusOwner=[body,actions].find(node=>node.contains(document.activeElement));
   const focusKey=focusOwner?(document.activeElement as HTMLElement).dataset.actionKey:undefined;
-  badge('Files',current.shelf.length);
+
   if(nativeDragging)return;
   body.replaceChildren();actions.replaceChildren();
 
    actions.append(iconButton('Add files',SVG_ICONS.plus,()=>invoke('shelf_pick'),'shelf-add'));
    const clear=iconButton('Clear shelf',SVG_ICONS.trash,()=>invoke('shelf_remove',{id:null}),'shelf-clear');clear.disabled=!current.shelf.length;actions.append(clear);
+   const drop=button('',()=>invoke('shelf_pick'),'shelf-drop');drop.className='shelf-drop';drop.innerHTML=SVG_ICONS.folder+'<span>Drop files here</span>';drop.setAttribute('aria-label','Drop files here');body.append(drop);
+   body.classList.toggle('empty',!current.shelf.length);
    for(const item of current.shelf){const row=el('div','','ext-row');
     const drag=el('button','','icon-btn grip');drag.type='button';drag.innerHTML=SVG_ICONS.grip;drag.title=`Drag ${item.name} to another app`;drag.dataset.noSwipe='';drag.dataset.actionKey=`drag-${item.id}`;drag.setAttribute('aria-label',`Drag ${item.name} to another app`);drag.addEventListener('pointerdown',event=>{if(event.button!==0)return;event.preventDefault();nativeDragging=true;window.dispatchEvent(new CustomEvent('tuck-drag-active',{detail:true}));void run(()=>invoke('shelf_drag',{id:item.id})).finally(()=>{nativeDragging=false;window.dispatchEvent(new CustomEvent('tuck-drag-active',{detail:false}));render(true);});});
     const text=el('span','','ext-row-text');text.append(el('span',item.name,'ext-row-name'),el('span',formatBytes(item.bytes),'ext-row-meta'));
     row.append(drag,text,iconButton(`Show ${item.name} in folder`,SVG_ICONS.folder,()=>invoke('shelf_reveal',{id:item.id}),`reveal-${item.id}`),iconButton(`Remove ${item.name}`,SVG_ICONS.close,()=>invoke('shelf_remove',{id:item.id}),`remove-${item.id}`));body.append(row);}
-   if(!current.shelf.length)body.append(el('p','Drop files on the island to stage them, originals stay in place','ext-note'));
+
 
   if(status)status.textContent=[...current.errors,actionError].filter(Boolean).join(' | ');
   if(focusKey&&focusOwner)[...page.querySelectorAll('button')].find(node=>node.dataset.actionKey===focusKey)?.focus();
  };
- show('Files');
+ window.addEventListener('tuck-drop-active',event=>page.classList.toggle('drag-over',(event as CustomEvent).detail===true));
+ render();
  if(isTauri()){
   void listen<ExtensionSnapshot>('extension-state',event=>{current=event.payload;render();}).catch(()=>{if(status)status.textContent='Could not subscribe to Windows state';});
   void listen<{title:string;body:string}>('notification-preview',event=>window.dispatchEvent(new CustomEvent('tuck-preview',{detail:{title:event.payload.title,text:event.payload.body,priority:90}}))).catch(()=>{});
   void getCurrentWebviewWindow().onDragDropEvent(event=>{
-   if(event.payload.type==='enter'||event.payload.type==='over'){window.dispatchEvent(new CustomEvent('tuck-drop-active',{detail:true}));show('Files');}
+   if(event.payload.type==='enter'||event.payload.type==='over'){window.dispatchEvent(new CustomEvent('tuck-drop-active',{detail:true}));render();}
    if(event.payload.type==='drop'){const paths=event.payload.paths;void run(()=>invoke('shelf_add',{paths})).finally(()=>window.dispatchEvent(new CustomEvent('tuck-drop-active',{detail:false})));}
    if(event.payload.type==='leave')window.dispatchEvent(new CustomEvent('tuck-drop-active',{detail:false}));
   }).catch(()=>{if(status)status.textContent='Native file drop is unavailable';});

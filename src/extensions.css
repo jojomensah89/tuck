@@ -40,54 +40,6 @@
   gap: var(--s-1);
 }
 
-.ext-tab {
-  position: relative;
-  width: var(--hit);
-  height: var(--hit);
-  border-radius: var(--r-md);
-  color: var(--ink-3);
-  transition:
-    background var(--d-fast) var(--ease-out),
-    color var(--d-fast) var(--ease-out),
-    transform var(--d-instant) var(--ease-out);
-}
-
-.ext-tab:hover {
-  color: var(--ink-2);
-  background: var(--raise-subtle);
-}
-
-.ext-tab:active {
-  transform: scale(var(--press));
-}
-
-.ext-tab[aria-pressed=true] {
-  background: var(--raise);
-  color: var(--ink);
-}
-
-.ext-badge {
-  position: absolute;
-  top: 2px;
-  right: 2px;
-  min-width: 14px;
-  height: 14px;
-  padding: 0 var(--s-half);
-  border-radius: 7px;
-  background: var(--raise-active);
-  color: var(--ink);
-  font-size: var(--t-2xs);
-  font-weight: var(--w-medium);
-  line-height: 14px;
-  font-variant-numeric: tabular-nums;
-  text-align: center;
-}
-
-
-.ext-badge[hidden] {
-  display: none;
-}
-
 .ext-body {
   overflow: auto;
   min-height: 0;
@@ -159,3 +111,11 @@
 .ext-status:empty {
   display: none;
 }
+
+.ext-body.empty { display: flex; }
+.shelf-drop { width: 100%; min-height: var(--hit); border: 1px dashed var(--ink-3); border-radius: var(--r-md); color: var(--ink-2); display: flex; align-items: center; justify-content: center; gap: var(--s-2); transition: color var(--d-fast) var(--ease-out), background-color var(--d-fast) var(--ease-out); }
+.empty .shelf-drop { flex: 1; flex-direction: column; }
+.shelf-drop:hover, .extensions.drag-over .shelf-drop { background: var(--raise); color: var(--ink); border-color: var(--ink); }
+.shelf-drop:active { transform: scale(var(--press)); }
+
+.ext-head:empty, .ext-head:not(:has(button)) { display: none; }

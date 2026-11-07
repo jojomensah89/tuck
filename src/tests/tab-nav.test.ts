@@ -32,7 +32,7 @@ describe('tab and section mapping', () => {
     expect(all.sort()).toEqual([...pages].sort());
   });
   test('groups follow the roadmap', () => {
-    expect(TABS.map(tab => tab.id)).toEqual(['media', 'today', 'tools', 'usage']);
+    expect(TABS.map(tab => tab.id)).toEqual(['media', 'today', 'dictation', 'tools', 'usage']);
     expect(tabForSection('visualizer')).toBeNull();
     expect(tabForSection('calendar')).toBeNull();
     expect(tabForSection('activities')).toBe('today');

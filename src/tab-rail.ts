@@ -104,7 +104,9 @@ export function mountTabRail(options: TabRailOptions): TabRail {
     e.stopPropagation();
     options.openSettings();
   });
-  rail.append(tablist, settings);
+  const updateSlot = document.createElement('div');
+  updateSlot.className = 'rail-update'; updateSlot.hidden = true;
+  rail.append(tablist, updateSlot, settings);
   full.insertBefore(rail, container);
 
   // Sections move into their tab's panel in the documented order. A section
@@ -122,10 +124,17 @@ export function mountTabRail(options: TabRailOptions): TabRail {
 
   /* ---------- Section position ---------- */
   const sectionIndex = document.createElement('div');
-  sectionIndex.className = 'section-index';
-  sectionIndex.setAttribute('role', 'group');
+  sectionIndex.className = 'section-switch';
+  sectionIndex.setAttribute('role', 'tablist');
   sectionIndex.setAttribute('aria-label', 'Sections');
   full.append(sectionIndex);
+  const sectionActions = document.createElement('div'); sectionActions.className = 'section-actions'; full.append(sectionActions);
+  const snip = full.querySelector<HTMLButtonElement>('button[aria-label="Screen snip"]');
+  const ownActions = new Map<HTMLElement, Element>();
+  for (const section of sections) {
+    const actions = section.querySelector('.ext-actions, .clipboard .live-title, #usageRefresh');
+    if (actions) ownActions.set(section, actions);
+  }
 
   const sectionsOf = (panel: HTMLElement) => [...panel.querySelectorAll<HTMLElement>(':scope > .page:not([hidden])')];
   const visibleSection = (panel: HTMLElement): number =>
@@ -140,14 +149,22 @@ export function mountTabRail(options: TabRailOptions): TabRail {
 
   function buildMark(name: string, index: number): HTMLButtonElement {
     const button = document.createElement('button');
-    const label = `Go to ${sectionLabel(name)}`;
+    const label = ({today:'Clock',activities:'Timer',extensions:'Files',clipboard:'Clipboard',usage:'AI',stats:'System'} as Record<string,string>)[name] ?? sectionLabel(name);
     button.type = 'button';
-    button.className = 'section-index-button';
+    button.className = 'section-switch-button';
     button.setAttribute('aria-label', label);
     button.title = label;
-    const mark = document.createElement('i');
-    mark.setAttribute('aria-hidden', 'true');
-    button.append(mark);
+    button.textContent = label;
+    button.setAttribute('role', 'tab');
+    const section = sections.find(s => s.dataset.page === name);
+    if (section) { section.id ||= `section-${name}`; button.setAttribute('aria-controls', section.id); }
+    button.addEventListener('keydown', event => {
+      const target = rovingTarget(event.key, index, sectionsOf(panels[current]).length);
+      if (target === null) return;
+      event.preventDefault(); event.stopPropagation();
+      goToSection(target);
+      (sectionIndex.children[target] as HTMLElement)?.focus();
+    });
     button.addEventListener('click', event => {
       event.stopPropagation();
       goToSection(index);
@@ -162,6 +179,13 @@ export function mountTabRail(options: TabRailOptions): TabRail {
     const names = sectionsOf(panel).map(section => section.dataset.page ?? 'section');
     const count = names.length;
     const at = visibleSection(panel);
+    full.classList.toggle('has-sections', count > 1);
+    for (const [section, actions] of ownActions) section.append(actions);
+    sectionActions.replaceChildren();
+    const activeSection = sectionsOf(panel)[at];
+    const actions = ownActions.get(activeSection);
+    if (count > 1 && actions) sectionActions.append(actions);
+    if (TABS[current].id === 'tools' && snip) sectionActions.append(snip);
     // Tabs can have the same number of sections, so the marks are keyed by name
     const key = names.join(' ');
     if (key !== indexKey) {
@@ -173,6 +197,8 @@ export function mountTabRail(options: TabRailOptions): TabRail {
     }
     [...sectionIndex.children].forEach((button, index) => {
       button.classList.toggle('on', index === at);
+      button.setAttribute('aria-selected', String(index === at));
+      (button as HTMLElement).tabIndex = index === at ? 0 : -1;
       if (index === at) button.setAttribute('aria-current', 'true');
       else button.removeAttribute('aria-current');
     });

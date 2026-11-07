@@ -1,3 +1,5 @@
+> Historical plan or verification record. This is not the current feature list or setup guide. Some described features are being retired. Start with the [README](../README.md).
+
 # Tuck feature scope and acceptance
 
 Source: supplied notch-island-build-guide.md. User confirmed on 2026-11-02: specified Windows app plus v1; track later ideas separately. No automatic publication or release is included.

@@ -224,7 +224,7 @@ export function mountDictationSettings(): void {
     const host = el('modelRows');
     const locked = modelsLocked(status);
     const seen = new Set<string>();
-    for (const row of models) {
+    for (const row of [...models].sort((a, b) => Number(b.state === 'installed' || b.state === 'found') - Number(a.state === 'installed' || a.state === 'found'))) {
       seen.add(row.id);
       let view = rows.get(row.id);
       if (!view) {

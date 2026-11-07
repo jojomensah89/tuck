@@ -139,6 +139,7 @@ function mountShell(): void {
   });
 
   window.addEventListener('hashchange', () => {
+    if (location.hash === '#welcome') { $('showWelcome')?.click(); return; }
     // Going to a section always leaves search, whether from the sidebar, a privacy link or history.
     if (search.value) { search.value = ''; applySearch(''); }
     $('content')!.scrollTop = 0;
@@ -251,6 +252,7 @@ function initNativeToggles(): void {
     refreshPrivacy();
   });
   void listenToEvent<string>('navigate-settings-view', view => {
+    if (view === 'welcome') { $('showWelcome')?.click(); return; }
     if (VIEWS.includes(view)) {
       showView(view);
       location.hash = `#${view}`;
@@ -392,6 +394,7 @@ document.addEventListener('DOMContentLoaded', () => {
   mountExtensionSettings();
   mountLiveSettings();
   mountPrivacy();
+  mountWelcome();
   mountShell();
   refreshPrivacy();
 });
@@ -402,11 +405,48 @@ function confirmAntigravity(): Promise<boolean> {
     dialog.setAttribute('aria-label', 'Turn on Antigravity usage');
     const text = document.createElement('p');
     text.textContent = "Tuck will read Antigravity's sign-in file and use it to ask Google for your quota. It's used only for this, kept in memory, and never saved or sent anywhere else.";
-    const on = document.createElement('button'); on.textContent = 'Turn on';
-    const cancel = document.createElement('button'); cancel.textContent = 'Cancel';
+    const on = document.createElement('button'); on.textContent = 'Turn on'; on.className = 'button primary';
+    const cancel = document.createElement('button'); cancel.textContent = 'Cancel'; cancel.className = 'button';
     const finish = (value: boolean) => { dialog.close(); dialog.remove(); resolve(value); };
     on.onclick = () => finish(true); cancel.onclick = () => finish(false);
     dialog.oncancel = event => { event.preventDefault(); finish(false); };
     dialog.append(text, cancel, on); document.body.append(dialog); dialog.showModal(); cancel.focus();
   });
+}
+
+function mountWelcome(): void {
+  const links: [string, string][] = [
+    ['GitHub', 'https://github.com/jojomensah89/tuck'],
+    ['Report a bug', 'https://github.com/jojomensah89/tuck/issues/new'],
+    ['Licence (MIT)', 'https://github.com/jojomensah89/tuck/blob/main/LICENSE'],
+    ['Third-party notices', 'https://github.com/jojomensah89/tuck/blob/main/THIRD_PARTY_NOTICES.md'],
+  ];
+  for (const [label, url] of links) {
+    const row = document.createElement('div'); row.className = 'set-row'; row.id = `row-resource-${links.findIndex(item => item[1] === url)}`;
+    const button = document.createElement('button'); button.className = 'button'; button.textContent = 'Open'; button.setAttribute('aria-label', `Open ${label}`);
+    const title = document.createElement('span'); title.className = 'row-title'; title.textContent = label;
+    button.onclick = () => { void invokeCommand('open_about_link', { url }).catch(() => setStatus('updateStatusText', 'Could not open browser', 'error')); };
+    row.append(title, button); $('aboutLinks')!.append(row);
+  }
+  const access = document.querySelector('.notification-access');
+  if (access) { document.querySelector('#view-activities .panel')!.append(...access.querySelector('.panel')!.childNodes); access.remove(); }
+  let welcome: HTMLElement | null = null;
+  const show = () => {
+    if (welcome) return;
+    welcome = document.createElement('section'); welcome.className = 'welcome'; welcome.id = 'welcome';
+    welcome.innerHTML = '<span class="about-mark" aria-hidden="true"></span><h1 tabindex="-1">Welcome to Tuck</h1><p>A desktop island for Windows; hover over the pill at the top of your screen to open it</p>';
+    const moved: { node: HTMLElement; placeholder: Comment }[] = [];
+    for (const [title, ids] of [['Start with Windows', ['row-autostart', 'autostartStatus']], ['Track AI usage', ['providerSwitches', 'providersEmpty', 'installedUsageStatus']], ['Dictation', ['row-dictationModel', 'modelRows', 'dictationStatus', 'dictationRetryRow']]] as [string, string[]][]) {
+      const group = document.createElement('div'); group.className = 'group';
+      const heading = document.createElement('h2'); heading.textContent = title; group.append(heading);
+      const panel = document.createElement('div'); panel.className = 'panel'; group.append(panel);
+      for (const id of ids) { const node = $(id); if (!node) continue; const placeholder = document.createComment(id); node.before(placeholder); moved.push({node, placeholder}); panel.append(node); }
+      welcome.append(group);
+    }
+    const actions = document.createElement('div'); actions.className = 'welcome-actions';
+    for (const label of ['Done', 'Skip']) { const button = document.createElement('button'); button.className = label === 'Done' ? 'button primary' : 'button'; button.textContent = label; button.onclick = () => { for (const {node, placeholder} of moved) placeholder.replaceWith(node); welcome?.remove(); welcome = null; document.body.classList.remove('welcoming'); searchIndex = buildSearchIndex(); $<HTMLInputElement>('settingsSearch')!.value = ''; applySearch(''); $('showWelcome')?.focus(); }; actions.append(button); }
+    welcome.append(actions); $('content')!.append(welcome); document.body.classList.add('welcoming'); welcome.querySelector('h1')!.focus();
+  };
+  $('showWelcome')!.onclick = show;
+  if (location.hash === '#welcome') queueMicrotask(show);
 }

@@ -104,6 +104,14 @@ try {
   await page.keyboard.press('Escape');
   assert.equal(await page.locator('.full').evaluate(el => el.inert),true);
   await page.goto('http://tuck.test/settings.html');
+  assert.equal(await page.locator('#welcome').count(),0,'Welcome never appears in regular UI smoke');
+  await page.goto('http://tuck.test/settings.html#welcome');
+  await page.locator('#welcome').waitFor();
+  assert.equal(await page.locator('#welcome #autostart').count(),1,'Welcome uses the real autostart control');
+  assert.equal(await page.locator('#welcome #modelRows').count(),1,'Welcome uses the real model picker');
+  await page.getByRole('button',{name:'Skip',exact:true}).click();
+  assert.equal(await page.locator('#view-general #autostart').count(),1,'Closing restores the real controls');
+  await page.goto('http://tuck.test/settings.html');
   // Sidebar: one view at a time, arrow keys move between sections.
   assert.equal(await page.locator('#view-general').isVisible(),true);
   assert.equal(await page.locator('#view-keys').count(),0);

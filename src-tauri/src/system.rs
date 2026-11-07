@@ -751,7 +751,7 @@ pub fn open_settings(app: &AppHandle) -> Result<(), String> {
     } else {
         WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("settings.html".into()))
             .title("Tuck Settings")
-            .inner_size(760.0, 600.0)
+            .inner_size(1000.0, 760.0)
             .min_inner_size(640.0, 440.0)
             .resizable(true)
             .focused(true)
@@ -781,7 +781,7 @@ pub fn open_settings_view(app: &AppHandle, view: &str, check: bool) -> Result<()
     } else {
         WebviewWindowBuilder::new(app, "settings", WebviewUrl::App(url_str.into()))
             .title("Tuck Settings")
-            .inner_size(760.0, 600.0)
+            .inner_size(1000.0, 760.0)
             .min_inner_size(640.0, 440.0)
             .resizable(true)
             .focused(true)

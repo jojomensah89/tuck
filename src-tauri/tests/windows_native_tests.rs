@@ -247,11 +247,11 @@ fn test_power_unknown_and_desktop_handling() {
 
 #[test]
 fn test_quick_action_allowlist() {
-    assert!(ALLOWED_QUICK_ACTIONS.contains(&"wifi"));
-    assert!(ALLOWED_QUICK_ACTIONS.contains(&"bluetooth"));
-    assert!(ALLOWED_QUICK_ACTIONS.contains(&"focus"));
+    assert!(!ALLOWED_QUICK_ACTIONS.contains(&"focus"));
     assert!(ALLOWED_QUICK_ACTIONS.contains(&"capture"));
 
+    assert!(!ALLOWED_QUICK_ACTIONS.contains(&"wifi"));
+    assert!(!ALLOWED_QUICK_ACTIONS.contains(&"bluetooth"));
     assert!(!ALLOWED_QUICK_ACTIONS.contains(&"cmd"));
     assert!(!ALLOWED_QUICK_ACTIONS.contains(&"powershell"));
     assert!(!ALLOWED_QUICK_ACTIONS.contains(&"malicious"));

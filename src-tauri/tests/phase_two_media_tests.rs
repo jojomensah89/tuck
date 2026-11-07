@@ -1,4 +1,4 @@
-use tuck_lib::{lyrics, telemetry, visualizer};
+use tuck_lib::{lyrics, telemetry};
 
 use tuck_lib::media::{MediaSessionInfo, MediaState};
 
@@ -120,56 +120,4 @@ fn test_telemetry_snapshot_lifecycle() {
     assert!(json.contains("\"status\":\"ready\""));
     assert!(json.contains("\"usagePercent\":24.5"));
     assert!(json.contains("\"totalBytes\":32000000000"));
-}
-
-#[test]
-fn test_visualizer_fft_and_hann_window() {
-    let n = 256;
-    let mut samples = vec![0.0f32; n];
-    // Generate 440Hz test sine tone (assuming 44100Hz sample rate)
-    for (i, s) in samples.iter_mut().enumerate() {
-        *s = (2.0 * std::f32::consts::PI * 440.0 * (i as f32) / 44100.0).sin();
-    }
-
-    let mut windowed = vec![0.0f32; n];
-    visualizer::apply_hann_window(&samples, &mut windowed);
-    assert_eq!(windowed[0], 0.0); // Hann window zero at start
-    assert_eq!(windowed[n - 1], 0.0); // Hann window zero at end
-
-    let mut imag = vec![0.0f32; n];
-    visualizer::fft_radix2(&mut windowed, &mut imag);
-
-    // Peak should be detected in lower frequency bins
-    let magnitudes: Vec<f32> = windowed
-        .iter()
-        .zip(imag.iter())
-        .take(n / 2)
-        .map(|(&r, &im)| (r * r + im * im).sqrt())
-        .collect();
-
-    let max_bin = magnitudes
-        .iter()
-        .enumerate()
-        .max_by(|(_, a), (_, b)| a.total_cmp(b))
-        .map(|(idx, _)| idx)
-        .unwrap();
-
-    assert!(max_bin > 0 && max_bin < 10);
-}
-
-#[test]
-fn test_visualizer_silence_settle() {
-    let silent_samples = vec![0.0f32; 128];
-    let mut bins = vec![0.8f32; visualizer::NUM_BINS];
-
-    for _ in 0..25 {
-        let snap = visualizer::analyze_samples(&silent_samples, &bins, false);
-        assert!(snap.is_silent);
-        bins = snap.bins;
-    }
-
-    // After repeated silent frames, all bins must decay towards 0
-    for b in bins {
-        assert!(b < 0.1);
-    }
 }

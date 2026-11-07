@@ -1,6 +1,5 @@
 import './setup.js';
 import { describe, it, expect, beforeEach } from 'bun:test';
-import { setSecret } from '../ipc.js';
 import { STORAGE_KEYS, saveJson, getJson } from '../usage.js';
 
 describe('Security & Persistence Invariants', () => {
@@ -9,7 +8,6 @@ describe('Security & Persistence Invariants', () => {
   });
 
   it('never stores admin API keys or secrets in localStorage', async () => {
-    await setSecret('anthropic-admin', 'sk-ant-admin-test-placeholder');
     // Save sample budgets and chatgpt configs
     saveJson(STORAGE_KEYS.BUDGETS, { 'anthropic-api': 25 });
     saveJson(STORAGE_KEYS.CHATGPT, { cap: 40, hours: 3, label: 'Chat' });

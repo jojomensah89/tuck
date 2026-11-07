@@ -83,15 +83,6 @@
   text-align: center;
 }
 
-.ext-badge.dot {
-  min-width: 0;
-  width: var(--status-dot);
-  height: var(--status-dot);
-  top: 6px;
-  right: 6px;
-  padding: 0;
-  background: var(--ok);
-}
 
 .ext-badge[hidden] {
   display: none;
@@ -110,20 +101,6 @@
   font-size: var(--t-xs);
   line-height: 1.35;
   margin: var(--s-1) 0;
-}
-
-.ext-call {
-  display: flex;
-  align-items: center;
-  gap: var(--s-3);
-  margin-top: var(--s-2);
-}
-
-.ext-time {
-  font-size: var(--t-xl);
-  font-weight: var(--w-regular);
-  font-variant-numeric: tabular-nums;
-  line-height: 1;
 }
 
 .ext-row {
@@ -149,9 +126,6 @@
   padding-left: var(--s-2);
 }
 
-.ext-row-icon + .ext-row-text {
-  padding-left: 0;
-}
 
 .ext-row-name {
   min-width: 0;
@@ -167,66 +141,11 @@
   font-variant-numeric: tabular-nums;
 }
 
-.ext-row-icon {
-  display: grid;
-  place-items: center;
-  width: var(--hit-sm);
-  color: var(--ink-2);
-}
 
 .ext-row .grip {
   width: var(--hit-sm);
   cursor: grab;
   color: var(--ink-3);
-}
-
-.ext-download {
-  flex-wrap: wrap;
-}
-
-.ext-row progress {
-  width: 100%;
-  height: 4px;
-  margin: 0 var(--s-2);
-  accent-color: var(--ink-2);
-}
-
-/* A switch for radios: the track is a tone step, the knob slides */
-.switch {
-  width: 44px;
-  height: var(--hit);
-  flex-shrink: 0;
-  border-radius: var(--r-md);
-}
-
-.switch i {
-  position: relative;
-  display: block;
-  width: 32px;
-  height: 18px;
-  border-radius: 9px;
-  background: var(--raise-active);
-  transition: background var(--d-fast) var(--ease-out);
-}
-
-.switch i::after {
-  content: "";
-  position: absolute;
-  top: 2px;
-  left: 2px;
-  width: 14px;
-  height: 14px;
-  border-radius: var(--r-round);
-  background: var(--ink);
-  transition: transform var(--d-base) var(--spring-enter);
-}
-
-.switch[aria-checked=true] i {
-  background: var(--ok);
-}
-
-.switch[aria-checked=true] i::after {
-  transform: translateX(14px);
 }
 
 .ext-status {

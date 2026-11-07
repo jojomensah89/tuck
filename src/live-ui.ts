@@ -1,4 +1,4 @@
-import { listenToEvent, mediaSeek, isTauri } from './ipc.js';
+import { listenToEvent, mediaSeek, isTauri, triggerQuickAction } from './ipc.js';
 import { SVG_ICONS } from './icons.js';
 import { islandModelLine } from './dictation-models.js';
 import { DictationUpdates, nativeAction, nativeService, normalizeClipboard, normalizeDictation, normalizeTelemetry, type ClipboardSnapshot, type DictationSnapshot, type LyricsSnapshot, type MediaSession, type TelemetrySnapshot } from './live-services.js';
@@ -316,7 +316,10 @@ export function mountLivePages(onLayout: () => void): {
   const clipboard = makePage('clipboard', 'Clipboard history');
   const clipboardHead = node('div', 'live-heading'); const clipboardStatus = node('p', 'live-note', 'Enable clipboard history in Settings');
   const clearClipboard = iconButton('Clear unpinned history', SVG_ICONS.trash, () => { void act(nativeAction('clipboard_clear').then(refreshClipboard), clipboardStatus); });
-  clipboardHead.append(node('h2', '', 'Clipboard'), clearClipboard);
+  const snip = iconButton('Screen snip', SVG_ICONS.capture, () => { void act(triggerQuickAction('capture'), clipboardStatus); });
+  const clipboardActions = node('div', 'live-title');
+  clipboardActions.append(clearClipboard, snip);
+  clipboardHead.append(node('h2', '', 'Clipboard'), clipboardActions);
   const clipList = node('div', 'clipboard-list'); clipboard.append(clipboardHead, clipboardStatus, clipList);
   let clipboardSignature = '';
   function renderClipboard(data: ClipboardSnapshot): void {
@@ -343,100 +346,37 @@ export function mountLivePages(onLayout: () => void): {
   }
   async function refreshClipboard(): Promise<void> { renderClipboard(await nativeService<ClipboardSnapshot>('clipboard_snapshot')); }
 
-  // Frequency bars are driven exclusively by actual native loopback measurements.
-  const spectrum = node('div', 'live-spectrum'); spectrum.setAttribute('aria-label', 'System audio spectrum');
-  const bars = Array.from({ length: 32 }, () => { const bar = node('i'); spectrum.append(bar); return bar; }); mediaPage.append(spectrum);
-  const audioPage = makePage('visualizer', 'Audio visualizer');
-  const audioTitle = node('div', 'live-heading'); const audioStatus = node('p', 'live-note', 'Analysis off, no audio is stored');
-  // One toggle: the spectrum itself shows whether analysis runs
-  let visualizerOn = false;
-  // Frames still in flight (and the capture thread's final empty frame) arrive just after Stop
-  let stoppedAt = 0;
-  const visualizerToggle = iconButton('Start playback analysis', SVG_ICONS.power, () => {
-    const next = !visualizerOn;
-    void act(nativeAction('visualizer_set_enabled', { enabled: next }).then(() => { setVisualizer(next); }), audioStatus);
-  });
-  function setVisualizer(on: boolean): void {
-    if (visualizerOn && !on) stoppedAt = Date.now();
-    visualizerOn = on;
-    visualizerToggle.setAttribute('aria-pressed', String(on));
-    setIconLabel(visualizerToggle, on ? 'Stop playback analysis' : 'Start playback analysis', SVG_ICONS.power);
-    if (!on) audioStatus.textContent = 'Analysis off, no audio is stored';
-  }
-  setVisualizer(false);
-  void nativeService<{ enabled: boolean }>('visualizer_settings').then(status => setVisualizer(status.enabled === true)).catch(() => {});
-  audioTitle.append(node('h2', '', 'System audio'), visualizerToggle);
-  const wideSpectrum = node('div', 'wide-spectrum'); wideSpectrum.setAttribute('aria-label', 'Measured playback frequency bands');
-  const wideBars = Array.from({ length: 48 }, () => { const bar = node('i'); wideSpectrum.append(bar); return bar; });
-  audioPage.append(audioTitle, wideSpectrum, audioStatus);
-  const visibleSpectra = new Set<Element>();
-  const spectrumObserver = new IntersectionObserver(entries => {
-    for (const entry of entries) {
-      if (entry.isIntersecting && entry.intersectionRatio > 0) visibleSpectra.add(entry.target);
-      else visibleSpectra.delete(entry.target);
-    }
-  });
-  spectrumObserver.observe(spectrum); spectrumObserver.observe(wideSpectrum);
-  let lastAudio = 0;
-  function audio(data: { bands: number[]; active?: boolean }): void {
-    if (!data || !Array.isArray(data.bands)) return;
-    if (!visualizerOn) {
-      // Ignore stragglers after a local Stop; later frames mean analysis was started elsewhere (Settings)
-      if (Date.now() - stoppedAt < 1500) return;
-      setVisualizer(true);
-    }
-    lastAudio = Date.now();
-    audioStatus.textContent = data.active === false ? 'Silence, no audio is stored' : 'Live spectrum, no audio is stored';
-    if (document.getElementById('isl')?.dataset.state !== 'open') return;
-    for (const [element, group] of [[spectrum, bars], [wideSpectrum, wideBars]] as const) {
-      if (!visibleSpectra.has(element)) continue;
-      group.forEach((bar, i) => {
-        const source = i * Math.max(0, data.bands.length - 1) / (group.length - 1);
-        const low = data.bands[Math.floor(source)] || 0, high = data.bands[Math.ceil(source)] || 0;
-        const sample = data.active === false ? 0 : low + (high - low) * (source % 1);
-        bar.style.setProperty('--level', String(Number.isFinite(sample) ? Math.max(0, Math.min(1, sample)) : 0));
-      });
-    }
-  }
   async function act(action: Promise<unknown>, status: HTMLElement): Promise<void> {
     try { await action; status.textContent = ''; } catch (error) { status.textContent = friendlyError(error); }
   }
   const unlisteners: (() => void)[] = [];
   for (const [event, handler] of [
-    ['lyrics', applyLyrics], ['telemetry', (data: unknown) => telemetry(normalizeTelemetry(data))], ['dictation_state', (data: unknown) => dictation(normalizeDictation(data))], ['clipboard_history_changed', (data: unknown) => renderClipboard(normalizeClipboard(data))], ['visualizer', (data: {bins?: number[]; bands?: number[]; isSilent?: boolean}) => audio({ bands: data.bins || data.bands || [], active: !data.isSilent })],
+    ['lyrics', applyLyrics], ['telemetry', (data: unknown) => telemetry(normalizeTelemetry(data))], ['dictation_state', (data: unknown) => dictation(normalizeDictation(data))], ['clipboard_history_changed', (data: unknown) => renderClipboard(normalizeClipboard(data))],
   ] as const) void listenToEvent(event, handler as (data: unknown) => void).then(unlisten => unlisteners.push(unlisten));
   void listenToEvent<DictationSnapshot>('dictation_partial', data => dictation(normalizeDictation(data))).then(unlisten => unlisteners.push(unlisten));
   void listenToEvent<{ enabled: boolean }>('lyrics-settings', data => {
     if (!data.enabled) { generation++; currentRequestId = ''; baseLines = []; lines = []; currentLyric = ''; lyricList.replaceChildren(); hideTiming(); lyricsStatus.textContent = 'Enable online lyrics in Settings'; }
     else if (latestMedia?.active) void requestLyrics(latestMedia);
   }).then(unlisten => unlisteners.push(unlisten));
-  void listenToEvent<string>('visualizer-error', () => { audioStatus.textContent = 'Playback analysis unavailable, check the output device'; }).then(unlisten => unlisteners.push(unlisten));
   void sessions();
   void nativeService<DictationSnapshot>('dictation_snapshot').then(dictation).catch(() => { speechStatus.textContent = 'Dictation service unavailable, see Settings'; });
   void refreshClipboard().catch(() => { clipboardStatus.textContent = 'Clipboard service unavailable, see Settings'; });
   let interval: number | undefined;
   let sessionInterval: number | undefined;
   const visible = () => document.getElementById('isl')?.dataset.state === 'open';
-  let wasVisible = false;
-  const clearAudioBars = () => [...bars, ...wideBars].forEach(bar => bar.style.setProperty('--level', '0'));
   const syncTimers = () => {
-    const open = visible();
-    if (open && !wasVisible) clearAudioBars();
-    wasVisible = open;
     window.clearInterval(interval); window.clearInterval(sessionInterval);
     interval = undefined; sessionInterval = undefined;
     if (!visible()) return;
     void sessions();
     if (stats.closest('.tab-panel.on')) void refreshTelemetry();
     interval = window.setInterval(() => {
-      if (Date.now() - lastAudio > 1000) [...bars, ...wideBars].forEach(bar => bar.style.setProperty('--level', '0'));
       if (stats.closest('.tab-panel.on')) void refreshTelemetry();
     }, 1000);
     sessionInterval = window.setInterval(() => { void sessions(); }, 5000);
   };
   window.addEventListener('tuck-visibility', syncTimers);
   window.addEventListener('pagehide', () => {
-    spectrumObserver.disconnect();
     clearInterval(interval); clearInterval(sessionInterval);
     window.removeEventListener('tuck-visibility', syncTimers);
     unlisteners.forEach(unlisten => unlisten());

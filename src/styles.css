@@ -1545,42 +1545,6 @@ body.fullscreen-hidden .island {
   color: var(--ink-2);
 }
 
-/* ================= Quick Actions Page ================= */
-
-.page.quick {
-  align-items: center;
-}
-
-.quick-grid {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: var(--s-2);
-  width: 100%;
-}
-
-.chip {
-  background: var(--raise);
-  border-radius: var(--r-lg);
-  height: 72px;
-  color: var(--ink);
-  transition:
-    background var(--d-fast) var(--ease-out),
-    transform var(--d-instant) var(--ease-out);
-}
-
-.chip:hover {
-  background: var(--raise-hover);
-}
-
-.chip:active {
-  transform: scale(var(--press));
-}
-
-.chip svg {
-  width: var(--i-lg);
-  height: var(--i-lg);
-}
-
 /* ================= Browser Demo Header ================= */
 
 /* Pinned to the bottom of the window, below the open island (210px), so it never

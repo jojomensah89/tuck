@@ -21,10 +21,8 @@ Source: supplied notch-island-build-guide.md. User confirmed on 2026-11-02: spec
 | Write-only Credential Manager keys, explicit removal, redacted errors | Usage + UI / PRs 1 and 2 | Allowlist/redaction tests and settings failure smoke |
 | ChatGPT manual rolling message estimate, configured cap/window, expiry, clear log | UI / PR 1 | Real module tests including corrupt storage and seven-day window |
 | Priority activity registry, timer, stopwatch and Pomodoro | UI / PR 1 | Timer tests and rendered layout/control smoke |
-| Downloads and manual call live activities; priority compact override | PR 5, integration PR 4 | Opt-in, unknown totals honest, start/stop tests |
 | Notification previews, permission request and unsupported access state | PR 5, integration PR 4 | WinRT compile; permission/native smoke with app identity constraints recorded |
-| Local ICS calendar, upcoming events, five-minute reminder and join action | PR 5, integration PR 4 | ICS parser, timestamp and safe URL tests |
-| Real Wi-Fi/Bluetooth radio state/control where Windows grants permission; Focus settings; screen capture | PR 5, integration PR 4 | WinRT compile, denied/unavailable states, allowlisted actions |
+| Screen snip (Windows screen clip URI) | Native | Allowlisted command and mocked transport smoke; real desktop launch requires manual verification |
 | File shelf, native drops, remove/clear and drag out | PR 5, integration PR 4 | Native drag/drop smoke; never removes original files |
 
 ## Completed integration and observed checks
@@ -33,15 +31,15 @@ PRs 1, 2, 3 and 5 contain the reviewed feature implementations. PR 4 supplies th
 
 Coordinator combined validation: 22 frontend tests; 37 Rust tests; formatting and Clippy; browser demo plus mocked-native-transport rendered interactions for geometry, keyboard, timers, file shelf, focused updates, compact priority, drag hold and previews. The live installed-client smoke is separate and ignored by CI. Windows native executable builds successfully.
 
-The full real-desktop visual/click-through smoke was blocked by an existing nusa.exe Notch overlay at the same screen position. Tuck's test process was closed; the existing application was left running. Radio hardware changes, Windows notification permission/package capability, cross-application drag completion and real provider billing remain manual unknowns, not passed tests.
+The full real-desktop visual/click-through smoke was blocked by an existing nusa.exe Notch overlay at the same screen position. Tuck's test process was closed; the existing application was left running. Windows notification permission/package capability, cross-application drag completion and real provider billing remain manual unknowns, not passed tests.
 
 ## Phase two (draft PR 6)
 
-Lyrics, clipboard history, CPU/RAM/GPU metrics, real audio visualization, offline dictation, local to-dos/reminders and system peeks have moved into the approved development scope. See [phase-two verification](phase-two-verification.md) for code coverage, actual observations and remaining review/manual gates. The original delivery evidence above describes v1, not the new integrated head.
+Lyrics, clipboard history, CPU/RAM/GPU metrics, offline dictation, local to-dos/reminders and system peeks have moved into the approved development scope. See [phase-two verification](phase-two-verification.md) for code coverage, actual observations and remaining review/manual gates. The original delivery evidence above describes v1, not the new integrated head.
 
 ## Deferred ideas from the guide
 
-These are explicitly tracked, not claimed implemented: plugin widgets; weather/stocks/crypto/sports; disk/network stats; disk-space alerts; Num Lock HUD; active-app context; lock/unlock behavior; mic/camera indicators; meeting-app mute automation; Wi-Fi/VPN quality; Bluetooth peripheral battery; USB safe eject; battery health; shared GPU memory detail; hardware temperatures/fan drivers; Windows Update/reboot alerts; Docker/WSL; Git/CI/deploy status; local development server discovery; macOS/Linux builds; signing certificate and updater/release pipeline. Calendar OAuth providers can extend the local ICS implementation later.
+These are explicitly tracked, not claimed implemented: plugin widgets; weather/stocks/crypto/sports; disk/network stats; disk-space alerts; Num Lock HUD; active-app context; lock/unlock behavior; mic/camera indicators; meeting-app mute automation; Wi-Fi/VPN quality; Bluetooth peripheral battery; USB safe eject; battery health; shared GPU memory detail; hardware temperatures/fan drivers; Windows Update/reboot alerts; Docker/WSL; Git/CI/deploy status; local development server discovery; macOS/Linux builds; signing certificate and updater/release pipeline.
 
 ## Review and merge policy
 

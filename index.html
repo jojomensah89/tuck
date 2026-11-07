@@ -33,13 +33,16 @@
                  which moves these sections into their tabs (see TABS in src/tab-nav.ts) -->
             <div class="pages-container">
               <!-- Media tab: now playing -->
-              <section class="page media" data-page="media" aria-label="Now Playing">
+              <section class="page media nothing" data-page="media" aria-label="Now Playing">
+                <p class="empty-line media-empty">Nothing playing</p>
                 <div class="now">
                   <div class="art" id="art" aria-label="Album Artwork"></div>
                   <div class="meta">
-                    <span class="media-battery" id="mediaBattBadge"></span>
                     <div class="title" id="title"><span>Nothing playing</span></div>
-                    <div class="artist" id="artist"></div>
+                    <div class="meta-sub">
+                      <div class="artist" id="artist"></div>
+                      <span class="media-battery" id="mediaBattBadge"></span>
+                    </div>
                   </div>
                 </div>
 
@@ -100,7 +103,7 @@
 
               <!-- Usage tab: AI usage meters -->
               <section class="page usage" data-page="usage" aria-label="AI Usage Meters">
-                <div class="usage-actions"><button class="icon-btn" id="usageRefresh" aria-label="Refresh AI usage" title="Refresh AI usage"></button></div>
+                <button class="icon-btn" id="usageRefresh" data-section-actions="usage" aria-label="Refresh AI usage" title="Refresh AI usage"></button>
                 <div class="u-list" id="uList"></div>
               </section>
 

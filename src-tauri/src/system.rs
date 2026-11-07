@@ -151,10 +151,11 @@ pub struct HitBounds {
     pub bottom: f64,
 }
 
-/// Clamps logical CSS hit dimensions to stay within the 520x230 window canvas.
+/// Clamps logical CSS hit dimensions to stay within the 520x288 window canvas: the 500x264
+/// open island, the 10px floating gap and the shell spring's overshoot.
 pub fn clamp_hit_size(w: u32, h: u32) -> (u32, u32) {
     let bounded_w = w.clamp(10, 520);
-    let bounded_h = h.clamp(10, 230);
+    let bounded_h = h.clamp(10, 288);
     (bounded_w, bounded_h)
 }
 
@@ -782,8 +783,12 @@ pub fn open_settings_view(app: &AppHandle, view: &str, check: bool) -> Result<()
 
 /// Frontend command to open settings window without phantom successes.
 #[tauri::command]
-pub(crate) async fn open_settings_cmd(app: AppHandle) -> Result<(), String> {
-    open_settings(&app)
+pub(crate) async fn open_settings_cmd(app: AppHandle, view: Option<String>) -> Result<(), String> {
+    match view.as_deref() {
+        // The island's missing-model link goes straight to the model picker.
+        Some("tools") => open_settings_view(&app, "tools", false),
+        _ => open_settings(&app),
+    }
 }
 
 /// Autostart status check.

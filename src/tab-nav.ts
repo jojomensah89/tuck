@@ -25,16 +25,16 @@ export const TABS: readonly TabDef[] = [
 
 export const DEFAULT_TAB: TabId = 'media';
 
-/** What each section is called on its indicator mark ("Go to AI usage") */
+/** What each section is called on the segmented switch */
 const SECTION_LABELS: Readonly<Record<string, string>> = {
-  media: 'now playing',
-  today: 'clock and battery',
-  activities: 'timer',
-  clipboard: 'clipboard',
-  extensions: 'files',
-  dictation: 'dictation',
-  usage: 'AI usage',
-  stats: 'system',
+  media: 'Now playing',
+  today: 'Clock',
+  activities: 'Timer',
+  dictation: 'Dictation',
+  extensions: 'Files',
+  clipboard: 'Clipboard',
+  usage: 'AI',
+  stats: 'System',
 };
 
 export function sectionLabel(section: string): string {
@@ -119,27 +119,32 @@ export interface WheelInput {
   now: number;
   /** Scrollers between the event target and the tab panel, innermost first */
   chain: readonly ScrollMetrics[];
+  /** Where the tab's parts stand. Left out over the rail, where the wheel means tabs */
+  part?: { index: number; count: number };
 }
 
 /**
  * - `scroll`: let the browser scroll the content
  * - `block`: swallow the event (just switched; keeps momentum out of the new tab)
+ * - `section`: move to the tab's next or previous part
  * - `switch`: change tab by `delta`
  * - `none`: ignore
  */
 export type WheelAction =
   | { kind: 'scroll' }
   | { kind: 'block' }
+  | { kind: 'section'; delta: 1 | -1 }
   | { kind: 'switch'; delta: 1 | -1 }
   | { kind: 'none' };
 
 /**
- * Edge-aware wheel handling. Vertical wheel scrolls the innermost scroller that
- * still has room; only a fresh gesture that starts at the edge switches tabs.
- * Horizontal wheel (trackpad swipe, wheel tilt) always switches.
+ * Edge-aware wheel handling. Vertical wheel scrolls the innermost list that still
+ * has room, then moves between the tab's parts, then on to the next tab; only a
+ * fresh gesture that starts at an edge moves. Horizontal wheel (trackpad swipe,
+ * wheel tilt) always switches tabs.
  */
 export function wheelStep(state: WheelState, input: WheelInput): { state: WheelState; action: WheelAction } {
-  const { deltaX, deltaY, now, chain } = input;
+  const { deltaX, deltaY, now, chain, part } = input;
   const freshGesture = now - state.lastWheelAt > GESTURE_GAP_MS;
   const next: WheelState = {
     lockedUntil: state.lockedUntil,
@@ -159,7 +164,11 @@ export function wheelStep(state: WheelState, input: WheelInput): { state: WheelS
   if (!horizontal && next.gestureScrolled) return { state: next, action: { kind: 'none' } };
   next.lockedUntil = now + SWITCH_LOCK_MS;
   next.gestureSwitched = true;
-  return { state: next, action: { kind: 'switch', delta: delta > 0 ? 1 : -1 } };
+  const direction = delta > 0 ? 1 : -1;
+  if (!horizontal && part && part.index + direction >= 0 && part.index + direction < part.count) {
+    return { state: next, action: { kind: 'section', delta: direction } };
+  }
+  return { state: next, action: { kind: 'switch', delta: direction } };
 }
 
 /** Distance alone, or a shorter flick with enough speed, turns a drag into a tab change */

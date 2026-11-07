@@ -638,13 +638,13 @@ body.fullscreen-hidden .island {
 
 /* Chrome arrives a beat after the page content */
 .full > .rail,
-.full > .section-switch {
+.full > .section-row {
   opacity: 0;
   transition: opacity var(--d-instant) var(--ease-exit);
 }
 
 .island[data-state="open"] .full > .rail,
-.island[data-state="open"] .full > .section-switch {
+.island[data-state="open"] .full > .section-row {
   opacity: 1;
   transition: opacity var(--d-base) calc(var(--d-content-in) + 80ms) var(--ease-out);
 }
@@ -652,8 +652,9 @@ body.fullscreen-hidden .island {
 /* ================= Tab Rail ================= */
 
 /*
- * A vertical rail in the left strip the old previous-page arrow used. Four
- * tabs at the top, the settings button at the bottom, 36px hit targets.
+ * Five tabs at the top and the settings gear pinned to the bottom, 32px hit
+ * targets. Seven items fit: the update slot sits right above the gear when it is
+ * filled and takes no room when it is not.
  */
 .rail {
   position: absolute;
@@ -663,8 +664,31 @@ body.fullscreen-hidden .island {
   width: var(--hit-sm);
   display: flex;
   flex-direction: column;
-  justify-content: space-between;
   z-index: 10;
+}
+
+.rail-update {
+  width: var(--hit-sm);
+  height: var(--hit-sm);
+  margin-top: auto;
+}
+
+.rail-update[hidden] {
+  display: none;
+}
+
+.rail-settings {
+  margin-top: auto;
+  color: var(--ink-2);
+}
+
+.rail-update:not([hidden]) + .rail-settings {
+  margin-top: 0;
+}
+
+.rail-settings:hover,
+.rail-settings:focus-visible {
+  color: var(--ink);
 }
 
 .rail-tabs {
@@ -727,24 +751,104 @@ body.fullscreen-hidden .island {
   pointer-events: none;
 }
 
-/* A visible keyboard reachable segmented switch above the content. */
-.section-switch { position: absolute; top: var(--s-4); left: 56px; right: var(--s-6); display: flex; gap: var(--s-1); }
-.section-switch[hidden] { display: none; }
-.section-switch-button { height: var(--hit-sm); padding: 0 var(--s-3); border-radius: var(--r-md); color: var(--ink-2); transition: color var(--d-fast) var(--ease-out), background-color var(--d-fast) var(--ease-out), transform var(--d-instant) var(--ease-out); }
-.section-switch-button.on { color: var(--ink); background: var(--raise); }
-.section-switch-button:hover { color: var(--ink); background: var(--raise-hover); }
-.section-switch-button:active { transform: scale(var(--press)); }
-.has-sections .pages-container { top: 56px; }
+/* ================= A Tab's Parts ================= */
+
+/* The segmented switch on the left, the part's actions on the right */
+.section-row {
+  position: absolute;
+  top: var(--s-4);
+  left: var(--content-left);
+  right: var(--content-right);
+  height: var(--hit-sm);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-2);
+  z-index: 10; /* above the content box, which starts at the same top edge */
+}
+
+.section-row[hidden],
+.section-switch[hidden],
+[data-section-actions][hidden] {
+  display: none;
+}
+
+.section-switch {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
+  border-radius: var(--r-md);
+  background: var(--raise);
+}
+
+.section-switch-button {
+  height: var(--hit-sm);
+  padding: 0 var(--s-3);
+  border-radius: var(--r-md);
+  color: var(--ink-2);
+  font-size: var(--t-sm);
+  font-weight: var(--w-medium);
+  transition:
+    color var(--d-fast) var(--ease-out),
+    background-color var(--d-fast) var(--ease-out),
+    transform var(--d-instant) var(--ease-out);
+}
+
+.section-switch-button:hover {
+  color: var(--ink);
+}
+
+.section-switch-button.on {
+  color: var(--ink);
+  background: var(--raise-active);
+}
+
+.section-switch-button:active {
+  transform: scale(var(--press));
+}
+
+.section-switch-button:focus-visible {
+  outline-offset: -2px;
+}
+
+.section-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--s-1);
+  margin-left: auto;
+}
+
+[data-section-actions] {
+  display: flex;
+  gap: var(--s-1);
+}
+
+.section-actions .icon-btn {
+  width: var(--hit-sm);
+  height: var(--hit-sm);
+}
+
+/* The system status dot lines up with where an icon would sit */
+.section-actions .status-dot {
+  margin-right: 13px;
+}
+
+/* Quiet by design: an ink-2 icon, never a filled tile */
+.section-actions #usageRefresh:hover:not(:disabled) {
+  background: transparent;
+}
+
 /* ================= Tab Panels and Sections ================= */
 
 .pages-container {
   position: absolute;
-  /* The left edge clears the rail; the right edge holds the 24px section marks */
-  inset: var(--s-4) var(--s-6) var(--s-4) 56px;
+  /* The left edge clears the rail */
+  inset: var(--s-4) var(--content-right) var(--s-4) var(--content-left);
   overflow: hidden;
 }
 
-/* Each tab's sections stack vertically and snap one section per view */
+/* A tab's parts stack vertically and snap one per view. The panel owns the room for
+   the row, so an outgoing tab keeps its shape while it fades */
 .tab-panel {
   position: absolute;
   inset: 0;
@@ -754,6 +858,10 @@ body.fullscreen-hidden .island {
   scroll-snap-type: y mandatory;
   scrollbar-width: none;
   touch-action: pan-y;
+}
+
+.tab-panel.has-row {
+  top: var(--section-row);
 }
 
 .tab-panel::-webkit-scrollbar {
@@ -831,16 +939,26 @@ body.fullscreen-hidden .island {
   gap: var(--s-2);
 }
 
+/* Nothing to control: one calm line instead of a dead player */
+.page.media:not(.nothing) .media-empty {
+  display: none;
+}
+
+.page.media.nothing > :not(.media-empty) {
+  display: none !important;
+}
+
 .now {
   display: flex;
   align-items: center;
-  gap: var(--s-3);
+  gap: var(--s-4);
+  min-width: 0;
 }
 
 .art {
-  width: 52px;
-  height: 52px;
-  border-radius: var(--r-md);
+  width: 112px;
+  height: 112px;
+  border-radius: var(--r-lg);
   background-color: var(--raise);
   background-position: center;
   background-size: cover;
@@ -853,14 +971,15 @@ body.fullscreen-hidden .island {
 .meta {
   min-width: 0;
   flex: 1;
-  position: relative;
-  padding-right: calc(var(--i-lg) + var(--s-2));
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-1);
 }
 
 .title {
-  font-size: var(--t-base);
+  font-size: var(--t-lg);
   font-weight: var(--w-strong);
-  line-height: 18px;
+  line-height: var(--s-6);
   color: var(--ink);
   white-space: nowrap;
   overflow: hidden;
@@ -889,10 +1008,20 @@ body.fullscreen-hidden .island {
   }
 }
 
+/* The artist line shares its row with the battery, so the title has a row of its own */
+.meta-sub {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  min-height: var(--s-4);
+}
+
 .artist {
-  font-size: var(--t-sm);
+  flex: 1;
+  min-width: 0;
+  font-size: var(--t-md);
   font-weight: var(--w-medium);
-  line-height: 16px;
+  line-height: var(--s-4);
   color: var(--ink-2);
   white-space: nowrap;
   overflow: hidden;
@@ -969,6 +1098,28 @@ body.fullscreen-hidden .island {
   gap: var(--s-3);
 }
 
+/* Beside lyrics the column is narrow: the artwork shrinks and the text gets the full width */
+.page.media.with-lyrics:not(.no-lyrics) .now {
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--s-3);
+}
+
+.page.media.with-lyrics:not(.no-lyrics) .art {
+  width: 80px;
+  height: 80px;
+  border-radius: var(--r-md);
+}
+
+.page.media.with-lyrics:not(.no-lyrics) .title {
+  font-size: var(--t-base);
+  line-height: 20px;
+}
+
+.page.media.with-lyrics:not(.no-lyrics) .artist {
+  font-size: var(--t-sm);
+}
+
 .page.media.with-lyrics:not(.no-lyrics) .ctl::after {
   display: none;
 }
@@ -1004,6 +1155,21 @@ body.fullscreen-hidden .island {
 .ctl button.big svg {
   width: var(--i-lg);
   height: var(--i-lg);
+}
+
+/* An empty state is one calm line in the middle of the area, nothing else */
+.empty-line {
+  flex: 1;
+  display: grid;
+  place-items: center;
+  margin: 0;
+  color: var(--ink-2);
+  font-size: var(--t-md);
+  text-align: center;
+}
+
+.empty-line[hidden] {
+  display: none;
 }
 
 /* ================= Rings, icon buttons, status dots ================= */
@@ -1164,12 +1330,12 @@ body.fullscreen-hidden .island {
   flex-direction: column;
   align-items: center;
   gap: var(--s-2);
-  width: 88px;
+  width: 96px;
 }
 
 .batt-face {
-  width: 72px;
-  height: 72px;
+  width: 96px;
+  height: 96px;
 }
 
 .batt-center {
@@ -1177,7 +1343,7 @@ body.fullscreen-hidden .island {
 }
 
 .batt-pct {
-  font-size: var(--t-base);
+  font-size: var(--t-lg);
   font-weight: var(--w-medium);
   font-variant-numeric: tabular-nums;
   line-height: 1;
@@ -1550,15 +1716,8 @@ body.fullscreen-hidden .island {
   animation-play-state: paused !important;
 }
 
-.rail-settings { color: var(--ink-2); }
-.rail-settings:hover, .rail-settings:focus-visible { color: var(--ink); }
-.rail-settings svg.ico { width: var(--i-lg); height: var(--i-lg); }
-.usage-actions { position: absolute; top: 0; right: 0; display: flex; align-items: center; gap: var(--s-2); z-index: 1; }
-.page.usage { padding-top: var(--hit); }
 .open-announcement { position: absolute; top: var(--s-1); left: var(--s-12); right: var(--s-12); pointer-events: none; color: var(--ink-2); background: var(--surface); font-size: var(--t-xs); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .open-announcement:empty { display: none; }
 
 body:not(:has(#isl[data-state="open"])) .open-announcement { display: none; }
 
-.u-list.with-toolbar:not(.dense) .u-face { width: calc(var(--hit) + var(--s-5)); height: calc(var(--hit) + var(--s-5)); flex-basis: calc(var(--hit) + var(--s-5)); }
-.u-list.with-toolbar:not(.dense) .u-ring-outer { width: 100%; height: 100%; }

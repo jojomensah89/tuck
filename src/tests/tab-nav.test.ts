@@ -81,12 +81,18 @@ describe('scroll edges', () => {
   });
 });
 
-describe('section marks', () => {
-  test('every section has a name of its own for its mark', () => {
+describe('segmented switch', () => {
+  test('every section has a name of its own on the switch', () => {
     const sections = TABS.flatMap(tab => [...tab.sections]);
-    const labels = sections.map(sectionLabel);
-    expect(sectionLabel('usage')).toBe('AI usage');
-    expect(new Set(labels).size).toBe(sections.length);
+    expect(new Set(sections.map(sectionLabel)).size).toBe(sections.length);
+  });
+  test('tabs with two parts use the decided names, in order', () => {
+    const parts = (id: string) => TABS.find(tab => tab.id === id)!.sections.map(sectionLabel);
+    expect(parts('today')).toEqual(['Clock', 'Timer']);
+    expect(parts('tools')).toEqual(['Files', 'Clipboard']);
+    expect(parts('usage')).toEqual(['AI', 'System']);
+    expect(parts('media')).toHaveLength(1);
+    expect(parts('dictation')).toHaveLength(1);
   });
 });
 
@@ -126,6 +132,24 @@ describe('wheel', () => {
   test('horizontal wheel switches even when content could scroll vertically', () => {
     expect(step(INITIAL_WHEEL_STATE, 10, 1000, [top], -80).action).toEqual({ kind: 'switch', delta: -1 });
   });
+  test('the wheel moves between parts before it leaves the tab', () => {
+    const at = (index: number, deltaY: number) => wheelStep(INITIAL_WHEEL_STATE, { deltaX: 0, deltaY, now: 1000, chain: [], part: { index, count: 2 } });
+    expect(at(0, 100).action).toEqual({ kind: 'section', delta: 1 });
+    expect(at(1, 100).action).toEqual({ kind: 'switch', delta: 1 });
+    expect(at(1, -100).action).toEqual({ kind: 'section', delta: -1 });
+    expect(at(0, -100).action).toEqual({ kind: 'switch', delta: -1 });
+  });
+  test('a list with room scrolls before the parts move, and one gesture moves one part', () => {
+    const part = { index: 0, count: 2 };
+    expect(wheelStep(INITIAL_WHEEL_STATE, { deltaX: 0, deltaY: 100, now: 1000, chain: [top], part }).action).toEqual({ kind: 'scroll' });
+    const moved = wheelStep(INITIAL_WHEEL_STATE, { deltaX: 0, deltaY: 100, now: 1000, chain: [bottom], part });
+    expect(moved.action.kind).toBe('section');
+    expect(wheelStep(moved.state, { deltaX: 0, deltaY: 100, now: 1016, chain: [], part: { index: 1, count: 2 } }).action).toEqual({ kind: 'block' });
+  });
+  test('horizontal wheel and a tab with one part skip straight to tabs', () => {
+    expect(wheelStep(INITIAL_WHEEL_STATE, { deltaX: 100, deltaY: 0, now: 1000, chain: [], part: { index: 0, count: 2 } }).action).toEqual({ kind: 'switch', delta: 1 });
+    expect(wheelStep(INITIAL_WHEEL_STATE, { deltaX: 0, deltaY: 100, now: 1000, chain: [], part: { index: 0, count: 1 } }).action).toEqual({ kind: 'switch', delta: 1 });
+  });
   test('zero deltas do nothing', () => {
     expect(step(INITIAL_WHEEL_STATE, 0, 1000, []).action).toEqual({ kind: 'none' });
   });
@@ -150,6 +174,8 @@ describe('remembered tab', () => {
     expect(normalizePreferences({ lastTab: 'usage' }).lastTab).toBe('usage');
     expect(normalizePreferences({ lastTab: 'settings' }).lastTab).toBe('media');
     expect(normalizePreferences({}).lastTab).toBe('media');
+    // Every tab an older version could have saved
+    for (const old of ['media', 'today', 'tools', 'usage'] as const) expect(normalizePreferences({ lastTab: old }).lastTab).toBe(old);
   });
 });
 

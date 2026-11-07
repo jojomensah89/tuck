@@ -110,12 +110,12 @@ export async function fetchUsageNow(): Promise<Meter[]> {
   return [];
 }
 
-export async function openSettingsCmd(): Promise<void> {
+export async function openSettingsCmd(view?: 'tools'): Promise<void> {
   if (isTauri()) {
-    await invokeCommand('open_settings_cmd');
+    await invokeCommand('open_settings_cmd', view ? { view } : undefined);
   } else {
     // In browser demo, open settings.html in a new tab/window
-    window.open('settings.html', '_blank', 'width=460,height=700');
+    window.open(view ? `settings.html#${view}` : 'settings.html', '_blank', 'width=460,height=700');
   }
 }
 

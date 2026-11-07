@@ -59,7 +59,10 @@ fn test_clamp_hit_size() {
     assert_eq!(clamp_hit_size(0, 0), (10, 10));
     assert_eq!(clamp_hit_size(212, 32), (212, 32));
     assert_eq!(clamp_hit_size(440, 180), (440, 180));
-    assert_eq!(clamp_hit_size(1000, 500), (520, 230));
+    assert_eq!(clamp_hit_size(500, 264), (500, 264));
+    // The floating shape adds its 10px gap above the open island
+    assert_eq!(clamp_hit_size(500, 274), (500, 274));
+    assert_eq!(clamp_hit_size(1000, 500), (520, 288));
 }
 
 #[test]

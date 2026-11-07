@@ -1,11 +1,11 @@
 //! Opt-in Windows v1 services. All external I/O happens outside the snapshot mutex.
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashSet,
     io::Read,
     path::{Path, PathBuf},
     sync::{Mutex, OnceLock},
-    time::{Duration, Instant},
+    time::Duration,
 };
 use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
 use tauri_plugin_dialog::DialogExt;
@@ -14,17 +14,7 @@ use tauri_plugin_opener::OpenerExt;
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Settings {
-    pub downloads: bool,
     pub notifications: bool,
-}
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Download {
-    pub id: String,
-    pub name: String,
-    pub bytes: u64,
-    pub bytes_per_second: u64,
-    pub total_bytes: Option<u64>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -38,7 +28,6 @@ pub struct ShelfItem {
 #[serde(rename_all = "camelCase")]
 pub struct Snapshot {
     pub settings: Settings,
-    pub downloads: Vec<Download>,
     pub shelf: Vec<ShelfItem>,
     pub notification_status: String,
     pub errors: Vec<String>,
@@ -106,9 +95,6 @@ pub async fn extension_settings(
         )?;
         let mut state = state().lock().unwrap_or_else(|p| p.into_inner());
         state.settings = settings.clone();
-        if !settings.downloads {
-            state.downloads.clear();
-        }
         if !settings.notifications {
             state.notification_status = "Disabled".into();
         }
@@ -337,67 +323,6 @@ fn notifications() -> Result<(String, Vec<Preview>), String> {
     }
     Ok(("Allowed".into(), previews))
 }
-fn downloads_dir() -> Option<PathBuf> {
-    #[cfg(windows)]
-    {
-        use windows::Win32::{
-            System::Com::CoTaskMemFree,
-            UI::Shell::{FOLDERID_Downloads, SHGetKnownFolderPath, KF_FLAG_DEFAULT},
-        };
-        unsafe {
-            let path = SHGetKnownFolderPath(&FOLDERID_Downloads, KF_FLAG_DEFAULT, None).ok()?;
-            let owned = path.to_string().ok().map(PathBuf::from);
-            CoTaskMemFree(Some(path.0 as _));
-            owned
-        }
-    }
-    #[cfg(not(windows))]
-    {
-        None
-    }
-}
-fn scan_downloads(
-    dir: &Path,
-    history: &mut HashMap<PathBuf, (u64, Instant)>,
-) -> Result<Vec<Download>, String> {
-    let mut current = HashSet::new();
-    let mut downloads = Vec::new();
-    let now = Instant::now();
-    for entry in std::fs::read_dir(dir)
-        .map_err(|_| "Downloads directory unavailable")?
-        .take(5000)
-        .flatten()
-    {
-        let path = entry.path();
-        let extension = path.extension().and_then(|s| s.to_str()).unwrap_or("");
-        if !["crdownload", "part", "download"].contains(&extension) {
-            continue;
-        }
-        let meta = match entry.metadata() {
-            Ok(meta) if meta.is_file() => meta,
-            _ => continue,
-        };
-        let bytes = meta.len();
-        let rate = history
-            .get(&path)
-            .map(|(old, then)| {
-                ((bytes.saturating_sub(*old)) as f64
-                    / now.duration_since(*then).as_secs_f64().max(0.001)) as u64
-            })
-            .unwrap_or(0);
-        history.insert(path.clone(), (bytes, now));
-        current.insert(path.clone());
-        downloads.push(Download {
-            id: path.to_string_lossy().into(),
-            name: entry.file_name().to_string_lossy().into(),
-            bytes,
-            bytes_per_second: rate,
-            total_bytes: None,
-        });
-    }
-    history.retain(|path, _| current.contains(path));
-    Ok(downloads)
-}
 pub fn start(app: AppHandle) {
     if let Ok(dir) = app.path().app_data_dir() {
         let _ = STORAGE.set(dir.clone());
@@ -411,24 +336,11 @@ pub fn start(app: AppHandle) {
         let mut emitted = None;
         #[cfg(windows)]
         let _apartment = Apartment::enter();
-        let mut history = HashMap::new();
         let mut seen_notifications: Option<HashSet<u32>> = None;
         loop {
             let current = snapshot();
             let settings = current.settings.clone();
             let mut errors = Vec::new();
-            let downloads = if settings.downloads {
-                downloads_dir()
-                    .ok_or("Downloads directory unavailable".to_string())
-                    .and_then(|dir| scan_downloads(&dir, &mut history))
-                    .unwrap_or_else(|error| {
-                        errors.push(error);
-                        Vec::new()
-                    })
-            } else {
-                history.clear();
-                Vec::new()
-            };
             let mut notification_status = if settings.notifications {
                 current.notification_status.clone()
             } else {
@@ -464,7 +376,6 @@ pub fn start(app: AppHandle) {
             {
                 let mut state = state().lock().unwrap_or_else(|p| p.into_inner());
                 if state.settings == settings {
-                    state.downloads = downloads;
                     state.notification_status = notification_status;
                     state.errors = errors;
                 }
@@ -488,13 +399,17 @@ mod tests {
             Settings::default(),
             serde_json::from_str::<Settings>("{}").unwrap()
         );
-        assert!(!Settings::default().downloads);
+        assert!(!Settings::default().notifications);
+        assert_eq!(
+            serde_json::from_str::<Settings>(r#"{"downloads":true}"#).unwrap(),
+            Settings::default()
+        );
     }
     #[test]
     fn snapshot_contains_only_remaining_extension_services() {
         let json = serde_json::to_value(Snapshot::default()).unwrap();
         let settings = json.get("settings").unwrap();
-        assert!(settings.get("downloads").is_some());
+        assert!(settings.get("downloads").is_none());
         assert!(settings.get("notifications").is_some());
         assert!(settings.get("calendar").is_none());
         assert!(settings.get("radios").is_none());
@@ -503,20 +418,6 @@ mod tests {
         assert!(json.get("radios").is_none());
     }
 
-    #[test]
-    fn downloads_never_invent_total() {
-        let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
-        std::fs::create_dir(&dir).unwrap();
-        let path = dir.join("x.part");
-        std::fs::write(&path, b"1234").unwrap();
-        let mut history = HashMap::new();
-        let first = scan_downloads(&dir, &mut history).unwrap();
-        assert_eq!(first[0].total_bytes, None);
-        assert_eq!(first[0].bytes, 4);
-        std::fs::remove_file(&path).unwrap();
-        assert!(scan_downloads(&dir, &mut history).unwrap().is_empty());
-        std::fs::remove_dir(dir).unwrap();
-    }
     #[test]
     fn removing_shelf_reference_does_not_delete_file() {
         let path = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());

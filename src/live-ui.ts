@@ -1,4 +1,4 @@
-import { listenToEvent, mediaSeek, isTauri } from './ipc.js';
+import { listenToEvent, mediaSeek, isTauri, triggerQuickAction } from './ipc.js';
 import { SVG_ICONS } from './icons.js';
 import { islandModelLine } from './dictation-models.js';
 import { DictationUpdates, nativeAction, nativeService, normalizeClipboard, normalizeDictation, normalizeTelemetry, type ClipboardSnapshot, type DictationSnapshot, type LyricsSnapshot, type MediaSession, type TelemetrySnapshot } from './live-services.js';
@@ -316,7 +316,10 @@ export function mountLivePages(onLayout: () => void): {
   const clipboard = makePage('clipboard', 'Clipboard history');
   const clipboardHead = node('div', 'live-heading'); const clipboardStatus = node('p', 'live-note', 'Enable clipboard history in Settings');
   const clearClipboard = iconButton('Clear unpinned history', SVG_ICONS.trash, () => { void act(nativeAction('clipboard_clear').then(refreshClipboard), clipboardStatus); });
-  clipboardHead.append(node('h2', '', 'Clipboard'), clearClipboard);
+  const snip = iconButton('Screen snip', SVG_ICONS.capture, () => { void act(triggerQuickAction('capture'), clipboardStatus); });
+  const clipboardActions = node('div', 'live-title');
+  clipboardActions.append(clearClipboard, snip);
+  clipboardHead.append(node('h2', '', 'Clipboard'), clipboardActions);
   const clipList = node('div', 'clipboard-list'); clipboard.append(clipboardHead, clipboardStatus, clipList);
   let clipboardSignature = '';
   function renderClipboard(data: ClipboardSnapshot): void {

@@ -120,10 +120,10 @@ export async function openSettingsCmd(): Promise<void> {
 }
 
 /**
- * Native quick action to open corresponding Windows settings page or tool.
+ * Native screen snip action; never navigates the webview.
  */
 export async function triggerQuickAction(actionName: string): Promise<void> {
-  if (!['focus', 'capture'].includes(actionName)) throw new Error('Unknown action');
+  if (!['capture'].includes(actionName)) throw new Error('Unknown action');
   if (!isTauri()) throw new Error('Windows actions are available in the desktop app');
   await invokeCommand('quick_action', { name: actionName });
 }

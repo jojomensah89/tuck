@@ -141,7 +141,7 @@ try {
   const nativeBridge = () => {
     window.isTauri=true;
     let serial=0;const callbacks=new Map();const listeners=new Map();
-    const state={settings:{downloads:false,notifications:false},downloads:[],shelf:[],notificationStatus:'Disabled',errors:[]};
+    const state={settings:{notifications:false},shelf:[],notificationStatus:'Disabled',errors:[]};
     window.__nativeState=state;window.__calls=[];
     window.__emitNative=(event,payload)=>{for(const id of listeners.get(event)||[])callbacks.get(id)?.({event,id,payload});};
     window.__TAURI_INTERNALS__={metadata:{currentWindow:{label:'main'},currentWebview:{label:'main'}},transformCallback(callback){const id=++serial;callbacks.set(id,callback);return id;},async invoke(command,args={}){
@@ -372,8 +372,7 @@ try {
   await native.mouse.move(stripX, stripY);
   await native.mouse.wheel(0,-100);
   await native.locator('#levelStrip[data-on]').waitFor({timeout:2000});
-  await native.getByRole('button',{name:'Downloads',exact:true}).click();
-  assert.match(await native.locator('#extensionsPage .ext-body').textContent(),/download/i);
+  assert.equal(await native.getByRole('button',{name:'Downloads',exact:true}).count(),0);
   await native.getByRole('tab',{name:'Media',exact:true}).click();
   await native.locator('#levelStrip:not([data-on])').waitFor({state:'attached',timeout:3000});
   // Scrolling anywhere else switches tabs and leaves the volume alone
@@ -404,7 +403,15 @@ try {
   await native.getByRole('button',{name:'Files',exact:true}).click();
   await native.getByRole('button',{name:'Add files',exact:true}).click();
   assert.match(await native.locator('#extensionsPage .ext-body').textContent(),/sample.txt/);
-  await native.screenshot({path:path.join(root,'artifacts','removed-features-tools.png')});
+  await native.screenshot({path:path.join(root,'docs/screens/tools-files.png')});
+  await native.locator('.page.clipboard').evaluate(el=>{el.closest('.tab-panel').scrollTop=el.offsetTop;});
+  const snipBox = await native.getByRole('button',{name:'Screen snip',exact:true}).boundingBox();
+  assert.equal(snipBox.width,36);
+  assert.equal(snipBox.height,36);
+  await native.getByRole('button',{name:'Screen snip',exact:true}).click();
+  assert.equal(await native.evaluate(()=>window.__calls.some(c=>c.command==='quick_action'&&c.args.name==='capture')),true);
+  assert.equal(await native.locator('.page.quick').count(),0);
+  await native.screenshot({path:path.join(root,'docs/screens/tools-clipboard.png')});
   assert.equal(await native.getByRole('button',{name:'Calls',exact:true}).count(),0);
   assert.equal(await native.getByRole('button',{name:'Radios',exact:true}).count(),0);
   await native.evaluate(()=>window.dispatchEvent(new CustomEvent('tuck-drop-active',{detail:true})));
@@ -437,7 +444,6 @@ try {
 
   // Closed media content stays present while playing and uses one stable width per track.
   await native.evaluate(()=>document.getElementById('actReset').click());
-  await native.evaluate(()=>window.dispatchEvent(new CustomEvent('tuck-activity',{detail:{id:'native-call',type:'call',title:'Manual call timer',text:'',priority:95,active:false}})));
   await native.evaluate(()=>window.__emitNative('media',{active:true,trackId:'fixture-track',title:'Artwork color fixture',artist:'Synthetic test data',playing:true,positionMs:3000,durationMs:120000,artwork:null}));
   await setLive({compactContent:'lyrics'});
   await native.keyboard.press('Escape');
@@ -896,10 +902,10 @@ try {
   await native.setViewportSize({width:1000,height:850});
   await native.screenshot({path:path.join(root,'artifacts','settings-activities.png')});
   await native.setViewportSize({width:520,height:230});
-  await native.locator('#ext-downloads').click();
+  await native.locator('#ext-notifications').click();
   await native.getByText('Activity settings could not be saved',{exact:true}).waitFor();
-  assert.equal(await native.locator('#ext-downloads').isChecked(),false);
-  assert.equal(await native.evaluate(()=>window.__calls.findLast(call=>call.command==='extension_settings').args.settings.downloads),true);
+  assert.equal(await native.locator('#ext-notifications').isChecked(),false);
+  assert.equal(await native.evaluate(()=>window.__calls.findLast(call=>call.command==='extension_settings').args.settings.notifications),true);
   // Hiding the Windows flyout defaults on and reports when it turned itself off
   await native.locator('#nav a[data-view="island"]').click();
   await native.locator('#row-hideSystemFlyout').waitFor({state:'visible'});

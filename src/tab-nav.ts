@@ -18,7 +18,7 @@ export interface TabDef {
 export const TABS: readonly TabDef[] = [
   { id: 'media', label: 'Media', icon: 'note', sections: ['media'] },
   { id: 'today', label: 'Today', icon: 'calendar', sections: ['today', 'activities'] },
-  { id: 'tools', label: 'Tools', icon: 'grid', sections: ['quick', 'clipboard', 'extensions', 'dictation'] },
+  { id: 'tools', label: 'Tools', icon: 'grid', sections: ['clipboard', 'extensions', 'dictation'] },
   { id: 'usage', label: 'Usage', icon: 'gauge', sections: ['usage', 'stats'] },
 ];
 
@@ -29,9 +29,8 @@ const SECTION_LABELS: Readonly<Record<string, string>> = {
   media: 'now playing',
   today: 'clock and battery',
   activities: 'timer',
-  quick: 'quick actions',
   clipboard: 'clipboard',
-  extensions: 'files and devices',
+  extensions: 'files',
   dictation: 'dictation',
   usage: 'AI usage',
   stats: 'system',

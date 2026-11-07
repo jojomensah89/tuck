@@ -25,7 +25,7 @@ const flat: ScrollMetrics = { scrollTop: 0, scrollHeight: 178, clientHeight: 178
 
 describe('tab and section mapping', () => {
   test('every section that existed as a page has exactly one tab', () => {
-    const pages = ['media', 'today', 'activities', 'usage', 'quick', 'extensions', 'stats', 'dictation', 'clipboard'];
+    const pages = ['media', 'today', 'activities', 'usage', 'extensions', 'stats', 'dictation', 'clipboard'];
     for (const page of pages) expect(tabForSection(page)).not.toBeNull();
     const all = TABS.flatMap(tab => tab.sections);
     expect(new Set(all).size).toBe(all.length);

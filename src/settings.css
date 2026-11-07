@@ -17,8 +17,8 @@
   --switch-off: #3a3a3c;
   --rule: rgba(255, 255, 255, 0.08);
   --ink: #ffffff;
-  --ink-2: #a1a1a6;
-  --ink-3: #8e8e93;
+  --ink-2: #a5a5aa;
+  --ink-3: #ababaf;
   --nav-ink: #a1a1a6;
   --nav-active: #1c1c1e;
   --on: #30d158;
@@ -46,10 +46,10 @@
     --rule: rgba(0, 0, 0, 0.08);
     --ink: #111111;
     --ink-2: #5c5c61;
-    --ink-3: #6b6b70;
+    --ink-3: #606066;
     --nav-ink: #4f4f54;
     --nav-active: #e2e2e6;
-    --on: #248a3d;
+    --on: #207a35;
     --warn-ink: #c4242a;
     --primary: #1d1d1f;
     --primary-ink: #ffffff;
@@ -189,7 +189,7 @@ body {
   outline: none;
 }
 
-.view, .search-summary, .empty { max-width: 640px; margin-inline: auto; }
+.view, .search-summary, .empty { max-width: 1120px; margin-inline: 0; }
 
 .view + .view { margin-top: 0; }
 .searching .view { margin-bottom: var(--s-8); }
@@ -214,7 +214,7 @@ h1 {
 .group { margin-top: var(--s-5); }
 
 h2 {
-  margin: 0 0 var(--s-2) var(--s-1);
+  margin: 0 0 var(--s-2);
   font-size: var(--t-md);
   font-weight: var(--w-medium);
   color: var(--ink-2);
@@ -240,8 +240,8 @@ h2 {
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: var(--s-2) var(--s-6);
-  min-height: 56px;
-  padding: var(--s-3) var(--row-pad-x);
+  min-height: 44px;
+  padding: var(--s-1) var(--row-pad-x);
 }
 
 .set-row + .set-row,
@@ -284,8 +284,8 @@ h2 {
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: var(--s-2) var(--s-6);
-  min-height: 56px;
-  padding: var(--s-3) var(--row-pad-x);
+  min-height: 44px;
+  padding: var(--s-1) var(--row-pad-x);
   box-shadow: inset 0 1px 0 var(--rule);
 }
 .model-name { display: inline-flex; align-items: center; gap: var(--s-2); font-weight: var(--w-medium); }
@@ -342,7 +342,7 @@ h2 {
   width: 34px;
   height: 20px;
   margin: 0;
-  border-radius: 999px;
+  border-radius: var(--r-md);
   background: var(--switch-off);
   cursor: pointer;
   transition: background var(--d-fast) var(--ease-out);
@@ -372,7 +372,7 @@ h2 {
   height: var(--ctl-h);
   padding: 0 14px;
   border: 0;
-  border-radius: 999px;
+  border-radius: var(--r-md);
   background: var(--control);
   color: var(--ink);
   font: inherit;
@@ -389,7 +389,8 @@ h2 {
 .button:disabled:hover { background: var(--control); }
 .button.primary { background: var(--primary); color: var(--primary-ink); }
 .button.primary:hover { opacity: 0.88; }
-.button.danger { color: var(--warn-ink); }
+.button.danger { color: var(--ink-2); }
+.button.danger:hover { color: var(--warn-ink); }
 
 .file-button { position: relative; overflow: hidden; }
 .file-button input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
@@ -470,7 +471,7 @@ h2 {
 .segmented {
   display: inline-flex;
   padding: 2px;
-  border-radius: 999px;
+  border-radius: var(--r-md);
   background: var(--well);
 }
 
@@ -482,7 +483,7 @@ h2 {
   min-width: 64px;
   padding: 0 var(--s-3);
   line-height: 28px;
-  border-radius: 999px;
+  border-radius: var(--r-md);
   text-align: center;
   color: var(--ink-2);
   font-size: var(--t-md);
@@ -535,7 +536,7 @@ h2 {
 
 .pv { display: block; width: 72px; background: var(--preview-shape); }
 .pv.notch { height: 18px; border-radius: 0 0 9px 9px; }
-.pv.float { height: 16px; margin-top: 6px; border-radius: 999px; }
+.pv.float { height: 16px; margin-top: 6px; border-radius: var(--r-md); }
 
 .shape-name { padding: 0 var(--s-1); font-weight: var(--w-medium); }
 .shape-desc { padding: 0 var(--s-1); color: var(--ink-2); font-size: var(--t-md); line-height: 18px; }
@@ -547,7 +548,7 @@ h2 {
   gap: var(--s-1);
   min-height: var(--ctl-h);
   padding: 0 var(--s-2) 0 var(--s-3);
-  border-radius: 999px;
+  border-radius: var(--r-md);
   color: var(--ink-2);
   text-decoration: none;
   font-size: var(--t-md);
@@ -598,7 +599,7 @@ mark { background: none; color: inherit; text-decoration: underline; text-decora
   display: inline-flex;
   align-items: center;
   padding: 1px 7px;
-  border-radius: 999px;
+  border-radius: var(--r-md);
   background: var(--control);
   color: var(--on);
   font-size: var(--t-xs);
@@ -673,7 +674,7 @@ mark { background: none; color: inherit; text-decoration: underline; text-decora
   width: 100%;
   height: 6px;
   background: var(--control);
-  border-radius: 999px;
+  border-radius: var(--r-md);
   overflow: hidden;
 }
 
@@ -681,7 +682,7 @@ mark { background: none; color: inherit; text-decoration: underline; text-decora
   height: 100%;
   width: 0%;
   background: var(--on);
-  border-radius: 999px;
+  border-radius: var(--r-md);
   transition: width var(--d-fast) var(--ease-out);
 }
 
@@ -743,3 +744,22 @@ dialog[aria-label="Turn on Antigravity usage"] {
 }
 dialog[aria-label="Turn on Antigravity usage"] p { margin: 0 0 var(--s-4); line-height: 1.5; }
 dialog[aria-label="Turn on Antigravity usage"] button { min-height: 36px; margin-right: var(--s-2); }
+
+.set-row:has(.row-desc:not([hidden])) { min-height: 56px; }
+body { font-variant-numeric: tabular-nums; }
+.group-status:empty { display: none; }
+dialog button { border: 0; border-radius: var(--r-md); background: var(--control); color: var(--ink); padding: 0 var(--s-3); font: inherit; }
+dialog button:hover { background: var(--control-hover); }
+dialog button:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+dialog::backdrop { background: #0008; }
+.welcome { max-width: 1120px; }
+.welcome .about-mark { display: inline-block; }
+.welcome h1 { margin-top: var(--s-3); }
+.welcome-actions { display: flex; gap: var(--s-2); margin-top: var(--s-5); }
+body.welcoming .view, body.welcoming .search-summary { display: none; }
+body.welcoming .sidebar { visibility: hidden; }
+
+.view > h1, .view > .lead, .group > h2 { padding-inline: var(--row-pad-x); }
+
+.welcome .model-rows { max-height: 160px; overflow-y: auto; }
+.welcome h1:focus { outline: none; }

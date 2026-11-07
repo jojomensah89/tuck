@@ -17,6 +17,7 @@ pub mod system;
 pub mod telemetry;
 mod update;
 pub mod usage;
+mod welcome;
 
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -72,6 +73,8 @@ pub fn run() {
         .manage(system::PendingUpdateState::default())
         .manage(update::UpdateService::default())
         .invoke_handler(tauri::generate_handler![
+            welcome::maybe_show_welcome,
+            welcome::open_about_link,
             set_hit,
             update::update_check,
             update::update_snapshot,
@@ -147,6 +150,7 @@ pub fn run() {
             media::media_seek,
         ])
         .setup(move |app| {
+            app.manage(welcome::capture(app.handle()));
             let handle = app.handle().clone();
             legacy_credentials::run(&handle);
             // Missing shortcut availability must not prevent the island from launching.

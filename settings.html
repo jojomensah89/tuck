@@ -57,8 +57,8 @@
             <div class="panel">
               <div class="set-row" id="row-autostart">
                 <div class="row-text">
-                  <label class="row-title" for="autostart">Launch at sign-in</label>
-                  <p class="row-desc">Start Tuck when you sign in to Windows.</p>
+                  <label class="row-title" for="autostart">Start with Windows</label>
+
                 </div>
                 <input id="autostart" class="switch" type="checkbox" role="switch" />
               </div>
@@ -71,7 +71,7 @@
               <div class="set-row stack" id="row-shape" data-keywords="style geometry notch pill float shape">
                 <div class="row-text">
                   <span class="row-title" id="shapeLabel">Island shape</span>
-                  <p class="row-desc">How the island meets the top edge of your screen.</p>
+
                 </div>
                 <div class="shape-picks" role="group" aria-labelledby="shapeLabel">
                   <button class="shape-pick" id="pickNotch" aria-pressed="true" type="button">
@@ -89,7 +89,7 @@
               <div class="set-row" id="row-openWidth" data-keywords="size wide">
                 <div class="row-text">
                   <label class="row-title" for="openWidth">Expanded width</label>
-                  <p class="row-desc">Width of the open island, from 440 to 500.</p>
+
                 </div>
                 <span class="num-field"><input id="openWidth" type="number" min="440" max="500" step="10" inputmode="numeric" /><span class="unit">px</span></span>
               </div>
@@ -108,28 +108,28 @@
               <div class="set-row" id="row-openDelay" data-keywords="hover wait open timing">
                 <div class="row-text">
                   <label class="row-title" for="openDelay">Expand delay</label>
-                  <p class="row-desc">Wait before opening, from 0 to 2000.</p>
+                  <p class="row-desc">Wait before opening, from 0 to 2000</p>
                 </div>
                 <span class="num-field"><input id="openDelay" type="number" min="0" max="2000" step="10" inputmode="numeric" /><span class="unit">ms</span></span>
               </div>
               <div class="set-row" id="row-closeDelay" data-keywords="leave wait close timing instant">
                 <div class="row-text">
                   <label class="row-title" for="closeDelay">Collapse delay</label>
-                  <p class="row-desc">Wait after the pointer leaves. 0 collapses instantly.</p>
+                  <p class="row-desc">Wait after the pointer leaves. 0 collapses instantly</p>
                 </div>
                 <span class="num-field"><input id="closeDelay" type="number" min="0" max="10000" step="10" inputmode="numeric" /><span class="unit">ms</span></span>
               </div>
               <div class="set-row" id="row-pinOpen" data-keywords="pin sticky stay">
                 <div class="row-text">
                   <label class="row-title" for="pinOpen">Keep open until dismissed</label>
-                  <p class="row-desc">Stay open after the pointer leaves, until you close it.</p>
+
                 </div>
                 <input id="pinOpen" class="switch" type="checkbox" role="switch" />
               </div>
               <div class="set-row" id="row-fullscreenAutoHide" data-keywords="fullscreen game presentation hide topmost">
                 <div class="row-text">
                   <label class="row-title" for="fullscreenAutoHide">Hide in fullscreen</label>
-                  <p class="row-desc">Hide the island over fullscreen apps, games and presentations.</p>
+
                 </div>
                 <input id="fullscreenAutoHide" class="switch" type="checkbox" role="switch" />
               </div>
@@ -141,14 +141,14 @@
               <div class="set-row" id="row-desktopPeeks" data-keywords="wifi bluetooth caps lock charger audio output keyboard language">
                 <div class="row-text">
                   <label class="row-title" for="desktopPeeks">System peeks</label>
-                  <p class="row-desc">Show connection, charger and key changes in the island.</p>
+                  <p class="row-desc">Show connection, charger and key changes in the island</p>
                 </div>
                 <input id="desktopPeeks" class="switch" type="checkbox" role="switch" />
               </div>
               <div class="set-row" id="row-levelHud" data-keywords="volume brightness hud level peek sound">
                 <div class="row-text">
                   <label class="row-title" for="levelHud">Volume and brightness HUD</label>
-                  <p class="row-desc">Show level changes in the island. Brightness only shows right after input, and gradual automatic changes stay quiet. Scrolling over the top centre of the island always shows the volume.</p>
+                  <p class="row-desc">Show volume and brightness changes</p>
                 </div>
                 <input id="levelHud" class="switch" type="checkbox" role="switch" />
               </div>
@@ -156,7 +156,7 @@
               <div class="set-row" id="row-hideSystemFlyout" data-keywords="volume brightness flyout osd hud overlay windows popup hide">
                 <div class="row-text">
                   <label class="row-title" for="hideSystemFlyout">Hide the Windows volume flyout</label>
-                  <p class="row-desc">The island shows volume and brightness instead. The Windows flyout comes back while the HUD above is off, the island is pinned open, or a fullscreen app hides the island. Uses an undocumented method and turns itself off if it stops working.</p>
+                  <p class="row-desc">Restores Windows feedback when the island is hidden or pinned open</p>
                 </div>
                 <input id="hideSystemFlyout" class="switch" type="checkbox" role="switch" />
               </div>
@@ -174,14 +174,14 @@
               <div class="set-row" id="row-lyricsOpen" data-keywords="music player side pane">
                 <div class="row-text">
                   <label class="row-title" for="lyricsOpen">Lyrics beside the player</label>
-                  <p class="row-desc">Show synced lyrics next to the track when the island is open.</p>
+
                 </div>
                 <input id="lyricsOpen" class="switch" type="checkbox" role="switch" />
               </div>
               <div class="set-row" id="row-compactContent" data-keywords="idle peek collapsed artwork title lyric">
                 <div class="row-text">
                   <span class="row-title" id="compactLabel">Collapsed content</span>
-                  <p class="row-desc">Choose artwork only, the track title, or the current lyric. Lyric falls back to the title.</p>
+                  <p class="row-desc">Lyric falls back to the track title</p>
                 </div>
                 <div class="segmented" role="radiogroup" aria-labelledby="compactLabel">
                   <label><input type="radio" name="compactContent" value="artwork" /><span>Artwork</span></label>
@@ -196,8 +196,8 @@
             <div class="panel">
               <div class="set-row" id="row-onlineLyrics" data-keywords="lrclib internet network privacy lookup">
                 <div class="row-text">
-                  <label class="row-title" for="onlineLyrics">Look up lyrics with LRCLIB</label>
-                  <p class="row-desc">Sends the song title, artist and duration to LRCLIB. Some tracks have no lyrics.</p>
+                  <label class="row-title" for="onlineLyrics">Online lyrics</label>
+                  <p class="row-desc">Sends the song title, artist and duration to LRCLIB. Some tracks have no lyrics</p>
                 </div>
                 <input id="onlineLyrics" class="switch" type="checkbox" role="switch" disabled />
               </div>
@@ -217,7 +217,7 @@
               <div class="set-row" id="row-ext-notifications" data-keywords="notification toast preview permission">
                 <div class="row-text">
                   <label class="row-title" for="ext-notifications">Notification previews</label>
-                  <p class="row-desc">Mirror Windows notifications in the island. Needs Windows permission.</p>
+                  <p class="row-desc">Mirror Windows notifications in the island. Needs Windows permission</p>
                 </div>
                 <input id="ext-notifications" class="switch" type="checkbox" role="switch" />
               </div>
@@ -225,14 +225,13 @@
               <p class="group-status" id="extStatus" role="status"></p>
             </div>
           </div>
-          <div class="group">
-            <h2>Notification access</h2>
+          <div class="group notification-access">
             <div class="panel">
 
               <div class="set-row" id="row-notificationAccess" data-keywords="notification permission listener access">
                 <div class="row-text">
                   <span class="row-title">Notification access</span>
-                  <p class="row-desc">Windows asks only when you press the button.</p>
+
                 </div>
                 <button class="button" id="requestNotificationAccess" type="button">Request access</button>
               </div>
@@ -246,11 +245,11 @@
           <div class="group">
             <h2>Offline dictation</h2>
             <div class="panel">
-              <p class="panel-note">Click a text field, then use a shortcut. Tuck types the finished text without sending it. Audio stays on this computer. To change a shortcut, click it and press the new keys.</p>
+              <p class="panel-note">Audio stays on this computer</p>
               <div class="set-row" id="row-dictationShortcut" data-keywords="dictation shortcut hotkey toggle voice speech">
                 <div class="row-text">
                   <label class="row-title" for="dictationShortcut">Start and stop</label>
-                  <p class="row-desc">Press once to start, again to finish.</p>
+                  <p class="row-desc">Press once to start, again to finish</p>
                   <p class="row-desc row-error" id="dictationShortcutError" role="alert" hidden></p>
                   <button class="link-button" id="dictationShortcutTryAgain" type="button" hidden>Try again</button>
                 </div>
@@ -259,8 +258,8 @@
               <div class="set-row" id="row-dictationHoldShortcut" data-keywords="dictation shortcut hotkey hold push to talk voice shift both">
                 <div class="row-text">
                   <label class="row-title" for="dictationHoldShortcut">Hold to talk</label>
-                  <p class="row-desc">Hold Left + Right Shift, or a hotkey combination.</p>
-                  <p class="row-desc" id="dictationFilterKeysNote" hidden>Holding right Shift for 8 seconds can open the Windows Filter Keys prompt unless its shortcut is off.</p>
+                  <p class="row-desc">Hold Left + Right Shift, or a hotkey combination</p>
+                  <p class="row-desc" id="dictationFilterKeysNote" hidden>Holding right Shift for 8 seconds can open the Windows Filter Keys prompt unless its shortcut is off</p>
                   <p class="row-desc row-error" id="dictationHoldShortcutError" role="alert" hidden></p>
                   <button class="link-button" id="dictationHoldShortcutTryAgain" type="button" hidden>Try again</button>
                   <button class="link-button" id="dictationUseBothShifts" type="button" hidden>Use both Shift keys</button>
@@ -270,14 +269,14 @@
               <div class="set-row" id="row-dictationReview" data-keywords="dictation review confirm">
                 <div class="row-text">
                   <label class="row-title" for="dictationReview">Review before inserting</label>
-                  <p class="row-desc">Check the text in the island before it is typed.</p>
+
                 </div>
                 <input id="dictationReview" class="switch" type="checkbox" role="switch" disabled />
               </div>
               <div class="set-row" id="row-dictationPreview" data-keywords="dictation partial live transcript">
                 <div class="row-text">
                   <label class="row-title" for="dictationPreview">Live transcript</label>
-                  <p class="row-desc">Show partial text while you speak.</p>
+
                 </div>
                 <input id="dictationPreview" class="switch" type="checkbox" role="switch" disabled />
               </div>
@@ -285,7 +284,7 @@
                 <div class="row-text">
                   <span class="row-title">Speech model</span>
                   <p class="row-desc" id="dictationSetupStatus" role="status">Reading model status…</p>
-                  <p class="row-desc">Listed from fastest to most accurate. Models load only while you dictate.</p>
+                  <p class="row-desc">Models load only while you dictate</p>
                   <p class="row-desc row-error" id="dictationModelNotice" role="alert" hidden></p>
                 </div>
                 <div class="row-actions">
@@ -303,14 +302,14 @@
               <div class="set-row" id="row-clipboardEnabled" data-keywords="clipboard copy paste history privacy">
                 <div class="row-text">
                   <label class="row-title" for="clipboardEnabled">Keep clipboard history</label>
-                  <p class="row-desc">Off by default. Private clipboard formats and Tuck's own dictation paste are skipped; other sensitive text may not be.</p>
+                  <p class="row-desc">Off by default. Private clipboard formats and Tuck's own dictation paste are skipped; other sensitive text may not be</p>
                 </div>
                 <input id="clipboardEnabled" class="switch" type="checkbox" role="switch" disabled />
               </div>
               <div class="set-row" id="row-clipboardPersist" data-keywords="clipboard save restart persist disk privacy">
                 <div class="row-text">
                   <label class="row-title" for="clipboardPersist">Keep after restart</label>
-                  <p class="row-desc">Otherwise history clears when Tuck exits. Pins follow the same choice.</p>
+                  <p class="row-desc">Otherwise history clears when Tuck exits. Pins follow the same choice</p>
                 </div>
                 <input id="clipboardPersist" class="switch" type="checkbox" role="switch" disabled />
               </div>
@@ -334,7 +333,7 @@
                 </div>
                 <button class="button" id="refreshInstalledUsage" type="button">Refresh now</button>
               </div>
-              <div class="set-row" id="claudeSetup" hidden><span class="row-title">Claude status-line setup</span><button class="button" id="copyClaudeSetup" type="button">Copy setup link</button></div>
+              <div class="set-row" id="claudeSetup" hidden><span class="row-title">Claude status-line setup</span><button class="button" id="copyClaudeSetup" type="button">Copy Claude setup link</button></div>
               <p class="group-status" id="installedUsageStatus" role="status"></p>
             </div>
           </div>
@@ -345,14 +344,14 @@
         <!-- ============ Privacy ============ -->
         <section class="view" id="view-privacy" data-view="privacy" aria-labelledby="h-privacy" hidden>
           <h1 id="h-privacy">Privacy</h1>
-          <p class="lead">Optional monitoring starts off. This is where each kind of data goes, with its current setting.</p>
+          <p class="lead">Optional monitoring starts off</p>
           <div class="group">
             <h2>What leaves this computer</h2>
             <div class="panel">
               <div class="set-row" id="row-privacy-lyrics" data-keywords="privacy lrclib internet lyrics">
                 <div class="row-text">
                   <span class="row-title">Lyrics lookup</span>
-                  <p class="row-desc">Song title, artist and duration, sent to LRCLIB.</p>
+                  <p class="row-desc">Song title, artist and duration, sent to LRCLIB</p>
                 </div>
                 <a class="mirror" href="#media" data-mirror="onlineLyrics" data-focus="onlineLyrics"><span class="mirror-state"></span><svg class="i" aria-hidden="true"><use href="#i-chevron" /></svg></a>
               </div>
@@ -365,7 +364,7 @@
               <div class="set-row" id="row-privacy-clipboard" data-keywords="privacy clipboard history">
                 <div class="row-text">
                   <span class="row-title">Clipboard history</span>
-                  <p class="row-desc">Kept in memory; written to disk only with Keep after restart.</p>
+                  <p class="row-desc">Kept in memory; written to disk only with Keep after restart</p>
                 </div>
                 <a class="mirror" href="#tools" data-mirror="clipboardEnabled" data-focus="clipboardEnabled"><span class="mirror-state"></span><svg class="i" aria-hidden="true"><use href="#i-chevron" /></svg></a>
               </div>
@@ -373,7 +372,7 @@
               <div class="set-row" id="row-privacy-notifications" data-keywords="privacy notifications">
                 <div class="row-text">
                   <span class="row-title">Notification previews</span>
-                  <p class="row-desc">Read from Windows and shown in the island only.</p>
+                  <p class="row-desc">Read from Windows and shown in the island only</p>
                 </div>
                 <a class="mirror" href="#activities" data-mirror="ext-notifications" data-focus="ext-notifications"><span class="mirror-state"></span><svg class="i" aria-hidden="true"><use href="#i-chevron" /></svg></a>
               </div>
@@ -396,7 +395,7 @@
             <span class="about-mark" aria-hidden="true"></span>
             <div>
               <p class="about-name">Tuck <span id="appVersion" class="num">0.1.0</span></p>
-              <p class="row-desc">A notch for Windows: media, live activities, AI usage and quick tools at the top of your screen.</p>
+              <p class="row-desc">A notch for Windows: media, live activities, AI usage and quick tools at the top of your screen</p>
             </div>
           </div>
           <div class="group">
@@ -405,7 +404,7 @@
               <div class="set-row" id="row-update-check" data-keywords="update version check upgrade release download">
                 <div class="row-text">
                   <span class="row-title">Software update</span>
-                  <p class="row-desc" id="updateStatusText">Check for updates.</p>
+                  <p class="row-desc" id="updateStatusText">Check for updates</p>
                 </div>
                 <button class="button" id="btnCheckUpdates" type="button">Check for updates</button>
               </div>
@@ -433,6 +432,7 @@
               </div>
             </div>
           </div>
+          <div class="group"><h2>Resources</h2><div class="panel" id="aboutLinks"><div class="set-row" id="row-welcome"><span class="row-title">First steps</span><button class="button" id="showWelcome">Show welcome</button></div></div></div>
           <div class="group">
             <h2>Keyboard</h2>
             <div class="panel">
@@ -454,7 +454,7 @@
 
         <div class="empty" id="searchEmpty" hidden>
           <p class="empty-title">No settings match</p>
-          <p class="row-desc">Try a word such as lyrics, delay, budget or key.</p>
+          <p class="row-desc">Try a word such as lyrics, delay, budget or key</p>
         </div>
       </main>
     </div>

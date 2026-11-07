@@ -1,3 +1,4 @@
+import { hadSavedPreferences } from './welcome-decision.js';
 import { UsageSnapshotGate } from './usage-snapshot.js';
 import {mountExtensions} from './extensions.js';
 import { mountLivePages } from './live-ui.js';
@@ -1516,3 +1517,5 @@ usageRefresh.onclick = async () => {
     usageRefresh.setAttribute('aria-busy', 'false');
   }
 };
+
+if (isTauri()) void invokeCommand('maybe_show_welcome', { savedPreferences: hadSavedPreferences }).catch(() => {});

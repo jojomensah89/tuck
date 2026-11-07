@@ -124,3 +124,23 @@ The island owns the startup and six-hour one-shot check; Rust owns the update ha
 A version is claimed in island local storage once across restarts. Its one-line download-icon peek waits for dictation and the HUD. No update polling or idle animation is added. The reserved rail slot contains a 32px button outside the tablist, with ink line artwork and a 6px ok dot. Hidden means no space. Download progress uses the shared ring; unknown size is a resting track. Restart uses the refresh glyph. Press scale is 0.96; reduced motion disables transitions. The Settings sidebar ends with the same quiet action, while About retains release notes and full controls. Errors keep the action available, say `Update failed`, and retain details in the tooltip and console. Installation is announced through the polite status region.
 
 AI usage settings: one switch per detected installed provider, off by default. Empty detection shows one calm line. Claude and Codex migrate the old opt-in; Antigravity requires a plain-language confirmation before reading its ACP sign-in file and contacting Google. Its model/bucket-scoped allowance uses one ring and the initial A; it never represents a general weekly limit. The service is undocumented and may stop working. Provider initials are used without a sourced official mark.
+
+
+## Settings and first-run welcome
+
+Settings retain the folded T, Segoe UI Variable, sidebar/search and Windows theme preference. Content fills the remaining width with 32px gutters and a 1120px cap; page titles, group headings and row text share a left edge. Rows start at 44px, or 56px with supporting text, and controls retain the shared 32px height. Group headings are sentence case at one size. Destructive buttons use secondary ink until hover. Antigravity confirmation uses native dialog focus containment, Escape cancellation and the shared theme/control tokens.
+
+Activities combines notification previews and access. About supplies exact allowlisted browser links to GitHub, bugs, MIT and third-party notices. Welcome lives in Settings and moves the actual autostart, detected-provider and model nodes, restoring them on Done/Skip. Local models sort before downloadable models; downloads remain explicit actions with size shown. Startup snapshots native config-directory presence before service initialization and checks pre-existing frontend preferences. An exclusive marker claim precedes opening; unreadable storage, failed claims, fullscreen or busy dictation suppress automatic display. About can reopen welcome. Browser smoke never automatically requests it.
+
+### Baseline audit (both theme captures, browser fixtures)
+
+- General: centred width cap and redundant startup/shape/width descriptions
+- Island: loose rows and long HUD/flyout explanations crowd controls
+- Media: repeated lyric description and an orphan online-lyrics group
+- Activities: separate notification preview/access groups break one task apart
+- Dictation and clipboard: dense explanatory paragraphs with loose rows; downloaded models do not lead
+- AI usage: ambiguous setup-link button and loose refresh row
+- Privacy: introductory interface description; repeated punctuation
+- About: lacks project, bug, licence, notices and welcome entry points
+
+Captures are browser fixtures, not live account readings or native hardware verification. Native focus/fullscreen interactions require manual Windows acceptance testing.

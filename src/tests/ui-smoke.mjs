@@ -512,9 +512,10 @@ try {
   const dropBox = () => shelfDrop.evaluate(n=>{const r=n.getBoundingClientRect(),s=getComputedStyle(n);return {w:Math.round(r.width),h:Math.round(r.height),dashed:s.borderTopStyle,colour:s.borderTopColor};});
   const emptyDrop = await dropBox();
   assert.deepEqual([emptyDrop.w,emptyDrop.h,emptyDrop.dashed],[420,192,'dashed'],'An empty shelf fills the content box');
-  assert.equal(await native.locator('#extensionsPage').textContent().then(text=>text.trim()),'Drop files here');
+  assert.equal(await native.locator('#extensionsPage').textContent().then(text=>text.trim()),'Drop files here to keep them handy');
   await native.evaluate(()=>window.dispatchEvent(new CustomEvent('tuck-drop-active',{detail:true})));
   assert.notEqual((await dropBox()).colour,emptyDrop.colour,'A drag over the island highlights the box');
+  assert.equal(await native.locator('.shelf-drop .drop-text').textContent(),'Release to add','A drag says what happens next');
   await native.evaluate(()=>window.dispatchEvent(new CustomEvent('tuck-drop-active',{detail:false})));
   await shelfDrop.click();
   await native.locator('#extensionsPage .ext-row').waitFor();

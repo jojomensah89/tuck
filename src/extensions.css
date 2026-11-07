@@ -11,7 +11,9 @@
   width: 100%;
   min-height: var(--hit-sm);
   flex-direction: column;
-  gap: var(--s-2);
+  gap: var(--s-3);
+  /* A filled well with a dashed edge reads as somewhere to put things, not as an outline */
+  background: var(--raise);
   border: 1px dashed var(--ink-3);
   border-radius: var(--r-lg);
   color: var(--ink-2);
@@ -23,9 +25,19 @@
     transform var(--d-instant) var(--ease-out);
 }
 
+.shelf-drop svg.ico {
+  width: var(--s-12);
+  height: var(--s-12);
+  color: var(--ink);
+  transition:
+    color var(--d-fast) var(--ease-out),
+    transform var(--d-base) var(--spring-enter);
+}
+
 .has-files .shelf-drop {
   flex: 0 0 var(--hit-sm);
   flex-direction: row;
+  gap: var(--s-2);
   border-radius: var(--r-md);
   font-size: var(--t-sm);
 }
@@ -36,14 +48,21 @@
 }
 
 .shelf-drop:hover {
+  background: var(--raise-hover);
   color: var(--ink);
   border-color: var(--ink-2);
 }
 
 .extensions.drag-over .shelf-drop {
-  background: var(--raise);
+  background: var(--raise-hover);
   color: var(--ink);
-  border-color: var(--ink);
+  border-color: var(--ok);
+}
+
+/* The one thing that moves: the file is over a place that will take it */
+.extensions.drag-over .shelf-drop svg.ico {
+  color: var(--ok);
+  transform: scale(1.12);
 }
 
 .shelf-drop:active {

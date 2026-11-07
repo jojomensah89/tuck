@@ -28,24 +28,18 @@ export interface PowerState {
 
 export interface Meter {
   id: string;
-  provider: string; // 'claude' | 'codex' | 'anthropic-api' | 'openai-api' | 'chatgpt'
+  provider: string; // Subscription provider
   label: string;
   usedPct: number | null; // 0..100
-  spentUsd: number | null; // month-to-date USD
+  spentUsd: number | null; // Reserved for native compatibility; always null
   resetsAt: number | null; // unix seconds
-  source: string; // 'official' | 'api' | 'manual'
+  source: string; // Subscription quota provenance
   stale: boolean;
   status?: string;
   error?: string;
-  count?: number; // message count for manual chatgpt
-  cap?: number; // message cap for manual chatgpt
 }
 
-export interface ChatGPTConfig {
-  label: string;
-  cap: number;
-  hours: number;
-}
+
 
 export type ActivityType = 'timer' | 'stopwatch' | 'pomodoro';
 

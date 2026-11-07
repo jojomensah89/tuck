@@ -21,15 +21,7 @@ describe('usage provider groups', () => {
     expect(groups[1].meters.map(item => item.id)).toEqual(['codex-primary', 'codex-secondary']);
   });
 
-  it('keeps API and manual single-window providers separate from subscriptions', () => {
-    const groups = groupUsageProviders([
-      meter('claude-5h', 'claude', 'Claude 5 h'),
-      { ...meter('anthropic-api', 'anthropic-api', 'Anthropic API'), source: 'api' },
-      { ...meter('chatgpt', 'chatgpt', 'ChatGPT estimate'), source: 'manual' },
-    ]);
-    expect(groups.map(group => group.key)).toEqual(['anthropic-subscription', 'anthropic-api', 'chatgpt']);
-    expect(groups.map(group => group.meters.length)).toEqual([1, 1, 1]);
-  });
+
 });
 
 describe('windows a card draws', () => {
@@ -53,7 +45,6 @@ describe('windows a card draws', () => {
 
   it('draws one ring for a single-window provider', () => {
     expect(ringMeters([meter('week', 'claude', 'Claude weekly')])).toHaveLength(1);
-    expect(ringMeters([{ ...meter('api', 'openai-api', 'OpenAI API'), source: 'api' }])).toHaveLength(1);
   });
 });
 
@@ -95,19 +86,14 @@ describe('card state', () => {
     expect(usageStateWord([{ ...meter('a', 'codex', 'A'), stale: true, status: 'error', error: 'timed out' }])).toBe('Error');
   });
 
-  it('shows what is left of a quota and keeps spend in dollars', () => {
+  it('shows what is left of a quota', () => {
     expect(valueText({ ...meter('a', 'claude', 'Claude 5 h'), usedPct: 100 })).toBe('0% left');
     expect(valueText({ ...meter('a', 'claude', 'Claude 5 h'), usedPct: 36 })).toBe('64% left');
-    expect(valueText({ ...meter('a', 'anthropic-api', 'API'), usedPct: 25, spentUsd: 25 })).toBe('$25.00');
-    expect(valueText({ ...meter('a', 'anthropic-api', 'API'), usedPct: null, spentUsd: 12.4 })).toBe('$12.40');
   });
 
   it('marks a reading as out only when its value says nothing is left', () => {
     expect(isOut({ ...meter('a', 'claude', 'Claude 5 h'), usedPct: 100 })).toBe(true);
     expect(isOut({ ...meter('a', 'claude', 'Claude 5 h'), usedPct: 99 })).toBe(false);
-    expect(isOut({ ...meter('chatgpt', 'chatgpt', 'ChatGPT'), count: 40, cap: 40 })).toBe(true);
-    expect(isOut({ ...meter('chatgpt', 'chatgpt', 'ChatGPT'), count: 30, cap: 40 })).toBe(false);
-    expect(isOut({ ...meter('a', 'anthropic-api', 'API'), usedPct: 100, spentUsd: 25 })).toBe(false);
     expect(isOut({ ...meter('a', 'claude', 'Claude 5 h'), usedPct: null })).toBe(false);
   });
 

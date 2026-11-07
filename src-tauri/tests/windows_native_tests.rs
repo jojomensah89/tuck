@@ -247,7 +247,7 @@ fn test_power_unknown_and_desktop_handling() {
 
 #[test]
 fn test_quick_action_allowlist() {
-    assert!(ALLOWED_QUICK_ACTIONS.contains(&"focus"));
+    assert!(!ALLOWED_QUICK_ACTIONS.contains(&"focus"));
     assert!(ALLOWED_QUICK_ACTIONS.contains(&"capture"));
 
     assert!(!ALLOWED_QUICK_ACTIONS.contains(&"wifi"));

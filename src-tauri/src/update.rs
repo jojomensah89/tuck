@@ -61,6 +61,24 @@ pub(crate) async fn update_check(
         .check()
         .await
         .map_err(|e| e.to_string())?;
+    let cached = app
+        .path()
+        .app_cache_dir()
+        .ok()
+        .map(|dir| dir.join("pending-update.bin"));
+    let restored = cached
+        .as_ref()
+        .and_then(|path| std::fs::read(path).ok())
+        .filter(|bytes| {
+            found
+                .as_ref()
+                .is_some_and(|update| update.verify(bytes).is_ok())
+        });
+    if restored.is_none() {
+        if let Some(path) = &cached {
+            let _ = std::fs::remove_file(path);
+        }
+    }
     let info = found.as_ref().map(|u| PendingUpdateInfo {
         version: u.version.clone(),
         current_version: u.current_version.clone(),
@@ -69,9 +87,14 @@ pub(crate) async fn update_check(
     });
     let mut inner = state.inner.lock().unwrap();
     inner.update = found;
+    inner.bytes = restored;
     inner.snapshot = Snapshot {
         info: info.clone(),
-        phase: "available",
+        phase: if inner.bytes.is_some() {
+            "restart"
+        } else {
+            "available"
+        },
         ..Default::default()
     };
     system::set_pending_update(app.clone(), app.state(), info.clone())?;
@@ -139,7 +162,17 @@ pub(crate) async fn update_action(
             )
             .await;
         let mut inner = state.inner.lock().unwrap();
-        let result = inner.finish_download(result.map_err(|error| error.to_string()));
+        let result = result.map_err(|error| error.to_string()).and_then(|bytes| {
+            let dir = app
+                .path()
+                .app_cache_dir()
+                .map_err(|error| error.to_string())?;
+            std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
+            std::fs::write(dir.join("pending-update.bin"), &bytes)
+                .map_err(|error| format!("Could not cache update: {error}"))?;
+            Ok(bytes)
+        });
+        let result = inner.finish_download(result);
         publish(&app, &inner);
         result?;
     }

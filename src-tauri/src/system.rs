@@ -858,7 +858,7 @@ pub(crate) fn set_pending_update(
         *lock = update.clone();
     }
     set_tray_update_title(&app, update.as_ref().map(|u| u.version.as_str()));
-    let _ = app.emit_to("settings", "pending-update-changed", update);
+    let _ = app.emit("pending-update-changed", update);
     Ok(())
 }
 
@@ -872,7 +872,7 @@ fn set_tray_update_title(app: &AppHandle, version: Option<&str>) {
     }
 }
 
-fn ensure_update_allowed(app: &AppHandle) -> Result<(), String> {
+pub(crate) fn ensure_update_allowed(app: &AppHandle) -> Result<(), String> {
     if let Some(dictation) = app.try_state::<Arc<crate::dictation::DictationService>>() {
         if let Some(reason) = dictation.update_blocker() {
             return Err(reason.into());

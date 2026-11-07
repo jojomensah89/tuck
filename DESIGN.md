@@ -116,3 +116,9 @@ Reduced motion: all durations and delays go to zero, nothing slides, scales or l
 ## Rules
 
 Consistent SVG icons; overflow-only marquee; tabular times; visible focus; state-synchronized ARIA and inert hidden layers. Real system and provider state always wins over illustrative content. The browser demo is explicitly labeled, with a badge pinned to the bottom-right of the window, below the island, so it never covers content.
+
+## Update alerts
+
+The island owns the startup and six-hour one-shot check; Rust owns the update handle, verified downloaded bytes and serialized operation state. Both webviews subscribe to the same snapshot and events; opening Settings during a download reads its current progress. Checks cannot replace a downloaded package. Download and restart require separate clicks; retries after a blocked or failed install reuse bytes.
+
+A version is claimed in island local storage once across restarts. Its one-line download-icon peek waits for dictation and the HUD. No update polling or idle animation is added. The reserved rail slot contains a 32px button outside the tablist, with ink line artwork and a 6px ok dot. Hidden means no space. Download progress uses the shared ring; unknown size is a resting track. Restart uses the refresh glyph. Press scale is 0.96; reduced motion disables transitions. The Settings sidebar ends with the same quiet action, while About retains release notes and full controls. Errors keep the action available, say ?Update failed?, and retain details in the tooltip and console. Installation is announced through the polite status region.

@@ -159,6 +159,7 @@ struct Runtime {
     focus_changed: bool,
     previews_paused: bool,
     selection_generation: u64,
+    repair_attempt: Option<(String, u64)>,
     status: String,
     message: Option<String>,
     transcript: Option<String>,
@@ -169,6 +170,7 @@ struct Runtime {
     removing_model: bool,
     download_cancel: Option<Arc<AtomicBool>>,
     checking_models: Vec<String>,
+    user_selection_check: Option<u64>,
     scanning_models: bool,
     found_models: Vec<model::Found>,
     model_error: Option<String>,
@@ -191,6 +193,11 @@ impl Drop for Runtime {
 /// Shared by coordinator-registered Tauri commands and the shortcut callback.
 pub struct DictationService {
     app: RwLock<Option<AppHandle>>,
+    storage_root: Option<PathBuf>,
+    #[cfg(test)]
+    acquisition_fixture: Option<AcquisitionFixture>,
+    #[cfg(test)]
+    scan_barrier: Option<Arc<dyn Fn() + Send + Sync>>,
     settings: RwLock<DictationSettings>,
     runtime: Mutex<Runtime>,
     insertion_gate: Mutex<()>,
@@ -203,6 +210,15 @@ pub struct DictationService {
     locations: Vec<model::Location>,
     shortcuts_paused: AtomicBool,
     pause_generation: AtomicU64,
+}
+
+#[cfg(test)]
+type FixtureNetwork = dyn Fn(&Path, &AtomicBool) -> Result<(), String> + Send + Sync;
+
+#[cfg(test)]
+struct AcquisitionFixture {
+    entry: &'static model::CatalogEntry,
+    network: Arc<FixtureNetwork>,
 }
 
 impl Default for DictationService {
@@ -222,6 +238,11 @@ impl DictationService {
     pub fn new() -> Self {
         Self {
             app: RwLock::new(None),
+            storage_root: None,
+            #[cfg(test)]
+            acquisition_fixture: None,
+            #[cfg(test)]
+            scan_barrier: None,
             settings: RwLock::new(DictationSettings::default()),
             runtime: Mutex::new(Runtime {
                 session_id: 0,
@@ -232,6 +253,7 @@ impl DictationService {
                 focus_changed: false,
                 previews_paused: false,
                 selection_generation: 0,
+                repair_attempt: None,
                 status: "idle".into(),
                 message: None,
                 transcript: None,
@@ -242,6 +264,7 @@ impl DictationService {
                 removing_model: false,
                 download_cancel: None,
                 checking_models: Vec::new(),
+                user_selection_check: None,
                 scanning_models: false,
                 found_models: Vec::new(),
                 model_error: None,
@@ -263,6 +286,9 @@ impl DictationService {
     }
 
     fn models_dir(&self) -> Result<PathBuf, String> {
+        if let Some(root) = &self.storage_root {
+            return Ok(root.join("dictation"));
+        }
         let app = self
             .app
             .read()
@@ -280,6 +306,20 @@ impl DictationService {
             return model::Resolution::default();
         };
         let settings = self.settings();
+        if let (Some(id), Some(path)) = (
+            settings.active_model.as_deref(),
+            settings.active_model_path.as_deref(),
+        ) {
+            if !model::local_model_exists(path) {
+                return model::Resolution {
+                    active: None,
+                    notice: Some(format!(
+                        "{} is missing. Open Settings to download it again.",
+                        model::entry(id).map_or(id, |e| e.label)
+                    )),
+                };
+            }
+        }
         model::resolve_active(
             settings.active_model.as_deref(),
             settings.active_model_path.as_deref(),
@@ -293,6 +333,40 @@ impl DictationService {
                     && model::local_model_exists(path)
             },
         )
+    }
+
+    // Looks for another verified copy of a missing selection, once per selection generation
+    // and process. It never downloads: that takes a click, because a model can be hundreds of MB.
+    fn repair_missing(self: &Arc<Self>) -> Result<(), String> {
+        let settings = self.settings();
+        let Some(id) = settings.active_model.as_deref() else {
+            return Ok(());
+        };
+        let Some(path) = settings.active_model_path.as_deref() else {
+            return Ok(());
+        };
+        if model::local_model_exists(path)
+            || !model::path_is_known(path, &self.locations)
+            || settings.stopped_models.iter().any(|stopped| stopped == id)
+        {
+            return Ok(());
+        }
+        {
+            let mut runtime = self.runtime.lock().map_err(|_| "Dictation unavailable")?;
+            let key = (id.to_owned(), runtime.selection_generation);
+            if runtime.repair_attempt.as_ref() == Some(&key)
+                || runtime.downloading_model.is_some()
+                || runtime.removing_model
+                || runtime.active.is_some()
+                || runtime.status == "review"
+                || runtime.status == "inserting"
+                || self.is_shutdown()
+            {
+                return Ok(());
+            }
+            runtime.repair_attempt = Some(key);
+        }
+        self.start_model_download(id, true)
     }
 
     pub(crate) fn snapshot(&self) -> DictationSnapshot {
@@ -399,8 +473,11 @@ impl DictationService {
         if runtime.downloading_model.is_some() {
             return Some("Wait for the model download or cancel it before installing the update.");
         }
-        if runtime.removing_model || self.model_busy.load(Ordering::Acquire) {
+        if runtime.removing_model {
             return Some("Wait for the model change to finish before installing the update.");
+        }
+        if self.model_busy.load(Ordering::Acquire) {
+            return Some("Wait for dictation to finish before installing the update.");
         }
         let resting = matches!(runtime.status.as_str(), "idle" | "error" | "modelMissing");
         (runtime.active.is_some() || !resting)
@@ -568,6 +645,14 @@ impl DictationService {
 
     fn begin(self: &Arc<Self>, mode: RecordingMode) -> Result<(), String> {
         self.app()?;
+        if self
+            .runtime
+            .lock()
+            .is_ok_and(|r| r.status == "review" || r.status == "inserting")
+        {
+            return Err("Finish or discard the transcript before starting dictation".into());
+        }
+        self.repair_missing()?;
         let operation = self
             .settings_operation
             .lock()
@@ -993,9 +1078,18 @@ impl DictationService {
     }
 
     fn download_model(self: &Arc<Self>, id: &str) -> Result<(), String> {
+        self.start_model_download(id, false)
+    }
+
+    fn start_model_download(self: &Arc<Self>, id: &str, restoring: bool) -> Result<(), String> {
         let entry = model::entry(id)
-            .filter(|entry| entry.offered)
+            .filter(|entry| entry.offered || restoring)
             .ok_or("That model is not available to download")?;
+        #[cfg(test)]
+        let entry = self
+            .acquisition_fixture
+            .as_ref()
+            .map_or(entry, |fixture| fixture.entry);
         let dir = self.models_dir()?;
         let cancel = Arc::new(AtomicBool::new(false));
         let generation = {
@@ -1009,6 +1103,32 @@ impl DictationService {
             if runtime.removing_model {
                 return Err("A model is being removed. Try again in a moment.".into());
             }
+            if self.is_shutdown() {
+                return Err("Tuck is shutting down".into());
+            }
+            if restoring {
+                let desired = self.settings();
+                if desired.active_model.as_deref() != Some(entry.id)
+                    || desired
+                        .active_model_path
+                        .as_deref()
+                        .is_none_or(model::local_model_exists)
+                    || runtime.repair_attempt.as_ref()
+                        != Some(&(entry.id.to_owned(), runtime.selection_generation))
+                {
+                    return Ok(());
+                }
+            }
+
+            runtime.settings_notice = Some(format!(
+                "{} {}\u{2026}",
+                if restoring {
+                    "Looking for"
+                } else {
+                    "Checking existing copies of"
+                },
+                entry.label
+            ));
             runtime.downloading_model = Some(entry.id);
             runtime.download_cancel = Some(cancel.clone());
             runtime.downloaded_bytes = 0;
@@ -1024,56 +1144,146 @@ impl DictationService {
             .name("tuck-model-download".into())
             .spawn(move || {
                 let mut last_event = std::time::Instant::now();
+                #[cfg(test)]
+                let catalog = service
+                    .acquisition_fixture
+                    .as_ref()
+                    .map_or(model::CATALOG, |f| std::slice::from_ref(f.entry));
+                #[cfg(not(test))]
+                let existing = model::verified_existing(
+                    &dir,
+                    entry,
+                    &service.locations,
+                    &service.verified,
+                    &cancel,
+                );
+                #[cfg(test)]
+                let existing = model::verified_existing_with_catalog(
+                    &dir,
+                    entry,
+                    &service.locations,
+                    &service.verified,
+                    &cancel,
+                    catalog,
+                );
+                let reused_path = existing.as_ref().ok().and_then(|p| p.clone());
+                let needs_download = restoring && matches!(existing, Ok(None));
                 let result = match tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
                 {
-                    Ok(runtime) => runtime.block_on(model::download(
-                        &dir,
-                        entry,
-                        &service.verified,
-                        &cancel,
-                        |received| {
-                            if let Ok(mut runtime) = service.runtime.lock() {
-                                runtime.downloaded_bytes = received;
+                    Ok(runtime) => runtime
+                        .block_on(model::acquire(existing, || async {
+                            if needs_download {
+                                Ok(())
+                            } else if service.is_shutdown()
+                                || cancel.load(Ordering::Acquire)
+                                || service
+                                    .runtime
+                                    .lock()
+                                    .map_or(true, |r| r.selection_generation != generation)
+                            {
+                                Err("Model operation cancelled".into())
+                            } else {
+                                #[cfg(test)]
+                                if let Some(fixture) = &service.acquisition_fixture {
+                                    return (fixture.network)(&dir, &cancel);
+                                }
+                                model::download(
+                                    &dir,
+                                    entry,
+                                    &service.verified,
+                                    &cancel,
+                                    |received| {
+                                        if let Ok(mut runtime) = service.runtime.lock() {
+                                            runtime.downloaded_bytes = received;
+                                        }
+                                        if last_event.elapsed()
+                                            >= std::time::Duration::from_millis(250)
+                                        {
+                                            last_event = std::time::Instant::now();
+                                            service.emit_state();
+                                        }
+                                    },
+                                )
+                                .await
                             }
-                            if last_event.elapsed() >= std::time::Duration::from_millis(250) {
-                                last_event = std::time::Instant::now();
-                                service.emit_state();
-                            }
-                        },
-                    )),
-                    Err(error) => Err(format!("Could not start model download runtime: {error}")),
+                        }))
+                        .map(|_| ()),
+                    Err(error) => Err(format!("Could not start acquisition runtime: {error}")),
                 };
-                let error = result.as_ref().err().cloned();
+                let mut error = result.as_ref().err().cloned();
+                let mut activated = false;
+                let mut superseded = false;
+                let mut cleanup_generation = generation;
+                // Only when the owner did not choose a model during the download.
+                if error.is_none()
+                    && !needs_download
+                    && !cancel.load(Ordering::Acquire)
+                    && !service.is_shutdown()
+                {
+                    // A fallback model removed during the download is not worth pinning.
+                    let still_there = selection_before.is_some()
+                        || active_before
+                            .is_some_and(|id| model::local_model_exists(&dir_for_pin.join(id)));
+                    let selection = if restoring {
+                        Some(entry.id)
+                    } else {
+                        selection_after_download(
+                            active_before.filter(|_| still_there),
+                            selection_before.is_some(),
+                            entry.id,
+                        )
+                    };
+                    if let Some(id) = selection {
+                        match service.commit_selection_inner(
+                            Some(id.to_owned()),
+                            reused_path
+                                .clone()
+                                .filter(|path| id == entry.id && path != &dir.join(entry.id)),
+                            Some(generation),
+                            None,
+                            true,
+                        ) {
+                            Ok(committed_generation) => {
+                                activated = committed_generation.is_some() && id == entry.id;
+                                superseded = committed_generation.is_none();
+                                if let Some(committed_generation) = committed_generation {
+                                    cleanup_generation = committed_generation;
+                                }
+                            }
+                            Err(activation_error) => error = Some(activation_error),
+                        }
+                    }
+                }
                 let reported = error.clone().filter(|_| !cancel.load(Ordering::Acquire));
                 if let Ok(mut runtime) = service.runtime.lock() {
                     runtime.downloading_model = None;
                     runtime.download_cancel = None;
                     runtime.downloaded_bytes = 0;
-                    runtime.model_error = reported.clone();
-                }
-                // Only when the owner did not choose a model during the download.
-                if error.is_none() {
-                    // A fallback model removed during the download is not worth pinning.
-                    let still_there = selection_before.is_some()
-                        || active_before
-                            .is_some_and(|id| model::local_model_exists(&dir_for_pin.join(id)));
-                    let selection = selection_after_download(
-                        active_before.filter(|_| still_there),
-                        selection_before.is_some(),
-                        entry.id,
-                    );
-                    if let Some(id) = selection {
-                        if let Err(error) = service.commit_selection_inner(
-                            Some(id.to_owned()),
-                            None,
-                            Some(generation),
-                            None,
-                            true,
-                        ) {
-                            service.set_model_error(error);
-                        }
+                    if runtime.selection_generation == cleanup_generation {
+                        runtime.model_error = reported.clone();
+                        runtime.settings_notice = Some(if cancel.load(Ordering::Acquire) {
+                            "Model download cancelled; use Download to retry".into()
+                        } else if error.is_some() {
+                            "Model download failed; use Download to retry".into()
+                        } else if needs_download {
+                            format!("{} is missing; use Download to get it again", entry.label)
+                        } else if superseded {
+                            format!(
+                                "{} is available; the model selection was left unchanged",
+                                entry.label
+                            )
+                        } else if let Some(path) = reused_path {
+                            format!(
+                                "{} existing {} from {}",
+                                if activated { "Using" } else { "Verified" },
+                                entry.label,
+                                model::app_for(&path, &service.locations).unwrap_or("Tuck")
+                            )
+                        } else {
+                            format!("{} is ready", entry.label)
+                        });
                     }
                 }
                 service.clear_missing_status();
@@ -1138,6 +1348,7 @@ impl DictationService {
         stop: Option<&str>,
     ) -> Result<(), String> {
         self.commit_selection_inner(id, path, generation, stop, false)
+            .map(|_| ())
     }
     fn commit_selection_inner(
         &self,
@@ -1146,14 +1357,17 @@ impl DictationService {
         generation: Option<u64>,
         stop: Option<&str>,
         automatic: bool,
-    ) -> Result<(), String> {
-        let app = self.app()?;
+    ) -> Result<Option<u64>, String> {
+        let settings_path = match &self.storage_root {
+            Some(root) => root.join("dictation.json"),
+            None => settings_path(&self.app()?)?,
+        };
         let _operation = self
             .settings_operation
             .lock()
             .map_err(|_| "Dictation settings unavailable")?;
         let mut runtime = self.runtime.lock().map_err(|_| "Dictation unavailable")?;
-        apply_selection_commit(&mut runtime, generation, automatic, || {
+        let committed = apply_selection_commit(&mut runtime, generation, automatic, || {
             let mut next = self.settings();
             if let Some(id) = id.as_ref() {
                 next.stopped_models.retain(|item| item != id);
@@ -1165,14 +1379,16 @@ impl DictationService {
             }
             next.active_model = id;
             next.active_model_path = path;
-            persist_settings(&app, &next)?;
+            persist_settings_at(&settings_path, &next)?;
             *self
                 .settings
                 .write()
                 .map_err(|_| "Dictation settings unavailable")? = next;
             Ok(())
         })?;
-        Ok(())
+        // Capture ownership while still holding the lock: a later user choice
+        // must prevent this worker from replacing that choice's notice.
+        Ok(committed.then_some(runtime.selection_generation))
     }
 
     /// Verifies off the UI thread, then selects. Other apps' files are used where they are.
@@ -1199,7 +1415,15 @@ impl DictationService {
                 ));
             }
             runtime.selection_generation = runtime.selection_generation.wrapping_add(1);
+            if let Some(cancel) = &runtime.download_cancel {
+                cancel.store(true, Ordering::Release);
+            }
+            let current_generation = runtime.selection_generation;
+            if let Some((_, attempted_generation)) = &mut runtime.repair_attempt {
+                *attempted_generation = current_generation;
+            }
             runtime.checking_models.push(entry.id.to_owned());
+            runtime.user_selection_check = Some(current_generation);
             runtime.model_error = None;
             (external, runtime.selection_generation)
         };
@@ -1224,6 +1448,9 @@ impl DictationService {
                 });
                 if let Ok(mut runtime) = service.runtime.lock() {
                     runtime.checking_models.retain(|item| item != entry.id);
+                    if runtime.user_selection_check == Some(generation) {
+                        runtime.user_selection_check = None;
+                    }
                     if runtime.selection_generation == generation || result.is_ok() {
                         runtime.model_error = result.err();
                     }
@@ -1234,6 +1461,9 @@ impl DictationService {
         if let Err(error) = spawned {
             if let Ok(mut runtime) = self.runtime.lock() {
                 runtime.checking_models.retain(|item| item != entry.id);
+                if runtime.user_selection_check == Some(generation) {
+                    runtime.user_selection_check = None;
+                }
             }
             self.emit_state();
             return Err(format!("Could not check the model: {error}"));
@@ -1244,13 +1474,16 @@ impl DictationService {
     /// Deletes a model Tuck downloaded. For another app's file it only stops using it.
     fn remove_model(&self, id: &str) -> Result<(), String> {
         let entry = model::entry(id).ok_or("That model is not in Tuck's catalog")?;
+        let settings = self.settings();
+        let borrowed =
+            settings.active_model.as_deref() == Some(id) && settings.active_model_path.is_some();
         {
             let mut runtime = self
                 .runtime
                 .lock()
                 .map_err(|_| "Dictation service unavailable")?;
             if runtime.active.is_some()
-                || runtime.downloading_model == Some(entry.id)
+                || (runtime.downloading_model == Some(entry.id) && !borrowed)
                 || runtime.removing_model
                 || runtime.status == "review"
                 || runtime.status == "inserting"
@@ -1292,6 +1525,7 @@ impl DictationService {
     /// On demand only. Lists by name and size, then hashes only what could be a match,
     /// on a low-priority thread, skipping models Tuck already has.
     fn scan_models(self: &Arc<Self>) -> Result<(), String> {
+        self.repair_missing()?;
         let dir = self.models_dir()?;
         {
             let mut runtime = self
@@ -1309,7 +1543,17 @@ impl DictationService {
             .name("tuck-model-scan".into())
             .spawn(move || {
                 let mut found: Vec<model::Found> = Vec::new();
-                for candidate in model::find_candidates(&service.locations) {
+                #[cfg(test)]
+                let candidates = model::find_candidates_with_catalog(
+                    &service.locations,
+                    service
+                        .acquisition_fixture
+                        .as_ref()
+                        .map_or(model::CATALOG, |f| std::slice::from_ref(f.entry)),
+                );
+                #[cfg(not(test))]
+                let candidates = model::find_candidates(&service.locations);
+                for candidate in candidates {
                     let id = candidate.entry.id;
                     if service.is_shutdown()
                         || model::local_model_exists(&dir.join(id))
@@ -1321,6 +1565,10 @@ impl DictationService {
                         runtime.checking_models.push(id.to_owned());
                     }
                     service.emit_state();
+                    #[cfg(test)]
+                    if let Some(barrier) = &service.scan_barrier {
+                        barrier();
+                    }
                     let matched =
                         model::verify(&candidate.path, candidate.entry, &service.verified, true)
                             .is_ok();
@@ -1384,12 +1632,22 @@ fn apply_selection_commit(
     commit: impl FnOnce() -> Result<(), String>,
 ) -> Result<bool, String> {
     if automatic
-        && (generation != Some(runtime.selection_generation) || !runtime.checking_models.is_empty())
+        && (generation != Some(runtime.selection_generation)
+            || runtime.user_selection_check.is_some()
+            || runtime
+                .download_cancel
+                .as_ref()
+                .is_some_and(|cancel| cancel.load(Ordering::Acquire)))
     {
         return Ok(false);
     }
     validate_selection_commit(runtime, generation)?;
     commit()?;
+    if !automatic {
+        if let Some(cancel) = &runtime.download_cancel {
+            cancel.store(true, Ordering::Release);
+        }
+    }
     runtime.selection_generation = runtime.selection_generation.wrapping_add(1);
     Ok(true)
 }
@@ -1446,8 +1704,8 @@ fn sync_dual_shift(service: &Arc<DictationService>) {
     });
 }
 
-/// Initialize settings and shortcuts only. This does not access the microphone
-/// or download/load a speech model.
+/// Initialize settings and shortcuts, and restore only a missing saved external model.
+/// Never accesses the microphone or loads a speech model.
 pub fn start(app: AppHandle, service: &Arc<DictationService>) -> Result<(), String> {
     if let Ok(mut slot) = service.app.write() {
         *slot = Some(app.clone());
@@ -1472,6 +1730,7 @@ pub fn start(app: AppHandle, service: &Arc<DictationService>) -> Result<(), Stri
         eprintln!("Dictation shortcut registration warning: {error}");
     }
     sync_dual_shift(service);
+    service.repair_missing()?;
     service.emit_state();
     Ok(())
 }
@@ -1798,7 +2057,10 @@ fn load_settings(app: &AppHandle) -> (DictationSettings, Option<String>) {
 }
 
 fn persist_settings(app: &AppHandle, settings: &DictationSettings) -> Result<(), String> {
-    let path = settings_path(app)?;
+    persist_settings_at(&settings_path(app)?, settings)
+}
+
+fn persist_settings_at(path: &Path, settings: &DictationSettings) -> Result<(), String> {
     let parent = path.parent().ok_or("Invalid settings directory")?;
     std::fs::create_dir_all(parent)
         .map_err(|e| format!("Could not create settings directory: {e}"))?;
@@ -1814,7 +2076,7 @@ fn persist_settings(app: &AppHandle, settings: &DictationSettings) -> Result<(),
     let tmp = path.with_file_name(format!("{file_name}.{}.tmp", uuid::Uuid::new_v4()));
     let _cleanup = TemporaryConfigFile(tmp.clone());
     std::fs::write(&tmp, bytes).map_err(|e| format!("Could not write settings: {e}"))?;
-    replace_file(&tmp, &path).map_err(|e| format!("Could not commit settings: {e}"))
+    replace_file(&tmp, path).map_err(|e| format!("Could not commit settings: {e}"))
 }
 
 struct TemporaryConfigFile(PathBuf);
@@ -2042,6 +2304,372 @@ pub fn dictation_model_download_cancel(
 mod tests {
     use super::*;
 
+    const FIXTURE_ENTRY: model::CatalogEntry = model::CatalogEntry {
+        id: "ggml-base-q5_1.bin",
+        label: "Fixture Base",
+        bytes: 3,
+        sha256: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+        speed: "",
+        accuracy: "",
+        note: None,
+        offered: true,
+        memory_mb: 1,
+    };
+
+    struct ServiceFixture {
+        service: Arc<DictationService>,
+        root: PathBuf,
+        calls: Arc<AtomicU64>,
+        entered: std::sync::mpsc::Receiver<()>,
+        release: std::sync::mpsc::Sender<bool>,
+    }
+    impl ServiceFixture {
+        fn new() -> Self {
+            let root = std::env::temp_dir().join(format!("tuck-service-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(root.join("dictation")).unwrap();
+            std::fs::create_dir_all(root.join("external")).unwrap();
+            let calls = Arc::new(AtomicU64::new(0));
+            let (entered_tx, entered) = std::sync::mpsc::channel();
+            let (release, release_rx) = std::sync::mpsc::channel();
+            let release_rx = Mutex::new(release_rx);
+            let count = calls.clone();
+            let mut service = DictationService::new();
+            service.storage_root = Some(root.clone());
+            service.locations = vec![model::Location {
+                app: "Hex",
+                root: root.join("external"),
+                depth: 2,
+                huggingface: false,
+            }];
+            service.acquisition_fixture = Some(AcquisitionFixture {
+                entry: &FIXTURE_ENTRY,
+                network: Arc::new(move |dir, cancel| {
+                    count.fetch_add(1, Ordering::SeqCst);
+                    entered_tx.send(()).unwrap();
+                    let success: bool = release_rx
+                        .lock()
+                        .unwrap()
+                        .recv_timeout(std::time::Duration::from_secs(10))
+                        .unwrap();
+                    if cancel.load(Ordering::Acquire) || !success {
+                        return Err("fixture acquisition failed".into());
+                    }
+                    std::fs::write(dir.join(FIXTURE_ENTRY.id), b"abc").map_err(|e| e.to_string())
+                }),
+            });
+            let fixture = Self {
+                service: Arc::new(service),
+                root,
+                calls,
+                entered,
+                release,
+            };
+            fixture.select_missing();
+            fixture
+        }
+        fn select_missing(&self) {
+            self.service
+                .commit_selection(
+                    Some(FIXTURE_ENTRY.id.into()),
+                    Some(self.root.join("external/missing.bin")),
+                )
+                .unwrap();
+        }
+        fn wait(&self) {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            loop {
+                if self
+                    .service
+                    .runtime
+                    .lock()
+                    .unwrap()
+                    .downloading_model
+                    .is_none()
+                {
+                    break;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "worker did not finish"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        }
+        fn disk(&self) -> DictationSettings {
+            serde_json::from_slice(&std::fs::read(self.root.join("dictation.json")).unwrap())
+                .unwrap()
+        }
+        fn entered(&self) {
+            self.entered
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .unwrap();
+        }
+    }
+    impl Drop for ServiceFixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    #[test]
+    fn service_worker_rediscovers_moved_external_without_network() {
+        let f = ServiceFixture::new();
+        let moved = f.root.join("external").join(FIXTURE_ENTRY.id);
+        std::fs::write(&moved, b"abc").unwrap();
+        f.service.repair_missing().unwrap();
+        f.wait();
+        assert_eq!(f.calls.load(Ordering::SeqCst), 0);
+        assert_eq!(f.disk().active_model_path.as_ref(), Some(&moved));
+        assert_eq!(f.service.resolve_model().active.unwrap().path, moved);
+        assert_eq!(std::fs::read(&moved).unwrap(), b"abc");
+        let runtime = f.service.runtime.lock().unwrap();
+        let notice = runtime.settings_notice.as_deref().unwrap();
+        assert!(notice.starts_with("Using existing "), "{notice}");
+    }
+
+    #[test]
+    fn service_worker_singleflight_survives_background_scan() {
+        let mut f = ServiceFixture::new();
+        let (scan_tx, scan_rx) = std::sync::mpsc::channel();
+        let (resume_tx, resume_rx) = std::sync::mpsc::channel();
+        let resume_rx = Mutex::new(resume_rx);
+        Arc::get_mut(&mut f.service).unwrap().scan_barrier = Some(Arc::new(move || {
+            scan_tx.send(()).unwrap();
+            resume_rx
+                .lock()
+                .unwrap()
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .unwrap();
+        }));
+        f.service
+            .start_model_download(FIXTURE_ENTRY.id, false)
+            .unwrap();
+        f.entered();
+        // Candidate appears after acquisition preflight, before background discovery.
+        std::fs::write(f.root.join("external").join(FIXTURE_ENTRY.id), b"bad").unwrap();
+        let service = f.service.clone();
+        std::thread::spawn(move || {
+            service.repair_missing().unwrap();
+            service.scan_models().unwrap();
+        })
+        .join()
+        .unwrap();
+        scan_rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .unwrap();
+        assert!(f
+            .service
+            .start_model_download(FIXTURE_ENTRY.id, false)
+            .is_err());
+        f.release.send(true).unwrap();
+        f.wait();
+        resume_tx.send(()).unwrap();
+        assert_eq!(f.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(f.disk().active_model_path, None);
+        assert_eq!(
+            f.service.runtime.lock().unwrap().settings_notice.as_deref(),
+            Some(format!("{} is ready", FIXTURE_ENTRY.label).as_str())
+        );
+        assert_eq!(
+            f.service.resolve_model().active.unwrap().entry.id,
+            FIXTURE_ENTRY.id
+        );
+    }
+
+    #[test]
+    fn service_worker_persistence_failure_remains_visible() {
+        let f = ServiceFixture::new();
+        let old = f.service.settings();
+        f.service
+            .start_model_download(FIXTURE_ENTRY.id, false)
+            .unwrap();
+        f.entered();
+        // A directory at the destination forces the real atomic replace to fail.
+        std::fs::remove_file(f.root.join("dictation.json")).unwrap();
+        std::fs::create_dir(f.root.join("dictation.json")).unwrap();
+        f.release.send(true).unwrap();
+        f.wait();
+        assert_eq!(
+            f.service.settings().active_model_path,
+            old.active_model_path
+        );
+        let runtime = f.service.runtime.lock().unwrap();
+        assert!(runtime
+            .model_error
+            .as_ref()
+            .unwrap()
+            .contains("commit settings"));
+        assert!(!runtime.settings_notice.as_ref().unwrap().contains("ready"));
+        assert!(!runtime.settings_notice.as_ref().unwrap().contains("Using"));
+        assert!(f.service.resolve_model().active.is_none());
+    }
+
+    #[test]
+    fn service_worker_selection_and_user_check_guards() {
+        for pending_check in [false, true] {
+            let f = ServiceFixture::new();
+            if pending_check {
+                let mut r = f.service.runtime.lock().unwrap();
+                r.user_selection_check = Some(r.selection_generation);
+            }
+            f.service
+                .start_model_download(FIXTURE_ENTRY.id, false)
+                .unwrap();
+            f.entered();
+            if !pending_check {
+                f.service.commit_selection(None, None).unwrap();
+                f.service.set_model_error("newer choice error".into());
+            }
+            f.release.send(true).unwrap();
+            f.wait();
+            assert_eq!(
+                f.disk().active_model_path,
+                f.service.settings().active_model_path
+            );
+            if pending_check {
+                assert!(f.disk().active_model_path.is_some());
+            } else {
+                assert!(f.disk().active_model.is_none());
+                assert_eq!(
+                    f.service.runtime.lock().unwrap().model_error.as_deref(),
+                    Some("newer choice error")
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn service_worker_failure_or_cancel_never_downloads_again_until_a_click() {
+        for cancel in [false, true] {
+            let f = ServiceFixture::new();
+            f.service
+                .start_model_download(FIXTURE_ENTRY.id, false)
+                .unwrap();
+            f.entered();
+            if cancel {
+                f.service.cancel_download().unwrap();
+            }
+            f.release.send(false).unwrap();
+            f.wait();
+            f.service.repair_missing().unwrap();
+            f.wait();
+            assert_eq!(f.calls.load(Ordering::SeqCst), 1);
+            f.service
+                .start_model_download(FIXTURE_ENTRY.id, false)
+                .unwrap();
+            f.entered();
+            f.release.send(true).unwrap();
+            f.wait();
+            assert_eq!(f.calls.load(Ordering::SeqCst), 2);
+            assert!(f.service.resolve_model().active.is_some());
+        }
+    }
+
+    #[test]
+    fn service_worker_manual_reuse_preserves_other_selection_and_truthful_notice() {
+        let f = ServiceFixture::new();
+        let a = "ggml-tiny.bin";
+        std::fs::write(f.root.join("dictation").join(a), b"selected").unwrap();
+        f.service.commit_selection(Some(a.into()), None).unwrap();
+        let borrowed = f.root.join("external").join(FIXTURE_ENTRY.id);
+        std::fs::write(&borrowed, b"abc").unwrap();
+        f.service
+            .start_model_download(FIXTURE_ENTRY.id, false)
+            .unwrap();
+        f.wait();
+        assert_eq!(f.disk().active_model.as_deref(), Some(a));
+        assert_eq!(f.service.resolve_model().active.unwrap().entry.id, a);
+        assert_eq!(f.calls.load(Ordering::SeqCst), 0);
+        assert!(f
+            .service
+            .runtime
+            .lock()
+            .unwrap()
+            .settings_notice
+            .as_ref()
+            .unwrap()
+            .starts_with("Verified existing"));
+        assert_eq!(std::fs::read(borrowed).unwrap(), b"abc");
+    }
+
+    #[test]
+    fn service_worker_rejects_hash_mismatch_and_unsupported_filename() {
+        for name in [FIXTURE_ENTRY.id, "unsupported.onnx"] {
+            let f = ServiceFixture::new();
+            let path = f.root.join("external").join(name);
+            let bytes = if name == FIXTURE_ENTRY.id {
+                b"bad"
+            } else {
+                b"abc"
+            };
+            std::fs::write(&path, bytes).unwrap();
+            let selected = f.disk().active_model_path;
+            f.service.repair_missing().unwrap();
+            f.wait();
+            assert_eq!(f.calls.load(Ordering::SeqCst), 0);
+            assert_eq!(f.disk().active_model_path, selected);
+            assert!(f.service.resolve_model().active.is_none());
+            assert_eq!(std::fs::read(path).unwrap(), bytes);
+        }
+    }
+
+    #[test]
+    fn service_worker_asks_before_downloading_a_missing_model() {
+        let f = ServiceFixture::new();
+        let selected = f.disk().active_model_path;
+        f.service.repair_missing().unwrap();
+        f.wait();
+        assert_eq!(
+            f.calls.load(Ordering::SeqCst),
+            0,
+            "no download without a click"
+        );
+        assert_eq!(f.disk().active_model_path, selected);
+        {
+            let runtime = f.service.runtime.lock().unwrap();
+            assert_eq!(runtime.model_error, None);
+            let notice = runtime.settings_notice.as_deref().unwrap();
+            assert!(notice.contains("is missing"), "{notice}");
+        }
+        // The click: only now does the download run, and it makes the model usable.
+        f.service
+            .start_model_download(FIXTURE_ENTRY.id, false)
+            .unwrap();
+        f.entered();
+        f.release.send(true).unwrap();
+        f.wait();
+        assert_eq!(f.calls.load(Ordering::SeqCst), 1);
+        assert!(f.service.resolve_model().active.is_some());
+    }
+
+    #[test]
+    fn service_worker_fresh_service_looks_again_for_a_missing_selection() {
+        let mut f = ServiceFixture::new();
+        f.service.repair_missing().unwrap();
+        f.wait();
+        let previous = f.service.clone();
+        let copy = f.root.join("external").join(FIXTURE_ENTRY.id);
+        std::fs::write(&copy, b"abc").unwrap();
+        let mut fresh = DictationService::new();
+        fresh.storage_root = Some(f.root.clone());
+        fresh.locations = previous.locations.clone();
+        *fresh.settings.write().unwrap() = f.disk();
+        fresh.acquisition_fixture = Some(AcquisitionFixture {
+            entry: &FIXTURE_ENTRY,
+            network: previous
+                .acquisition_fixture
+                .as_ref()
+                .unwrap()
+                .network
+                .clone(),
+        });
+        f.service = Arc::new(fresh);
+        f.service.repair_missing().unwrap();
+        f.wait();
+        assert_eq!(f.calls.load(Ordering::SeqCst), 0);
+        assert_eq!(f.service.resolve_model().active.unwrap().path, copy);
+    }
+
     fn recording_service() -> DictationService {
         let service = DictationService::new();
         {
@@ -2131,7 +2759,9 @@ mod tests {
         service.runtime.lock().unwrap().removing_model = false;
 
         service.model_busy.store(true, Ordering::Release);
-        assert!(service.update_blocker().unwrap().contains("model change"));
+        service.runtime.lock().unwrap().status = "transcribing".into();
+        assert!(service.update_blocker().unwrap().contains("dictation"));
+        service.runtime.lock().unwrap().status = "idle".into();
         service.model_busy.store(false, Ordering::Release);
 
         assert_eq!(service.update_blocker(), None);
@@ -2174,6 +2804,69 @@ mod tests {
     }
 
     #[test]
+    fn failed_restoration_is_single_attempt_per_launch_and_review_is_preserved() {
+        fn fixture() -> Arc<DictationService> {
+            let mut service = DictationService::new();
+            let root = std::env::temp_dir().join("tuck-missing-repair-fixture");
+            service.locations = vec![model::Location {
+                app: "Test",
+                root: root.clone(),
+                depth: 1,
+                huggingface: false,
+            }];
+            let mut settings = service.settings.write().unwrap();
+            settings.active_model = Some(model::PARAKEET.into());
+            settings.active_model_path = Some(root.join(model::PARAKEET));
+            drop(settings);
+            Arc::new(service)
+        }
+        let service = fixture();
+        // No initialized app: acquiring the managed directory fails before any HTTP.
+        assert!(service.repair_missing().is_err());
+        assert!(service.runtime.lock().unwrap().repair_attempt.is_some());
+        for _ in 0..3 {
+            service.repair_missing().unwrap();
+        }
+        let fresh_launch = fixture();
+        assert!(
+            fresh_launch.repair_missing().is_err(),
+            "restart permits one retry"
+        );
+        let review = fixture();
+        review.runtime.lock().unwrap().status = "review".into();
+        review.repair_missing().unwrap();
+        let runtime = review.runtime.lock().unwrap();
+        assert_eq!(runtime.status, "review");
+        assert!(runtime.repair_attempt.is_none());
+    }
+
+    #[test]
+    fn explicit_stop_or_new_choice_cancels_repair_and_prevents_stale_activation() {
+        for choice in ["stop", "different model"] {
+            let service = DictationService::new();
+            let mut runtime = service.runtime.lock().unwrap();
+            let cancel = Arc::new(AtomicBool::new(false));
+            runtime.download_cancel = Some(cancel.clone());
+            let generation = runtime.selection_generation;
+            let mut selected = "original external";
+            apply_selection_commit(&mut runtime, None, false, || {
+                selected = choice;
+                Ok(())
+            })
+            .unwrap();
+            assert!(cancel.load(Ordering::Acquire));
+            assert!(
+                !apply_selection_commit(&mut runtime, Some(generation), true, || {
+                    selected = "repaired";
+                    Ok(())
+                })
+                .unwrap()
+            );
+            assert_eq!(selected, choice);
+        }
+    }
+
+    #[test]
     fn download_pinning_cannot_overwrite_a_committed_newer_selection() {
         let service = DictationService::new();
         let mut runtime = service.runtime.lock().unwrap();
@@ -2199,6 +2892,23 @@ mod tests {
     }
 
     #[test]
+    fn background_scan_does_not_suppress_restoration_commit() {
+        let service = DictationService::new();
+        let mut runtime = service.runtime.lock().unwrap();
+        let generation = runtime.selection_generation;
+        runtime.checking_models.push(model::PARAKEET.into());
+        let mut persisted = false;
+        assert!(
+            apply_selection_commit(&mut runtime, Some(generation), true, || {
+                persisted = true;
+                Ok(())
+            })
+            .unwrap()
+        );
+        assert!(persisted);
+    }
+
+    #[test]
     fn download_pinning_does_not_invalidate_in_progress_user_verification() {
         let service = DictationService::new();
         let mut runtime = service.runtime.lock().unwrap();
@@ -2206,6 +2916,7 @@ mod tests {
         runtime.selection_generation += 1; // newer user request still hashing
         runtime.checking_models.push("ggml-base.bin".into());
         let user_generation = runtime.selection_generation;
+        runtime.user_selection_check = Some(user_generation);
         for token in [download_generation, user_generation] {
             // Also protects a user verification already pending when download began.
             assert!(

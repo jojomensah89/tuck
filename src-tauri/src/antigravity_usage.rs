@@ -166,11 +166,11 @@ async fn fetch(c: Credentials) -> Result<Vec<Meter>, &'static str> {
         return Err(ERROR);
     }
     drop(bytes);
+    // The first host that answers ends the search, so the token is sent no more than needed.
     for (operation, models) in [
         ("retrieveUserQuotaSummary", false),
         ("fetchAvailableModels", true),
     ] {
-        let mut meters = Vec::new();
         for host in [
             "daily-cloudcode-pa.googleapis.com",
             "cloudcode-pa.googleapis.com",
@@ -188,16 +188,12 @@ async fn fetch(c: Credentials) -> Result<Vec<Meter>, &'static str> {
             .await
             {
                 if let Ok(v) = serde_json::from_slice::<Value>(&bytes) {
-                    meters.extend(parse_quota(&v, models));
+                    let meters = parse_quota(&v, models);
+                    if !meters.is_empty() {
+                        return Ok(meters);
+                    }
                 }
             }
-        }
-        if let Some(m) = meters.into_iter().max_by(|a, b| {
-            a.used_pct
-                .partial_cmp(&b.used_pct)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        }) {
-            return Ok(vec![m]);
         }
     }
     Err(ERROR)

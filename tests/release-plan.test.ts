@@ -1,4 +1,4 @@
-import { afterAll, describe, expect, it } from 'bun:test';
+import { afterAll, describe, expect, it, setDefaultTimeout } from 'bun:test';
 import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -6,6 +6,9 @@ import * as path from 'node:path';
 
 import { syncCargoLockVersion } from '../scripts/release-metadata';
 import { compareVersions, planRelease, validateSynchronizedVersion } from '../scripts/release-plan';
+
+// These integration tests spawn real Git processes; Windows startup can exceed 5 s.
+setDefaultTimeout(60_000);
 
 const roots: string[] = [];
 afterAll(() => {

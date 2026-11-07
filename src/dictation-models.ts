@@ -55,7 +55,7 @@ export function removeConfirmation(row: ModelRow): string {
 
 /** Text for the picker's header row. */
 export function modelHeader(activeLabel: string | null | undefined): string {
-  return activeLabel ? `In use: ${activeLabel}` : 'No model selected. Download one below.';
+  return activeLabel ? `In use: ${activeLabel}` : 'No model selected. Use an existing model or download one below.';
 }
 
 /** Text for the island's Dictation page. */

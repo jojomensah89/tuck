@@ -5,7 +5,8 @@ import { isTauri, invokeCommand, listenToEvent } from './ipc.js';
 import { STORAGE_KEYS } from './usage.js';
 import { describeResult, filterSettings, isRowHidden, navTarget, type SearchEntry } from './settings-search.js';
 import { markSaved, setStatus } from './settings-ui.js';
-import { checkForUpdates, downloadAndInstallUpdate, type UpdateInfo } from './updater.js';
+import { checkForUpdates, updateAction, subscribeUpdate, type UpdateInfo } from './updater.js';
+import { mountUpdateButton } from './update-button.js';
 import { parseReleaseNotes } from './update-notes.js';
 import type { ShapeStyle } from './types.js';
 import pkg from '../package.json';
@@ -313,11 +314,11 @@ function initUpdates(): void {
   const progressWrap = $('updateProgressWrap')!;
   const progressBar = $<HTMLElement>('updateProgressBar')!;
   const progressLabel = $('updateProgressLabel')!;
+  progressLabel.setAttribute('role', 'status');
+  progressLabel.setAttribute('aria-live', 'polite');
 
-  let installing = false;
 
   function showPendingUpdate(info: UpdateInfo | null): void {
-    if (installing) return;
     if (info) {
       statusText.textContent = `Update available: v${info.version}.`;
       versionBadge.textContent = `v${info.version}`;
@@ -366,36 +367,16 @@ function initUpdates(): void {
   });
   if (new URLSearchParams(window.location.search).get('check') === '1') btnCheck.click();
 
-  btnInstall.addEventListener('click', async () => {
-    installing = true;
-    btnInstall.disabled = true;
-    btnInstall.textContent = 'Downloading...';
-    progressWrap.hidden = false;
-    progressLabel.textContent = 'Downloading...';
-    progressBar.style.width = '0%';
-
-    try {
-      await downloadAndInstallUpdate((downloaded, total) => {
-        const mbDl = (downloaded / (1024 * 1024)).toFixed(1);
-        if (total && total > 0) {
-          const pct = Math.min(100, Math.round((downloaded / total) * 100));
-          progressBar.style.width = `${pct}%`;
-          progressLabel.textContent = `Downloading... ${pct}% (${mbDl} / ${(total / (1024 * 1024)).toFixed(1)} MB)`;
-        } else {
-          progressLabel.textContent = `Downloading... ${mbDl} MB`;
-        }
-      }, () => {
-        btnInstall.textContent = 'Installing...';
-        progressLabel.textContent = 'Installing update. Tuck will restart.';
-      });
-    } catch (err) {
-      console.error('[updater] Download/install error:', err);
-      installing = false;
-      btnInstall.disabled = false;
-      btnInstall.textContent = 'Download and install';
-      progressLabel.textContent = typeof err === 'string' ? err : (err instanceof Error ? err.message : 'Installation failed. Please try again.');
-    }
+  mountUpdateButton(document.querySelector('.sidebar')!, true);
+  void subscribeUpdate(state => {
+    showPendingUpdate(state.info);
+    btnInstall.disabled = state.phase === 'downloading' || state.phase === 'installing';
+    btnInstall.textContent = state.phase === 'restart' ? 'Restart to update' : state.phase === 'downloading' ? 'Downloading...' : 'Download update';
+    progressWrap.hidden = !state.info;
+    progressBar.style.width = `${state.progress ?? 0}%`;
+    progressLabel.textContent = state.blocker || state.error || (state.phase === 'installing' ? 'Installing update. Tuck will restart.' : state.phase === 'restart' ? 'Ready to restart' : state.phase === 'downloading' ? state.progress === null ? 'Downloading...' : `Downloading... ${Math.round(state.progress)}%` : '');
   });
+  btnInstall.addEventListener('click', () => { void updateAction().catch(e => console.error('[updater]', e)); });
 }
 
 /* ================= Boot ================= */

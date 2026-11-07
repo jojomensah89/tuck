@@ -41,7 +41,7 @@ try {
   assert.equal(await page.locator('.rail-tabs [role=tab]').count(),5);
   assert.equal(await page.locator('#prevPage, #nextPage, #dots').count(),0);
   assert.deepEqual(await page.locator('.rail-tabs [role=tab]').evaluateAll(tabs => tabs.map(t => [t.getAttribute('aria-selected'), t.tabIndex])),[['true',0],['false',-1],['false',-1],['false',-1],['false',-1]]);
-  const railGeometry = await page.locator('.rail-tab').evaluateAll(nodes => nodes.map(n => { const r = n.getBoundingClientRect(); return [r.width, r.height]; }));
+  const railGeometry = await page.locator('.rail-tab:visible').evaluateAll(nodes => nodes.map(n => { const r = n.getBoundingClientRect(); return [r.width, r.height]; }));
   assert.equal(railGeometry.every(([w,h]) => w === 32 && h === 32),true,'Rail hit targets are 32px');
   assert.deepEqual(await page.locator('.rail-tabs [role=tab]').evaluateAll(tabs => tabs.map(t => t.getAttribute('aria-label'))),['Media','Today','Dictation','Tools','Usage'],'Rail order');
   assert.equal(await page.locator('.section-index, .section-index-button').count(),0,'The old section marks are gone');
@@ -219,6 +219,54 @@ try {
   }
 
   await context.addInitScript(nativeBridge);
+  // Update screenshots and assertions use a mocked bridge, never a release installer.
+  const updateFixtures = await context.newPage();
+  await updateFixtures.goto('http://tuck.test/');
+  await updateFixtures.waitForFunction(() => window.__calls?.some(c => c.args?.event === 'update-state-changed'));
+  assert.equal(await updateFixtures.locator('#railUpdate').isHidden(), true);
+  const fixture = {info:{version:'0.2.2',currentVersion:'0.2.1',body:'Fixture release notes'},phase:'available',progress:null,error:null,blocker:null};
+  const emitUpdate = (page, state) => page.evaluate(state => window.__emitNative('update-state-changed', state), state);
+  await emitUpdate(updateFixtures, fixture);
+  await updateFixtures.waitForTimeout(100);
+  await mkdir('docs/screens', {recursive:true});
+  await updateFixtures.screenshot({path:'docs/screens/update-peek.png'});
+  await updateFixtures.evaluate(() => window.__emitNative('open-island', null));
+  const action = updateFixtures.locator('#railUpdate button');
+  assert.equal(await action.getAttribute('aria-label'), 'Update to v0.2.2');
+  await action.click();
+  assert.ok(await updateFixtures.evaluate(() => window.__calls.some(c => c.command === 'update_action')));
+  for (const [name, phase, progress, error, label] of [
+    ['available','available',null,null,'Update to v0.2.2'],
+    ['downloading','downloading',42,null,'Downloading update, 42%'],
+    ['unknown','downloading',null,null,'Downloading update'],
+    ['restart','restart',100,null,'Restart to update'],
+    ['failed','available',null,'Fixture network failure','Update to v0.2.2'],
+  ]) {
+    await emitUpdate(updateFixtures, {...fixture,phase,progress,error});
+    assert.equal(await action.getAttribute('aria-label'), label);
+    assert.equal(await action.isDisabled(), phase === 'downloading');
+    if (error) assert.equal(await action.getAttribute('title'), error);
+    await updateFixtures.screenshot({path:`docs/screens/update-${name}.png`});
+  }
+  const updateSettings = await context.newPage();
+  await updateSettings.setViewportSize({width:900,height:720});
+  await updateSettings.goto('http://tuck.test/settings.html');
+  await updateSettings.waitForFunction(() => window.__calls?.some(c => c.args?.event === 'update-state-changed'));
+  await emitUpdate(updateSettings, fixture);
+  assert.equal(await updateSettings.locator('.update-sidebar').getAttribute('aria-label'), 'Update to v0.2.2');
+  await updateSettings.screenshot({path:'docs/screens/update-settings.png'});
+  for (const phase of ['downloading', 'restart', 'available']) {
+    const shared = {...fixture,phase,progress:42,error:phase === 'available' ? 'Fixture error' : null};
+    await Promise.all([emitUpdate(updateFixtures, shared), emitUpdate(updateSettings, shared)]);
+    assert.equal(await updateSettings.locator('.update-sidebar').getAttribute('aria-label'), await action.getAttribute('aria-label'));
+    assert.equal(await updateSettings.locator('#btnInstallUpdate').isDisabled(), phase === 'downloading');
+  }
+  await Promise.all([emitUpdate(updateFixtures, {...fixture,info:null}), emitUpdate(updateSettings, {...fixture,info:null})]);
+  assert.equal(await action.isHidden(), true);
+  assert.equal(await updateSettings.locator('.update-sidebar').isHidden(), true);
+
+  await updateFixtures.close(); await updateSettings.close();
+
   const native=await context.newPage();const nativeErrors=[];native.on('pageerror',error=>nativeErrors.push(error.message));
   await native.goto('http://tuck.test/');
   await native.waitForFunction(() => window.__calls?.some(call => call.command === 'plugin:event|listen' && call.args.event === 'open-island') && window.__calls.some(call => call.command === 'usage_now'));
@@ -241,9 +289,9 @@ try {
   await updates.locator('#settingsSearch').fill('');
   // A failed install explains itself and does not stop services unless it got that far
   await updates.locator('#btnInstallUpdate').click();
-  await updates.locator('#updateProgressLabel').filter({hasText:'No update available to install'}).waitFor({timeout:2000});
+
   assert.equal(await updates.locator('#btnInstallUpdate').isEnabled(),true);
-  assert.equal(await updates.evaluate(()=>window.__calls.some(call=>call.command==='check_update_allowed')),true,'Dictation is checked before any download');
+  assert.equal(await updates.evaluate(()=>window.__calls.some(call=>call.command==='update_action')),true,'About uses the shared action command');
   assert.equal(await updates.evaluate(()=>window.__calls.some(call=>call.command==='prepare_update_install')),false);
   await updates.evaluate(()=>window.__emitNative('pending-update-changed',null));
   await updates.locator('#row-update-available').waitFor({state:'hidden'});
@@ -1030,6 +1078,11 @@ try {
   await native.locator('#railSettings').click();
   assert.equal(await native.evaluate(()=>window.__calls.some(call=>call.command==='open_settings_cmd')),true,'The rail settings button opens the settings window');
   await native.goto('http://tuck.test/settings.html#tools');
+  await native.evaluate(()=>window.__emitNative('dictation_state',{status:'idle',modelInstalled:false,activeModelLabel:null,models:[{id:'ggml-base.bin',label:'Base',bytes:147951465,speed:'Very fast',accuracy:'Good',note:null,state:'found',foundIn:'podcli',active:false}]}));
+  assert.match(await native.locator('#dictationSetupStatus').textContent(),/Use an existing model or download/);
+  await native.setViewportSize({width:1000,height:850});
+  await native.screenshot({path:path.join(root,'docs/screens/model-reuse-settings.png')});
+  await native.setViewportSize({width:520,height:288});
   await native.evaluate(()=>window.__emitNative('dictation_state',{status:'review',modelInstalled:true,modelDownloadedBytes:0,activeModelLabel:'Tiny',models:[{id:'ggml-tiny.bin',label:'Tiny',bytes:77691713,speed:'Fastest',accuracy:'Lower',note:null,state:'installed',foundIn:null,active:true},{id:'ggml-base.bin',label:'Base (full size)',bytes:147951465,speed:'Very fast',accuracy:'Good',note:null,state:'found',foundIn:'podcli',active:false}]}));
   assert.equal(await native.locator('.model-row[data-id="ggml-tiny.bin"] button',{hasText:'Remove'}).isDisabled(),true,'Review must be discarded before model removal');
   assert.match(await native.locator('#dictationSetupStatus').textContent(),/In use: Tiny/);

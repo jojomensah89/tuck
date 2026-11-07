@@ -3,7 +3,8 @@ import {mountExtensions} from './extensions.js';
 import { mountLivePages } from './live-ui.js';
 import { LIVE_SETTINGS_KEY, readPreferences, writePreferences } from './live-state.js';
 import { mountTabRail } from './tab-rail.js';
-import { startBackgroundUpdateScheduler } from './updater.js';
+import { claimUpdateVersion } from './update-alert.js';
+import { subscribeUpdate, startBackgroundUpdateScheduler } from './updater.js';
 import './live.css';
 import {
   isTauri,
@@ -770,7 +771,7 @@ function renderCompact(): void {
   }
 
   if (announcement && announcement.until > Date.now() && state === 'peek') {
-    setCompactSlot(cl, 'announcement:leading', 'note', () => compactMarkup(SVG_ICONS.note));
+    setCompactSlot(cl, 'announcement:leading', 'note', () => compactMarkup(announcement!.text.startsWith('Tuck ') ? SVG_ICONS.installUpdate : SVG_ICONS.note));
     const changed = setCompactSlot(cc, 'announcement:title', announcement.text, () => compactTitle(announcement!.text));
     setCompactSlot(cr, 'announcement:trailing', 'notification', () => compactIndicator(
       '<span class="peek-indicator"></span>',
@@ -1140,6 +1141,7 @@ function setupMediaControls(): void {
 
 /** A peek ended: next queued announcement first, then back to where the island belongs */
 function finishPeek(): void {
+  if (flushUpdatePeek()) return;
   const next = pendingAnnouncements.next(Date.now());
   if (next) { showAnnouncement(next, false); return; }
   if (state === 'open') return;
@@ -1309,6 +1311,7 @@ window.addEventListener('tuck-activity',event=>{
     audioLevel: Number.isFinite(detail.audioLevel) ? Math.max(0, Math.min(1, detail.audioLevel)) : 0,
     phase:typeof detail.phase==='string'?detail.phase:'active',
   });else externalActivities.delete(detail.id);
+  flushUpdatePeek();
   renderCompact();
 });
 window.addEventListener('tuck-preview',event=>{
@@ -1360,6 +1363,18 @@ void listenToEvent<null>('tray-toggle-island', () => {
   }
 });
 
+let queuedUpdatePeek: string | null = null;
+function flushUpdatePeek(): boolean {
+  if (!queuedUpdatePeek || [...externalActivities.values()].some(a => a.type === 'dictation') || hud.visible(Date.now())) return false;
+  const text = queuedUpdatePeek; queuedUpdatePeek = null; showAnnouncement(text); return true;
+}
+void subscribeUpdate(update => {
+  if (update.phase === 'installing') $('statusMessage').textContent = 'Installing update. Tuck will restart.';
+  const feedback = update.blocker || (update.error ? 'Update failed' : null);
+  if (feedback) { queuedUpdatePeek = feedback; if (update.error) console.error('[updater]', update.error); }
+  else if (update.info && claimUpdateVersion(localStorage, update.info.version)) queuedUpdatePeek = `Tuck ${update.info.version} available`;
+  flushUpdatePeek();
+});
 startBackgroundUpdateScheduler();
 void listenToEvent<boolean>('hover', (inside) => onHover(inside));
 void listenToEvent<boolean>('fullscreen', (hidden) => {

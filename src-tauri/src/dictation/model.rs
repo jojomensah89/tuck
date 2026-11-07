@@ -497,6 +497,16 @@ pub(super) fn verify(
     cache: &Mutex<VerifyCache>,
     low_priority: bool,
 ) -> Result<(), String> {
+    verify_current(path, entry, cache, low_priority, false)
+}
+
+fn verify_current(
+    path: &Path,
+    entry: &CatalogEntry,
+    cache: &Mutex<VerifyCache>,
+    low_priority: bool,
+    fresh: bool,
+) -> Result<(), String> {
     let identity = file_identity(path)?;
     if identity.size != entry.bytes {
         return Err(format!(
@@ -509,7 +519,9 @@ pub(super) fn verify(
         .lock()
         .ok()
         .and_then(|c| c.lookup(path, &key, &identity).map(str::to_owned));
-    let actual = match cached {
+    // Acquisition must confirm current bytes even when Windows coalesces metadata
+    // timestamps for an immediate same-size rewrite. Recording retains its cache.
+    let actual = match cached.filter(|_| !fresh) {
         Some(sha256) => sha256,
         None => {
             let sha256 = hash_file(path, low_priority)?;
@@ -629,6 +641,75 @@ pub(super) fn local_model_exists(path: &Path) -> bool {
 }
 
 /* ---------- Download ---------- */
+
+/// Fresh bounded discovery, followed by catalog integrity verification. Never copies
+/// or modifies a borrowed model. Called only on the model worker thread.
+pub(super) fn verified_existing(
+    dir: &Path,
+    entry: &CatalogEntry,
+    locations: &[Location],
+    cache: &Mutex<VerifyCache>,
+    cancel: &AtomicBool,
+) -> Result<Option<PathBuf>, String> {
+    verified_existing_with_catalog(dir, entry, locations, cache, cancel, CATALOG)
+}
+
+pub(super) fn verified_existing_with_catalog(
+    dir: &Path,
+    entry: &CatalogEntry,
+    locations: &[Location],
+    cache: &Mutex<VerifyCache>,
+    cancel: &AtomicBool,
+    catalog: &'static [CatalogEntry],
+) -> Result<Option<PathBuf>, String> {
+    let own = dir.join(entry.id);
+    let candidates = std::iter::once((own, false)).chain(
+        find_candidates_with_catalog(locations, catalog)
+            .into_iter()
+            .filter(|c| c.entry.id == entry.id)
+            .map(|c| (c.path, true)),
+    );
+    verify_candidates(candidates, entry, cache, cancel)
+}
+
+fn verify_candidates(
+    candidates: impl IntoIterator<Item = (PathBuf, bool)>,
+    entry: &CatalogEntry,
+    cache: &Mutex<VerifyCache>,
+    cancel: &AtomicBool,
+) -> Result<Option<PathBuf>, String> {
+    for (path, external) in candidates {
+        if cancel.load(Ordering::Acquire) {
+            return Err("Model operation cancelled".into());
+        }
+        if local_model_exists(&path) && verify_current(&path, entry, cache, external, true).is_ok()
+        {
+            if cancel.load(Ordering::Acquire) {
+                return Err("Model operation cancelled".into());
+            }
+            return Ok(Some(path));
+        }
+    }
+    Ok(None)
+}
+
+/// The network callback is lazy: a verified local copy never starts HTTP.
+pub(super) async fn acquire<F, Fut>(
+    existing: Result<Option<PathBuf>, String>,
+    network: F,
+) -> Result<Option<PathBuf>, String>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<(), String>>,
+{
+    match existing? {
+        Some(path) => Ok(Some(path)),
+        None => {
+            network().await?;
+            Ok(None)
+        }
+    }
+}
 
 pub(super) async fn download(
     models_dir: &Path,
@@ -944,6 +1025,13 @@ fn huggingface_path_allowed(root: &Path, dir: &Path) -> bool {
 /// Lists files by name and size only, without opening any of them. Directory links are not
 /// followed. Hugging Face snapshots are file links, so the size of a file link is its target's.
 pub(super) fn find_candidates(locations: &[Location]) -> Vec<Candidate> {
+    find_candidates_with_catalog(locations, CATALOG)
+}
+
+pub(super) fn find_candidates_with_catalog(
+    locations: &[Location],
+    catalog: &'static [CatalogEntry],
+) -> Vec<Candidate> {
     let mut candidates = Vec::new();
     let mut visited = 0usize;
     for location in locations {
@@ -983,7 +1071,7 @@ pub(super) fn find_candidates(locations: &[Location]) -> Vec<Candidate> {
                 let Ok(size) = std::fs::metadata(&resolved).map(|meta| meta.len()) else {
                     continue;
                 };
-                if let Some(entry) = CATALOG.iter().find(|entry| entry.bytes == size) {
+                if let Some(entry) = catalog.iter().find(|entry| entry.bytes == size) {
                     candidates.push(Candidate {
                         entry,
                         path,
@@ -1261,6 +1349,99 @@ mod tests {
             offered: true,
             memory_mb: 100,
         }
+    }
+
+    #[test]
+    fn acquisition_suppresses_http_for_verified_copy_and_cancel_but_calls_once_when_missing() {
+        let dir = temp_dir();
+        let entry = small_entry(b"model bytes");
+        let path = dir.join(entry.id);
+        let cache = cache();
+        let cancel = AtomicBool::new(false);
+        let calls = std::cell::Cell::new(0);
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        std::fs::write(&path, b"model bytes").unwrap();
+        let acquire_now = || {
+            rt.block_on(acquire(
+                verified_existing(&dir, &entry, &[], &cache, &cancel),
+                || async {
+                    calls.set(calls.get() + 1);
+                    Ok(())
+                },
+            ))
+        };
+        assert_eq!(acquire_now().unwrap(), Some(path.clone()));
+        assert_eq!(calls.get(), 0);
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(acquire_now().unwrap(), None);
+        assert_eq!(calls.get(), 1);
+        cancel.store(true, Ordering::Release);
+        assert!(acquire_now().is_err());
+        assert_eq!(calls.get(), 1);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn moved_external_copy_is_rediscovered_without_network_or_removal() {
+        let dir = temp_dir();
+        let first = dir.join("first.bin");
+        let moved = dir.join("moved.bin");
+        let entry = small_entry(b"model bytes");
+        let cache = cache();
+        let cancel = AtomicBool::new(false);
+        std::fs::write(&first, b"model bytes").unwrap();
+        verify(&first, &entry, &cache, true).unwrap();
+        std::fs::rename(&first, &moved).unwrap();
+        let existing = verify_candidates(
+            [(first, true), (moved.clone(), true)],
+            &entry,
+            &cache,
+            &cancel,
+        );
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        assert_eq!(
+            rt.block_on(acquire(existing, || async {
+                panic!("HTTP started for moved copy")
+            }))
+            .unwrap(),
+            Some(moved.clone())
+        );
+        assert!(moved.exists());
+        assert!(!is_owned(&moved, &entry));
+        remove_owned(&moved, &entry).unwrap();
+        assert_eq!(std::fs::read(moved).unwrap(), b"model bytes");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn fresh_preflight_reuses_verified_bytes_and_rejects_invalid_or_cancelled_copy() {
+        let dir = temp_dir();
+        let entry = small_entry(b"model bytes");
+        let path = dir.join(entry.id);
+        let cache = cache();
+        let cancel = AtomicBool::new(false);
+        assert_eq!(
+            verified_existing(&dir, &entry, &[], &cache, &cancel).unwrap(),
+            None
+        );
+        std::fs::write(&path, b"model bytes").unwrap();
+        assert_eq!(
+            verified_existing(&dir, &entry, &[], &cache, &cancel).unwrap(),
+            Some(path.clone())
+        );
+        std::fs::write(&path, b"wrong bytes").unwrap();
+        assert_eq!(
+            verified_existing(&dir, &entry, &[], &cache, &cancel).unwrap(),
+            None
+        );
+        cancel.store(true, Ordering::Release);
+        assert!(verified_existing(&dir, &entry, &[], &cache, &cancel).is_err());
+        assert!(path.exists(), "preflight never deletes even invalid files");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[cfg(windows)]

@@ -4,7 +4,15 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::{io::Read, path::PathBuf, time::Duration};
 use zeroize::Zeroizing;
+// Every message is fixed text that says which step failed. None can hold a token or a reply.
 const ERROR: &str = "Antigravity quota unavailable";
+const FILE_ERROR: &str = "Antigravity's sign-in file couldn't be read";
+const OFFLINE: &str = "Couldn't reach Google";
+const SIGN_IN_REFUSED: &str = "Google refused the sign-in. Sign in to Antigravity again";
+const NO_QUOTA: &str = "Google's reply had no quota in it";
+// Google's private quota service refuses clients it doesn't recognise. Same value as T3 Code.
+const USER_AGENT: &str =
+    "antigravity/hub/2.24.0 (aidev_client; os_type=windows; arch=x86_64; cl=963137146)";
 // UNVERIFIED Windows default; never search T3 profiles or alternative credential paths.
 const UNVERIFIED_WINDOWS_TOKEN_PATH: &str = ".gemini/antigravity-acp/acp_token.json";
 const MAX_FILE: usize = 16 * 1024;
@@ -41,16 +49,16 @@ fn read_credentials(reader: impl Read) -> Result<Credentials, &'static str> {
     reader
         .take((MAX_FILE + 1) as u64)
         .read_to_end(&mut bytes)
-        .map_err(|_| ERROR)?;
+        .map_err(|_| FILE_ERROR)?;
     if bytes.len() > MAX_FILE {
-        return Err(ERROR);
+        return Err(FILE_ERROR);
     }
-    let c: Credentials = serde_json::from_slice(&bytes).map_err(|_| ERROR)?;
+    let c: Credentials = serde_json::from_slice(&bytes).map_err(|_| FILE_ERROR)?;
     if [&c.client_id, &c.client_secret, &c.refresh_token]
         .iter()
         .any(|s| s.0.is_empty())
     {
-        return Err(ERROR);
+        return Err(FILE_ERROR);
     }
     Ok(c)
 }
@@ -77,19 +85,39 @@ fn client() -> Result<reqwest::Client, &'static str> {
         .build()
         .map_err(|_| ERROR)
 }
-async fn response(request: reqwest::RequestBuilder) -> Result<Zeroizing<Vec<u8>>, &'static str> {
-    let request = request.build().map_err(|_| ERROR)?;
-    if !allowed(request.url()) {
-        return Err(ERROR);
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Failure {
+    Offline,
+    Refused(u16),
+    Other,
+}
+fn quota_refused(status: u16) -> &'static str {
+    match status {
+        401 => "Google refused the quota request (401)",
+        403 => "Google refused the quota request (403)",
+        404 => "Google refused the quota request (404)",
+        429 => "Google refused the quota request (429)",
+        400..=499 => "Google refused the quota request",
+        _ => "Google's quota service is having trouble",
     }
-    let mut r = client()?.execute(request).await.map_err(|_| ERROR)?;
+}
+async fn response(request: reqwest::RequestBuilder) -> Result<Zeroizing<Vec<u8>>, Failure> {
+    let request = request.build().map_err(|_| Failure::Other)?;
+    if !allowed(request.url()) {
+        return Err(Failure::Other);
+    }
+    let client = client().map_err(|_| Failure::Other)?;
+    let mut r = client
+        .execute(request)
+        .await
+        .map_err(|_| Failure::Offline)?;
     if !r.status().is_success() {
-        return Err(ERROR);
+        return Err(Failure::Refused(r.status().as_u16()));
     }
     let mut bytes = Zeroizing::new(Vec::new());
-    while let Some(chunk) = r.chunk().await.map_err(|_| ERROR)? {
+    while let Some(chunk) = r.chunk().await.map_err(|_| Failure::Offline)? {
         if bytes.len() + chunk.len() > 1024 * 1024 {
-            return Err(ERROR);
+            return Err(Failure::Other);
         }
         bytes.extend_from_slice(&chunk);
     }
@@ -152,6 +180,13 @@ fn parse_quota(v: &Value, models: bool) -> Vec<Meter> {
         .into_iter()
         .collect()
 }
+/// An empty project ID is the same as none: the service treats a blank one as a real value.
+fn quota_body(project: Option<&Secret>) -> Value {
+    match project.filter(|p| !p.0.is_empty()) {
+        Some(p) => json!({"project":p.0.as_str()}),
+        None => json!({}),
+    }
+}
 async fn fetch(c: Credentials) -> Result<Vec<Meter>, &'static str> {
     let http = client()?;
     let bytes = response(http.post("https://oauth2.googleapis.com/token").form(&[
@@ -160,50 +195,65 @@ async fn fetch(c: Credentials) -> Result<Vec<Meter>, &'static str> {
         ("refresh_token", c.refresh_token.0.as_str()),
         ("grant_type", "refresh_token"),
     ]))
-    .await?;
-    let access: Access = serde_json::from_slice(&bytes).map_err(|_| ERROR)?;
+    .await
+    .map_err(|failure| match failure {
+        Failure::Offline => OFFLINE,
+        Failure::Refused(_) => SIGN_IN_REFUSED,
+        Failure::Other => ERROR,
+    })?;
+    let access: Access = serde_json::from_slice(&bytes).map_err(|_| SIGN_IN_REFUSED)?;
     if access.access_token.0.is_empty() {
-        return Err(ERROR);
+        return Err(SIGN_IN_REFUSED);
     }
     drop(bytes);
-    // The first host that answers ends the search, so the token is sent no more than needed.
+    let mut failed = None;
     for (operation, models) in [
         ("retrieveUserQuotaSummary", false),
         ("fetchAvailableModels", true),
     ] {
+        // The hosts can report different quota groups, so read both and keep the most used.
+        let mut meters = Vec::new();
         for host in [
             "daily-cloudcode-pa.googleapis.com",
             "cloudcode-pa.googleapis.com",
         ] {
-            let body = if let Some(p) = &c.project_id {
-                json!({"project":p.0.as_str()})
-            } else {
-                json!({})
-            };
-            if let Ok(bytes) = response(
+            match response(
                 http.post(format!("https://{host}/v1internal:{operation}"))
                     .bearer_auth(access.access_token.0.as_str())
-                    .json(&body),
+                    .header(reqwest::header::USER_AGENT, USER_AGENT)
+                    .json(&quota_body(c.project_id.as_ref())),
             )
             .await
             {
-                if let Ok(v) = serde_json::from_slice::<Value>(&bytes) {
-                    let meters = parse_quota(&v, models);
-                    if !meters.is_empty() {
-                        return Ok(meters);
+                Ok(bytes) => {
+                    if let Ok(v) = serde_json::from_slice::<Value>(&bytes) {
+                        meters.extend(parse_quota(&v, models));
                     }
                 }
+                Err(failure) => failed = Some(failure),
             }
         }
+        if let Some(m) = meters.into_iter().max_by(|a, b| {
+            a.used_pct
+                .partial_cmp(&b.used_pct)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        }) {
+            return Ok(vec![m]);
+        }
     }
-    Err(ERROR)
+    Err(match failed {
+        Some(Failure::Offline) => OFFLINE,
+        Some(Failure::Refused(status)) => quota_refused(status),
+        Some(Failure::Other) => ERROR,
+        None => NO_QUOTA,
+    })
 }
 pub fn probe(active: impl Fn() -> bool) -> Result<Vec<Meter>, &'static str> {
     // Gate before even resolving/opening the file; caller captures the enablement epoch.
     if !active() {
         return Err(ERROR);
     }
-    let file = std::fs::File::open(path().ok_or(ERROR)?).map_err(|_| ERROR)?;
+    let file = std::fs::File::open(path().ok_or(FILE_ERROR)?).map_err(|_| FILE_ERROR)?;
     let c = read_credentials(file)?;
     if !active() {
         return Err(ERROR);
@@ -239,7 +289,7 @@ mod tests {
             vec![b'x'; MAX_FILE + 1],
             b"{}".to_vec(),
         ] {
-            assert_eq!(read_credentials(&b[..]).err(), Some(ERROR));
+            assert_eq!(read_credentials(&b[..]).err(), Some(FILE_ERROR));
         }
         assert_eq!(probe(|| false).unwrap_err(), ERROR); // never opens any real file
         assert!(!ERROR.contains("FAKE"));
@@ -252,10 +302,45 @@ mod tests {
         std::fs::write(&file, vec![b'x'; MAX_FILE + 1]).unwrap();
         assert_eq!(
             read_credentials(std::fs::File::open(&file).unwrap()).err(),
-            Some(ERROR)
+            Some(FILE_ERROR)
         );
         std::fs::remove_file(file).unwrap();
         assert_eq!(probe(|| false).unwrap_err(), ERROR);
+    }
+    #[test]
+    fn a_blank_project_is_left_out_of_the_quota_request() {
+        let with = |file: &[u8]| {
+            let c = read_credentials(file).unwrap();
+            quota_body(c.project_id.as_ref())
+        };
+        let base =
+            r#""client_id":"FAKE_ID","client_secret":"FAKE_SECRET","refresh_token":"FAKE_REFRESH""#;
+        assert_eq!(with(format!("{{{base}}}").as_bytes()), json!({}));
+        assert_eq!(
+            with(format!(r#"{{{base},"project_id":""}}"#).as_bytes()),
+            json!({})
+        );
+        assert_eq!(
+            with(format!(r#"{{{base},"project_id":"fake-project"}}"#).as_bytes()),
+            json!({"project":"fake-project"})
+        );
+    }
+    #[test]
+    fn failure_messages_name_the_step_and_hold_nothing_from_a_reply() {
+        assert!(quota_refused(403).contains("403"));
+        assert!(quota_refused(418).contains("refused"));
+        assert!(quota_refused(503).contains("trouble"));
+        assert!(USER_AGENT.starts_with("antigravity/"));
+        for message in [
+            ERROR,
+            FILE_ERROR,
+            OFFLINE,
+            SIGN_IN_REFUSED,
+            NO_QUOTA,
+            quota_refused(403),
+        ] {
+            assert!(!message.contains("FAKE"));
+        }
     }
     #[test]
     fn redirects_are_not_followed() {

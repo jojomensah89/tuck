@@ -13,3 +13,5 @@ The Windows path constant `UNVERIFIED_WINDOWS_TOKEN_PATH` is unverified. The pin
 Summary bucket and fallback model responses are parsed conservatively: the most-used valid scoped allowance is one ring, not a general weekly or paired window. Only fixed labels, percentages, reset times and fixed errors cross IPC. Failures retain the last reading as Error at the normal five-minute cadence; no login is attempted. The existing epoch cancels work and prevents late results from restoring disabled rings.
 
 Development and tests use fake fixtures only. This reader has never run against a real account. No local Antigravity or T3 Code data was opened, printed, copied or listed.
+
+Google's private quota service appears to refuse clients it doesn't recognise, so quota requests send the same `antigravity/hub` User-Agent as T3 Code. Tuck identifies itself as Antigravity's client on those requests, which is part of why the service could stop working or be restricted.

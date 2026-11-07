@@ -49,7 +49,8 @@ export const SVG_ICONS = {
   gauge: ico('<path d="M4.4 15.25a7.25 7.25 0 1 1 11.2 0"/><path d="M10 11.5l3-3"/><circle class="f" cx="10" cy="11.5" r=".75"/>'),
   check: ico('<path d="m4.75 10.5 3.5 3.5 7-8"/>'),
   installUpdate: ico('<path d="M10 2.75v9.5m-3.5-3.5 3.5 3.5 3.5-3.5M3.75 13.25v3.5h12.5v-3.5"/>'),
-  refresh: ico('<path d="M16.25 10a6.25 6.25 0 1 1-1.85-4.45"/><path d="M15.25 2.75v3.5h-3.5"/>'),
+  restart: ico('<path d="M10 2.75V10"/><path d="M6 5.25a6.25 6.25 0 1 0 8 0"/>'),
+  refresh: ico('<path d="M3.75 8a6.5 6.5 0 0 1 11-3L16.25 6.5M16.25 12a6.5 6.5 0 0 1-11 3L3.75 13.5"/><path d="M16.25 3v3.5h-3.5M3.75 17v-3.5h3.5"/>'),
   external: ico('<path d="M11.25 3.25h5.5v5.5M16.75 3.25 9.5 10.5"/><path d="M14.25 12.25v2.5a2 2 0 0 1-2 2h-7a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h2.5"/>'),
   sparkle: ico('<path d="M10 3q.9 6.1 7 7-6.1.9-7 7-.9-6.1-7-7 6.1-.9 7-7z"/>'),
   alert: ico('<path d="M10 3.25 2.75 16.25h14.5z"/><path d="M10 8.25v3.5"/><circle class="f" cx="10" cy="14" r=".5"/>', 'warn'),
@@ -100,4 +101,15 @@ export function batteryGlyph(
     : '';
 
   return `<svg class="battery-glyph${stateClass}" viewBox="0 0 24 18" aria-hidden="true"><rect class="battery-outline" x="1" y="3" width="20" height="12" rx="2"/><rect class="battery-terminal" x="22" y="7" width="2" height="4" rx="1"/><rect class="battery-fill" x="3" y="5" width="${fillWidth.toFixed(2)}" height="8" rx="1"/>${bolt}</svg>`;
+}
+
+// Official, unmodified published product assets (downloaded 2026-11-07):
+// Claude: https://claude.ai/images/claude_app_icon.png (338px, above 3x at 32px).
+// Antigravity: https://antigravity.google/assets/image/brand/antigravity-icon__full-color.svg
+// Published by https://antigravity.google/press . Intrinsic artwork gradients are preserved.
+// Codex: OpenAI publishes no downloadable colour icon and the Windows app ships none, so this is a
+// community drawing: @lobehub/icons-static-svg@1.102.0 icons/codex-color.svg (MIT), unmodified.
+export function providerArtwork(provider: string): string | null {
+  const file = provider === 'claude' ? 'claude.png' : provider === 'antigravity' ? 'antigravity.svg' : provider === 'codex' ? 'codex.svg' : null;
+  return file ? `<img class="provider-artwork" src="/providers/${file}" alt="" aria-hidden="true"/>` : null;
 }

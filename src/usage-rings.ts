@@ -2,7 +2,7 @@
  * One provider card per connected source. Subscription providers combine their
  * 5-hour and weekly quotas into concentric rings; other providers keep one ring.
  */
-import { SVG_ICONS } from './icons.js';
+import { SVG_ICONS, providerArtwork } from './icons.js';
 import { createRing, meterWindow, providerInitial, providerMark, remainingPct, usageTone, type Ring } from './rings.js';
 import { resetSpan } from './usage.js';
 import type { Meter } from './types.js';
@@ -130,6 +130,8 @@ export function isOut(meter: Meter): boolean {
 }
 
 function glyphFor(meter: Meter): { key: string; markup: string } {
+  const artwork = providerArtwork(meter.provider);
+  if (artwork) return { key: `artwork-${meter.provider}`, markup: artwork };
   const mark = providerMark(meter.provider);
   if (mark) return { key: mark, markup: SVG_ICONS[mark] };
   const initial = providerInitial(meter);

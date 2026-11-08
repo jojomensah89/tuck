@@ -103,7 +103,7 @@ File drag entry temporarily reveals Tools > Files and its selected segment witho
 Springs are sampled into CSS `linear()`:
 
 - `--spring` (damping 0.68, ~5% overshoot): shell open and peek, 420ms.
-- `--spring-enter` (damping 0.78, ~2% overshoot): content and pages entering, 280ms.
+- `--spring-enter` (damping 0.78, ~2% overshoot): reserved for shell content; UI pages use `--ease-out`, 280ms.
 - `--ease-out`: `cubic-bezier(0.23, 1, 0.32, 1)` for UI, 200ms changes. Shell closing remains 300ms.
 - `--ease-exit`: the shared strong ease-out, content leaving in 100ms.
 
@@ -111,7 +111,7 @@ Durations: 100 (instant/exit), 160 (fast), 280 (base), 300 (close), 420 (shell).
 
 Shell morph: only the shell box animates width/height/radius. Its layers sit in `.island-clip`; the open layer is laid out once at the open size (`contain: strict`) and clipped, so the morph never relayouts page content. On open, compact content fades and scales out within 100ms, and the open layer fades and scales in (0.96 to 1) starting at 90ms, when the shell is ~65% open; the rail and segmented row follow 80ms later. On close the order reverses. No blur, no shadow, no permanent `will-change`.
 
-Tabs cross-fade vertically, matching the rail: the outgoing tab slides 8px opposite to the travel direction and fades in 100ms while the incoming tab slides 12px in on `--spring-enter`. Panels share one absolutely positioned box, so the content area never changes height. The rail is built once; only its state changes.
+Tabs cross-fade vertically, matching the rail: the outgoing tab slides 8px opposite to the travel direction and fades in 100ms while the incoming tab slides 12px in on `--ease-out`. Panels share one absolutely positioned box, so the content area never changes height. The rail is built once; only its state changes.
 
 Live content (compact slots, timers, seek bar, header) is written only when a value changes, so CSS animations never restart. The seek fill, track hover and equalizer are transform-only.
 
@@ -149,7 +149,7 @@ Activities combines notification previews and access. About supplies exact allow
 
 Captures are browser fixtures, not live account readings or native hardware verification. Native focus/fullscreen interactions require manual Windows acceptance testing.
 
-Refresh feedback is shared by Usage and Settings: disabled and aria-busy until `refresh_usage` completes on success or failure, at least 500ms, ending on a complete 600ms transform-only turn. Reduced motion uses a brief opacity transition, no rotation. Nothing animates at rest. Settings uses the same completion-aware command as the island.
+Refresh feedback is shared by Usage and Settings: disabled and aria-busy until `refresh_usage` completes on success or failure, at least 500ms, ending on a complete 240ms transform-only turn. Reduced motion uses a brief opacity transition, no rotation. Nothing animates at rest. Settings uses the same completion-aware command as the island.
 
 ## Clipboard cards
 

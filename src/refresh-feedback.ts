@@ -1,6 +1,6 @@
 import './refresh-feedback.css';
 
-/** Complete whole 600ms turns, with at least 500ms feedback even for a fast reply. */
+/** Complete whole 240ms turns, with at least 500ms feedback even for a fast reply. */
 export function beginRefresh(button: HTMLButtonElement): (() => Promise<void>) | null {
   if (button.disabled || button.getAttribute('aria-busy') === 'true') return null;
   button.disabled = true;
@@ -15,7 +15,7 @@ export function beginRefresh(button: HTMLButtonElement): (() => Promise<void>) |
     );
     if (animation?.effect) {
       // Use the animation's own clock so delayed paints cannot cut a turn short.
-      const turns = Math.max(1, Math.ceil(Number(animation.currentTime ?? 0) / 600));
+      const turns = Math.max(1, Math.ceil(Number(animation.currentTime ?? 0) / 240));
       animation.effect.updateTiming({ iterations: turns });
       // A motion-preference change or a removed button may cancel the animation.
       await animation.finished.catch(() => {});

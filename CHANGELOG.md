@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-11-08
+
+### Added
+- Add visual clipboard cards with image and file capture
+- Refresh feedback and official colour provider artwork
+- Make the file drop zone look like somewhere to drop files
+- Add confirmed opt-in Antigravity quota reader
+- Surface update alerts with explicit download and restart
+- Taller island layout with a Dictation tab and segmented parts
+
+### Fixed
+- Open the first-run welcome off the command thread
+- Polish clipboard previews and shelf drop feedback
+- Accept files dropped from File Explorer
+- Send the quota request Google's service expects from Antigravity
+- Remove unused island features and settings
+
 ## [0.2.1] - 2026-11-06
 
 ### Fixed

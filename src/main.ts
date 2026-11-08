@@ -1320,10 +1320,22 @@ window.addEventListener('tuck-preview',event=>{
   const detail=(event as CustomEvent).detail;
   if(detail&&typeof detail.title==='string'&&typeof detail.text==='string')showAnnouncement(`${detail.title}: ${detail.text}`);
 });
+let dragReturn: { section: string; state: IslandState } | null = null;
+window.addEventListener('tuck-drop-complete', () => { dragReturn = null; });
 function holdDrag(active:boolean):void {
   nativeDragActive=active;window.clearTimeout(closeTimer);
-  if(active){setState('open');rail.reveal('extensions');}
-  else onHover(hoverInside);
+  if(active){
+    dragReturn ??= { section: rail.section(), state };
+    setState('open');rail.reveal('extensions');
+  } else {
+    const previous=dragReturn;dragReturn=null;
+    // A drop stays open on Files so the new file shows; moving the pointer away closes it as usual
+    if(!previous){ setState('open'); return; }
+    // A drag that only passed over returns the person to where they were
+    rail.reveal(previous.section);
+    if(previous.state==='idle'&&!hoverInside) setState('idle');
+    else onHover(hoverInside);
+  }
 }
 window.addEventListener('tuck-drop-active',event=>holdDrag((event as CustomEvent).detail===true));
 window.addEventListener('tuck-drag-active',event=>holdDrag((event as CustomEvent).detail===true));

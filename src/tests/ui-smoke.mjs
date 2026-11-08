@@ -587,6 +587,30 @@ try {
   assert.equal(await native.locator('#isl').getAttribute('data-state'),'peek');
   assert.match(await native.locator('#cc').textContent(),/Fixture notification/);
   await native.screenshot({path:path.join(root,'artifacts','island-v1.png')});
+  // File-drag navigation uses fixtures; no Explorer/OLE claim.
+  const dragEvent = active => native.evaluate(active => window.dispatchEvent(new CustomEvent('tuck-drop-active',{detail:active})), active);
+  for (const origin of ['clipboard','today','collapsed']) {
+    await native.evaluate(()=>window.__emitNative('open-island',null));
+    if (origin === 'clipboard') { await native.locator('#tab-tools').click(); await native.getByRole('tab',{name:'Clipboard',exact:true}).click(); }
+    else await native.locator('#tab-today').click();
+    if (origin === 'collapsed') await native.keyboard.press('Escape');
+    if(origin==='clipboard') await native.locator('#isl').screenshot({path:path.join(root,'docs/screens/motion-switch-clipboard-fixture.png')});
+    await dragEvent(true);
+    if(origin==='clipboard') await native.locator('#isl').screenshot({path:path.join(root,'docs/screens/motion-switch-files-fixture.png')});
+    assert.equal(await native.locator('#tab-tools').getAttribute('aria-selected'),'true',origin+' drag selects Tools');
+    assert.equal(await native.getByRole('tab',{name:'Files',exact:true}).getAttribute('aria-selected'),'true',origin+' drag selects Files');
+    assert.equal(await native.locator('#extensionsPage').evaluate(el=>!el.inert),true);
+    await dragEvent(false);
+    assert.equal(await native.locator('.tab-panel.on').getAttribute('data-tab'),origin==='clipboard'?'tools':'today','Leave restores tab');
+    if(origin==='clipboard') assert.equal(await native.getByRole('tab',{name:'Clipboard',exact:true}).getAttribute('aria-selected'),'true','Leave restores part');
+    if(origin==='collapsed') assert.equal(await native.locator('#isl').getAttribute('data-state'),'idle','Leave restores collapsed state');
+  }
+  await dragEvent(true);
+  await native.evaluate(()=>window.dispatchEvent(new Event('tuck-drop-complete')));
+  await dragEvent(false);
+  assert.equal(await native.locator('#tab-tools').getAttribute('aria-selected'),'true','Drop stays on Tools');
+  assert.equal(await native.getByRole('tab',{name:'Files',exact:true}).getAttribute('aria-selected'),'true','Drop stays on Files');
+  await native.locator('#isl').screenshot({path:path.join(root,'docs/screens/motion-drop-fixture.png')});
   // Phase-two presentation uses synthetic bridge fixtures, never a live-player claim.
   await native.evaluate(()=>window.__emitNative('open-island',null));
   await native.getByRole('tab',{name:'Media',exact:true}).click();

@@ -56,7 +56,7 @@ export function mountExtensions():void {
   const setDropActive=(active:boolean)=>{if(active===dropActive)return;dropActive=active;window.dispatchEvent(new CustomEvent('tuck-drop-active',{detail:active}));};
   void getCurrentWebviewWindow().onDragDropEvent(event=>{
    if(event.payload.type==='enter'||event.payload.type==='over')setDropActive(true);
-   if(event.payload.type==='drop'){const paths=event.payload.paths;void run(()=>invoke('shelf_add',{paths})).finally(()=>setDropActive(false));}
+   if(event.payload.type==='drop'){window.dispatchEvent(new Event('tuck-drop-complete'));const paths=event.payload.paths;void run(()=>invoke('shelf_add',{paths})).finally(()=>setDropActive(false));}
    if(event.payload.type==='leave')setDropActive(false);
   }).catch(()=>{if(status)status.textContent='Native file drop is unavailable';});
   void refresh().catch(()=>{if(status)status.textContent='Windows integrations unavailable';});

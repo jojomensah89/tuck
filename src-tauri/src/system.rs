@@ -806,6 +806,22 @@ pub fn open_settings_view(app: &AppHandle, view: &str, check: bool) -> Result<()
     }
 }
 
+/// Opens a Settings view from a command or task. Window lookup and creation run as one
+/// step on the event loop, so two callers can never build two Settings windows.
+pub(crate) async fn open_settings_view_on_main(
+    app: AppHandle,
+    view: &'static str,
+) -> Result<(), String> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let handle = app.clone();
+    app.run_on_main_thread(move || {
+        let _ = tx.send(open_settings_view(&handle, view, false));
+    })
+    .map_err(|e| e.to_string())?;
+    rx.await
+        .map_err(|_| "Settings window unavailable".to_owned())?
+}
+
 /// Frontend command to open settings window without phantom successes.
 #[tauri::command]
 pub(crate) async fn open_settings_cmd(app: AppHandle, view: Option<String>) -> Result<(), String> {

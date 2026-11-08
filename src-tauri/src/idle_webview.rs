@@ -14,6 +14,10 @@ fn memory_target(window: &WebviewWindow, low: bool, generation: u64) {
         if GENERATION.load(Ordering::Acquire) != generation {
             return;
         }
+        #[cfg(debug_assertions)]
+        if std::env::var_os("TUCK_DROP_TRACE").is_some() {
+            eprintln!("drop-memory low={low}");
+        }
         let result = (|| {
             let view = platform.controller().CoreWebView2()?;
             let view: ICoreWebView2_19 = view.cast()?;
@@ -38,6 +42,8 @@ pub fn island_activity(window: WebviewWindow, active: bool) {
     }
     let generation = GENERATION.fetch_add(1, Ordering::AcqRel) + 1;
     if active {
+        #[cfg(windows)]
+        crate::file_drop::refresh(&window);
         memory_target(&window, false, generation);
         return;
     }

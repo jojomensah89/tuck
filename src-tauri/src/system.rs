@@ -289,6 +289,13 @@ pub fn center_on_primary_monitor(win: &WebviewWindow) -> Result<(), Box<dyn std:
         let mon_size = mon.size();
         let x = mon_pos.x + (mon_size.width as i32 - size.width as i32) / 2;
         let y = mon_pos.y;
+        // The OLE integration probe must never overlap the installed island.
+        #[cfg(debug_assertions)]
+        let y = if win.app_handle().config().identifier == "com.jojo.tuck.drop-probe" {
+            y + 400
+        } else {
+            y
+        };
         let current_pos = win.outer_position()?;
         if current_pos.x != x || current_pos.y != y {
             win.set_position(tauri::PhysicalPosition::new(x, y))?;
@@ -404,6 +411,14 @@ fn apply_hit_test(
         let hovered = _sampled_hovered;
         // Tauri/Wry and Tao execute this setter inline when already on the event thread.
         let _ = target.set_ignore_cursor_events(!hovered);
+        #[cfg(debug_assertions)]
+        if std::env::var_os("TUCK_DROP_TRACE").is_some() {
+            eprintln!(
+                "drop-hit hovered={hovered} size={}x{}",
+                hit.width.load(Ordering::Acquire),
+                hit.height.load(Ordering::Acquire)
+            );
+        }
         if was_hovered.swap(hovered, Ordering::AcqRel) != hovered {
             let _ = app.emit("hover", hovered);
         }

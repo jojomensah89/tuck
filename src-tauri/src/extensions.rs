@@ -139,6 +139,14 @@ fn add_paths(paths: Vec<PathBuf>) -> Result<Vec<ShelfItem>, String> {
         return Err("Shelf holds at most 100 files".into());
     }
     state.shelf.extend(items.clone());
+    #[cfg(debug_assertions)]
+    if std::env::var_os("TUCK_DROP_TRACE").is_some() {
+        eprintln!(
+            "drop-shelf added={} total={}",
+            items.len(),
+            state.shelf.len()
+        );
+    }
     Ok(items)
 }
 #[tauri::command]

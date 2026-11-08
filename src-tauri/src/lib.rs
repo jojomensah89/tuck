@@ -3,6 +3,8 @@ pub mod clipboard_history;
 pub mod desktop_signals;
 pub mod dictation;
 pub mod extensions;
+#[cfg(windows)]
+mod file_drop;
 mod idle_webview;
 pub mod installed_usage;
 mod legacy_credentials;
@@ -304,6 +306,9 @@ pub fn run() {
                     system::apply_island_styles(HWND(hwnd.0 as _));
                 }
 
+                #[cfg(windows)]
+                file_drop::start(&main_win);
+
                 // Initial pass-through until cursor enters island
                 let _ = main_win.set_ignore_cursor_events(true);
                 let _ = main_win.show();
@@ -322,6 +327,12 @@ pub fn run() {
                     match event {
                         WindowEvent::ScaleFactorChanged { .. } | WindowEvent::Moved(_) => {
                             let _ = system::center_on_primary_monitor(&win_clone);
+                        }
+                        WindowEvent::DragDrop(event) => {
+                            #[cfg(debug_assertions)]
+                            if std::env::var_os("TUCK_DROP_TRACE").is_some() {
+                                eprintln!("drop-event {event:?}");
+                            }
                         }
                         WindowEvent::Focused(false) =>
                         {
@@ -359,6 +370,8 @@ pub fn run() {
 
 /// Central shutdown cleanup: cancels signals, un-hides native OS flyout, and shuts down dictation & clipboard.
 pub fn run_shutdown_cleanup(app: &AppHandle) {
+    #[cfg(windows)]
+    file_drop::stop();
     lifecycle::stop();
     media::stop();
     desktop_signals::stop();

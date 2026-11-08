@@ -1322,11 +1322,13 @@ try {
   await dictationEvent(13,'idle');
   await native.evaluate(()=>window.__emitNative('dictation_state',{revision:14,sessionId:1,status:'idle',message:'Inserted',modelInstalled:true,activeModelLabel:'Base'}));
   await native.locator('#isl').screenshot({path:path.join(root,'docs/screens/dictation-done.png')});
+  await native.locator('#isl').focus();
   await native.keyboard.press('Escape');
   await native.mouse.move(0,220);
   await native.waitForTimeout(600);
   await native.evaluate(()=>window.__emitNative('dictation_transcript',{reason:'Copied'}));
   await native.waitForTimeout(450);
+  assert.equal(await native.locator('#isl').getAttribute('data-state'),'peek');
   assert.equal(await native.locator('#statusMessage').textContent(),'Copied, paste with Ctrl+V');
   assert.match(await native.locator('#cc, #openAnnouncement').allTextContents().then(a=>a.join(' ')),/Copied, paste with Ctrl\+V/);
   await native.locator('#isl').screenshot({path:path.join(root,'docs/screens/dictation-copied.png')});

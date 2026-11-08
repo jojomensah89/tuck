@@ -170,3 +170,12 @@ Images are held in memory while history is on, so their budget is 128 MiB, about
 Recording shows a microphone, Recording label and amplitude meter, never provisional words. Stop closes capture and produces one authoritative result. Parakeet may process buffered audio privately; its guarded fallback remains. Whisper performs only final inference. Settings has no live transcript switch.
 
 Keep the selected engine warm for repeated dictation and while the Dictation tab is active, then unload after two idle minutes. Review remains off by default and existing review preferences survive. Review Insert uses the currently focused editable control. No editable control means copy, with the peek `Copied, paste with Ctrl+V`, regardless of review preference. Never type into Tuck or passwords; ambiguous partial insertion disables automatic retries. The island remains nonactivating.
+
+
+### Detail polish
+
+Active lyrics and unavailable lyric controls retain their ink hierarchy on touch devices as well as with a mouse. The dictation model label uses 12px secondary type. Today metadata shares a 16px line box. Dense AI values use 11px minimum type; exhausted quota text uses warn-ink for contrast while rings retain their semantic fill tone.
+
+Compact owner changes and returns settle in 160ms on ease-out; rail entry fades in 200ms. The shell keeps its existing spring. Keyboard input and reduced motion remain immediate. No new timers or idle animations. Welcome uses the settings lead style and row-aligned text; its instruction is one short sentence.
+
+Open-state announcements belong to the clipped island, aligned with the content insets in a 12px line box above the section row; they never paint against the native canvas edge.

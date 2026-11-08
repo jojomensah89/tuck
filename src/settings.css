@@ -755,6 +755,7 @@ dialog::backdrop { background: #0008; }
 .welcome { max-width: 1120px; }
 .welcome .about-mark { display: inline-block; }
 .welcome h1 { margin-top: var(--s-3); }
+.welcome > h1, .welcome > .lead { padding-inline: var(--row-pad-x); }
 .welcome-actions { display: flex; gap: var(--s-2); margin-top: var(--s-5); }
 body.welcoming .view, body.welcoming .search-summary { display: none; }
 body.welcoming .sidebar { visibility: hidden; }
@@ -768,9 +769,9 @@ body.welcoming .sidebar { visibility: hidden; }
 #providerSwitches .row-title { display: flex; align-items: center; gap: var(--s-3); }
 #providerSwitches .provider-artwork, #providerSwitches svg.ico { width: 32px; height: 32px; object-fit: contain; flex: none; }
 #providerSwitches svg.ico { fill: currentColor; }
-.provider-refresh { display: grid; place-items: center; width: 36px; height: 36px; padding: 8px; border: 0; border-radius: 8px; background: transparent; color: var(--ink-2); cursor: pointer; }@media (hover: hover) and (pointer: fine) { 
+.provider-refresh { display: grid; place-items: center; width: var(--hit); height: var(--hit); padding: var(--s-2); border: 0; border-radius: var(--r-md); background: transparent; color: var(--ink-2); cursor: pointer; }@media (hover: hover) and (pointer: fine) {
 .provider-refresh:hover { background: var(--control-hover); color: var(--ink); } }
-.provider-refresh:active { transform: scale(0.96); }
-.provider-refresh svg.ico { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.5px; stroke-linecap: round; stroke-linejoin: round; }
+.provider-refresh:active { transform: scale(var(--press)); }
+.provider-refresh svg.ico { width: var(--i-md); height: var(--i-md); fill: none; stroke: currentColor; stroke-width: 1.5px; stroke-linecap: round; stroke-linejoin: round; }
 .provider-refresh svg.ico path { vector-effect: non-scaling-stroke; }
 #providerSwitches svg.ico.brand-mark { background: none; }

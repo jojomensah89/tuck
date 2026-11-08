@@ -5,54 +5,53 @@
   gap: var(--s-2);
 }
 
-/* The product's one dashed element: it fills an empty shelf and is a slim strip above a list */
+/* The product's one dashed element. It fills an empty shelf, and covers the tiles while
+   a file is dragged over the island; otherwise a shelf with files shows only the tiles */
 .shelf-drop {
   flex: 1;
   width: 100%;
-  min-height: var(--hit-sm);
+  min-height: 0;
   flex-direction: column;
-  gap: var(--s-3);
+  gap: var(--s-1);
   /* A filled well with a dashed edge reads as somewhere to put things, not as an outline */
   background: var(--raise);
   border: 1px dashed var(--ink-3);
   border-radius: var(--r-lg);
   color: var(--ink-2);
-  font-size: var(--t-md);
-  transition: 
+  transition:
     transform var(--d-instant) var(--ease-out);
 }
 
 .shelf-drop svg.ico {
-  width: var(--s-12);
-  height: var(--s-12);
+  width: var(--i-lg);
+  height: var(--i-lg);
+  margin-bottom: var(--s-1);
   color: var(--ink);
-  transition: 
+  transition:
     transform var(--d-base) var(--ease-out);
 }
 
-.has-files .shelf-drop {
-  flex: 0 0 var(--hit-sm);
-  flex-direction: row;
-  gap: var(--s-2);
-  border-radius: var(--r-md);
-  font-size: var(--t-sm);
+.drop-text {
+  font-size: var(--t-base);
+  font-weight: var(--w-medium);
+  color: var(--ink);
 }
 
-.has-files .shelf-drop svg.ico {
-  width: var(--i-sm);
-  height: var(--i-sm);
-}@media (hover: hover) and (pointer: fine) { 
+.drop-hint {
+  font-size: var(--t-xs);
+  color: var(--ink-2);
+}
 
-.shelf-drop:hover {
-  background: var(--raise-hover);
-  color: var(--ink);
-  border-color: var(--ink-2);
-} }
+@media (hover: hover) and (pointer: fine) {
+  .shelf-drop:hover {
+    background: var(--raise-hover);
+    border-color: var(--ink-2);
+  }
+}
 
 .extensions.drag-over .shelf-drop {
   transform: scale(1.01);
   background: var(--raise-hover);
-  color: var(--ink);
   border-color: var(--ok);
 }
 
@@ -62,70 +61,257 @@
   transform: scale(1.12);
 }
 
+/* The hint keeps its line so the title does not jump when it changes */
+.extensions.drag-over .drop-hint {
+  visibility: hidden;
+}
+
 .shelf-drop:active {
   transform: scale(var(--press));
 }
 
-.ext-body {
-  overflow: auto;
-  overscroll-behavior: contain;
-  min-height: 0;
-  flex: 1;
-  font-size: var(--t-sm);
-  scrollbar-width: none;
-}
-
-.ext-body:empty {
+.extensions.has-files:not(.drag-over) .shelf-drop,
+.extensions:not(.has-files) .shelf,
+.extensions.drag-over .shelf {
   display: none;
 }
 
-.ext-row {
-  display: flex;
-  align-items: center;
-  gap: var(--s-1);
-  min-height: var(--hit);
-  border-radius: var(--r-md);
-  transition: none;
-}@media (hover: hover) and (pointer: fine) { 
+/* ---------- Tiles ---------- */
 
-.ext-row:hover,
-.ext-row:focus-within {
-  background: var(--raise-subtle);
-} }
-
-.ext-row-text {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  align-items: baseline;
-  gap: var(--s-2);
-  padding-left: var(--s-2);
+.shelf {
+  position: relative;
+  /* Centred in the part; the arrows are placed against the tile previews */
+  margin: auto 0;
 }
 
+.shelf-tiles {
+  position: relative;
+  display: flex;
+  gap: var(--s-2);
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
+  /* Room for the press scale and the highlight at the top and bottom */
+  padding: var(--s-1) 0;
+}
 
-.ext-row-name {
+.shelf-tiles::-webkit-scrollbar {
+  display: none;
+}
+
+.shelf-tile {
+  position: relative;
+  flex: 0 0 var(--shelf-tile);
   min-width: 0;
+}
+
+.tile-open {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  width: 100%;
+  gap: var(--s-1);
+  transition: transform var(--d-fast) var(--ease-out);
+}
+
+.tile-open:active {
+  transform: scale(var(--press));
+}
+
+/* Rings sit inside the tile, where the row cannot clip them */
+.tile-open:focus-visible {
+  outline-offset: -2px;
+  border-radius: var(--r-lg);
+}
+
+.tile-preview {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--shelf-tile);
+  height: var(--shelf-tile);
+  border-radius: var(--r-lg);
+  background: var(--raise);
+  color: var(--ink-2);
+  overflow: hidden;
+}
+
+.tile-preview svg.ico {
+  width: var(--i-lg);
+  height: var(--i-lg);
+}
+
+/* Explorer's own thumbnail, whole, on the neutral well */
+.tile-preview img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  padding: var(--s-2);
+  object-fit: contain;
+  opacity: 0;
+  transition: opacity var(--d-fast) var(--ease-out);
+}
+
+.tile-preview img.loaded {
+  opacity: 1;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .tile-open:hover .tile-preview {
+    background: var(--raise-hover);
+  }
+}
+
+.tile-name {
+  min-width: 0;
+  padding: 0 var(--s-half);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  text-align: center;
+  font-size: var(--t-sm);
+  color: var(--ink);
 }
 
-.ext-row-meta {
-  flex-shrink: 0;
+.tile-size {
+  text-align: center;
   font-size: var(--t-xs);
   color: var(--ink-2);
   font-variant-numeric: tabular-nums;
 }
 
-
-.ext-row .icon-btn {
-  width: var(--hit-sm);
-  height: var(--hit-sm);
+.shelf-tile.missing .tile-preview {
+  color: var(--ink-3);
 }
 
-.ext-row .grip {
-  cursor: grab;
-  color: var(--ink-3);
+.shelf-tile.missing .tile-name {
+  color: var(--ink-2);
+}
+
+/* A just-added file is outlined in the drop colour for a moment */
+.tile-flash {
+  position: absolute;
+  inset: 0;
+  border: 2px solid var(--ok);
+  border-radius: inherit;
+  background: var(--ok-wash);
+  pointer-events: none;
+}
+
+/* Remove and show in folder: 32px targets on the preview's top corners, shown on hover or focus */
+.tile-action {
+  position: absolute;
+  top: var(--s-1);
+  width: var(--hit-sm);
+  height: var(--hit-sm);
+  opacity: 0;
+  transition: opacity var(--d-fast) var(--ease-out);
+}
+
+.tile-remove {
+  right: 0;
+}
+
+.tile-reveal {
+  left: 0;
+}
+
+.tile-action-dot {
+  display: grid;
+  place-items: center;
+  width: var(--s-5);
+  height: var(--s-5);
+  border-radius: var(--r-round);
+  background: var(--raise-active);
+  color: var(--ink);
+  transition: transform var(--d-fast) var(--ease-out);
+}
+
+.tile-action-dot svg.ico {
+  width: var(--i-xs);
+  height: var(--i-xs);
+}
+
+.tile-action:active .tile-action-dot {
+  transform: scale(var(--press));
+}
+
+.tile-action:focus-visible {
+  outline-offset: -2px;
+  border-radius: var(--r-round);
+}
+
+.shelf-tile:focus-within .tile-action {
+  opacity: 1;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .shelf-tile:hover .tile-action {
+    opacity: 1;
+  }
+}
+
+/* Without hover (touch) the actions stay visible */
+@media (hover: none) {
+  .tile-action {
+    opacity: 1;
+  }
+}
+
+/* Edge arrows: only on a side with more to scroll, centred on the previews */
+.shelf-scroll {
+  position: absolute;
+  top: calc(var(--s-1) + var(--shelf-tile) / 2 - var(--hit-sm) / 2);
+  z-index: 1;
+  width: var(--hit-sm);
+  height: var(--hit-sm);
+  border-radius: var(--r-round);
+  background: var(--raise-active);
+  color: var(--ink);
+  transition: transform var(--d-fast) var(--ease-out);
+}
+
+.shelf-scroll[hidden] {
+  display: none;
+}
+
+.shelf-scroll.prev {
+  left: 0;
+}
+
+.shelf-scroll.next {
+  right: 0;
+}
+
+.shelf-scroll:active {
+  transform: scale(var(--press));
+}
+
+/* "Clear" in the segmented row: a quiet text button the height of the icons beside it */
+.text-btn {
+  min-height: var(--hit-sm);
+  padding: 0 var(--s-3);
+  border-radius: var(--r-md);
+  font-size: var(--t-sm);
+  color: var(--ink-2);
+  transition: transform var(--d-fast) var(--ease-out);
+}
+
+.text-btn[hidden] {
+  display: none;
+}
+
+.text-btn:active {
+  transform: scale(var(--press));
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .text-btn:hover {
+    background: var(--raise);
+    color: var(--ink);
+  }
 }
 
 .ext-status {
@@ -140,4 +326,9 @@
   display: none;
 }
 
-@media (prefers-reduced-motion: reduce) { .extensions.drag-over .shelf-drop, .extensions.drag-over .shelf-drop svg.ico { transform: none; } }
+@media (prefers-reduced-motion: reduce) {
+  .extensions.drag-over .shelf-drop,
+  .extensions.drag-over .shelf-drop svg.ico {
+    transform: none;
+  }
+}

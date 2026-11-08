@@ -139,14 +139,18 @@ fn add_paths(paths: Vec<PathBuf>) -> Result<Vec<ShelfItem>, String> {
         return Err("Shelf holds at most 100 files".into());
     }
     state.shelf.extend(items.clone());
+    let total = state.shelf.len();
+    drop(state);
+    // Each thumbnail is made once, in the background, as soon as its file arrives
+    for item in &items {
+        crate::shell_thumbs::prefetch(&crate::shell_thumbs::shelf_key(&item.id), &item.path);
+    }
     #[cfg(debug_assertions)]
     if std::env::var_os("TUCK_DROP_TRACE").is_some() {
-        eprintln!(
-            "drop-shelf added={} total={}",
-            items.len(),
-            state.shelf.len()
-        );
+        eprintln!("drop-shelf added={} total={total}", items.len());
     }
+    #[cfg(not(debug_assertions))]
+    let _ = total;
     Ok(items)
 }
 #[tauri::command]
@@ -178,13 +182,24 @@ pub async fn shelf_pick(window: WebviewWindow) -> Result<(), String> {
 #[tauri::command]
 pub fn shelf_remove(window: WebviewWindow, id: Option<String>) -> Result<(), String> {
     ensure(&window, false)?;
-    let mut state = state().lock().unwrap_or_else(|p| p.into_inner());
-    if let Some(id) = id {
-        state.shelf.retain(|item| item.id != id);
-    } else {
-        state.shelf.clear();
-    }
+    remove_items(id.as_deref());
     Ok(())
+}
+/// Takes items off the shelf (all of them for `None`) and drops their thumbnails.
+/// The files themselves are never touched.
+fn remove_items(id: Option<&str>) {
+    let mut state = state().lock().unwrap_or_else(|p| p.into_inner());
+    let removed = state
+        .shelf
+        .iter()
+        .filter(|item| id.is_none_or(|id| item.id == id))
+        .map(|item| item.id.clone())
+        .collect::<Vec<_>>();
+    state.shelf.retain(|item| !removed.contains(&item.id));
+    drop(state);
+    for id in removed {
+        crate::shell_thumbs::forget(&crate::shell_thumbs::shelf_key(&id));
+    }
 }
 fn shelf_path(id: &str) -> Result<PathBuf, String> {
     snapshot()
@@ -193,6 +208,37 @@ fn shelf_path(id: &str) -> Result<PathBuf, String> {
         .find(|item| item.id == id)
         .map(|item| item.path)
         .ok_or("Shelf item unavailable".into())
+}
+/// Only a file that is on the shelf can be opened, and only by its shelf id: the
+/// webview never supplies a path.
+fn openable_path(id: &str) -> Result<PathBuf, String> {
+    let path = shelf_path(id)?;
+    if !path.is_file() {
+        return Err("File no longer exists".into());
+    }
+    Ok(crate::shell_thumbs::shell_path(&path))
+}
+#[tauri::command]
+pub fn shelf_open(window: WebviewWindow, id: String) -> Result<(), String> {
+    ensure(&window, false)?;
+    let path = openable_path(&id)?;
+    window
+        .opener()
+        .open_path(path.to_string_lossy(), None::<&str>)
+        .map_err(|_| "Could not open file".into())
+}
+#[tauri::command]
+pub async fn shelf_thumbnail(
+    window: WebviewWindow,
+    id: String,
+) -> Result<crate::shell_thumbs::Thumb, String> {
+    ensure(&window, false)?;
+    let path = shelf_path(&id)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::shell_thumbs::thumbnail(&crate::shell_thumbs::shelf_key(&id), &path)
+    })
+    .await
+    .map_err(|_| "Thumbnail worker failed".to_string())
 }
 #[tauri::command]
 pub fn shelf_reveal(window: WebviewWindow, id: String) -> Result<(), String> {
@@ -439,6 +485,45 @@ mod tests {
         assert!(json.get("call").is_none());
         assert!(json.get("calendar").is_none());
         assert!(json.get("radios").is_none());
+    }
+
+    #[test]
+    fn open_is_restricted_to_shelf_items() {
+        let path = std::env::temp_dir().join(format!("tuck-open-{}.txt", uuid::Uuid::new_v4()));
+        std::fs::write(&path, b"sample").unwrap();
+        let added = add_paths(vec![path.clone()]).unwrap();
+        let id = added[0].id.clone();
+        assert_eq!(
+            openable_path(&id).unwrap(),
+            crate::shell_thumbs::shell_path(&added[0].path)
+        );
+        // Anything that is not a shelf id is refused, including a path
+        assert!(openable_path("not-a-shelf-id").is_err());
+        assert!(openable_path(&path.to_string_lossy()).is_err());
+        // A file that went away is reported, not handed to the shell
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(openable_path(&id).unwrap_err(), "File no longer exists");
+        remove_items(Some(&id));
+        assert!(openable_path(&id).is_err());
+    }
+
+    #[test]
+    fn removing_items_drops_their_thumbnails_but_not_the_files() {
+        let path = std::env::temp_dir().join(format!("tuck-thumb-{}.txt", uuid::Uuid::new_v4()));
+        std::fs::write(&path, b"sample").unwrap();
+        let added = add_paths(vec![path.clone()]).unwrap();
+        let key = crate::shell_thumbs::shelf_key(&added[0].id);
+        // Adding registers the item, so its thumbnail is wanted and made once
+        let first = crate::shell_thumbs::thumbnail(&key, &added[0].path);
+        assert_eq!(crate::shell_thumbs::thumbnail(&key, &added[0].path), first);
+        remove_items(Some(&added[0].id));
+        assert_eq!(
+            crate::shell_thumbs::thumbnail(&key, &added[0].path),
+            crate::shell_thumbs::Thumb::None,
+            "a removed item has no thumbnail"
+        );
+        assert!(path.exists());
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]

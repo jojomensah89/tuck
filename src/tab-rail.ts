@@ -408,7 +408,7 @@ export function mountTabRail(options: TabRailOptions): TabRail {
     const chain: ScrollMetrics[] = [];
     for (let el: Element | null = target; el && el !== panel; el = el.parentElement) {
       if (el instanceof HTMLElement && el.hasAttribute('data-horizontal-scroll')) {
-        chain.push({ scrollTop: el.scrollLeft, scrollHeight: el.scrollWidth, clientHeight: el.clientWidth });
+        chain.push({ scrollTop: el.scrollLeft, scrollHeight: el.scrollWidth, clientHeight: el.clientWidth, sideways: true });
       }
       if (el instanceof HTMLElement && el.scrollHeight > el.clientHeight + 1) {
         const style = getComputedStyle(el);

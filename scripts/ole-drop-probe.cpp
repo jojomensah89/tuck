@@ -96,6 +96,16 @@ struct Data : IDataObject {
     return OLE_E_ADVISENOTSUPPORTED;
   }
 };
+static bool over_island() {
+  POINT p;
+  GetCursorPos(&p);
+  if (p.x < box.left || p.x >= box.right || p.y < box.top || p.y >= box.bottom)
+    return false;
+  for (HWND h = WindowFromPoint(p); h; h = GetParent(h))
+    if (h == island)
+      return true;
+  return false;
+}
 struct Source : IDropSource {
   ULONG refs = 1;
   HRESULT STDMETHODCALLTYPE QueryInterface(REFIID id, void **out) override {
@@ -111,9 +121,11 @@ struct Source : IDropSource {
   ULONG STDMETHODCALLTYPE Release() override { return --refs; }
   HRESULT STDMETHODCALLTYPE QueryContinueDrag(BOOL escape,
                                               DWORD keys) override {
-    return escape || (foreign && !(keys & MK_LBUTTON)) ? DRAGDROP_S_CANCEL
-           : !(keys & MK_LBUTTON)                      ? DRAGDROP_S_DROP
-                                                       : S_OK;
+    if (escape)
+      return DRAGDROP_S_CANCEL;
+    if (!(keys & MK_LBUTTON))
+      return over_island() ? DRAGDROP_S_DROP : DRAGDROP_S_CANCEL;
+    return S_OK;
   }
   HRESULT STDMETHODCALLTYPE GiveFeedback(DWORD effect) override {
     POINT pt;
@@ -123,7 +135,7 @@ struct Source : IDropSource {
     for (HWND h = leaf; h; h = GetParent(h))
       if (h == island)
         ours = true;
-    foreign = pt.y >= box.top && pt.y < box.bottom && !ours;
+    foreign = !ours;
     printf("t=%llu point=%ld,%ld effect=%lu", GetTickCount64() - started, pt.x,
            pt.y, effect);
     for (HWND h = leaf; h; h = GetParent(h))
@@ -206,7 +218,19 @@ int wmain(int argc, wchar_t **argv) {
     lateChild = CreateWindowW(L"STATIC", L"", WS_CHILD | WS_VISIBLE, 0, 0,
                               box.right - box.left, box.bottom - box.top,
                               island, nullptr, wc.hInstance, nullptr);
-    Sleep(500);
+    printf("late-child hwnd=%p error=%lu\n", lateChild, GetLastError());
+    // OLE registration marshals messages to the child HWND's owning thread.
+    // Pump that thread while waiting; sleeping here can block the registration.
+    DWORD deadline = GetTickCount() + 3000;
+    do {
+      while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
+        TranslateMessage(&message);
+        DispatchMessageW(&message);
+      }
+      if (GetPropW(lateChild, L"OleDropTargetInterface"))
+        break;
+      Sleep(10);
+    } while (GetTickCount() < deadline);
     printf("late-child registered=%p\n",
            GetPropW(lateChild, L"OleDropTargetInterface"));
     if (!lateChild || !GetPropW(lateChild, L"OleDropTargetInterface")) {
@@ -216,6 +240,11 @@ int wmain(int argc, wchar_t **argv) {
       OleUninitialize();
       return 5;
     }
+    DestroyWindow(lateChild);
+    DestroyWindow(sourceWindow);
+    OleUninitialize();
+    puts("REGISTRATION PASS (before island activity)");
+    return 0;
   }
   Data data;
   data.path = argv[2];
@@ -239,7 +268,7 @@ int wmain(int argc, wchar_t **argv) {
     Sleep(1500);
     for (int y = 25; y <= dy; y += 5) {
       move(x, box.top + y);
-        Sleep(120);
+      Sleep(120);
     }
     Sleep(700);
     move(0, 0, MOUSEEVENTF_LEFTUP);
@@ -248,6 +277,7 @@ int wmain(int argc, wchar_t **argv) {
   puts("DoDragDrop");
   HRESULT hr = DoDragDrop(&data, &source, DROPEFFECT_COPY, &effect);
   worker.join();
+  foreign = !over_island();
   printf("RESULT hr=%lx effect=%lu foreign=%d\n", hr, effect, foreign);
   move(x, box.bottom + 100);
   if (lateChild)
@@ -255,5 +285,5 @@ int wmain(int argc, wchar_t **argv) {
   ReleaseCapture();
   DestroyWindow(sourceWindow);
   OleUninitialize();
-  return hr == DRAGDROP_S_DROP && effect == DROPEFFECT_COPY ? 0 : 1;
+  return hr == DRAGDROP_S_DROP && effect == DROPEFFECT_COPY && !foreign ? 0 : 1;
 }

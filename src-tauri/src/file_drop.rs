@@ -200,7 +200,7 @@ pub(crate) fn start(window: &WebviewWindow) {
     }
     use windows::Win32::UI::{
         Accessibility::SetWinEventHook,
-        WindowsAndMessaging::{EVENT_OBJECT_CREATE, EVENT_OBJECT_DESTROY, WINEVENT_OUTOFCONTEXT},
+        WindowsAndMessaging::{EVENT_OBJECT_CREATE, EVENT_OBJECT_SHOW, WINEVENT_OUTOFCONTEXT},
     };
     unsafe extern "system" fn created(
         _hook: windows::Win32::UI::Accessibility::HWINEVENTHOOK,
@@ -211,7 +211,7 @@ pub(crate) fn start(window: &WebviewWindow) {
         _thread: u32,
         _time: u32,
     ) {
-        if object != 0 || child != 0 {
+        if !matches!(object, 0 | -4) || child != 0 {
             return;
         }
         if event == windows::Win32::UI::WindowsAndMessaging::EVENT_OBJECT_DESTROY {
@@ -225,6 +225,13 @@ pub(crate) fn start(window: &WebviewWindow) {
             if window.hwnd().is_ok_and(|root| unsafe {
                 windows::Win32::UI::WindowsAndMessaging::IsChild(HWND(root.0), hwnd).as_bool()
             }) {
+                #[cfg(debug_assertions)]
+                if std::env::var_os("TUCK_DROP_TRACE").is_some() {
+                    eprintln!(
+                        "drop-child event={event:x} object={object} hwnd={:p}",
+                        hwnd.0
+                    );
+                }
                 refresh(&window);
             }
         }
@@ -232,7 +239,7 @@ pub(crate) fn start(window: &WebviewWindow) {
     let hook = unsafe {
         SetWinEventHook(
             EVENT_OBJECT_CREATE,
-            EVENT_OBJECT_DESTROY,
+            EVENT_OBJECT_SHOW,
             None,
             Some(created),
             0,
@@ -240,6 +247,9 @@ pub(crate) fn start(window: &WebviewWindow) {
             WINEVENT_OUTOFCONTEXT,
         )
     };
+    if hook.0.is_null() {
+        eprintln!("File drop HWND hook unavailable");
+    }
     WATCH.with(|watch| *watch.borrow_mut() = Some((window.clone(), hook)));
     refresh(window);
 }

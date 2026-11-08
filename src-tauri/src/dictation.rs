@@ -605,8 +605,10 @@ impl DictationService {
                     && !runtime.removing_model
                     && !service.model_busy.swap(true, Ordering::AcqRel)
             };
+            let active = can_warm.then(|| service.resolve_model().active).flatten();
+            drop(_operation); // Capture may open while weights are still loading.
             if can_warm {
-                if let Some(active) = service.resolve_model().active {
+                if let Some(active) = active {
                     service.engine_cache.start_reaper();
                     if model::verify(&active.path, active.entry, &service.verified, false).is_ok() {
                         let _ = service.engine_cache.warm(&active.path);
@@ -787,7 +789,21 @@ impl DictationService {
         self.emit_state();
         let mut inserted = false;
         let mut partial_insertion = false;
-        let mut reason = safety.err();
+        // Review waits only when a usable field is focused at the END. The later
+        // explicit Insert action captures its own fresh target again.
+        let editable_at_end = if settings.review_before_insert {
+            target::capture_foreground().as_ref().is_some_and(|target| {
+                target::verify_foreground_target(target).is_ok()
+                    && target::is_editable_target(target).is_ok()
+            })
+        } else {
+            safety.is_ok()
+        };
+        let mut reason = if settings.review_before_insert && editable_at_end {
+            None
+        } else {
+            safety.err()
+        };
         if self.session_cancelled() {
             self.finish_cancelled();
             return;
@@ -809,7 +825,7 @@ impl DictationService {
         let mut copied = false;
         if should_copy_final(
             settings.review_before_insert,
-            reason.is_none(),
+            editable_at_end,
             inserted,
             partial_insertion,
             cancel.load(Ordering::Acquire),
@@ -3497,6 +3513,39 @@ mod final_delivery_tests {
         assert!(!should_copy_final(true, true, false, false, false));
         assert!(should_copy_final(false, true, false, false, false));
     }
+    #[test]
+    fn legacy_review_preference_survives_without_preview_contract() {
+        let settings: DictationSettings = serde_json::from_value(
+            serde_json::json!({"reviewBeforeInsert":true,"partialPreview":true}),
+        )
+        .unwrap();
+        assert!(settings.review_before_insert);
+        assert!(serde_json::to_value(settings)
+            .unwrap()
+            .get("partialPreview")
+            .is_none());
+        let service = DictationService::new();
+        {
+            let mut runtime = service.runtime.lock().unwrap();
+            runtime.status = "review".into();
+            runtime.transcript = Some("ready".into());
+            assert!(runtime.review_target.is_none());
+        }
+        let snapshot = service.snapshot();
+        assert!(
+            snapshot.can_insert,
+            "Missing original target must still offer Insert / Copy"
+        );
+        let json = serde_json::to_value(snapshot).unwrap();
+        assert!(json.get("preview").is_none());
+        assert!(json.get("previewsPaused").is_none());
+        service.runtime.lock().unwrap().insertion_uncertain = true;
+        assert!(
+            !service.snapshot().can_insert,
+            "Ambiguous delivery disables retries"
+        );
+    }
+
     #[test]
     fn review_inserts_into_the_current_field_after_focus_moves() {
         let original = 1;

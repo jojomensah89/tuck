@@ -1067,11 +1067,11 @@ try {
   await native.evaluate(()=>window.__emitNative('dictation_state',{status:'starting',modelReady:true}));
   await native.evaluate(()=>window.__emitNative('dictation_state',{status:'recording',modelReady:true}));
   await native.evaluate(()=>window.__emitNative('dictation_partial',{status:'recording',preview:'Provisional words',modelReady:true}));
-  await native.evaluate(()=>window.__emitNative('dictation_state',{status:'recording',modelReady:true,previewsPaused:true}));
+  await native.evaluate(()=>window.__emitNative('dictation_state',{status:'recording',modelReady:true}));
   assert.doesNotMatch(await native.locator('.page.dictation').textContent(),/Live transcript paused/);
-  await native.evaluate(()=>window.__emitNative('dictation_partial',{status:'recording',preview:'Late stale preview',previewsPaused:true,modelReady:true}));
+  await native.evaluate(()=>window.__emitNative('dictation_partial',{status:'recording',preview:'Late stale preview',modelReady:true}));
   assert.doesNotMatch(await native.locator('.transcript').textContent(),/Provisional words|Late stale preview/);
-  await native.evaluate(()=>window.__emitNative('dictation_state',{status:'transcribing',modelReady:true,previewsPaused:true}));
+  await native.evaluate(()=>window.__emitNative('dictation_state',{status:'transcribing',modelReady:true}));
   assert.doesNotMatch(await native.locator('.transcript').textContent(),/Provisional words|Late stale preview/);
   assert.match(await native.locator('.page.dictation').textContent(),/Transcribing\u2026/);
   await native.evaluate(()=>window.__emitNative('dictation_state',{status:'cancelling',modelReady:true}));
@@ -1082,7 +1082,7 @@ try {
   await native.evaluate(()=>window.__emitNative('dictation_state',{status:'processing',modelReady:true}));
   assert.match(await native.locator('.page.dictation').textContent(),/Microphone closed/);
   await native.locator('#isl').screenshot({path:path.join(root,'docs/screens/dictation-processing.png')});
-  await native.evaluate(()=>window.__emitNative('dictation_state',{status:'starting',modelReady:true,previewsPaused:false}));
+  await native.evaluate(()=>window.__emitNative('dictation_state',{status:'starting',modelReady:true}));
   assert.doesNotMatch(await native.locator('.page.dictation').textContent(),/Live transcript paused|Provisional words/);
   await native.evaluate(()=>window.__emitNative('dictation_state',{status:'review',transcript:'<b>Text, not markup</b>',modelReady:true}));
   assert.equal(await native.locator('.transcript').textContent(),'<b>Text, not markup</b>');
@@ -1307,7 +1307,7 @@ try {
   await native.locator('#isl').focus(); await native.keyboard.press('Enter');
   await native.getByRole('tab',{name:'Tools',exact:true}).click();
   await native.getByRole('tab',{name:'Dictation',exact:true}).click();
-  const dictationEvent = (revision,status,transcript=null) => native.evaluate(({revision,status,transcript}) => window.__emitNative('dictation_state',{revision,sessionId:1,status,transcript,audioLevel:0.5,modelInstalled:true,canInsert:true}),{revision,status,transcript});
+  const dictationEvent = (revision,status,transcript=null) => native.evaluate(({revision,status,transcript}) => window.__emitNative('dictation_state',{revision,sessionId:1,status,transcript,audioLevel:0.5,modelInstalled:true,activeModelLabel:'Base',canInsert:true}),{revision,status,transcript});
   await dictationEvent(10,'recording');
   await native.waitForTimeout(450);
   assert.equal(await native.locator('.transcript').textContent(),'Listening\u2026');
@@ -1320,13 +1320,15 @@ try {
   await native.getByRole('button',{name:'Insert',exact:true}).click();
   assert.equal(await native.evaluate(()=>window.__calls.some(c=>c.command==='dictation_review_insert')),true);
   await dictationEvent(13,'idle');
+  await native.evaluate(()=>window.__emitNative('dictation_state',{revision:14,sessionId:1,status:'idle',message:'Inserted',modelInstalled:true,activeModelLabel:'Base'}));
   await native.locator('#isl').screenshot({path:path.join(root,'docs/screens/dictation-done.png')});
   await native.keyboard.press('Escape');
   await native.mouse.move(0,220);
   await native.waitForTimeout(600);
   await native.evaluate(()=>window.__emitNative('dictation_transcript',{reason:'Copied'}));
   await native.waitForTimeout(450);
-  assert.match(await native.locator('#isl').textContent(),/Copied, paste with Ctrl\+V/);
+  assert.equal(await native.locator('#statusMessage').textContent(),'Copied, paste with Ctrl+V');
+  assert.match(await native.locator('#cc, #openAnnouncement').allTextContents().then(a=>a.join(' ')),/Copied, paste with Ctrl\+V/);
   await native.locator('#isl').screenshot({path:path.join(root,'docs/screens/dictation-copied.png')});
   assert.deepEqual(nativeErrors,[]);
 

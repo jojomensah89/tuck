@@ -324,12 +324,12 @@ export function mountLivePages(onLayout: () => void): {
     if (!data || typeof data.status !== 'string' || !dictationUpdates.accept(data)) return;
     dictationPhase = data.status;
     const modelMissing = data.modelReady === false || data.status === 'modelMissing';
-    dictationLine = data.error || (modelMissing && !['cancelling', 'processing', 'transcribing'].includes(data.status) ? DICTATION_PHASES.modelMissing : data.status === 'cancelling' ? 'Cancelling\u2026' : data.status === 'processing' ? 'Microphone closed. Waiting for the speech engine\u2026' : data.status === 'transcribing' ? 'Transcribing\u2026' : data.modelNotice || DICTATION_PHASES[data.status] || '');
+    dictationLine = (data.message === 'Copied' ? 'Copied, paste with Ctrl+V' : data.error) || (modelMissing && !['cancelling', 'processing', 'transcribing'].includes(data.status) ? DICTATION_PHASES.modelMissing : data.status === 'cancelling' ? 'Cancelling\u2026' : data.status === 'processing' ? 'Microphone closed. Waiting for the speech engine\u2026' : data.status === 'transcribing' ? 'Transcribing\u2026' : data.modelNotice || DICTATION_PHASES[data.status] || '');
     paintSpeechStatus();
     speechModel.textContent = islandModelLine(data.activeModelLabel);
     modelSettings.hidden = !modelMissing;
     speechModel.hidden = modelMissing;
-    const dotState = data.error || data.status === 'error' ? 'warn' : data.status === 'recording' ? 'live' : ['starting', 'transcribing', 'processing', 'cancelling', 'inserting', 'review'].includes(data.status) ? 'idle' : 'off';
+    const dotState = (data.error && !['Copied', 'Inserted'].includes(data.error)) || data.status === 'error' ? 'warn' : data.status === 'recording' ? 'live' : ['starting', 'transcribing', 'processing', 'cancelling', 'inserting', 'review'].includes(data.status) ? 'idle' : 'off';
     speechDot.set(dotState, `Offline, ${data.status}`);
     const text = data.status === 'review' ? data.transcript : '';
     transcript.textContent = text.slice(0, 32000) || (data.status === 'recording' ? 'Listening\u2026' : data.status === 'transcribing' ? 'Transcribing\u2026' : 'Your transcript appears here');

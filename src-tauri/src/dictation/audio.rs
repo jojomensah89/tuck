@@ -93,6 +93,10 @@ struct EngineFlags {
 
 const IDLE_UNLOAD: Duration = Duration::from_secs(120);
 
+fn engine_expired(idle: Duration) -> bool {
+    idle >= IDLE_UNLOAD
+}
+
 #[derive(Default)]
 pub(super) struct EngineCache {
     entry: Mutex<Option<CachedEngine>>,
@@ -114,7 +118,7 @@ impl EngineCache {
         let mut slot = self.entry.lock().map_err(|_| "Speech engine unavailable")?;
         if slot
             .as_ref()
-            .is_none_or(|e| e.path != path || e.used.elapsed() >= IDLE_UNLOAD)
+            .is_none_or(|e| e.path != path || engine_expired(e.used.elapsed()))
         {
             *slot = None; // release the old weights before loading another model
             *slot = Some(CachedEngine {
@@ -138,7 +142,7 @@ impl EngineCache {
             if let Ok(mut slot) = cache.entry.try_lock() {
                 if slot
                     .as_ref()
-                    .is_some_and(|e| e.used.elapsed() >= IDLE_UNLOAD)
+                    .is_some_and(|e| engine_expired(e.used.elapsed()))
                 {
                     *slot = None;
                 }
@@ -515,7 +519,7 @@ impl Engine for WhisperEngine {
         if abort.requested() {
             return Err("Dictation cancelled".into());
         }
-        // opening guess is never sufficient evidence to force the final language.
+        // A fresh state avoids keeping audio/tokens between utterances.
         let mut state = self
             ._context
             .create_state()
@@ -865,7 +869,7 @@ mod tests {
         })
     }
 
-    pub(super) fn limits(_interval_ms: u64, _budget_ms: u64) -> SessionLimits {
+    pub(super) fn limits() -> SessionLimits {
         SessionLimits {
             max_seconds: 60,
             poll: Duration::from_millis(1),
@@ -916,7 +920,7 @@ mod tests {
             },
             &events,
             capture,
-            limits(20, 5_000),
+            limits(),
             &stop,
             &cancel,
         );
@@ -925,6 +929,13 @@ mod tests {
         assert_eq!(harness.final_samples.load(Ordering::SeqCst), 100 * 320);
         assert_eq!(events.recording.load(Ordering::SeqCst), 1);
         assert_eq!(events.transcribing.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn warm_engine_idle_policy_has_a_bounded_lifetime() {
+        assert!(!engine_expired(Duration::from_secs(119)));
+        assert!(engine_expired(Duration::from_secs(120)));
+        assert!(engine_expired(Duration::from_secs(600)));
     }
 
     #[test]
@@ -939,7 +950,7 @@ mod tests {
             move || Ok(engine),
             &events,
             capture,
-            limits(1, 5_000),
+            limits(),
             &stop,
             &cancel,
         );
@@ -959,7 +970,7 @@ mod tests {
             || Err("The model failed its integrity check".into()),
             &events,
             capture,
-            limits(5, 5_000),
+            limits(),
             &stop,
             &cancel,
         );
@@ -985,7 +996,7 @@ mod tests {
             move || Ok(engine),
             &events,
             capture,
-            limits(5, 5_000),
+            limits(),
             &stop,
             &cancel,
         );
@@ -1813,7 +1824,7 @@ mod buffered_tests {
             || Ok(Streaming),
             &super::tests::RecordedEvents::default(),
             capture,
-            super::tests::limits(1, 100),
+            super::tests::limits(),
             &stop,
             &AtomicBool::new(false),
         );

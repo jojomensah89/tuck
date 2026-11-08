@@ -347,6 +347,8 @@ function syncFlyoutPause(): void {
 function onHover(inside: boolean): void {
   hoverInside = inside;
   if (isTauri()) void invokeCommand('island_activity', { active: inside || state !== 'idle' });
+  // Keep copied feedback visible on pointer exit, preserving its expiry timer.
+  if (!inside && state === 'peek' && announcement?.text === 'Copied, paste with Ctrl+V' && announcement.until > Date.now()) return;
   window.clearTimeout(closeTimer);
   window.clearTimeout(openTimer);
   // The HUD owns the shell until it times out; hover is re-read when it leaves

@@ -33,8 +33,7 @@
   height: var(--hit-sm);
   border-radius: var(--r-md);
   color: var(--ink-2);
-  transition:
-    color var(--d-fast) var(--ease-out),
+  transition: 
     transform var(--d-instant) var(--ease-out);
 }@media (hover: hover) and (pointer: fine) { 
 
@@ -177,7 +176,7 @@
   width: 100%;
   color: var(--ink-2);
   min-height: var(--hit);
-  transition: color var(--d-fast) var(--ease-out);
+  transition: none;
 }@media (hover: hover) and (pointer: fine) { 
 
 .lyric-line.current,
@@ -321,8 +320,7 @@
   background: var(--raise);
   font-size: var(--t-sm);
   font-weight: var(--w-medium);
-  transition:
-    background var(--d-fast) var(--ease-out),
+  transition: 
     transform var(--d-instant) var(--ease-out);
 }@media (hover: hover) and (pointer: fine) { 
 
@@ -396,7 +394,7 @@
 .clipboard-row[data-kind="image"] { --clip-color: var(--clip-image); }
 .clipboard-row[data-kind="video"] { --clip-color: var(--clip-video); }
 .clipboard-row[data-kind="file"] { --clip-color: var(--clip-file); }
-.clipboard-text { display: block; width: 100%; height: 100%; padding: var(--s-2) var(--s-2) var(--s-8); overflow: hidden; text-align: left; white-space: pre-wrap; overflow-wrap: anywhere; font-size: var(--t-sm); color: var(--ink); transition: background var(--d-fast) var(--ease-out), transform var(--d-fast) var(--ease-out); }@media (hover: hover) and (pointer: fine) { 
+.clipboard-text { display: block; width: 100%; height: 100%; padding: var(--s-2) var(--s-2) var(--s-8); overflow: hidden; text-align: left; white-space: pre-wrap; overflow-wrap: anywhere; font-size: var(--t-sm); color: var(--ink); transition:  transform var(--d-fast) var(--ease-out); }@media (hover: hover) and (pointer: fine) { 
 .clipboard-text:hover { background: var(--raise-hover); } }
 .clipboard-text:active { transform: scale(0.96); }
 .clipboard-type { position: absolute; left: var(--s-2); bottom: var(--s-1); font-size: var(--t-2xs); color: var(--ink-2); pointer-events: none; }

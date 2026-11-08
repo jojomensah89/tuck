@@ -1,4 +1,4 @@
-.update-button { position: relative; color: var(--ink); transition: transform var(--d-fast), background-color var(--d-fast); }
+.update-button { position: relative; color: var(--ink); transition: transform var(--d-fast) var(--ease-out); }
 .update-button[hidden] { display: none; }
 .update-button:active { transform: scale(0.96); }
 .update-button::after { content: ''; position: absolute; width: 6px; height: 6px; border-radius: 50%; background: var(--ok, var(--on)); right: 3px; top: 3px; }
@@ -8,7 +8,7 @@
 .update-sidebar::after { display: none; }
 .update-button .ring-track, .update-button .ring-fill { fill: none; }
 .update-button .ring-track { stroke: var(--raise-hover, var(--control)); }
-.update-button .ring-fill { stroke: var(--ink); stroke-linecap: round; transition: stroke-dashoffset var(--d-fast); }
+.update-button .ring-fill { stroke: var(--ink); stroke-linecap: round; transition: stroke-dashoffset var(--d-ui) var(--ease-out); }
 .update-button [data-empty='true'] .ring-fill { visibility: hidden; }
 @media (prefers-reduced-motion: reduce) { .update-button, .update-button .ring-fill { transition: none; } }@media (hover: hover) and (pointer: fine) { 
 .rail-update .update-button, .rail-update .update-button:hover { color: var(--ink); } }

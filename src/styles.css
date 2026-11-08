@@ -149,8 +149,7 @@ svg.ico.big {
   outline: none;
   pointer-events: auto;
   /* Closing: settle without overshoot, a little quicker than opening */
-  transition:
-    width var(--d-close) var(--ease-out),
+  transition: width var(--d-close) var(--ease-out),
     height var(--d-close) var(--ease-out),
     border-radius var(--d-close) var(--ease-out),
     opacity var(--d-fast) var(--ease-out),
@@ -163,8 +162,7 @@ svg.ico.big {
 
 .island[data-state="peek"],
 .island[data-state="open"] {
-  transition:
-    width var(--d-shell) var(--spring),
+  transition: width var(--d-shell) var(--spring),
     height var(--d-shell) var(--spring),
     border-radius var(--d-shell) var(--spring),
     opacity var(--d-fast) var(--ease-out),
@@ -248,8 +246,7 @@ body.fullscreen-hidden .island {
   font-weight: var(--w-medium);
   contain: layout paint;
   /* Returning from open: wait for the full layer to leave */
-  transition:
-    opacity var(--d-fast) var(--d-instant) var(--ease-out),
+  transition: opacity var(--d-fast) var(--d-instant) var(--ease-out),
     transform var(--d-base) var(--d-instant) var(--spring-enter);
 }
 
@@ -267,8 +264,7 @@ body.fullscreen-hidden .island {
   opacity: 0;
   transform: scale(0.92);
   pointer-events: none;
-  transition:
-    opacity var(--d-instant) var(--ease-exit),
+  transition: opacity var(--d-instant) var(--ease-exit),
     transform var(--d-instant) var(--ease-exit);
 }
 
@@ -306,8 +302,7 @@ body.fullscreen-hidden .island {
   min-width: 0;
   opacity: 1;
   transform: scale(1);
-  transition:
-    opacity var(--d-fast) var(--ease-out),
+  transition: opacity var(--d-fast) var(--ease-out),
     transform var(--d-base) var(--ease-out);
 }
 
@@ -440,7 +435,7 @@ body.fullscreen-hidden .island {
   transform: scaleX(var(--level, 0));
   transform-origin: left center;
   /* Value changes settle without overshoot (DESIGN.md: --ease-out for values) */
-  transition: transform var(--d-fast) var(--ease-out), background-color var(--d-fast) var(--ease-out);
+  transition: transform var(--d-fast) var(--ease-out);
 }
 
 .hud-bar.muted .hud-fill {
@@ -628,8 +623,7 @@ body.fullscreen-hidden .island {
   transform-origin: 50% 0;
   pointer-events: none;
   contain: strict;
-  transition:
-    opacity var(--d-instant) var(--ease-exit),
+  transition: opacity var(--d-instant) var(--ease-exit),
     transform var(--d-instant) var(--ease-exit);
 }
 
@@ -637,8 +631,7 @@ body.fullscreen-hidden .island {
   opacity: 1;
   transform: translateX(-50%) scale(1);
   pointer-events: auto;
-  transition:
-    opacity var(--d-fast) var(--d-content-in) var(--ease-out),
+  transition: opacity var(--d-fast) var(--d-content-in) var(--ease-out),
     transform var(--d-base) var(--d-content-in) var(--spring-enter);
 }
 
@@ -709,9 +702,7 @@ body.fullscreen-hidden .island {
   height: var(--hit-sm);
   border-radius: var(--r-lg);
   color: var(--ink-3);
-  transition:
-    color var(--d-fast) var(--ease-out),
-    background-color var(--d-fast) var(--ease-out),
+  transition: 
     transform var(--d-instant) var(--ease-out);
 }@media (hover: hover) and (pointer: fine) { 
 
@@ -797,9 +788,7 @@ body.fullscreen-hidden .island {
   color: var(--ink-2);
   font-size: var(--t-sm);
   font-weight: var(--w-medium);
-  transition:
-    color var(--d-fast) var(--ease-out),
-    background-color var(--d-fast) var(--ease-out),
+  transition: 
     transform var(--d-instant) var(--ease-out);
 }@media (hover: hover) and (pointer: fine) { 
 
@@ -1142,8 +1131,7 @@ body.fullscreen-hidden .island {
   border-radius: var(--r-md);
   color: var(--ink);
   opacity: 0.85;
-  transition:
-    opacity var(--d-fast) var(--ease-out),
+  transition: opacity var(--d-fast) var(--ease-out),
     transform var(--d-instant) var(--ease-out);
 }@media (hover: hover) and (pointer: fine) { 
 
@@ -1200,9 +1188,7 @@ body.fullscreen-hidden .island {
   fill: none;
   stroke: var(--ink);
   stroke-linecap: round;
-  transition:
-    stroke-dashoffset var(--d-ui) var(--ease-out),
-    stroke var(--d-base) var(--ease-out),
+  transition: stroke-dashoffset var(--d-ui) var(--ease-out),
     opacity var(--d-fast) var(--ease-out);
 }
 
@@ -1257,9 +1243,7 @@ body.fullscreen-hidden .island {
   flex-shrink: 0;
   border-radius: var(--r-md);
   color: var(--ink-2);
-  transition:
-    background var(--d-fast) var(--ease-out),
-    color var(--d-fast) var(--ease-out),
+  transition: 
     transform var(--d-instant) var(--ease-out);
 }@media (hover: hover) and (pointer: fine) { 
 
@@ -1299,7 +1283,7 @@ body.fullscreen-hidden .island {
   border-radius: var(--r-round);
   background: var(--ink-3);
   flex-shrink: 0;
-  transition: background var(--d-base) var(--ease-out);
+  transition: none;
 }
 
 .status-dot[data-status="live"],
@@ -1404,9 +1388,7 @@ body.fullscreen-hidden .island {
   font-size: var(--t-md);
   font-weight: var(--w-medium);
   font-variant-numeric: tabular-nums;
-  transition:
-    background var(--d-fast) var(--ease-out),
-    color var(--d-fast) var(--ease-out),
+  transition: 
     transform var(--d-instant) var(--ease-out);
 }@media (hover: hover) and (pointer: fine) { 
 
@@ -1431,9 +1413,7 @@ body.fullscreen-hidden .island {
 
 /* The timer ticks every 250ms; its ring follows linearly instead of springing */
 .act-face .ring-fill {
-  transition:
-    stroke-dashoffset 250ms linear,
-    stroke var(--d-base) var(--ease-out),
+  transition: stroke-dashoffset 250ms linear,
     opacity var(--d-fast) var(--ease-out);
 }
 
@@ -1708,4 +1688,4 @@ body:not(:has(#isl[data-state="open"])) .open-announcement { display: none; }
 .provider-artwork { display: block; object-fit: contain; }
 
 .section-switch::before { content: ''; position: absolute; inset: 0 auto 0 0; width: 50%; border-radius: var(--r-md); background: var(--raise-active); transform: translateX(calc(var(--section-index, 0) * 100%)); transition: transform var(--d-ui) var(--ease-out); }
-.keyboard-input *, .keyboard-input *::before { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+.keyboard-input *, .keyboard-input *::before { animation: none !important; transition: none; scroll-behavior: auto !important; }

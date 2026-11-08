@@ -152,10 +152,10 @@ function setIfChanged(node: HTMLElement, text: string): void {
   const next = text.match(/^(\d+)% left$/);
   cancelAnimationFrame(counts.get(node) ?? 0);
   node.dataset.target = text;
-  if (!previous || !next || !node.checkVisibility() || document.hidden || document.querySelector('.keyboard-input') || matchMedia('(prefers-reduced-motion: reduce)').matches) { node.textContent = text; return; }
+  if (!previous || !next || (!node.checkVisibility() || !!node.closest('[inert]')) || document.hidden || document.querySelector('.keyboard-input') || matchMedia('(prefers-reduced-motion: reduce)').matches) { node.textContent = text; return; }
   const start = performance.now(), from = Number(previous[1]), to = Number(next[1]);
   const tick = (now: number) => {
-    if (document.hidden || !node.checkVisibility()) { node.textContent = text; return; }
+    if (document.hidden || (!node.checkVisibility() || !!node.closest('[inert]'))) { node.textContent = text; return; }
     const progress = Math.min(1, (now-start)/200);
     node.textContent = `${Math.round(from+(to-from)*(1-Math.pow(1-progress, 3)))}% left`;
     if (progress < 1) counts.set(node, requestAnimationFrame(tick)); else node.textContent = text;

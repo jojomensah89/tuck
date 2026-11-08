@@ -173,7 +173,7 @@ body {
   color: var(--nav-ink);
   text-decoration: none;
   font-size: var(--t-md);
-  transition: background var(--d-fast) var(--ease-out), color var(--d-fast) var(--ease-out);
+  transition: none;
 }@media (hover: hover) and (pointer: fine) { 
 
 .nav a:hover { color: var(--ink); } }
@@ -345,7 +345,7 @@ h2 {
   border-radius: var(--r-md);
   background: var(--switch-off);
   cursor: pointer;
-  transition: background var(--d-fast) var(--ease-out);
+  transition: none;
 }
 
 .switch::before {
@@ -380,7 +380,7 @@ h2 {
   font-weight: var(--w-medium);
   white-space: nowrap;
   cursor: pointer;
-  transition: background var(--d-fast) var(--ease-out), transform var(--d-instant) var(--ease-out);
+  transition:  transform var(--d-instant) var(--ease-out);
 }@media (hover: hover) and (pointer: fine) { 
 
 .button:hover { background: var(--control-hover); } }
@@ -488,7 +488,7 @@ h2 {
   color: var(--ink-2);
   font-size: var(--t-md);
   font-weight: var(--w-medium);
-  transition: background var(--d-fast) var(--ease-out), color var(--d-fast) var(--ease-out);
+  transition: none;
 }
 
 .segmented input:checked + span { background: var(--thumb); color: var(--ink); }
@@ -515,7 +515,7 @@ h2 {
   text-align: left;
   cursor: pointer;
   box-shadow: inset 0 0 0 1px var(--rule);
-  transition: box-shadow var(--d-fast) var(--ease-out), background var(--d-fast) var(--ease-out);
+  transition: none;
 }@media (hover: hover) and (pointer: fine) { 
 
 .shape-pick:hover { background: var(--control); } }
@@ -683,7 +683,7 @@ mark { background: none; color: inherit; text-decoration: underline; text-decora
   width: 0%;
   background: var(--on);
   border-radius: var(--r-md);
-  transition: width var(--d-fast) var(--ease-out);
+  transition: none;
 }
 
 .update-progress-label {

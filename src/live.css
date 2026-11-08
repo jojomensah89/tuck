@@ -382,18 +382,14 @@
 /* ================= Clipboard ================= */
 
 
-/* Clipboard cards use semantic strips, never coloured surfaces. */
+/* Type labels and filters identify clips; card surfaces stay neutral. */
 .clipboard-filters { display: flex; flex: none; gap: var(--s-1); overflow-x: auto; scrollbar-width: none; }
 .clipboard-filters[hidden] { display: none; }
 .clipboard-filters button { flex: none; min-height: var(--hit-sm); padding: 0 var(--s-3); border-radius: var(--r-lg); color: var(--ink-2); font-size: var(--t-sm); }
 .clipboard-filters button[aria-pressed="true"] { background: var(--raise); color: var(--ink); }
 .clipboard-list { display: flex; gap: var(--s-2); overflow-x: auto; overflow-y: hidden; scrollbar-width: none; flex: 1; min-height: 0; }
 .clipboard-list:empty { display: none; }
-.clipboard-row { --clip-color: var(--clip-text); position: relative; flex: 0 0 var(--clip-card-width); min-height: 0; overflow: hidden; border-radius: var(--r-md); background: var(--raise); border-bottom: var(--s-1) solid var(--clip-color); }
-.clipboard-row[data-kind="link"] { --clip-color: var(--clip-link); }
-.clipboard-row[data-kind="image"] { --clip-color: var(--clip-image); }
-.clipboard-row[data-kind="video"] { --clip-color: var(--clip-video); }
-.clipboard-row[data-kind="file"] { --clip-color: var(--clip-file); }
+.clipboard-row { position: relative; flex: 0 0 var(--clip-card-width); min-height: 0; overflow: hidden; border-radius: var(--r-md); background: var(--raise); }
 .clipboard-text { display: block; width: 100%; height: 100%; padding: var(--s-2) var(--s-2) var(--s-8); overflow: hidden; text-align: left; white-space: pre-wrap; overflow-wrap: anywhere; font-size: var(--t-sm); color: var(--ink); transition:  transform var(--d-fast) var(--ease-out); }@media (hover: hover) and (pointer: fine) { 
 .clipboard-text:hover { background: var(--raise-hover); } }
 .clipboard-text:active { transform: scale(0.96); }
@@ -421,17 +417,21 @@
   min-width: 0;
 }
 
-/* The whole copied image, fitted on the card's neutral surface above its label, never a confusing crop */
-.clipboard-row[data-kind="image"] .clipboard-text { padding: var(--s-2) var(--s-2) var(--s-6); }
-.clipboard-row[data-kind="image"] .clipboard-text img { width: 100%; height: 100%; display: block; object-fit: contain; }
-.clipboard-row[data-kind="image"] .clipboard-type { background: var(--surface); border-radius: var(--r-xs); padding: 0 var(--s-1); color: var(--ink); }
+/* Picture previews fill the equal-size card; labels sit over a quiet shade. */
+.clipboard-row[data-kind="image"] .clipboard-text,
+.clipboard-row:has(.has-thumb) .clipboard-text { padding: 0; }
+.clipboard-row[data-kind="image"] .clipboard-text img,
+.clipboard-file-icon.has-thumb img { display: block; width: 100%; height: 100%; object-fit: cover; }
 .clipboard-file-icon { display: block; margin-bottom: var(--s-2); color: var(--ink-2); }
 .clipboard-file-icon svg { width: var(--i-lg); height: var(--i-lg); }
-/* Explorer's thumbnail (a page, a frame or the app's icon) in a fixed box, so cards stay equal */
-.clipboard-file-icon.has-thumb { display: flex; align-items: center; justify-content: center; height: var(--s-12); }
-.clipboard-file-icon img { display: block; max-width: 100%; max-height: 100%; object-fit: contain; }
+.clipboard-file-icon.has-thumb { position: absolute; inset: 0; margin: 0; }
+.clipboard-row[data-kind="image"]::after,
+.clipboard-row:has(.has-thumb)::after { content: ''; position: absolute; inset: 40% 0 0; background: linear-gradient(transparent, var(--surface)); pointer-events: none; }
+.clipboard-row[data-kind="image"] .clipboard-type,
+.clipboard-row:has(.has-thumb) .clipboard-type { z-index: 1; color: var(--ink); }
 .clipboard-file-name { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; }
-.clipboard-file-icon.has-thumb + .clipboard-file-name { -webkit-line-clamp: 2; }
+.clipboard-file-icon.has-thumb + .clipboard-file-name { position: absolute; bottom: var(--s-6); left: var(--s-2); right: var(--s-2); -webkit-line-clamp: 2; z-index: 1; }
+.clipboard-row .row-action { z-index: 2; }
 /* A file that has gone is a quiet, neutral state, not an error */
 .clipboard-missing { display: block; font-size: var(--t-xs); color: var(--ink-2); margin-top: var(--s-1); }
 .clipboard-row.missing .clipboard-file-name { color: var(--ink-2); }

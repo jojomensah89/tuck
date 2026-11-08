@@ -1067,11 +1067,11 @@ try {
   await native.evaluate(()=>window.__emitNative('dictation_state',{status:'starting',modelReady:true}));
   await native.evaluate(()=>window.__emitNative('dictation_state',{status:'recording',modelReady:true}));
   await native.evaluate(()=>window.__emitNative('dictation_partial',{status:'recording',preview:'Provisional words',modelReady:true}));
-  await native.evaluate(()=>window.__emitNative('dictation_state',{status:'recording',modelReady:true,previewsPaused:true}));
-  assert.match(await native.locator('.page.dictation').textContent(),/Live transcript paused for this recording/);
-  await native.evaluate(()=>window.__emitNative('dictation_partial',{status:'recording',preview:'Late stale preview',previewsPaused:true,modelReady:true}));
+  await native.evaluate(()=>window.__emitNative('dictation_state',{status:'recording',modelReady:true}));
+  assert.doesNotMatch(await native.locator('.page.dictation').textContent(),/Live transcript paused/);
+  await native.evaluate(()=>window.__emitNative('dictation_partial',{status:'recording',preview:'Late stale preview',modelReady:true}));
   assert.doesNotMatch(await native.locator('.transcript').textContent(),/Provisional words|Late stale preview/);
-  await native.evaluate(()=>window.__emitNative('dictation_state',{status:'transcribing',modelReady:true,previewsPaused:true}));
+  await native.evaluate(()=>window.__emitNative('dictation_state',{status:'transcribing',modelReady:true}));
   assert.doesNotMatch(await native.locator('.transcript').textContent(),/Provisional words|Late stale preview/);
   assert.match(await native.locator('.page.dictation').textContent(),/Transcribing\u2026/);
   await native.evaluate(()=>window.__emitNative('dictation_state',{status:'cancelling',modelReady:true}));
@@ -1082,7 +1082,7 @@ try {
   await native.evaluate(()=>window.__emitNative('dictation_state',{status:'processing',modelReady:true}));
   assert.match(await native.locator('.page.dictation').textContent(),/Microphone closed/);
   await native.locator('#isl').screenshot({path:path.join(root,'docs/screens/dictation-processing.png')});
-  await native.evaluate(()=>window.__emitNative('dictation_state',{status:'starting',modelReady:true,previewsPaused:false}));
+  await native.evaluate(()=>window.__emitNative('dictation_state',{status:'starting',modelReady:true}));
   assert.doesNotMatch(await native.locator('.page.dictation').textContent(),/Live transcript paused|Provisional words/);
   await native.evaluate(()=>window.__emitNative('dictation_state',{status:'review',transcript:'<b>Text, not markup</b>',modelReady:true}));
   assert.equal(await native.locator('.transcript').textContent(),'<b>Text, not markup</b>');
@@ -1300,45 +1300,38 @@ try {
   assert.equal(await native.locator('#flyoutStatus').getAttribute('data-kind'),'error');
   assert.deepEqual(nativeErrors,[]);
 
-  // Versioned native snapshots drive collapsed and expanded previews together.
+  // Recording never publishes words, including legacy late partial events.
   await native.setViewportSize({width:520,height:288});
   await native.goto('http://tuck.test/');
   await native.locator('#isl').waitFor();
+  await native.locator('#isl').focus(); await native.keyboard.press('Enter');
+  await native.getByRole('tab',{name:'Tools',exact:true}).click();
+  await native.getByRole('tab',{name:'Dictation',exact:true}).click();
+  const dictationEvent = (revision,status,transcript=null) => native.evaluate(({revision,status,transcript}) => window.__emitNative('dictation_state',{revision,sessionId:1,status,transcript,audioLevel:0.5,modelInstalled:true,activeModelLabel:'Base',canInsert:true}),{revision,status,transcript});
+  await dictationEvent(10,'recording');
+  await native.waitForTimeout(450);
+  assert.equal(await native.locator('.transcript').textContent(),'Listening\u2026');
+  await native.evaluate(() => window.__emitNative('dictation_partial',{revision:11,status:'recording',preview:'Legacy words'}));
+  assert.doesNotMatch(await native.locator('.transcript').textContent(),/Legacy words/);
+  await native.locator('#isl').screenshot({path:path.join(root,'docs/screens/dictation-recording.png')});
+  await dictationEvent(12,'review','Fixture: words ready to insert');
+  assert.equal(await native.getByRole('button',{name:'Insert',exact:true}).isEnabled(),true);
+  await native.locator('#isl').screenshot({path:path.join(root,'docs/screens/dictation-review.png')});
+  await native.getByRole('button',{name:'Insert',exact:true}).click();
+  assert.equal(await native.evaluate(()=>window.__calls.some(c=>c.command==='dictation_review_insert')),true);
+  await dictationEvent(13,'idle');
+  await native.evaluate(()=>window.__emitNative('dictation_state',{revision:14,sessionId:1,status:'idle',message:'Inserted',modelInstalled:true,activeModelLabel:'Base'}));
+  await native.locator('#isl').screenshot({path:path.join(root,'docs/screens/dictation-done.png')});
+  await native.locator('#isl').focus();
   await native.keyboard.press('Escape');
   await native.mouse.move(0,220);
-  const dictationEvent = (event, revision, status, preview = null, transcript = null, sessionId = 1) =>
-    native.evaluate(({event, revision, status, preview, transcript, sessionId}) => window.__emitNative(event,{revision,sessionId,status,preview,transcript,audioLevel:0.5,modelInstalled:true}),{event,revision,status,preview,transcript,sessionId});
-  await dictationEvent('dictation_state',10,'recording');
+  await native.waitForTimeout(600);
+  await native.evaluate(()=>window.__emitNative('dictation_transcript',{reason:'Copied'}));
   await native.waitForTimeout(450);
-  const wave = native.locator('#cc .compact-slot.current .dictation-waveform');
-  assert.equal(await wave.count(), 1);
-  const quietHeight = await wave.locator('i').nth(1).evaluate(el => el.getBoundingClientRect().height);
-  assert.equal(quietHeight,10,'Wave height follows supplied audio amplitude');
-  assert.equal(await wave.evaluate(el => getComputedStyle(el).animationName),'none');
-  await native.evaluate(() => window.__emitNative('dictation_partial', {revision:10.5, sessionId:1,status:'recording',audioLevel:1,modelInstalled:true}));
-  assert.equal(await wave.locator('i').nth(1).evaluate(el => el.getBoundingClientRect().height),quietHeight,'Invalid revision is ignored');
-  await native.locator('#isl').screenshot({path:path.join(root,'docs/screens/dictation-preview-listening.png')});
-  const focusBeforePreview = await native.evaluate(()=>document.activeElement.id);
-  await dictationEvent('dictation_partial',11,'recording','Live words <b>stay text</b>');
-  assert.equal(await native.locator('#cc .compact-slot.current').textContent(),'Live words <b>stay text</b>');
-  assert.equal(await native.locator('#cc b').count(),0);
-  assert.equal(await native.locator('#isl').getAttribute('data-state'),'idle');
-  assert.equal(await native.evaluate(()=>document.activeElement.id),focusBeforePreview,'Preview never takes focus');
-  await native.locator('#isl').screenshot({path:path.join(root,'docs/screens/dictation-preview-recording.png')});
-  await dictationEvent('dictation_state',12,'transcribing','Live words <b>stay text</b>');
-  assert.equal(await native.locator('.transcript').textContent(),'Live words <b>stay text</b>');
-  await dictationEvent('dictation_partial',11,'recording','stale text');
-  assert.equal(await native.locator('.transcript').textContent(),'Live words <b>stay text</b>');
-  await dictationEvent('dictation_state',13,'review',null,'Final words');
-  assert.equal(await native.locator('#cc .compact-slot.current').textContent(),'Final words');
-  await dictationEvent('dictation_state',14,'idle');
-  assert.equal(await native.locator('.transcript').textContent(),'Your transcript appears here');
-  await dictationEvent('dictation_partial',11,'recording','late cancelled text');
-  assert.equal(await native.locator('.transcript').textContent(),'Your transcript appears here');
-  await dictationEvent('dictation_state',15,'recording',null,null,2);
-  assert.equal(await native.locator('#cc .compact-slot.current .dictation-waveform').count(),1);
-  await dictationEvent('dictation_state',16,'error',null,null,2);
-  assert.equal(await native.locator('.transcript').textContent(),'Your transcript appears here');
+  assert.equal(await native.locator('#isl').getAttribute('data-state'),'peek');
+  assert.equal(await native.locator('#statusMessage').textContent(),'Copied, paste with Ctrl+V');
+  assert.match(await native.locator('#cc, #openAnnouncement').allTextContents().then(a=>a.join(' ')),/Copied, paste with Ctrl\+V/);
+  await native.locator('#isl').screenshot({path:path.join(root,'docs/screens/dictation-copied.png')});
   assert.deepEqual(nativeErrors,[]);
 
   // With motion on: what actually keeps running while the island is collapsed

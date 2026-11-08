@@ -17,7 +17,6 @@ use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutEvent, S
 use zeroize::{Zeroize, Zeroizing};
 
 const EVENT_STATE: &str = "dictation_state";
-const EVENT_PARTIAL: &str = "dictation_partial";
 const EVENT_TRANSCRIPT: &str = "dictation_transcript";
 const EVENT_ERROR: &str = "dictation_error";
 const DEFAULT_TOGGLE: &str = "Ctrl+Shift+Space";
@@ -51,7 +50,6 @@ pub struct DictationSettings {
     pub toggle_shortcut: String,
     pub hold_to_talk_shortcut: String,
     pub review_before_insert: bool,
-    pub partial_preview: bool,
     pub stopped_models: Vec<String>,
     #[serde(default)]
     pub settings_version: u32,
@@ -69,7 +67,6 @@ impl Default for DictationSettings {
             toggle_shortcut: DEFAULT_TOGGLE.to_owned(),
             hold_to_talk_shortcut: DEFAULT_HOLD.to_owned(),
             review_before_insert: false,
-            partial_preview: true,
             stopped_models: Vec::new(),
             settings_version: SETTINGS_VERSION,
             active_model: None,
@@ -91,10 +88,8 @@ pub struct ShortcutProblems {
 pub struct DictationSnapshot {
     pub session_id: u64,
     pub revision: u64,
-    pub preview: Option<String>,
     pub audio_level: f32,
     pub status: String,
-    pub previews_paused: bool,
     pub model_installed: bool,
     pub model_downloaded_bytes: u64,
     pub transcript: Option<String>,
@@ -114,9 +109,6 @@ pub struct DictationSnapshot {
 
 impl Drop for DictationSnapshot {
     fn drop(&mut self) {
-        if let Some(preview) = self.preview.as_mut() {
-            preview.zeroize();
-        }
         if let Some(transcript) = self.transcript.as_mut() {
             transcript.zeroize();
         }
@@ -153,17 +145,16 @@ struct ActiveSession {
 struct Runtime {
     session_id: u64,
     revision: u64,
-    preview: Option<String>,
     audio_level: f32,
     recording_target: Option<target::ForegroundTarget>,
     focus_changed: bool,
-    previews_paused: bool,
     selection_generation: u64,
     repair_attempt: Option<(String, u64)>,
     status: String,
     message: Option<String>,
     transcript: Option<String>,
     review_target: Option<target::ForegroundTarget>,
+    insertion_uncertain: bool,
     active: Option<ActiveSession>,
     downloaded_bytes: u64,
     downloading_model: Option<&'static str>,
@@ -181,9 +172,6 @@ struct Runtime {
 
 impl Drop for Runtime {
     fn drop(&mut self) {
-        if let Some(preview) = self.preview.as_mut() {
-            preview.zeroize();
-        }
         if let Some(transcript) = self.transcript.as_mut() {
             transcript.zeroize();
         }
@@ -203,6 +191,7 @@ pub struct DictationService {
     insertion_gate: Mutex<()>,
     focus_observer_busy: Arc<AtomicBool>,
     model_busy: AtomicBool,
+    engine_cache: Arc<audio::EngineCache>,
     registered_shortcuts: Mutex<Vec<Shortcut>>,
     settings_operation: Mutex<()>,
     is_shutdown: AtomicBool,
@@ -247,17 +236,16 @@ impl DictationService {
             runtime: Mutex::new(Runtime {
                 session_id: 0,
                 revision: 0,
-                preview: None,
                 audio_level: 0.0,
                 recording_target: None,
                 focus_changed: false,
-                previews_paused: false,
                 selection_generation: 0,
                 repair_attempt: None,
                 status: "idle".into(),
                 message: None,
                 transcript: None,
                 review_target: None,
+                insertion_uncertain: false,
                 active: None,
                 downloaded_bytes: 0,
                 downloading_model: None,
@@ -275,6 +263,7 @@ impl DictationService {
             insertion_gate: Mutex::new(()),
             focus_observer_busy: Arc::new(AtomicBool::new(false)),
             model_busy: AtomicBool::new(false),
+            engine_cache: Arc::default(),
             registered_shortcuts: Mutex::new(Vec::new()),
             settings_operation: Mutex::new(()),
             is_shutdown: AtomicBool::new(false),
@@ -379,7 +368,7 @@ impl DictationService {
                 Ok(runtime) => (
                     runtime.status.clone(),
                     runtime.downloaded_bytes,
-                    runtime.status == "review" && runtime.review_target.is_some(),
+                    runtime.status == "review" && !runtime.insertion_uncertain,
                     runtime.transcript.clone(),
                     runtime.message.clone(),
                     model::build_rows(
@@ -421,7 +410,6 @@ impl DictationService {
                 (problems, runtime.settings_notice.clone())
             })
             .unwrap_or_default();
-        let previews_paused = locked.as_ref().is_ok_and(|r| r.previews_paused);
         let audio_level = locked
             .as_ref()
             .map(|r| {
@@ -432,18 +420,16 @@ impl DictationService {
                 }
             })
             .unwrap_or(0.0);
-        let (session_id, revision, preview) = locked
+        let (session_id, revision) = locked
             .as_ref()
-            .map(|r| (r.session_id, r.revision, r.preview.clone()))
+            .map(|r| (r.session_id, r.revision))
             .unwrap_or_default();
         drop(locked);
         let active = resolution.active.as_ref();
         DictationSnapshot {
             session_id,
             revision,
-            preview,
             audio_level,
-            previews_paused,
             status,
             model_installed: active.is_some(),
             model_downloaded_bytes: downloaded,
@@ -487,16 +473,6 @@ impl DictationService {
     fn emit_state(&self) {
         if let Ok(mut runtime) = self.runtime.lock() {
             runtime.revision += 1;
-            if runtime.previews_paused
-                || !matches!(
-                    runtime.status.as_str(),
-                    "recording" | "transcribing" | "processing"
-                )
-            {
-                if let Some(mut preview) = runtime.preview.take() {
-                    preview.zeroize();
-                }
-            }
         }
         let app = self.app.read().ok().and_then(|slot| slot.clone());
         if let Some(app) = app {
@@ -524,7 +500,7 @@ impl DictationService {
         self.emit_state();
     }
 
-    /// Preview is display-only. Publish a complete versioned snapshot so a late
+    /// Publish versioned meter snapshots so a late
     /// initial response or event cannot resurrect an earlier recording's text.
     fn mark_focus_changed(&self, session_id: u64) {
         if let Ok(mut runtime) = self.runtime.lock() {
@@ -600,35 +576,7 @@ impl DictationService {
         } else {
             return;
         }
-        if let Ok(app) = self.app() {
-            let _ = app.emit(EVENT_PARTIAL, self.snapshot());
-        }
-    }
-
-    fn publish_preview(&self, text: &str) {
-        if !self.settings().partial_preview {
-            return;
-        }
-        if let Ok(mut runtime) = self.runtime.lock() {
-            let eligible = runtime.status == "recording"
-                && !runtime.previews_paused
-                && runtime.active.as_ref().is_some_and(|active| {
-                    !active.cancel.load(Ordering::Acquire) && !active.stop.load(Ordering::Acquire)
-                });
-            if !eligible || text.is_empty() {
-                return;
-            }
-            if let Some(mut previous) = runtime.preview.take() {
-                previous.zeroize();
-            }
-            runtime.preview = Some(text.to_owned());
-            runtime.revision += 1;
-        } else {
-            return;
-        }
-        if let Ok(app) = self.app() {
-            let _ = app.emit(EVENT_PARTIAL, self.snapshot());
-        }
+        self.emit_state();
     }
 
     fn app(&self) -> Result<AppHandle, String> {
@@ -641,6 +589,35 @@ impl DictationService {
 
     fn settings(&self) -> DictationSettings {
         self.settings.read().map(|s| s.clone()).unwrap_or_default()
+    }
+
+    fn keep_warm(self: &Arc<Self>) {
+        if self.is_shutdown() || self.engine_cache.warming.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let service = self.clone();
+        std::thread::spawn(move || {
+            // Serialize with model selection/removal, and never overlap active inference.
+            let _operation = service.settings_operation.lock().unwrap();
+            let can_warm = {
+                let runtime = service.runtime.lock().unwrap();
+                runtime.active.is_none()
+                    && !runtime.removing_model
+                    && !service.model_busy.swap(true, Ordering::AcqRel)
+            };
+            let active = can_warm.then(|| service.resolve_model().active).flatten();
+            drop(_operation); // Capture may open while weights are still loading.
+            if can_warm {
+                if let Some(active) = active {
+                    service.engine_cache.start_reaper();
+                    if model::verify(&active.path, active.entry, &service.verified, false).is_ok() {
+                        let _ = service.engine_cache.warm(&active.path);
+                    }
+                }
+                service.model_busy.store(false, Ordering::Release);
+            }
+            service.engine_cache.warming.store(false, Ordering::Release);
+        });
     }
 
     fn begin(self: &Arc<Self>, mode: RecordingMode) -> Result<(), String> {
@@ -754,13 +731,11 @@ impl DictationService {
             text.zeroize();
         }
         runtime.review_target = None;
+        runtime.insertion_uncertain = false;
         runtime.message = None;
         runtime.active = Some(ActiveSession { stop, cancel, mode });
-        runtime.previews_paused = false;
         runtime.session_id += 1;
-        if let Some(mut preview) = runtime.preview.take() {
-            preview.zeroize();
-        }
+
         runtime.status = "starting".into();
         Ok(())
     }
@@ -814,7 +789,21 @@ impl DictationService {
         self.emit_state();
         let mut inserted = false;
         let mut partial_insertion = false;
-        let mut reason = safety.err();
+        // Review waits only when a usable field is focused at the END. The later
+        // explicit Insert action captures its own fresh target again.
+        let editable_at_end = if settings.review_before_insert {
+            target::capture_foreground().as_ref().is_some_and(|target| {
+                target::verify_foreground_target(target).is_ok()
+                    && target::is_editable_target(target).is_ok()
+            })
+        } else {
+            safety.is_ok()
+        };
+        let mut reason = if settings.review_before_insert && editable_at_end {
+            None
+        } else {
+            safety.err()
+        };
         if self.session_cancelled() {
             self.finish_cancelled();
             return;
@@ -822,7 +811,10 @@ impl DictationService {
         if !settings.review_before_insert && reason.is_none() {
             if let Some(target) = original_target.as_ref() {
                 match target::insert_unicode(target, text.as_str(), cancel, &self.insertion_gate) {
-                    Ok(()) => inserted = true,
+                    Ok(()) => {
+                        inserted = true;
+                        reason = Some("Inserted".into());
+                    }
                     Err(error) => {
                         partial_insertion = error.may_have_inserted;
                         reason = Some(error.message);
@@ -833,28 +825,14 @@ impl DictationService {
         let mut copied = false;
         if should_copy_final(
             settings.review_before_insert,
+            editable_at_end,
             inserted,
             partial_insertion,
             cancel.load(Ordering::Acquire),
         ) {
             let _guard = self.insertion_gate.lock().unwrap();
             if !cancel.load(Ordering::Acquire) {
-                #[cfg(windows)]
-                let result = self
-                    .app()
-                    .and_then(|app| {
-                        app.get_webview_window("main")
-                            .ok_or("Main window unavailable".into())
-                    })
-                    .and_then(|window| window.hwnd().map_err(|e| e.to_string()))
-                    .and_then(|owner| {
-                        target::copy_final(
-                            text.as_str(),
-                            windows::Win32::Foundation::HWND(owner.0 as _),
-                        )
-                    });
-                #[cfg(not(windows))]
-                let result = target::copy_final(text.as_str(), ());
+                let result = self.copy_transcript_locked(text.as_str());
                 match result {
                     Ok(()) => {
                         copied = true;
@@ -864,7 +842,7 @@ impl DictationService {
                 }
             }
         }
-        let review = settings.review_before_insert || (!inserted && !copied);
+        let review = !copied && (settings.review_before_insert || !inserted);
         if let Ok(mut runtime) = self.runtime.lock() {
             if cancel.load(Ordering::Acquire) {
                 drop(runtime);
@@ -873,14 +851,13 @@ impl DictationService {
             }
             runtime.active = None;
             runtime.recording_target = None;
-            if let Some(mut preview) = runtime.preview.take() {
-                preview.zeroize();
-            }
+
             runtime.audio_level = 0.0;
             runtime.status = if review { "review" } else { "idle" }.into();
             runtime.message = reason.clone();
             // Keep text only during review. Immediate successful insertion drops it.
             runtime.transcript = review.then(|| text.as_str().to_owned());
+            runtime.insertion_uncertain = partial_insertion;
             runtime.review_target = if review && !partial_insertion {
                 original_target
             } else {
@@ -927,9 +904,7 @@ impl DictationService {
         if let Ok(mut runtime) = self.runtime.lock() {
             runtime.active = None;
             runtime.recording_target = None;
-            if let Some(mut preview) = runtime.preview.take() {
-                preview.zeroize();
-            }
+
             runtime.audio_level = 0.0;
             runtime.focus_changed = false;
             if let Some(mut text) = runtime.transcript.take() {
@@ -1001,9 +976,36 @@ impl DictationService {
         Ok(())
     }
 
+    fn copy_transcript(&self, text: &str, cancel: &AtomicBool) -> Result<(), String> {
+        let _guard = self
+            .insertion_gate
+            .lock()
+            .map_err(|_| "Insertion unavailable")?;
+        if cancel.load(Ordering::Acquire) {
+            return Err("Dictation cancelled".into());
+        }
+        self.copy_transcript_locked(text)
+    }
+    fn copy_transcript_locked(&self, text: &str) -> Result<(), String> {
+        #[cfg(windows)]
+        let result = self
+            .app()
+            .and_then(|app| {
+                app.get_webview_window("main")
+                    .ok_or("Main window unavailable".into())
+            })
+            .and_then(|window| window.hwnd().map_err(|e| e.to_string()))
+            .and_then(|owner| {
+                target::copy_final(text, windows::Win32::Foundation::HWND(owner.0 as _))
+            });
+        #[cfg(not(windows))]
+        let result = target::copy_final(text, ());
+        result
+    }
+
     fn finish_review(self: &Arc<Self>) -> Result<(), String> {
         let cancel = Arc::new(AtomicBool::new(false));
-        let (text, original_target) = {
+        let text = {
             let mut runtime = self
                 .runtime
                 .lock()
@@ -1011,7 +1013,9 @@ impl DictationService {
             if runtime.status != "review" {
                 return Err("There is no transcript awaiting review".into());
             }
-            let target = runtime.review_target.clone().ok_or("Automatic insertion is unavailable. Reconcile any existing text manually before copying the transcript.")?;
+            if runtime.insertion_uncertain {
+                return Err("Some text may already have been inserted. Reconcile it manually before copying.".into());
+            }
             let text = runtime
                 .transcript
                 .take()
@@ -1022,10 +1026,15 @@ impl DictationService {
                 mode: RecordingMode::Toggle,
             });
             runtime.status = "inserting".into();
-            (Zeroizing::new(text), target)
+            Zeroizing::new(text)
         };
         self.emit_state();
-        let result = target::insert_unicode(&original_target, &text, &cancel, &self.insertion_gate);
+        let result = deliver_review(
+            target::capture_foreground,
+            |target| target::insert_unicode(&target, &text, &cancel, &self.insertion_gate),
+            || self.copy_transcript(&text, &cancel),
+        );
+        let copied = matches!(result, Ok(ReviewDelivery::Copied));
         let mut runtime = self
             .runtime
             .lock()
@@ -1037,9 +1046,15 @@ impl DictationService {
         }
         runtime.active = None;
         let result = match result {
-            Ok(()) => {
+            Ok(ReviewDelivery::Typed) => {
                 runtime.review_target = None;
-                runtime.message = None;
+                runtime.message = Some("Inserted".into());
+                runtime.status = "idle".into();
+                Ok(())
+            }
+            Ok(ReviewDelivery::Copied) => {
+                runtime.review_target = None;
+                runtime.message = Some("Copied".into());
                 runtime.status = "idle".into();
                 Ok(())
             }
@@ -1048,6 +1063,7 @@ impl DictationService {
                 runtime.status = "review".into();
                 if error.may_have_inserted {
                     runtime.review_target = None;
+                    runtime.insertion_uncertain = true;
                 }
                 runtime.message = Some(error.message.clone());
                 Err(error.message)
@@ -1055,6 +1071,19 @@ impl DictationService {
         };
         drop(runtime);
         self.emit_state();
+        if copied {
+            if let Ok(app) = self.app() {
+                let _ = app.emit(
+                    EVENT_TRANSCRIPT,
+                    DictationTranscriptEvent {
+                        text: String::new(),
+                        inserted: false,
+                        requires_review: false,
+                        reason: Some("Copied".into()),
+                    },
+                );
+            }
+        }
         result
     }
 
@@ -1495,6 +1524,7 @@ impl DictationService {
             runtime.removing_model = true;
             runtime.model_error = None;
         }
+        self.engine_cache.clear();
         let result = self.remove_model_files(entry);
         if let Ok(mut runtime) = self.runtime.lock() {
             runtime.removing_model = false;
@@ -1970,8 +2000,6 @@ fn parse_settings(bytes: &[u8]) -> (DictationSettings, Option<String>) {
         review_before_insert: settings_field(&map, "reviewBeforeInsert", &mut bad)
             .unwrap_or(defaults.review_before_insert),
         stopped_models: settings_field(&map, "stoppedModels", &mut bad).unwrap_or_default(),
-        partial_preview: settings_field(&map, "partialPreview", &mut bad)
-            .unwrap_or(defaults.partial_preview),
         settings_version: settings_field(&map, "settingsVersion", &mut bad).unwrap_or(0),
         active_model: settings_field(&map, "activeModel", &mut bad),
         active_model_path: settings_field(&map, "activeModelPath", &mut bad),
@@ -2130,6 +2158,11 @@ fn truncate_utf8(text: &mut String, max_bytes: usize) {
         end -= 1;
     }
     text.truncate(end);
+}
+
+#[tauri::command]
+pub fn dictation_keep_warm(service: State<'_, Arc<DictationService>>) {
+    service.keep_warm();
 }
 
 #[tauri::command]
@@ -2686,43 +2719,6 @@ mod tests {
     }
 
     #[test]
-    fn preview_survives_finalization_and_is_cleared_on_cancel() {
-        let service = recording_service();
-        service.publish_preview("provisional words");
-        let first = service.snapshot();
-        assert_eq!(first.preview.as_deref(), Some("provisional words"));
-        assert!(first.transcript.is_none());
-        service.set_status("transcribing", None);
-        let processing = service.snapshot();
-        assert_eq!(processing.preview, first.preview);
-        assert!(processing.revision > first.revision);
-        service.cancel().unwrap();
-        assert!(service.snapshot().preview.is_none());
-        service.publish_preview("late words");
-        assert!(service.snapshot().preview.is_none());
-    }
-
-    #[test]
-    fn disabled_or_stopped_recordings_do_not_publish_previews() {
-        let service = recording_service();
-        service.settings.write().unwrap().partial_preview = false;
-        service.publish_preview("disabled");
-        assert!(service.snapshot().preview.is_none());
-        service.settings.write().unwrap().partial_preview = true;
-        service
-            .runtime
-            .lock()
-            .unwrap()
-            .active
-            .as_ref()
-            .unwrap()
-            .stop
-            .store(true, Ordering::Release);
-        service.publish_preview("stopped");
-        assert!(service.snapshot().preview.is_none());
-    }
-
-    #[test]
     fn update_waits_for_work_in_progress_but_not_for_resting_states() {
         let service = DictationService::new();
         for resting in ["idle", "error", "modelMissing"] {
@@ -2776,29 +2772,11 @@ mod tests {
         let snapshot = service.snapshot();
         assert_eq!(snapshot.status, "idle");
         assert!(snapshot.transcript.is_none());
-        assert!(snapshot.preview.is_none());
     }
 
     #[test]
-    fn engine_failure_or_paused_preview_clears_provisional_text() {
-        for phase in ["recording", "error", "cancelling"] {
-            let service = recording_service();
-            service.publish_preview("display only");
-            if phase == "recording" {
-                service.runtime.lock().unwrap().previews_paused = true;
-            }
-            service.set_status(phase, None);
-            assert!(service.snapshot().preview.is_none());
-            service.publish_preview("late result");
-            assert!(service.snapshot().preview.is_none());
-            assert!(service.snapshot().transcript.is_none());
-        }
-    }
-
-    #[test]
-    fn model_change_is_rejected_during_preview_session() {
+    fn model_change_is_rejected_during_recording() {
         let service = Arc::new(recording_service());
-        service.publish_preview("same session");
         assert!(service.use_model("tiny").is_err());
         assert_eq!(service.runtime.lock().unwrap().selection_generation, 0);
     }
@@ -3000,11 +2978,10 @@ mod tests {
     }
 
     #[test]
-    fn recording_only_follows_starting_and_preview_pause_resets() {
+    fn recording_only_follows_starting() {
         let service = DictationService::new();
         service.session_status("recording");
         assert_eq!(service.runtime.lock().unwrap().status, "idle");
-        service.runtime.lock().unwrap().previews_paused = true;
         service
             .claim_session(
                 Arc::new(AtomicBool::new(false)),
@@ -3012,7 +2989,6 @@ mod tests {
                 RecordingMode::Toggle,
             )
             .unwrap();
-        assert!(!service.runtime.lock().unwrap().previews_paused);
         service.session_status("recording");
         service.session_status("processing");
         service.session_status("recording");
@@ -3025,7 +3001,6 @@ mod tests {
         assert_eq!(settings.toggle_shortcut, DEFAULT_TOGGLE);
         assert_eq!(settings.hold_to_talk_shortcut, DEFAULT_HOLD);
         assert!(!settings.review_before_insert);
-        assert!(settings.partial_preview);
     }
 
     #[test]
@@ -3196,7 +3171,6 @@ mod tests {
             br#"{"toggleShortcut":"Ctrl+Alt+F8","holdToTalkShortcut":"Shift+Shift","reviewBeforeInsert":"yes","partialPreview":false,"activeModel":"ggml-base.bin"}"#,
         );
         assert_eq!(settings.toggle_shortcut, "Ctrl+Alt+F8");
-        assert!(!settings.partial_preview);
         assert_eq!(settings.active_model.as_deref(), Some("ggml-base.bin"));
         assert!(!settings.review_before_insert, "the default for that field");
         assert!(notice.unwrap().contains("reviewBeforeInsert"));
@@ -3274,7 +3248,6 @@ mod tests {
         );
         assert_eq!(settings.hold_to_talk_shortcut, DEFAULT_HOLD);
         assert!(settings.review_before_insert, "unrelated values survive");
-        assert!(!settings.partial_preview);
         assert!(notice.unwrap().contains("not a key"));
 
         let (toggle, notice) = parse_settings(
@@ -3424,8 +3397,38 @@ mod tests {
     }
 }
 
-fn should_copy_final(review: bool, inserted: bool, uncertain: bool, cancelled: bool) -> bool {
-    !review && !inserted && !uncertain && !cancelled
+fn should_copy_final(
+    review: bool,
+    editable: bool,
+    inserted: bool,
+    uncertain: bool,
+    cancelled: bool,
+) -> bool {
+    (!review || !editable) && !inserted && !uncertain && !cancelled
+}
+#[derive(Debug, PartialEq)]
+enum ReviewDelivery {
+    Typed,
+    Copied,
+}
+fn deliver_review<T>(
+    capture: impl FnOnce() -> Option<T>,
+    insert: impl FnOnce(T) -> Result<(), target::InsertionFailure>,
+    copy: impl FnOnce() -> Result<(), String>,
+) -> Result<ReviewDelivery, target::InsertionFailure> {
+    let insertion = capture()
+        .ok_or_else(|| target::InsertionFailure {
+            message: "No editable control is focused".into(),
+            may_have_inserted: false,
+        })
+        .and_then(insert);
+    match insertion {
+        Ok(()) => Ok(ReviewDelivery::Typed),
+        Err(e) if e.may_have_inserted => Err(e),
+        Err(_) => copy()
+            .map(|_| ReviewDelivery::Copied)
+            .map_err(target::InsertionFailure::from),
+    }
 }
 #[cfg(test)]
 mod final_delivery_tests {
@@ -3500,11 +3503,96 @@ mod final_delivery_tests {
     }
 
     #[test]
-    fn clipboard_fallback_is_only_for_safe_undelivered_final_text() {
-        assert!(super::should_copy_final(false, false, false, false));
-        assert!(!super::should_copy_final(true, false, false, false));
-        assert!(!super::should_copy_final(false, true, false, false));
-        assert!(!super::should_copy_final(false, false, true, false));
-        assert!(!super::should_copy_final(false, false, false, true));
+    fn delivery_decisions_cover_review_and_clipboard() {
+        for review in [false, true] {
+            assert!(should_copy_final(review, false, false, false, false));
+            assert!(!should_copy_final(review, true, true, false, false));
+            assert!(!should_copy_final(review, false, false, true, false));
+            assert!(!should_copy_final(review, false, false, false, true));
+        }
+        assert!(!should_copy_final(true, true, false, false, false));
+        assert!(should_copy_final(false, true, false, false, false));
+    }
+    #[test]
+    fn legacy_review_preference_survives_without_preview_contract() {
+        let settings: DictationSettings = serde_json::from_value(
+            serde_json::json!({"reviewBeforeInsert":true,"partialPreview":true}),
+        )
+        .unwrap();
+        assert!(settings.review_before_insert);
+        assert!(serde_json::to_value(settings)
+            .unwrap()
+            .get("partialPreview")
+            .is_none());
+        let service = DictationService::new();
+        {
+            let mut runtime = service.runtime.lock().unwrap();
+            runtime.status = "review".into();
+            runtime.transcript = Some("ready".into());
+            assert!(runtime.review_target.is_none());
+        }
+        let snapshot = service.snapshot();
+        assert!(
+            snapshot.can_insert,
+            "Missing original target must still offer Insert / Copy"
+        );
+        let json = serde_json::to_value(snapshot).unwrap();
+        assert!(json.get("preview").is_none());
+        assert!(json.get("previewsPaused").is_none());
+        service.runtime.lock().unwrap().insertion_uncertain = true;
+        assert!(
+            !service.snapshot().can_insert,
+            "Ambiguous delivery disables retries"
+        );
+    }
+
+    #[test]
+    fn review_inserts_into_the_current_field_after_focus_moves() {
+        let original = 1;
+        let current = 2;
+        assert_ne!(original, current);
+        assert_eq!(
+            deliver_review(
+                || Some(current),
+                |target| {
+                    assert_eq!(target, 2);
+                    Ok(())
+                },
+                || panic!("unexpected copy")
+            )
+            .unwrap(),
+            ReviewDelivery::Typed
+        );
+    }
+    #[test]
+    fn review_without_target_or_with_rejected_target_copies() {
+        assert_eq!(
+            deliver_review(|| None::<()>, |_| panic!("no target"), || Ok(())).unwrap(),
+            ReviewDelivery::Copied
+        );
+        assert_eq!(
+            deliver_review(
+                || Some(()),
+                |_| Err("Password or noneditable control".to_owned().into()),
+                || Ok(())
+            )
+            .unwrap(),
+            ReviewDelivery::Copied
+        );
+        assert!(deliver_review(
+            || Some(()),
+            |_| Err(target::InsertionFailure {
+                message: "partial".into(),
+                may_have_inserted: true
+            }),
+            || panic!("unsafe copy")
+        )
+        .is_err());
+        assert!(deliver_review(
+            || None::<()>,
+            |_| unreachable!(),
+            || Err("Clipboard busy".into())
+        )
+        .is_err());
     }
 }

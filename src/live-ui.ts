@@ -301,7 +301,6 @@ export function mountLivePages(onLayout: () => void): {
   transcript.dataset.noSwipe = ''; // dragging here selects text
   let dictationPhase = 'disabled';
   const dictationUpdates = new DictationUpdates();
-  let previewsPaused = false;
   let dictationLine = 'Dictation is starting';
   /** Status text: what just failed, or else what the dictation state says */
   const paintSpeechStatus = (actionError = '') => {
@@ -324,23 +323,27 @@ export function mountLivePages(onLayout: () => void): {
   function dictation(data: DictationSnapshot): void {
     if (!data || typeof data.status !== 'string' || !dictationUpdates.accept(data)) return;
     dictationPhase = data.status;
-    previewsPaused = data.previewsPaused === true;
-    // Explain engine work and a paused preview without implying the microphone is live.
     const modelMissing = data.modelReady === false || data.status === 'modelMissing';
-    dictationLine = data.error || (modelMissing && !['cancelling', 'processing', 'transcribing'].includes(data.status) ? DICTATION_PHASES.modelMissing : data.status === 'cancelling' ? 'Cancelling\u2026' : data.status === 'processing' ? 'Microphone closed. Waiting for the speech engine\u2026' : data.status === 'transcribing' ? 'Transcribing\u2026' : previewsPaused && data.status === 'recording' ? 'Live transcript paused for this recording' : data.modelNotice || DICTATION_PHASES[data.status] || '');
+    dictationLine = (data.message === 'Copied' ? 'Copied, paste with Ctrl+V' : data.error) || (modelMissing && !['cancelling', 'processing', 'transcribing'].includes(data.status) ? DICTATION_PHASES.modelMissing : data.status === 'cancelling' ? 'Cancelling\u2026' : data.status === 'processing' ? 'Microphone closed. Waiting for the speech engine\u2026' : data.status === 'transcribing' ? 'Transcribing\u2026' : data.modelNotice || DICTATION_PHASES[data.status] || '');
     paintSpeechStatus();
     speechModel.textContent = islandModelLine(data.activeModelLabel);
     modelSettings.hidden = !modelMissing;
     speechModel.hidden = modelMissing;
-    const dotState = data.error || data.status === 'error' ? 'warn' : data.status === 'recording' ? 'live' : ['starting', 'transcribing', 'processing', 'cancelling', 'inserting', 'review'].includes(data.status) ? 'idle' : 'off';
+    const dotState = (data.error && !['Copied', 'Inserted'].includes(data.error)) || data.status === 'error' ? 'warn' : data.status === 'recording' ? 'live' : ['starting', 'transcribing', 'processing', 'cancelling', 'inserting', 'review'].includes(data.status) ? 'idle' : 'off';
     speechDot.set(dotState, `Offline, ${data.status}`);
-    const provisional = ['recording', 'transcribing', 'processing'].includes(data.status) && !previewsPaused ? data.preview || '' : '';
-    const text = data.transcript || provisional;
+    const text = data.status === 'review' ? data.transcript : '';
     transcript.textContent = text.slice(0, 32000) || (data.status === 'recording' ? 'Listening\u2026' : data.status === 'transcribing' ? 'Transcribing\u2026' : 'Your transcript appears here');
+    if (data.status === 'recording') {
+      const meter = node('span', 'dictation-waveform');
+      meter.setAttribute('aria-label', 'Microphone level');
+      const level = Math.max(0, Math.min(1, data.audioLevel || 0));
+      for (const scale of [8, 16, 12, 16, 8]) {
+        const bar = node('i', ''); bar.style.height = `${2 + level * scale}px`; meter.append(bar);
+      }
+      transcript.append(meter);
+    }
     transcript.classList.toggle('placeholder', !text);
-    transcript.setAttribute('aria-label', provisional ? 'Live preview, words may change' : 'Transcript');
-    // Live words follow the newest line
-    if (provisional) transcript.scrollTop = transcript.scrollHeight;
+    transcript.setAttribute('aria-label', 'Transcript');
     insert.disabled = data.status !== 'review' || data.canInsert === false;
     cancel.disabled = !['starting', 'recording', 'transcribing', 'processing', 'inserting', 'review'].includes(data.status);
     record.disabled = !['idle', 'recording', 'review', 'error'].includes(data.status) || data.modelReady === false;
@@ -450,7 +453,6 @@ export function mountLivePages(onLayout: () => void): {
   for (const [event, handler] of [
     ['lyrics', applyLyrics], ['telemetry', (data: unknown) => telemetry(normalizeTelemetry(data))], ['dictation_state', (data: unknown) => dictation(normalizeDictation(data))], ['clipboard_history_changed', (data: unknown) => renderClipboard(normalizeClipboard(data))],
   ] as const) void listenToEvent(event, handler as (data: unknown) => void).then(unlisten => unlisteners.push(unlisten));
-  void listenToEvent<DictationSnapshot>('dictation_partial', data => dictation(normalizeDictation(data))).then(unlisten => unlisteners.push(unlisten));
   void listenToEvent<{ enabled: boolean }>('lyrics-settings', data => {
     if (!data.enabled) { generation++; currentRequestId = ''; baseLines = []; lines = []; currentLyric = ''; lyricList.replaceChildren(); hideTiming(); lyricsStatus.textContent = 'Enable online lyrics in Settings'; syncLyricsAvailable(false); }
     else if (latestMedia?.active) void requestLyrics(latestMedia);
@@ -460,11 +462,16 @@ export function mountLivePages(onLayout: () => void): {
   void refreshClipboard().catch(() => { clipboardEmpty.textContent = 'Clipboard service unavailable, see Settings'; clipboardEmpty.hidden = false; });
   let interval: number | undefined;
   let sessionInterval: number | undefined;
+  let warmInterval: number | undefined;
   const visible = () => document.getElementById('isl')?.dataset.state === 'open';
   const syncTimers = () => {
-    window.clearInterval(interval); window.clearInterval(sessionInterval);
+    window.clearInterval(interval); window.clearInterval(sessionInterval); window.clearInterval(warmInterval);
     interval = undefined; sessionInterval = undefined;
     if (!visible()) return;
+    if (!speech.inert && speech.closest('.tab-panel.on')) {
+      const warm = () => { void nativeAction('dictation_keep_warm').catch(() => {}); };
+      warm(); warmInterval = window.setInterval(warm, 30000);
+    }
     if (!clipboard.inert && clipboard.closest('.tab-panel.on')) renderClipboard(latestClipboard);
     if (mediaPage.closest('.tab-panel.on')) { void sessions(); sessionInterval = window.setInterval(() => { void sessions(); }, 5000); }
     if (stats.inert || !stats.closest('.tab-panel.on')) return;
@@ -474,12 +481,13 @@ export function mountLivePages(onLayout: () => void): {
     }, 1000);
   };
   const sectionObserver = new MutationObserver(syncTimers);
+  sectionObserver.observe(speech, {attributes: true, attributeFilter: ['inert']});
   sectionObserver.observe(stats, {attributes: true, attributeFilter: ['inert']});
   sectionObserver.observe(clipboard, {attributes: true, attributeFilter: ['inert']});
   window.addEventListener('tuck-visibility', syncTimers);
   window.addEventListener('pagehide', () => {
     sectionObserver.disconnect();
-    clearInterval(interval); clearInterval(sessionInterval);
+    clearInterval(interval); clearInterval(sessionInterval); clearInterval(warmInterval);
     window.removeEventListener('tuck-visibility', syncTimers);
     unlisteners.forEach(unlisten => unlisten());
   }, { once: true });

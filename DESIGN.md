@@ -160,3 +160,9 @@ Fixed type strips: text #30d158, link #64d2ff, image #ff9f0a, video #bf8af7, fil
 Image cards fill with a real, once-generated thumbnail (at most 128px per side and 96 KiB encoded); full bitmap data never crosses IPC. Videos and files show their name and the existing video/folder line icons, plus a missing-file message when applicable. Native history holds full bitmaps in memory, with image sidecars written only when Keep after restart is on. Images are limited to 8192px per side and 32 MiB decoded; unpinned images evict oldest first under the image budget. All stored clipboard data is capped at 256 MiB including metadata. Turning history off clears all entries and stored media.
 
 Images are held in memory while history is on, so their budget is 128 MiB, about four full-size 4K screenshots; oldest unpinned images go first. That also leaves room for both atomic metadata versions and settings within the 256 MiB disk cap. Copy-back offers alpha-preserving CF_DIBV5 and a flattened CF_DIB fallback. Interrupted-write temporary files are cleaned at startup and when deleting saved history.
+
+## Dictation release-to-text
+
+Recording shows a microphone, Recording label and amplitude meter, never provisional words. Stop closes capture and produces one authoritative result. Parakeet may process buffered audio privately; its guarded fallback remains. Whisper performs only final inference. Settings has no live transcript switch.
+
+Keep the selected engine warm for repeated dictation and while the Dictation tab is active, then unload after two idle minutes. Review remains off by default and existing review preferences survive. Review Insert uses the currently focused editable control. No editable control means copy, with the peek `Copied, paste with Ctrl+V`, regardless of review preference. Never type into Tuck or passwords; ambiguous partial insertion disables automatic retries. The island remains nonactivating.

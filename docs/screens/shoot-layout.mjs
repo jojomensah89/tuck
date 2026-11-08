@@ -113,7 +113,7 @@ try {
     await tab('Dictation');
     await emit('dictation_state', { revision: 1, status: 'idle', modelInstalled: true, activeModelLabel: 'Tiny' });
     await shot('dictation-ready');
-    await emit('dictation_partial', { revision: 2, status: 'recording', preview: 'Live words appear here while you speak, and they may change as the model hears more', modelInstalled: true, activeModelLabel: 'Tiny' });
+    await emit('dictation_state', { revision: 2, status: 'recording', audioLevel: 0.6, modelInstalled: true, activeModelLabel: 'Tiny' });
     await shot('dictation-recording');
     await emit('dictation_state', { revision: 3, status: 'review', transcript: 'The finished transcript waits here for review before it is inserted into the app you were using.', modelInstalled: true, activeModelLabel: 'Tiny' });
     await shot('dictation-review');

@@ -145,8 +145,22 @@ export function usageStateWord(meters: Meter[]): string {
   return meters.some(meter => meter.stale || meter.status === 'stale') ? 'Stale' : '';
 }
 
+const counts = new WeakMap<HTMLElement, number>();
 function setIfChanged(node: HTMLElement, text: string): void {
-  if (node.textContent !== text) node.textContent = text;
+  if (node.dataset.target === text || node.textContent === text) return;
+  const previous = node.textContent?.match(/^(\d+)% left$/);
+  const next = text.match(/^(\d+)% left$/);
+  cancelAnimationFrame(counts.get(node) ?? 0);
+  node.dataset.target = text;
+  if (!previous || !next || !node.checkVisibility() || document.hidden || document.querySelector('.keyboard-input') || matchMedia('(prefers-reduced-motion: reduce)').matches) { node.textContent = text; return; }
+  const start = performance.now(), from = Number(previous[1]), to = Number(next[1]);
+  const tick = (now: number) => {
+    if (document.hidden || !node.checkVisibility()) { node.textContent = text; return; }
+    const progress = Math.min(1, (now-start)/200);
+    node.textContent = `${Math.round(from+(to-from)*(1-Math.pow(1-progress, 3)))}% left`;
+    if (progress < 1) counts.set(node, requestAnimationFrame(tick)); else node.textContent = text;
+  };
+  counts.set(node, requestAnimationFrame(tick));
 }
 
 function buildCell(drawn: Meter[]): Cell {

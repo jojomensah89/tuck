@@ -10,8 +10,8 @@
 .update-button .ring-track { stroke: var(--raise-hover, var(--control)); }
 .update-button .ring-fill { stroke: var(--ink); stroke-linecap: round; transition: stroke-dashoffset var(--d-fast); }
 .update-button [data-empty='true'] .ring-fill { visibility: hidden; }
-@media (prefers-reduced-motion: reduce) { .update-button, .update-button .ring-fill { transition: none; } }
-.rail-update .update-button, .rail-update .update-button:hover { color: var(--ink); }
+@media (prefers-reduced-motion: reduce) { .update-button, .update-button .ring-fill { transition: none; } }@media (hover: hover) and (pointer: fine) { 
+.rail-update .update-button, .rail-update .update-button:hover { color: var(--ink); } }
 .rail-update .update-button:active { transform: scale(0.96); }
 .update-button svg.ico { fill: none; stroke: currentColor; stroke-width: var(--stroke, 1.5); stroke-linecap: round; stroke-linejoin: round; }
 .update-button svg.ico * { vector-effect: non-scaling-stroke; }

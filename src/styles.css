@@ -690,12 +690,12 @@ body.fullscreen-hidden .island {
 
 .rail-update:not([hidden]) + .rail-settings {
   margin-top: 0;
-}
+}@media (hover: hover) and (pointer: fine) { 
 
 .rail-settings:hover,
 .rail-settings:focus-visible {
   color: var(--ink);
-}
+} }
 
 .rail-tabs {
   position: relative;
@@ -713,18 +713,18 @@ body.fullscreen-hidden .island {
     color var(--d-fast) var(--ease-out),
     background-color var(--d-fast) var(--ease-out),
     transform var(--d-instant) var(--ease-out);
-}
+}@media (hover: hover) and (pointer: fine) { 
 
 /* Hover is a lighter version of the active step: ink rises, no surface of its own
    on the active tab, a faint one elsewhere so the target is visible */
 .rail-tab:hover {
   color: var(--ink-2);
-}
+} }@media (hover: hover) and (pointer: fine) { 
 
 .rail-tabs .rail-tab:not(.on):hover,
 .rail-settings:hover {
   background-color: var(--raise-subtle);
-}
+} }
 
 .rail-tab.on {
   color: var(--ink);
@@ -780,6 +780,8 @@ body.fullscreen-hidden .island {
 }
 
 .section-switch {
+  position: relative;
+  isolation: isolate;
   display: grid;
   grid-auto-flow: column;
   grid-auto-columns: 1fr;
@@ -788,6 +790,7 @@ body.fullscreen-hidden .island {
 }
 
 .section-switch-button {
+  z-index: 1;
   height: var(--hit-sm);
   padding: 0 var(--s-3);
   border-radius: var(--r-md);
@@ -798,15 +801,14 @@ body.fullscreen-hidden .island {
     color var(--d-fast) var(--ease-out),
     background-color var(--d-fast) var(--ease-out),
     transform var(--d-instant) var(--ease-out);
-}
+}@media (hover: hover) and (pointer: fine) { 
 
 .section-switch-button:hover {
   color: var(--ink);
-}
+} }
 
 .section-switch-button.on {
   color: var(--ink);
-  background: var(--raise-active);
 }
 
 .section-switch-button:active {
@@ -837,12 +839,12 @@ body.fullscreen-hidden .island {
 /* The system status dot lines up with where an icon would sit */
 .section-actions .status-dot {
   margin-right: 13px;
-}
+}@media (hover: hover) and (pointer: fine) { 
 
 /* Quiet by design: an ink-2 icon, never a filled tile */
 .section-actions #usageRefresh:hover:not(:disabled) {
   background: transparent;
-}
+} }
 
 /* ================= Tab Panels and Sections ================= */
 
@@ -1063,11 +1065,11 @@ body.fullscreen-hidden .island {
   position: relative;
   transform: scaleY(0.5);
   transition: transform var(--d-fast) var(--ease-out);
-}
+}@media (hover: hover) and (pointer: fine) { 
 
 .bar:hover .track {
   transform: none;
-}
+} }
 
 .fill {
   width: 100%;
@@ -1143,11 +1145,11 @@ body.fullscreen-hidden .island {
   transition:
     opacity var(--d-fast) var(--ease-out),
     transform var(--d-instant) var(--ease-out);
-}
+}@media (hover: hover) and (pointer: fine) { 
 
 .ctl button:hover {
   opacity: 1;
-}
+} }
 
 .ctl button:active {
   transform: scale(var(--press));
@@ -1199,7 +1201,7 @@ body.fullscreen-hidden .island {
   stroke: var(--ink);
   stroke-linecap: round;
   transition:
-    stroke-dashoffset var(--d-shell) var(--spring-enter),
+    stroke-dashoffset var(--d-ui) var(--ease-out),
     stroke var(--d-base) var(--ease-out),
     opacity var(--d-fast) var(--ease-out);
 }
@@ -1259,12 +1261,12 @@ body.fullscreen-hidden .island {
     background var(--d-fast) var(--ease-out),
     color var(--d-fast) var(--ease-out),
     transform var(--d-instant) var(--ease-out);
-}
+}@media (hover: hover) and (pointer: fine) { 
 
 .icon-btn:hover:not(:disabled) {
   background: var(--raise);
   color: var(--ink);
-}
+} }
 
 .icon-btn:active:not(:disabled) {
   transform: scale(var(--press));
@@ -1279,11 +1281,11 @@ body.fullscreen-hidden .island {
   background: var(--raise);
   color: var(--ink);
   border-radius: var(--r-round);
-}
+}@media (hover: hover) and (pointer: fine) { 
 
 .icon-btn.primary:hover:not(:disabled) {
   background: var(--raise-hover);
-}
+} }
 
 .icon-btn:disabled {
   opacity: 0.35;
@@ -1406,12 +1408,12 @@ body.fullscreen-hidden .island {
     background var(--d-fast) var(--ease-out),
     color var(--d-fast) var(--ease-out),
     transform var(--d-instant) var(--ease-out);
-}
+}@media (hover: hover) and (pointer: fine) { 
 
 .act-chip:hover {
   background: var(--raise-hover);
   color: var(--ink);
-}
+} }
 
 .act-chip:active {
   transform: scale(var(--press));
@@ -1642,12 +1644,12 @@ body.fullscreen-hidden .island {
   pointer-events: auto;
   cursor: pointer;
   z-index: 1000;
-}
+}@media (hover: hover) and (pointer: fine) { 
 
 .demo-banner:hover {
   background: var(--wash-strong);
   color: var(--ink);
-}
+} }
 
 /* ================= Reduced Motion ================= */
 
@@ -1704,3 +1706,6 @@ body:not(:has(#isl[data-state="open"])) .open-announcement { display: none; }
 .network-rate[data-unavailable="true"] { opacity: .45; }
 
 .provider-artwork { display: block; object-fit: contain; }
+
+.section-switch::before { content: ''; position: absolute; inset: 0 auto 0 0; width: 50%; border-radius: var(--r-md); background: var(--raise-active); transform: translateX(calc(var(--section-index, 0) * 100%)); transition: transform var(--d-ui) var(--ease-out); }
+.keyboard-input *, .keyboard-input *::before { animation: none !important; transition: none !important; scroll-behavior: auto !important; }

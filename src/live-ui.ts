@@ -398,9 +398,11 @@ export function mountLivePages(onLayout: () => void): {
     clipboardEmpty.hidden = data.enabled && visible.length > 0;
     clearClipboard.disabled = !data.enabled || !data.items.length;
     const focus = (document.activeElement as HTMLElement)?.dataset.focus;
+    const oldRows = new Map([...clipList.children].map(el => [(el as HTMLElement).dataset.clipId, { el: el as HTMLElement, rect: el.getBoundingClientRect() }]));
+    const animateCards = !document.hidden && !document.querySelector('.keyboard-input') && !matchMedia('(prefers-reduced-motion: reduce)').matches && oldRows.size > 0;
     clipList.replaceChildren();
     for (const item of [...visible].sort((a, b) => b.createdAt - a.createdAt).slice(0, 100)) {
-      const row = node('div', 'clipboard-row');
+      const row = node('div', 'clipboard-row'); row.dataset.clipId = String(item.id);
       const kind = clipCategory(item); row.dataset.kind = kind;
       const copy = button(item.text.slice(0, 160), () => { void act(nativeAction('clipboard_copy', { id: item.id }).then(() => { clipboardStatus.textContent = 'Copied'; window.setTimeout(() => { if (clipboardStatus.textContent === 'Copied') clipboardStatus.textContent = ''; }, 1200); }), clipboardStatus, true); });
       if (kind === 'image' && item.thumbnail?.startsWith('data:image/png;base64,') && item.thumbnail.length < 132000) {
@@ -418,6 +420,20 @@ export function mountLivePages(onLayout: () => void): {
       row.dataset.pinned = String(item.pinned);
       const label = node('span', 'clipboard-type', kind === 'link' ? 'Link' : kind.charAt(0).toUpperCase() + kind.slice(1));
       row.append(copy, label, pin, remove); clipList.append(row);
+    }
+    if (animateCards) {
+      for (const row of [...clipList.children] as HTMLElement[]) {
+        const old = oldRows.get(row.dataset.clipId);
+        const rect = row.getBoundingClientRect();
+        row.animate(old ? [{transform:`translate(${old.rect.x-rect.x}px, ${old.rect.y-rect.y}px)`},{transform:'none'}] : [{opacity:0,transform:'translateY(4px)'},{opacity:1,transform:'none'}], {duration:200,easing:'cubic-bezier(0.23, 1, 0.32, 1)'});
+        oldRows.delete(row.dataset.clipId);
+      }
+      for (const {el,rect} of oldRows.values()) {
+        const parent = clipList.getBoundingClientRect();
+        Object.assign(el.style,{position:'absolute',left:`${rect.x-parent.x+clipList.scrollLeft}px`,top:`${rect.y-parent.y}px`,width:`${rect.width}px`,height:`${rect.height}px`,pointerEvents:'none'});
+        el.inert=true;clipList.append(el);
+        el.animate([{opacity:1},{opacity:0}],{duration:100}).finished.then(()=>el.remove()).catch(()=>el.remove());
+      }
     }
     if (focus) [...clipList.querySelectorAll<HTMLElement>('[data-focus]')].find(el => el.dataset.focus === focus)?.focus();
     if (focusedCategory) (filters.querySelector<HTMLButtonElement>(`[data-category="${focusedCategory}"]`) || filters.querySelector<HTMLButtonElement>('button'))?.focus();

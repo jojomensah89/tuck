@@ -36,11 +36,11 @@
   transition:
     color var(--d-fast) var(--ease-out),
     transform var(--d-instant) var(--ease-out);
-}
+}@media (hover: hover) and (pointer: fine) { 
 
 .lyrics-toggle-btn:hover {
   color: var(--ink);
-}
+} }
 
 .lyrics-toggle-btn:active {
   transform: scale(var(--press));
@@ -48,14 +48,14 @@
 
 .lyrics-toggle-btn[aria-pressed="true"] {
   color: var(--accent);
-}
+}@media (hover: hover) and (pointer: fine) { 
 
 /* No lyrics for this track: quiet, and its tooltip says why */
 .lyrics-toggle-btn[aria-disabled="true"],
 .lyrics-toggle-btn[aria-disabled="true"]:hover {
   color: var(--ink-3);
   cursor: default;
-}
+} }
 
 .lyrics-toggle-btn[aria-disabled="true"]:active {
   transform: none;
@@ -178,13 +178,13 @@
   color: var(--ink-2);
   min-height: var(--hit);
   transition: color var(--d-fast) var(--ease-out);
-}
+}@media (hover: hover) and (pointer: fine) { 
 
 .lyric-line.current,
 .lyric-line:hover,
 .lyric-line:focus-visible {
   color: var(--ink);
-}
+} }
 
 .plain-lyrics {
   white-space: pre-wrap;
@@ -324,11 +324,11 @@
   transition:
     background var(--d-fast) var(--ease-out),
     transform var(--d-instant) var(--ease-out);
-}
+}@media (hover: hover) and (pointer: fine) { 
 
 .dictation-link:hover {
   background: var(--raise-hover);
-}
+} }
 
 .dictation-link:active {
   transform: scale(var(--press));
@@ -396,13 +396,13 @@
 .clipboard-row[data-kind="image"] { --clip-color: var(--clip-image); }
 .clipboard-row[data-kind="video"] { --clip-color: var(--clip-video); }
 .clipboard-row[data-kind="file"] { --clip-color: var(--clip-file); }
-.clipboard-text { display: block; width: 100%; height: 100%; padding: var(--s-2) var(--s-2) var(--s-8); overflow: hidden; text-align: left; white-space: pre-wrap; overflow-wrap: anywhere; font-size: var(--t-sm); color: var(--ink); transition: background var(--d-fast) var(--ease-out), transform var(--d-fast) var(--ease-out); }
-.clipboard-text:hover { background: var(--raise-hover); }
+.clipboard-text { display: block; width: 100%; height: 100%; padding: var(--s-2) var(--s-2) var(--s-8); overflow: hidden; text-align: left; white-space: pre-wrap; overflow-wrap: anywhere; font-size: var(--t-sm); color: var(--ink); transition: background var(--d-fast) var(--ease-out), transform var(--d-fast) var(--ease-out); }@media (hover: hover) and (pointer: fine) { 
+.clipboard-text:hover { background: var(--raise-hover); } }
 .clipboard-text:active { transform: scale(0.96); }
 .clipboard-type { position: absolute; left: var(--s-2); bottom: var(--s-1); font-size: var(--t-2xs); color: var(--ink-2); pointer-events: none; }
 .clipboard-row .row-action { position: absolute; top: 0; right: 0; width: var(--hit-sm); height: var(--hit-sm); background: var(--raise); opacity: 0; }
-.clipboard-row .pin-btn { right: var(--hit-sm); }
-.clipboard-row:hover .row-action, .clipboard-row:focus-within .row-action, .clipboard-row .pin-btn[aria-pressed="true"] { opacity: 1; }
+.clipboard-row .pin-btn { right: var(--hit-sm); }@media (hover: hover) and (pointer: fine) { 
+.clipboard-row:hover .row-action, .clipboard-row:focus-within .row-action, .clipboard-row .pin-btn[aria-pressed="true"] { opacity: 1; } }
 
 .pin-btn[aria-pressed="true"] {
   color: var(--ink) !important;
@@ -430,3 +430,5 @@
 .clipboard-file-icon svg { width: var(--i-lg); height: var(--i-lg); }
 .clipboard-file-name { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; }
 .clipboard-missing { display: block; font-size: var(--t-xs); color: var(--warn-ink); margin-top: var(--s-1); }
+
+.clipboard-list { position: relative; }

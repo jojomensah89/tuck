@@ -45,15 +45,16 @@
 .has-files .shelf-drop svg.ico {
   width: var(--i-sm);
   height: var(--i-sm);
-}
+}@media (hover: hover) and (pointer: fine) { 
 
 .shelf-drop:hover {
   background: var(--raise-hover);
   color: var(--ink);
   border-color: var(--ink-2);
-}
+} }
 
 .extensions.drag-over .shelf-drop {
+  transform: scale(1.01);
   background: var(--raise-hover);
   color: var(--ink);
   border-color: var(--ok);
@@ -89,12 +90,12 @@
   min-height: var(--hit);
   border-radius: var(--r-md);
   transition: background var(--d-fast) var(--ease-out);
-}
+}@media (hover: hover) and (pointer: fine) { 
 
 .ext-row:hover,
 .ext-row:focus-within {
   background: var(--raise-subtle);
-}
+} }
 
 .ext-row-text {
   flex: 1;
@@ -142,3 +143,5 @@
 .ext-status:empty {
   display: none;
 }
+
+@media (prefers-reduced-motion: reduce) { .extensions.drag-over .shelf-drop, .extensions.drag-over .shelf-drop svg.ico { transform: none; } }

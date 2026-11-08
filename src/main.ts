@@ -1320,10 +1320,17 @@ window.addEventListener('tuck-preview',event=>{
   const detail=(event as CustomEvent).detail;
   if(detail&&typeof detail.title==='string'&&typeof detail.text==='string')showAnnouncement(`${detail.title}: ${detail.text}`);
 });
+let dragReturn: { section: string; state: typeof state } | null = null;
+window.addEventListener('tuck-drop-complete', () => { dragReturn = null; });
 function holdDrag(active:boolean):void {
   nativeDragActive=active;window.clearTimeout(closeTimer);
-  if(active){setState('open');rail.reveal('extensions');}
-  else onHover(hoverInside);
+  if(active){
+    dragReturn ??= { section: rail.section(), state };
+    setState('open');rail.reveal('extensions');
+  } else {
+    if(dragReturn){ const previous=dragReturn;dragReturn=null;rail.reveal(previous.section);setState(previous.state); }
+    else onHover(hoverInside);
+  }
 }
 window.addEventListener('tuck-drop-active',event=>holdDrag((event as CustomEvent).detail===true));
 window.addEventListener('tuck-drag-active',event=>holdDrag((event as CustomEvent).detail===true));

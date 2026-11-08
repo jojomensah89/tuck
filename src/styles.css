@@ -29,6 +29,8 @@
   --clip-video: #bf8af7;
   --clip-file: var(--ink-2);
   --clip-card-width: 128px;
+  /* Shelf tiles: equal squares, four across at the 500px open width */
+  --shelf-tile: 96px;
   /* Half a step above the surface: rail hover, below the --raise active step */
   --raise-subtle: #121214;
 
@@ -78,6 +80,22 @@ input:focus-visible,
 div[tabindex="0"]:focus-visible {
   outline: 2px solid var(--ink);
   outline-offset: 2px;
+}
+
+/*
+ * Focus rings are for the keyboard. Chromium also matches :focus-visible after a mouse
+ * click when focus moves by script: the island takes focus when it opens or closes
+ * (#isl is tabindex="0", so the whole island matched), Tauri's set_focus moves WebView2
+ * focus programmatically, and lists put focus back after they re-render. So a ring also
+ * needs the last input to have been a key (.keyboard-input, set on keydown and cleared
+ * on pointer and wheel input in src/tab-rail.ts).
+ */
+:root:not(.keyboard-input) #isl:focus-visible,
+:root:not(.keyboard-input) #isl :focus-visible {
+  outline: none;
+}
+.icon-btn[hidden] {
+  display: none;
 }
 
 /* One line family (src/icons.ts): 20px grid, 1.5px stroke at every size */

@@ -2,6 +2,7 @@ import { setIfChanged } from './usage-rings.js';
 import { clipCategory, CLIP_CATEGORIES } from './clipboard-categories.js';
 import { listenToEvent, mediaSeek, isTauri, openSettingsCmd, triggerQuickAction } from './ipc.js';
 import { SVG_ICONS } from './icons.js';
+import { ThumbnailMemo, type Thumb } from './extensions-types.js';
 import { islandModelLine } from './dictation-models.js';
 import { DictationUpdates, nativeAction, nativeService, normalizeClipboard, normalizeDictation, normalizeTelemetry, type ClipboardSnapshot, type DictationSnapshot, type LyricsSnapshot, type MediaSession, type TelemetrySnapshot } from './live-services.js';
 import { historyPath, heldLyric, lyricIndex, lyricOffsetFor, matchesLyricRequest, MAX_LYRIC_OFFSET_MS, measuredPercent, newRequestId, parseLrc, readPreferences, TelemetryGate, withLyricOffset, writePreferences, type LyricLine } from './live-state.js';
@@ -383,6 +384,13 @@ export function mountLivePages(onLayout: () => void): {
   let latestClipboard: ClipboardSnapshot = { enabled: false, items: [] };
   let clipboardSignature = '';
   let clipboardPainted = false;
+  // Explorer's thumbnails for copied files and videos, asked for once per clip
+  const clipThumbs = new ThumbnailMemo(id => nativeService<Thumb>('clipboard_thumbnail', { id }));
+  function paintClipThumb(preview: HTMLElement, thumb: Thumb): void {
+    if (thumb.kind !== 'image' || !thumb.url.startsWith('data:image/png;base64,')) return;
+    const image = document.createElement('img'); image.alt = ''; image.draggable = false; image.src = thumb.url;
+    preview.replaceChildren(image); preview.classList.add('has-thumb');
+  }
   function renderClipboard(data: ClipboardSnapshot): void {
     if (!data || !Array.isArray(data.items)) return;
     latestClipboard = data;
@@ -415,9 +423,15 @@ export function mountLivePages(onLayout: () => void): {
         const image = document.createElement('img'); image.src = item.thumbnail; image.alt = 'Copied image'; image.draggable = false;
         copy.replaceChildren(image); copy.setAttribute('aria-label', 'Copy image');
       } else if (kind === 'file' || kind === 'video') {
-        const icon = node('span', 'clipboard-file-icon'); icon.innerHTML = kind === 'video' ? SVG_ICONS.video : SVG_ICONS.folder; icon.setAttribute('aria-hidden', 'true');
-        const name = node('span', 'clipboard-file-name', item.text); copy.replaceChildren(icon, name);
-        if (item.missing) copy.append(node('span', 'clipboard-missing', 'File no longer exists'));
+        const preview = node('span', 'clipboard-file-icon'); preview.setAttribute('aria-hidden', 'true');
+        preview.innerHTML = item.missing ? SVG_ICONS.fileMissing : kind === 'video' ? SVG_ICONS.video : SVG_ICONS.file;
+        const name = node('span', 'clipboard-file-name', item.text); copy.replaceChildren(preview, name);
+        if (item.missing) { copy.append(node('span', 'clipboard-missing', 'File no longer exists')); row.classList.add('missing'); }
+        else {
+          const known = clipThumbs.peek(String(item.id));
+          if (known) paintClipThumb(preview, known);
+          else void clipThumbs.get(String(item.id)).then(thumb => { if (preview.isConnected) paintClipThumb(preview, thumb); });
+        }
       }
       copy.className = 'clipboard-text'; copy.dataset.focus = `copy-${item.id}`; copy.title = `Copy: ${item.text.slice(0, 500)}`;
       const pin = iconButton(item.pinned ? 'Unpin' : 'Pin', SVG_ICONS.pin, () => { void act(nativeAction('clipboard_pin', { id: item.id, pinned: !item.pinned }).then(refreshClipboard), clipboardStatus); }, 'row-action pin-btn');
@@ -441,8 +455,11 @@ export function mountLivePages(onLayout: () => void): {
         el.animate([{opacity:1},{opacity:0}],{duration:100}).finished.then(()=>el.remove()).catch(()=>el.remove());
       }
     }
-    if (focus) [...clipList.querySelectorAll<HTMLElement>('[data-focus]')].find(el => el.dataset.focus === focus)?.focus();
-    if (focusedCategory) (filters.querySelector<HTMLButtonElement>(`[data-category="${focusedCategory}"]`) || filters.querySelector<HTMLButtonElement>('button'))?.focus();
+    clipThumbs.keep(data.items.map(item => String(item.id)));
+    // Focus is only put back for the keyboard: a scripted focus after a click would show a ring
+    const keyboard = document.documentElement.classList.contains('keyboard-input');
+    if (focus && keyboard) [...clipList.querySelectorAll<HTMLElement>('[data-focus]')].find(el => el.dataset.focus === focus)?.focus();
+    if (focusedCategory && keyboard) (filters.querySelector<HTMLButtonElement>(`[data-category="${focusedCategory}"]`) || filters.querySelector<HTMLButtonElement>('button'))?.focus();
   }
   async function refreshClipboard(): Promise<void> { renderClipboard(await nativeService<ClipboardSnapshot>('clipboard_snapshot')); }
 

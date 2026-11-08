@@ -15,6 +15,7 @@ pub mod media;
 mod network_rates;
 pub mod osd_flyout;
 mod service_preferences;
+mod shell_thumbs;
 pub mod system;
 pub mod telemetry;
 mod update;
@@ -111,6 +112,7 @@ pub fn run() {
             clipboard_history::clipboard_clear,
             clipboard_history::clipboard_pin,
             clipboard_history::clipboard_copy,
+            clipboard_history::clipboard_thumbnail,
             lyrics::lyrics_status,
             lyrics::lyrics_set_enabled,
             lyrics::lyrics_get,
@@ -128,6 +130,8 @@ pub fn run() {
             extensions::shelf_pick,
             extensions::shelf_remove,
             extensions::shelf_reveal,
+            extensions::shelf_open,
+            extensions::shelf_thumbnail,
             extensions::shelf_drag,
             extensions::notification_access,
             usage::usage_now,

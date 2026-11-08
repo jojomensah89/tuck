@@ -85,6 +85,8 @@ export interface ScrollMetrics {
   scrollTop: number;
   scrollHeight: number;
   clientHeight: number;
+  /** A sideways list (`data-horizontal-scroll`), measured along x */
+  sideways?: boolean;
 }
 
 /** Whether a scroller has room left in the wheel direction (1px tolerance for fractional scroll) */
@@ -141,7 +143,8 @@ export type WheelAction =
  * Edge-aware wheel handling. Vertical wheel scrolls the innermost list that still
  * has room, then moves between the tab's parts, then on to the next tab; only a
  * fresh gesture that starts at an edge moves. Horizontal wheel (trackpad swipe,
- * wheel tilt) always switches tabs.
+ * wheel tilt) scrolls a sideways list that still has room that way, and otherwise
+ * switches tabs.
  */
 export function wheelStep(state: WheelState, input: WheelInput): { state: WheelState; action: WheelAction } {
   const { deltaX, deltaY, now, chain, part } = input;
@@ -161,7 +164,11 @@ export function wheelStep(state: WheelState, input: WheelInput): { state: WheelS
     next.gestureScrolled = true;
     return { state: next, action: { kind: 'scroll' } };
   }
-  if (!horizontal && next.gestureScrolled) return { state: next, action: { kind: 'none' } };
+  if (horizontal && chain.some(m => m.sideways && canScroll(m, delta))) {
+    next.gestureScrolled = true;
+    return { state: next, action: { kind: 'scroll' } };
+  }
+  if (next.gestureScrolled) return { state: next, action: { kind: 'none' } };
   next.lockedUntil = now + SWITCH_LOCK_MS;
   next.gestureSwitched = true;
   const direction = delta > 0 ? 1 : -1;

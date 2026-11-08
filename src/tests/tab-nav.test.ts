@@ -150,6 +150,18 @@ describe('wheel', () => {
     expect(wheelStep(INITIAL_WHEEL_STATE, { deltaX: 100, deltaY: 0, now: 1000, chain: [], part: { index: 0, count: 2 } }).action).toEqual({ kind: 'switch', delta: 1 });
     expect(wheelStep(INITIAL_WHEEL_STATE, { deltaX: 0, deltaY: 100, now: 1000, chain: [], part: { index: 0, count: 1 } }).action).toEqual({ kind: 'switch', delta: 1 });
   });
+  test('a sideways list takes a horizontal swipe until its edge, then tabs switch', () => {
+    const list = { scrollTop: 0, scrollHeight: 800, clientHeight: 420, sideways: true };
+    const end = { ...list, scrollTop: 380 };
+    expect(wheelStep(INITIAL_WHEEL_STATE, { deltaX: 60, deltaY: 0, now: 1000, chain: [list] }).action).toEqual({ kind: 'scroll' });
+    expect(wheelStep(INITIAL_WHEEL_STATE, { deltaX: -60, deltaY: 0, now: 1000, chain: [list] }).action).toEqual({ kind: 'switch', delta: -1 });
+    const scrolled = wheelStep(INITIAL_WHEEL_STATE, { deltaX: 60, deltaY: 0, now: 1000, chain: [list] });
+    // Momentum that reaches the edge does not carry on into the next tab
+    expect(wheelStep(scrolled.state, { deltaX: 60, deltaY: 0, now: 1016, chain: [end] }).action).toEqual({ kind: 'none' });
+    expect(wheelStep(INITIAL_WHEEL_STATE, { deltaX: 60, deltaY: 0, now: 2000, chain: [end] }).action).toEqual({ kind: 'switch', delta: 1 });
+    // A vertical list never takes a horizontal swipe
+    expect(wheelStep(INITIAL_WHEEL_STATE, { deltaX: 60, deltaY: 0, now: 1000, chain: [{ ...list, sideways: false }] }).action).toEqual({ kind: 'switch', delta: 1 });
+  });
   test('zero deltas do nothing', () => {
     expect(step(INITIAL_WHEEL_STATE, 0, 1000, []).action).toEqual({ kind: 'none' });
   });

@@ -249,6 +249,13 @@ impl ClipboardHistoryService {
     }
 
     fn emit_changed(&self) {
+        // Every change passes through here, so thumbnails for clips that left go with them
+        if let Ok(state) = self.inner.lock() {
+            crate::shell_thumbs::retain(
+                crate::shell_thumbs::CLIP_PREFIX,
+                state.items.iter().map(|item| item.id.as_str()),
+            );
+        }
         if let Ok(app) = self.app() {
             let _ = app.emit(EVENT_CHANGED, self.snapshot());
         }
@@ -1301,6 +1308,34 @@ pub fn clipboard_copy(
         let _ = item;
         Err("Windows clipboard required".into())
     }
+}
+
+/// Explorer's thumbnail for a copied file or video, made once and kept while the clip is
+#[tauri::command]
+pub async fn clipboard_thumbnail(
+    window: tauri::Window,
+    service: State<'_, Arc<ClipboardHistoryService>>,
+    id: String,
+) -> Result<crate::shell_thumbs::Thumb, String> {
+    if window.label() != "main" {
+        return Err("Access denied".into());
+    }
+    let path = service
+        .inner
+        .lock()
+        .map_err(|_| "Clipboard history unavailable")?
+        .items
+        .iter()
+        .find(|item| item.id == id && matches!(item.kind.as_str(), "file" | "video"))
+        .and_then(|item| item.paths.first().cloned())
+        .ok_or("Clipboard item not found")?;
+    let key = crate::shell_thumbs::clip_key(&id);
+    crate::shell_thumbs::register(&key);
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::shell_thumbs::thumbnail(&key, std::path::Path::new(&path))
+    })
+    .await
+    .map_err(|_| "Thumbnail worker failed".to_string())
 }
 
 #[cfg(windows)]

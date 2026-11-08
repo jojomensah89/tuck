@@ -247,7 +247,7 @@ mod native {
 
         fn hide_island(&self) {
             if let Some(win) = self.app.get_webview_window("main") {
-                let _ = win.set_ignore_cursor_events(true);
+                let _ = crate::system::set_cursor_passthrough(&win, true);
                 let _ = win.hide();
             }
         }

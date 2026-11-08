@@ -14,6 +14,8 @@ mod lyrics_match;
 pub mod media;
 mod network_rates;
 pub mod osd_flyout;
+#[cfg(all(windows, debug_assertions))]
+mod region_experiment;
 mod service_preferences;
 pub mod system;
 pub mod telemetry;
@@ -34,10 +36,20 @@ use windows::Win32::Foundation::HWND;
 
 /// Frontend command to notify Rust of the island's current CSS dimensions.
 #[tauri::command]
-fn set_hit(hit_state: State<'_, Arc<system::HitState>>, w: u32, h: u32) {
+fn set_hit(
+    window: tauri::WebviewWindow,
+    hit_state: State<'_, Arc<system::HitState>>,
+    w: u32,
+    h: u32,
+    top: Option<u32>,
+) {
     let (clamped_w, clamped_h) = system::clamp_hit_size(w, h);
     hit_state.width.store(clamped_w, Ordering::Relaxed);
     hit_state.height.store(clamped_h, Ordering::Relaxed);
+    #[cfg(all(windows, debug_assertions))]
+    region_experiment::apply(&window, clamped_w, clamped_h, top.unwrap_or(0));
+    #[cfg(not(all(windows, debug_assertions)))]
+    let _ = (window, top);
 }
 
 pub fn run() {
@@ -309,7 +321,9 @@ pub fn run() {
                 file_drop::start(&main_win);
 
                 // Initial pass-through until cursor enters island
-                let _ = main_win.set_ignore_cursor_events(true);
+                #[cfg(all(windows, debug_assertions))]
+                region_experiment::apply(&main_win, 212, 32, 0);
+                let _ = system::set_cursor_passthrough(&main_win, true);
                 let _ = main_win.show();
 
                 // Listen for scale and display changes to keep centered, and handle keyboard focus restore

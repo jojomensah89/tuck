@@ -350,7 +350,7 @@ fn park_cursor_while_paused(win: &WebviewWindow, on_park: impl FnOnce()) -> bool
     if CURSOR_PAUSE_REASONS.load(Ordering::SeqCst) == 0 {
         return false;
     }
-    let _ = win.set_ignore_cursor_events(true);
+    let _ = set_cursor_passthrough(win, true);
     on_park();
     while CURSOR_PAUSE_REASONS.load(Ordering::SeqCst) != 0 {
         guard = CURSOR_GATE
@@ -410,7 +410,7 @@ fn apply_hit_test(
         #[cfg(not(windows))]
         let hovered = _sampled_hovered;
         // Tauri/Wry and Tao execute this setter inline when already on the event thread.
-        let _ = target.set_ignore_cursor_events(!hovered);
+        let _ = set_cursor_passthrough(&target, !hovered);
         #[cfg(debug_assertions)]
         if std::env::var_os("TUCK_DROP_TRACE").is_some() {
             eprintln!(
@@ -539,7 +539,7 @@ pub fn open_island(win: &WebviewWindow) -> Result<(), Box<dyn std::error::Error>
     if let Ok(hwnd) = win.hwnd() {
         set_island_focusable(HWND(hwnd.0 as _), true);
     }
-    win.set_ignore_cursor_events(false)?;
+    set_cursor_passthrough(&win, false)?;
     win.show()?;
     win.set_focus()?;
     win.emit("open-island", ())?;
@@ -600,7 +600,7 @@ pub(crate) fn refresh_window_state(app: &AppHandle) -> bool {
     let previous = FULLSCREEN.swap(hidden, Ordering::Relaxed);
     set_cursor_pause(CURSOR_PAUSE_FULLSCREEN, hidden);
     if hidden {
-        let _ = win.set_ignore_cursor_events(true);
+        let _ = set_cursor_passthrough(&win, true);
     } else {
         #[cfg(windows)]
         reassert_topmost(&win);
@@ -623,8 +623,7 @@ pub(crate) fn deactivate_island(app: AppHandle) -> Result<(), String> {
     if let Ok(hwnd) = win.hwnd() {
         set_island_focusable(HWND(hwnd.0 as _), false);
     }
-    win.set_ignore_cursor_events(true)
-        .map_err(|_| "Could not restore click-through".to_string())
+    set_cursor_passthrough(&win, true).map_err(|_| "Could not restore click-through".to_string())
 }
 
 /// Starts adaptive cursor hit testing (see `cursor_poll_ms`). Native lifecycle, display, power and
@@ -1003,4 +1002,12 @@ mod idle_cursor_tests {
         assert!(cursor_poll_ms(true, false) < cursor_poll_ms(false, false));
         assert!(cursor_poll_ms(true, true) < cursor_poll_ms(true, false));
     }
+}
+
+pub(crate) fn set_cursor_passthrough(win: &WebviewWindow, ignore: bool) -> tauri::Result<()> {
+    #[cfg(all(windows, debug_assertions))]
+    if crate::region_experiment::enabled(win) {
+        return Ok(());
+    }
+    win.set_ignore_cursor_events(ignore)
 }

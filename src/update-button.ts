@@ -22,7 +22,7 @@ export function mountUpdateButton(host: HTMLElement, settings = false): void {
     button.dataset.visualPhase = state.phase;
     button.innerHTML = state.phase === 'restart' ? SVG_ICONS.restart : SVG_ICONS.installUpdate;
     if (state.phase === 'downloading') { button.replaceChildren(ring.root); ring.set(state.progress); }
-    if (oldIcon && button.checkVisibility() && !document.hidden && !document.querySelector('.keyboard-input')) {
+    if (oldIcon && button.checkVisibility() && !button.closest('[inert]') && !document.hidden && !document.querySelector('.keyboard-input')) {
       const icon = button.firstElementChild as HTMLElement;
       oldIcon.style.position = 'absolute'; button.append(oldIcon);
       oldIcon.animate([{opacity:1},{opacity:0}],{duration:100}).finished.then(()=>oldIcon.remove()).catch(()=>oldIcon.remove());

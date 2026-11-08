@@ -107,13 +107,13 @@ export function batteryGlyph(
   return `<svg class="battery-glyph${stateClass}" viewBox="0 0 24 18" aria-hidden="true"><rect class="battery-outline" x="1" y="3" width="20" height="12" rx="2"/><rect class="battery-terminal" x="22" y="7" width="2" height="4" rx="1"/><rect class="battery-fill" x="3" y="5" width="${fillWidth.toFixed(2)}" height="8" rx="1"/>${bolt}</svg>`;
 }
 
-// Official, unmodified published product assets (downloaded 2026-11-07):
-// Claude: https://claude.ai/images/claude_app_icon.png (338px, above 3x at 32px).
+// Unmodified provider artwork:
+// Claude: community drawing, @lobehub/icons-static-svg@1.102.0 icons/claude-color.svg (MIT).
 // Antigravity: https://antigravity.google/assets/image/brand/antigravity-icon__full-color.svg
 // Published by https://antigravity.google/press . Intrinsic artwork gradients are preserved.
 // Codex: OpenAI publishes no downloadable colour icon and the Windows app ships none, so this is a
 // community drawing: @lobehub/icons-static-svg@1.102.0 icons/codex-color.svg (MIT), unmodified.
 export function providerArtwork(provider: string): string | null {
-  const file = provider === 'claude' ? 'claude.png' : provider === 'antigravity' ? 'antigravity.svg' : provider === 'codex' ? 'codex.svg' : null;
+  const file = provider === 'claude' ? 'claude.svg' : provider === 'antigravity' ? 'antigravity.svg' : provider === 'codex' ? 'codex.svg' : null;
   return file ? `<img class="provider-artwork" src="/providers/${file}" alt="" aria-hidden="true"/>` : null;
 }

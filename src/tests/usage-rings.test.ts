@@ -25,6 +25,15 @@ describe('usage provider groups', () => {
 });
 
 describe('windows a card draws', () => {
+  it('draws Antigravity short and weekly windows and keeps a stable provider name', () => {
+    const short = meter('antigravity-short', 'antigravity', 'Antigravity 5 h');
+    const week = meter('antigravity-weekly', 'antigravity', 'Antigravity weekly');
+    const group = groupUsageProviders([week, short])[0];
+    expect(group.label).toBe('Antigravity');
+    expect(ringMeters(group.meters).map(m => m.id)).toEqual([short.id, week.id]);
+    expect(ringMeters([short])).toEqual([short]);
+  });
+
   it('takes the first 5h and the first weekly, leaving model-scoped windows to the tooltip', () => {
     const drawn = ringMeters([
       meter('claude-5h', 'claude', 'Claude 5 h'),

@@ -1474,7 +1474,7 @@ body.fullscreen-hidden .island {
   width: 100%;
   display: flex;
   flex-wrap: wrap;
-  justify-content: center;
+  justify-content: flex-start;
   align-content: center;
   gap: var(--s-3) var(--s-4);
 }
@@ -1695,6 +1695,7 @@ body.fullscreen-hidden .island {
 body:not(:has(#isl[data-state="open"])) .open-announcement { display: none; }
 
 
+.network-caption { display: block; text-align: center; margin-top: var(--s-2); font-size: var(--t-xs); color: var(--ink-2); }
 .network-rates { display: flex; justify-content: center; gap: var(--s-6); margin-top: var(--s-2); font-size: var(--t-sm); font-variant-numeric: tabular-nums; color: var(--ink-2); }
 .network-rate { display: flex; align-items: center; gap: var(--s-1); }
 .network-rate[data-unavailable="true"] { opacity: .45; }

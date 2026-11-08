@@ -211,16 +211,17 @@ export function mountLivePages(onLayout: () => void): {
   const rates = node('div', 'network-rates');
   const down = node('span', 'network-rate'); const up = node('span', 'network-rate');
   const rateValue = (parent: HTMLElement, upload: boolean) => {
+    parent.title = upload ? 'Upload speed' : 'Download speed';
     parent.innerHTML = upload ? SVG_ICONS.upload : SVG_ICONS.download;
     const value = node('span', '', '\u2013 MB/s'); parent.append(value); return value;
   };
   const downValue = rateValue(down, false); const upValue = rateValue(up, true);
-  rates.append(down, up); stats.append(rates);
+  rates.append(down, up); stats.append(node('span', 'network-caption', 'Network'), rates);
   function setRates(d: number | null | undefined, u: number | null | undefined): void {
     for (const [value, parent, number, label] of [[downValue, down, d, 'Download'], [upValue, up, u, 'Upload']] as const) {
       const valid = typeof number === 'number' && Number.isFinite(number) && number >= 0;
       value.textContent = valid ? `${(number / 1000000).toFixed(1)} MB/s` : '\u2013 MB/s';
-      parent.dataset.unavailable = String(!valid); parent.setAttribute('aria-label', `${label} ${value.textContent}`);
+      parent.dataset.unavailable = String(!valid); parent.setAttribute('aria-label', `${label} speed ${value.textContent}`);
     }
   }
   const histories = new Map<string, (number | null)[]>();

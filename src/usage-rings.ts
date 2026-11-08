@@ -1,6 +1,6 @@
 /**
  * One provider card per connected source. Subscription providers combine their
- * 5-hour and weekly quotas into concentric rings; other providers keep one ring.
+ * short and weekly quotas into concentric rings when both are available.
  */
 import { SVG_ICONS, providerArtwork } from './icons.js';
 import { createRing, meterWindow, providerInitial, providerMark, remainingPct, usageTone, type Ring } from './rings.js';
@@ -52,6 +52,7 @@ function providerLabel(meter: Meter): string {
   const key = providerKey(meter);
   if (key === 'anthropic-subscription') return 'Claude';
   if (key === 'openai-subscription') return 'OpenAI';
+  if (key === 'antigravity') return 'Antigravity';
   return meter.label || meter.provider;
 }
 
@@ -94,7 +95,6 @@ function quotaBucket(meter: Meter): string {
  * in the tooltip. A provider with neither window draws its first meter as one ring.
  */
 export function ringMeters(meters: Meter[]): Meter[] {
-  if (meters[0]?.provider === 'antigravity') return meters.slice(0, 1);
   const candidates = [...new Set(meters.map(quotaBucket))].map(bucket => (['5h', '7d'] as const)
     .map(name => meters.find(meter => quotaBucket(meter) === bucket && meterWindow(meter) === name))
     .filter((meter): meter is Meter => !!meter));

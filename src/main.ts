@@ -1328,8 +1328,13 @@ function holdDrag(active:boolean):void {
     dragReturn ??= { section: rail.section(), state };
     setState('open');rail.reveal('extensions');
   } else {
-    if(dragReturn){ const previous=dragReturn;dragReturn=null;rail.reveal(previous.section);setState(previous.state); }
-    else setState('open');
+    const previous=dragReturn;dragReturn=null;
+    // A drop stays open on Files so the new file shows; moving the pointer away closes it as usual
+    if(!previous){ setState('open'); return; }
+    // A drag that only passed over returns the person to where they were
+    rail.reveal(previous.section);
+    if(previous.state==='idle'&&!hoverInside) setState('idle');
+    else onHover(hoverInside);
   }
 }
 window.addEventListener('tuck-drop-active',event=>holdDrag((event as CustomEvent).detail===true));

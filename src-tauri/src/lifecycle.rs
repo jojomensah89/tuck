@@ -247,6 +247,7 @@ mod native {
 
         fn hide_island(&self) {
             if let Some(win) = self.app.get_webview_window("main") {
+                #[cfg(not(windows))]
                 let _ = win.set_ignore_cursor_events(true);
                 let _ = win.hide();
             }

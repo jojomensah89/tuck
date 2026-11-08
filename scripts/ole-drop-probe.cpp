@@ -19,6 +19,18 @@ static void describe(HWND h) {
   printf(" hwnd=%p pid=%lu class=%ls registered=%p transparent=%d", h, p, name,
          GetPropW(h, L"OleDropTargetInterface"),
          (GetWindowLongPtrW(h, GWL_EXSTYLE) & WS_EX_TRANSPARENT) != 0);
+  printf(" exstyle=%llx dpi=%u",
+         (unsigned long long)GetWindowLongPtrW(h, GWL_EXSTYLE),
+         GetDpiForWindow(h));
+  HRGN region = CreateRectRgn(0, 0, 0, 0);
+  RECT bounds = {};
+  int kind = GetWindowRgn(h, region);
+  if (kind > 0) {
+    GetRgnBox(region, &bounds);
+    printf(" region=%d:[%ld,%ld,%ld,%ld]", kind, bounds.left, bounds.top,
+           bounds.right, bounds.bottom);
+  }
+  DeleteObject(region);
 }
 static void move(int x, int y,
                  DWORD flags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE) {
@@ -140,6 +152,8 @@ struct Source : IDropSource {
            pt.y, effect);
     for (HWND h = leaf; h; h = GetParent(h))
       describe(h);
+    printf(" islandTransparent=%d hit=%lldx%lld", (GetWindowLongPtrW(island,GWL_EXSTYLE)&WS_EX_TRANSPARENT)!=0,
+      (long long)GetPropW(island,L"TuckProbeHitWidth"),(long long)GetPropW(island,L"TuckProbeHitHeight"));
     puts("");
     return DRAGDROP_S_USEDEFAULTCURSORS;
   }
@@ -190,6 +204,29 @@ int wmain(int argc, wchar_t **argv) {
   move(x, box.bottom + 100);
   printf("idle seconds=%d\n", idle);
   Sleep(idle * 1000);
+  if (argc > 5 && wcscmp(argv[5], L"far") == 0) {
+    move(GetSystemMetrics(SM_CXSCREEN) - 40,
+         GetSystemMetrics(SM_CYSCREEN) - 40);
+    puts("CURSOR FAR");
+    return 0;
+  }
+  if (argc > 5 && wcscmp(argv[5], L"geometry") == 0) {
+    move(x, box.top + 20);
+    Sleep(100);
+    printf("PILL hit=%d", over_island());
+    describe(island);
+    puts("");
+    Sleep(1000);
+    printf("HOVER OPEN");
+    describe(island);
+    puts("");
+    move(x, box.bottom + 100);
+    Sleep(800);
+    printf("OUTSIDE hit=%d", over_island());
+    describe(island);
+    puts("");
+    return over_island() ? 6 : 0;
+  }
   HRESULT init = OleInitialize(nullptr);
   printf("OleInitialize=%lx\n", init);
   if (FAILED(init))
@@ -265,12 +302,12 @@ int wmain(int argc, wchar_t **argv) {
   std::thread worker([=]() {
     Sleep(argc > 5 ? 80 : 400);
     move(x, box.top + 20);
-    Sleep(1500);
+    Sleep(argc > 5 && wcscmp(argv[5], L"fast") == 0 ? 0 : 1500);
     for (int y = 25; y <= dy; y += 5) {
       move(x, box.top + y);
-      Sleep(120);
+      Sleep(argc > 5 && wcscmp(argv[5], L"fast") == 0 ? 1 : 120);
     }
-    Sleep(700);
+    Sleep(argc > 5 && wcscmp(argv[5], L"fast") == 0 ? 0 : 700);
     move(0, 0, MOUSEEVENTF_LEFTUP);
   });
   DWORD effect = 0;

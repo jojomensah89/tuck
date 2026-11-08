@@ -78,6 +78,7 @@ impl IDropTarget_Impl for Target_Impl {
             };
         }
         if self.valid.get() {
+            crate::window_region::begin_drag();
             self.emit("tauri://drag-enter", point, files);
         }
         Ok(())
@@ -101,6 +102,7 @@ impl IDropTarget_Impl for Target_Impl {
         Ok(())
     }
     fn DragLeave(&self) -> Result<()> {
+        crate::window_region::leave_drag();
         if self.valid.replace(false) {
             let _ = self.window.emit_to(
                 EventTarget::labeled(self.window.label()),
@@ -129,6 +131,7 @@ impl IDropTarget_Impl for Target_Impl {
             self.emit("tauri://drag-drop", point, files);
         }
         self.valid.set(false);
+        crate::window_region::end_drag();
         Ok(())
     }
 }

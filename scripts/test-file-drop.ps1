@@ -8,7 +8,7 @@ $source = Join-Path $PSScriptRoot 'ole-drop-probe.cpp'
 $vcvars = 'C:\Program Files (x86)\Microsoft Visual Studio\2019\BuildTools\VC\Auxiliary\Build\vcvars64.bat'
 # Compiler environment and compilation stay in one child shell.
 $ErrorActionPreference = 'Continue'
-& cmd /c "`"$vcvars`" >nul && cl /nologo /EHsc `"$source`" /Fo`"$artifacts\probe.obj`" /Fe`"$exe`" ole32.lib user32.lib shell32.lib uuid.lib"
+& cmd /c "`"$vcvars`" >nul && cl /nologo /EHsc `"$source`" /Fo`"$artifacts\probe.obj`" /Fe`"$exe`" ole32.lib user32.lib shell32.lib uuid.lib gdi32.lib"
 $compileCode = $LASTEXITCODE
 $ErrorActionPreference = 'Stop'
 if ($compileCode -ne 0) { throw "Probe compilation failed: $compileCode" }

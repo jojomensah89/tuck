@@ -198,6 +198,7 @@ pub fn is_point_inside(bounds: &HitBounds, x: f64, y: f64) -> bool {
 }
 
 /// Keep fast sampling within 400 CSS pixels, including across negative monitor origins.
+#[cfg(any(not(windows), test))]
 fn cursor_near(bounds: &HitBounds, x: f64, y: f64, scale: f64) -> bool {
     let margin = 400.0 * scale;
     is_point_inside(
@@ -340,11 +341,14 @@ pub(crate) fn set_cursor_pause(reason: u8, paused: bool) {
         CURSOR_PAUSE_REASONS.fetch_and(!reason, Ordering::SeqCst);
     }
     CURSOR_GATE.1.notify_all();
+    #[cfg(windows)]
+    crate::window_region::refresh();
 }
 
 /// Parks the cursor thread while any pause reason is set. Before parking it forces
 /// click-through from this thread, so that request is queued after any hit-test result
 /// this thread sent earlier. `on_park` runs once before waiting. Returns true when parked.
+#[cfg(not(windows))]
 fn park_cursor_while_paused(win: &WebviewWindow, on_park: impl FnOnce()) -> bool {
     let mut guard = lock_cursor_gate();
     if CURSOR_PAUSE_REASONS.load(Ordering::SeqCst) == 0 {
@@ -361,6 +365,7 @@ fn park_cursor_while_paused(win: &WebviewWindow, on_park: impl FnOnce()) -> bool
     true
 }
 
+#[cfg(any(not(windows), test))]
 #[derive(Clone, Copy)]
 struct CursorGeometry {
     x: i32,
@@ -368,6 +373,7 @@ struct CursorGeometry {
     width: u32,
     scale: f64,
 }
+#[cfg(any(not(windows), test))]
 impl CursorGeometry {
     fn bounds(self, hit: &HitState) -> HitBounds {
         compute_hit_bounds(
@@ -384,6 +390,7 @@ impl CursorGeometry {
 
 /// Re-read the cursor on the UI thread: a queued outside sample must never turn
 /// click-through back on after the pointer has already entered the island.
+#[cfg(not(windows))]
 fn apply_hit_test(
     win: &WebviewWindow,
     app: AppHandle,
@@ -426,6 +433,7 @@ fn apply_hit_test(
     .is_ok()
 }
 
+#[cfg(any(not(windows), test))]
 fn hit_at_delivery(bounds: Option<&HitBounds>, current: Option<(f64, f64)>) -> bool {
     bounds
         .zip(current)
@@ -539,6 +547,7 @@ pub fn open_island(win: &WebviewWindow) -> Result<(), Box<dyn std::error::Error>
     if let Ok(hwnd) = win.hwnd() {
         set_island_focusable(HWND(hwnd.0 as _), true);
     }
+    #[cfg(not(windows))]
     win.set_ignore_cursor_events(false)?;
     win.show()?;
     win.set_focus()?;
@@ -600,6 +609,7 @@ pub(crate) fn refresh_window_state(app: &AppHandle) -> bool {
     let previous = FULLSCREEN.swap(hidden, Ordering::Relaxed);
     set_cursor_pause(CURSOR_PAUSE_FULLSCREEN, hidden);
     if hidden {
+        #[cfg(not(windows))]
         let _ = win.set_ignore_cursor_events(true);
     } else {
         #[cfg(windows)]
@@ -623,92 +633,103 @@ pub(crate) fn deactivate_island(app: AppHandle) -> Result<(), String> {
     if let Ok(hwnd) = win.hwnd() {
         set_island_focusable(HWND(hwnd.0 as _), false);
     }
-    win.set_ignore_cursor_events(true)
-        .map_err(|_| "Could not restore click-through".to_string())
+    #[cfg(windows)]
+    {
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        win.set_ignore_cursor_events(true)
+            .map_err(|_| "Could not restore click-through".to_string())
+    }
 }
 
 /// Starts adaptive cursor hit testing (see `cursor_poll_ms`). Native lifecycle, display, power and
 /// fullscreen events are handled by the hidden window in `lifecycle`.
 pub fn start(app: AppHandle, hit_state: Arc<HitState>) {
-    let app_cursor = app.clone();
-    let hit_cursor = hit_state.clone();
+    #[cfg(not(windows))]
+    {
+        let app_cursor = app.clone();
+        let hit_cursor = hit_state.clone();
 
-    // Adaptive cursor sampling; fullscreen is handled by lifecycle notifications.
-    std::thread::spawn(move || {
-        #[cfg(windows)]
-        unsafe {
-            let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
-        }
-
-        let was_hovered = Arc::new(AtomicBool::new(false));
-        let mut near = true;
-        let mut moved = true;
-        #[cfg(windows)]
-        let mut last_cursor: Option<(i32, i32)> = None;
-        #[cfg(windows)]
-        let mut geometry = None;
-
-        loop {
-            std::thread::sleep(std::time::Duration::from_millis(cursor_poll_ms(
-                near, moved,
-            )));
-
-            let Some(win) = app_cursor.get_webview_window("main") else {
-                continue;
-            };
-            let parked = park_cursor_while_paused(&win, || {
-                if was_hovered.swap(false, Ordering::AcqRel) {
-                    let _ = app_cursor.emit("hover", false);
-                }
-            });
-            if parked {
-                continue;
-            }
-
-            // Hit test: physical cursor vs scaled CSS geometry
-            let mut is_hovered = false;
-            let mut delivery_geometry = None;
+        // Adaptive cursor sampling; fullscreen is handled by lifecycle notifications.
+        std::thread::spawn(move || {
             #[cfg(windows)]
             unsafe {
-                let mut pt = POINT::default();
-                if GetCursorPos(&mut pt).is_ok() {
-                    moved = last_cursor.replace((pt.x, pt.y)) != Some((pt.x, pt.y));
-                    if geometry.is_none() || HIT_GEOMETRY_DIRTY.swap(false, Ordering::AcqRel) {
-                        geometry = win
-                            .outer_position()
-                            .ok()
-                            .zip(win.outer_size().ok())
-                            .zip(win.scale_factor().ok());
-                    }
-                    if let Some(((pos, size), sf)) = geometry {
-                        let hit_w = hit_cursor.width.load(Ordering::Relaxed);
-                        let hit_h = hit_cursor.height.load(Ordering::Relaxed);
-                        let bounds =
-                            compute_hit_bounds(pos.x, pos.y, size.width, sf, hit_w, hit_h, 6.0);
-                        delivery_geometry = Some(CursorGeometry {
-                            x: pos.x,
-                            y: pos.y,
-                            width: size.width,
-                            scale: sf,
-                        });
-                        is_hovered = is_point_inside(&bounds, pt.x as f64, pt.y as f64);
-                        near = cursor_near(&bounds, pt.x as f64, pt.y as f64, sf);
-                    }
-                }
+                let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
             }
 
-            // Reconcile even without an enter/leave transition: tray activation changes this externally.
-            let _ = apply_hit_test(
-                &win,
-                app_cursor.clone(),
-                was_hovered.clone(),
-                delivery_geometry,
-                hit_cursor.clone(),
-                is_hovered,
-            );
-        }
-    });
+            let was_hovered = Arc::new(AtomicBool::new(false));
+            let mut near = true;
+            let mut moved = true;
+            #[cfg(windows)]
+            let mut last_cursor: Option<(i32, i32)> = None;
+            #[cfg(windows)]
+            let mut geometry = None;
 
+            loop {
+                std::thread::sleep(std::time::Duration::from_millis(cursor_poll_ms(
+                    near, moved,
+                )));
+
+                let Some(win) = app_cursor.get_webview_window("main") else {
+                    continue;
+                };
+                let parked = park_cursor_while_paused(&win, || {
+                    if was_hovered.swap(false, Ordering::AcqRel) {
+                        let _ = app_cursor.emit("hover", false);
+                    }
+                });
+                if parked {
+                    continue;
+                }
+
+                // Hit test: physical cursor vs scaled CSS geometry
+                let mut is_hovered = false;
+                let mut delivery_geometry = None;
+                #[cfg(windows)]
+                unsafe {
+                    let mut pt = POINT::default();
+                    if GetCursorPos(&mut pt).is_ok() {
+                        moved = last_cursor.replace((pt.x, pt.y)) != Some((pt.x, pt.y));
+                        if geometry.is_none() || HIT_GEOMETRY_DIRTY.swap(false, Ordering::AcqRel) {
+                            geometry = win
+                                .outer_position()
+                                .ok()
+                                .zip(win.outer_size().ok())
+                                .zip(win.scale_factor().ok());
+                        }
+                        if let Some(((pos, size), sf)) = geometry {
+                            let hit_w = hit_cursor.width.load(Ordering::Relaxed);
+                            let hit_h = hit_cursor.height.load(Ordering::Relaxed);
+                            let bounds =
+                                compute_hit_bounds(pos.x, pos.y, size.width, sf, hit_w, hit_h, 6.0);
+                            delivery_geometry = Some(CursorGeometry {
+                                x: pos.x,
+                                y: pos.y,
+                                width: size.width,
+                                scale: sf,
+                            });
+                            is_hovered = is_point_inside(&bounds, pt.x as f64, pt.y as f64);
+                            near = cursor_near(&bounds, pt.x as f64, pt.y as f64, sf);
+                        }
+                    }
+                }
+
+                // Reconcile even without an enter/leave transition: tray activation changes this externally.
+                let _ = apply_hit_test(
+                    &win,
+                    app_cursor.clone(),
+                    was_hovered.clone(),
+                    delivery_geometry,
+                    hit_cursor.clone(),
+                    is_hovered,
+                );
+            }
+        });
+    }
+    #[cfg(windows)]
+    let _ = hit_state;
     crate::lifecycle::start(app);
 }
 
@@ -1003,4 +1024,9 @@ mod idle_cursor_tests {
         assert!(cursor_poll_ms(true, false) < cursor_poll_ms(false, false));
         assert!(cursor_poll_ms(true, true) < cursor_poll_ms(true, false));
     }
+}
+
+#[cfg(windows)]
+pub(crate) fn cursor_paused() -> bool {
+    CURSOR_PAUSE_REASONS.load(Ordering::Acquire) != 0
 }

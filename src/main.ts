@@ -21,7 +21,7 @@ import {
   dispatchMockEvent,
   invokeCommand,
 } from './ipc.js';
-import { currentPositionMs, retainedArtwork, hitGeometry } from './runtime.js';
+import { currentPositionMs, retainedArtwork } from './runtime.js';
 import { extractAccentColor } from './accent.js';
 import { batteryGlyph, SVG_ICONS } from './icons.js';
 import { activitiesManager } from './activities.js';
@@ -284,6 +284,29 @@ interface ExternalActivityState {
 }
 const externalActivities = new Map<string, ExternalActivityState>();
 
+let shellRegionFrame = 0;
+function syncShellRegion(): void {
+  window.cancelAnimationFrame(shellRegionFrame);
+  if (!isTauri()) return;
+  const deadline = performance.now() + 1000;
+  const report = () => {
+    const rect = isl.getBoundingClientRect();
+    const style = getComputedStyle(isl);
+    const ear = getComputedStyle(isl, '::before');
+    runAction(setHit(rect.width, rect.bottom, {
+      x: rect.x, y: rect.y, width: rect.width, height: rect.height,
+      topRadius: parseFloat(style.borderTopLeftRadius) || 0,
+      bottomRadius: parseFloat(style.borderBottomLeftRadius) || 0,
+      ear: ear.display === 'none' ? 0 : parseFloat(ear.width) || 0,
+    }), 'Update island bounds');
+    // Finite transition work only; no observer, timer or RAF remains while idle.
+    if (performance.now() < deadline && isl.getAnimations().some(animation => animation.playState === 'running')) {
+      shellRegionFrame = requestAnimationFrame(report);
+    }
+  };
+  report();
+}
+
 function setState(next: IslandState): void {
   if (state === 'open' && next !== 'open' && isTauri()) runAction(invokeCommand('deactivate_island'), 'Restore desktop interaction');
   if (next !== 'open') keyboardMode = false;
@@ -317,8 +340,7 @@ function setState(next: IslandState): void {
   compact.setAttribute('aria-hidden', String(next === 'open'));
   isl.setAttribute('aria-expanded', String(next === 'open'));
 
-  const hit = hitGeometry(w, h, topOffset);
-  runAction(setHit(hit.w, hit.h), 'Update island bounds');
+  syncShellRegion();
 
   renderCompact();
   if (next === 'open') {
@@ -362,11 +384,10 @@ function onHover(inside: boolean): void {
   }
 }
 
-// Mouse events inside browser preview
-if (!isTauri()) {
-  isl.addEventListener('mouseenter', () => onHover(true));
-  isl.addEventListener('mouseleave', () => onHover(false));
-}
+// The OS region owns Windows hit testing. DOM events replace the native cursor poll.
+// Listen on the document as well so the decorative notch ears count as entry.
+document.addEventListener('pointermove', () => { if (!hoverInside && !nativeDragActive) onHover(true); });
+document.addEventListener('pointerout', event => { if (!event.relatedTarget && !nativeDragActive) onHover(false); });
 
 isl.addEventListener('click', (e) => {
   if ((e.target as HTMLElement).closest('button, .track')) return;
@@ -757,8 +778,7 @@ function syncIdleWidth(width: number): void {
   idleWidth = width;
   isl.style.setProperty('--w', `${width}px`);
   isl.style.width = `${width}px`;
-  const hit = hitGeometry(width, SIZES.idle[1], topOffset);
-  runAction(setHit(hit.w, hit.h), 'Update island bounds');
+  syncShellRegion();
 }
 
 function renderCompact(): void {
@@ -1381,6 +1401,7 @@ startBackgroundUpdateScheduler();
 void listenToEvent<boolean>('hover', (inside) => onHover(inside));
 void listenToEvent<boolean>('fullscreen', (hidden) => {
   document.body.classList.toggle('fullscreen-hidden', hidden);
+  syncShellRegion();
 });
 void listenToEvent<MediaState>('media', (payload) => onMediaUpdate(payload));
 void listenToEvent<PowerState>('power', (payload) => {

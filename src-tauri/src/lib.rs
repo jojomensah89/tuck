@@ -20,6 +20,7 @@ pub mod telemetry;
 mod update;
 pub mod usage;
 mod welcome;
+mod window_region;
 
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -34,10 +35,22 @@ use windows::Win32::Foundation::HWND;
 
 /// Frontend command to notify Rust of the island's current CSS dimensions.
 #[tauri::command]
-fn set_hit(hit_state: State<'_, Arc<system::HitState>>, w: u32, h: u32) {
+fn set_hit(
+    window: tauri::WebviewWindow,
+    hit_state: State<'_, Arc<system::HitState>>,
+    w: u32,
+    h: u32,
+    geometry: Option<window_region::Geometry>,
+) {
     let (clamped_w, clamped_h) = system::clamp_hit_size(w, h);
     hit_state.width.store(clamped_w, Ordering::Relaxed);
     hit_state.height.store(clamped_h, Ordering::Relaxed);
+    #[cfg(windows)]
+    if let Some(geometry) = geometry {
+        window_region::update(&window, geometry);
+    }
+    #[cfg(not(windows))]
+    let _ = (window, geometry);
 }
 
 pub fn run() {
@@ -306,9 +319,13 @@ pub fn run() {
                 }
 
                 #[cfg(windows)]
-                file_drop::start(&main_win);
+                {
+                    window_region::start(&main_win);
+                    file_drop::start(&main_win);
+                }
 
                 // Initial pass-through until cursor enters island
+                #[cfg(not(windows))]
                 let _ = main_win.set_ignore_cursor_events(true);
                 let _ = main_win.show();
 
@@ -322,6 +339,8 @@ pub fn run() {
                             | WindowEvent::ScaleFactorChanged { .. }
                     ) {
                         system::invalidate_hit_geometry();
+                        #[cfg(windows)]
+                        window_region::refresh();
                     }
                     match event {
                         WindowEvent::ScaleFactorChanged { .. } | WindowEvent::Moved(_) => {
@@ -370,7 +389,10 @@ pub fn run() {
 /// Central shutdown cleanup: cancels signals, un-hides native OS flyout, and shuts down dictation & clipboard.
 pub fn run_shutdown_cleanup(app: &AppHandle) {
     #[cfg(windows)]
-    file_drop::stop();
+    {
+        file_drop::stop();
+        window_region::stop();
+    }
     lifecycle::stop();
     media::stop();
     desktop_signals::stop();

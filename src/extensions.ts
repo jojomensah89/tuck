@@ -153,7 +153,7 @@ export function mountExtensions():void {
    for(const tile of fresh){
     if(!reducedMotion())tile.animate([{opacity:0,transform:'translateY(4px) scale(0.96)'},{opacity:1,transform:'none'}],{duration:200,easing:EASE});
     // A short highlight says which tile just arrived, then fades
-    const flash=el('span','','tile-flash');flash.setAttribute('aria-hidden','true');tile.querySelector('.tile-preview')!.append(flash);
+    const flash=el('span','','tile-flash');flash.setAttribute('aria-hidden','true');tile.querySelector('.tile-preview')!.after(flash);
     flash.animate([{opacity:1},{opacity:0}],{duration:280,delay:700,easing:EASE,fill:'both'}).finished.then(()=>flash.remove()).catch(()=>flash.remove());
    }
    const last=fresh[fresh.length-1];

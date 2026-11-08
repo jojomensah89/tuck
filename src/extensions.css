@@ -107,6 +107,7 @@
 }
 
 .tile-open {
+  position: relative;
   display: flex;
   flex-direction: column;
   align-items: stretch;
@@ -172,6 +173,7 @@
   white-space: nowrap;
   text-align: center;
   font-size: var(--t-sm);
+  font-weight: var(--w-medium);
   color: var(--ink);
 }
 
@@ -193,9 +195,12 @@
 /* A just-added file is outlined in the drop colour for a moment */
 .tile-flash {
   position: absolute;
-  inset: 0;
+  top: 0;
+  left: 0;
+  width: var(--shelf-tile);
+  height: var(--shelf-tile);
   border: 2px solid var(--ok);
-  border-radius: inherit;
+  border-radius: var(--r-lg);
   background: var(--ok-wash);
   pointer-events: none;
 }

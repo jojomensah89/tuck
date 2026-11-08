@@ -169,12 +169,28 @@ try {
     let serial=0;const callbacks=new Map();const listeners=new Map();
     const state={settings:{notifications:false},shelf:[],notificationStatus:'Disabled',errors:[]};
     window.__nativeState=state;window.__calls=[];
+    // Stand-ins for Explorer's thumbnails: a page, a photo, an app icon and a video frame
+    window.__fixtureThumb=id=>{
+      const kinds={pdf:'page',doc:'word',photo:'photo',exe:'hex',app:'app',video:'frame','video-fixture':'frame','doc-fixture':'page'};
+      if(id==='gone')return {kind:'missing'};
+      const kind=id.startsWith('added-')?'photo':kinds[id];if(!kind)return {kind:'none'};
+      const c=document.createElement('canvas'),x=c.getContext('2d');
+      const round=(l,t,w,h,r,fill)=>{x.fillStyle=fill;x.beginPath();x.roundRect(l,t,w,h,r);x.fill();};
+      if(kind==='page'||kind==='word'){c.width=144;c.height=192;x.fillStyle='#fff';x.fillRect(0,0,144,192);x.fillStyle=kind==='word'?'#2b579a':'#444';x.fillRect(16,18,kind==='word'?112:70,kind==='word'?14:8);x.fillStyle='#b8b8bc';for(let y=44;y<176;y+=12)x.fillRect(16,y,y%36===8?80:112,4);}
+      else if(kind==='photo'){c.width=192;c.height=128;x.fillStyle='#f2a65a';x.fillRect(0,0,192,70);x.fillStyle='#ffd9a0';x.beginPath();x.arc(132,62,18,0,Math.PI*2);x.fill();x.fillStyle='#1f4e6b';x.fillRect(0,70,192,58);x.fillStyle='#163a50';x.fillRect(20,84,60,6);x.fillRect(100,100,70,5);}
+      else if(kind==='frame'){c.width=192;c.height=108;x.fillStyle='#18181b';x.fillRect(0,0,192,108);round(24,20,144,68,10,'#2c2c2e');x.fillStyle='#fff';x.beginPath();x.moveTo(88,40);x.lineTo(110,54);x.lineTo(88,68);x.fill();}
+      else{c.width=192;c.height=192;round(24,24,144,144,32,kind==='hex'?'#202024':'#1e88e5');x.strokeStyle='#fff';x.lineWidth=10;x.beginPath();if(kind==='hex'){for(let i=0;i<6;i++){const a=Math.PI/3*i+Math.PI/6;x.lineTo(96+40*Math.cos(a),96+40*Math.sin(a));}x.closePath();}else{x.moveTo(96,60);x.lineTo(96,124);x.moveTo(72,102);x.lineTo(96,126);x.lineTo(120,102);}x.stroke();}
+      return {kind:'image',url:c.toDataURL()};
+    };
     window.__emitNative=(event,payload)=>{for(const id of listeners.get(event)||[])callbacks.get(id)?.({event,id,payload});};
     window.__TAURI_INTERNALS__={metadata:{currentWindow:{label:'main'},currentWebview:{label:'main'}},transformCallback(callback){const id=++serial;callbacks.set(id,callback);return id;},async invoke(command,args={}){
       window.__calls.push({command,args});
       if(command==='plugin:event|listen'){const ids=listeners.get(args.event)||[];ids.push(args.handler);listeners.set(args.event,ids);return ++serial;}
       if(command==='extension_snapshot')return structuredClone(state);
       if(command==='shelf_pick'){state.shelf=[{id:'fixture-file',name:'sample.txt',path:'C:\\\\Fixture\\\\sample.txt',bytes:20}];return;}
+      if(command==='shelf_remove'){state.shelf=args.id==null?[]:state.shelf.filter(item=>item.id!==args.id);return null;}
+      if(command==='shelf_add'){const added=args.paths.map(p=>({id:`added-${++serial}`,name:p.split(/[\\/]/).pop(),path:p,bytes:48213}));state.shelf.push(...added);return added;}
+      if(command==='shelf_thumbnail'||command==='clipboard_thumbnail')return window.__fixtureThumb(args.id);
       if(command==='extension_settings')throw 'Activity settings could not be saved';
       if(command==='media_now')return {active:false,trackId:'',title:'',artist:'',playing:false,positionMs:0,durationMs:0,artwork:null};
       if(command==='refresh_usage') return new Promise((resolve,reject) => { window.__refreshResolve = resolve; window.__refreshReject = reject; });
@@ -541,23 +557,161 @@ try {
   assert.equal(await native.evaluate(()=>window.__calls.some(call=>call.command==='deactivate_island')),true);
   await native.evaluate(()=>window.__emitNative('open-island',null));
   await native.getByRole('tab',{name:'Files',exact:true}).click();
-  // The empty shelf is one large dashed box; a drag highlights it, a click picks files
+  // Files, with fixtures through the mocked bridge: Explorer's thumbnails and real drops need native runs
   const shelfDrop = native.getByRole('button',{name:/^Drop files here/});
-  const dropBox = () => shelfDrop.evaluate(n=>{const r=n.getBoundingClientRect(),s=getComputedStyle(n);return {w:Math.round(r.width),h:Math.round(r.height),dashed:s.borderTopStyle,colour:s.borderTopColor};});
+  const dropBox = () => native.locator('.shelf-drop').evaluate(n=>{const r=n.getBoundingClientRect(),s=getComputedStyle(n);return {w:Math.round(r.width),h:Math.round(r.height),dashed:s.borderTopStyle,colour:s.borderTopColor,shown:s.display!=='none'};});
+  const setShelf = names => native.evaluate(names=>{window.__nativeState.shelf=names.map(([id,name,bytes])=>({id,name,path:`C:\\Fixture\\${name}`,bytes}));window.__emitNative('extension-state',structuredClone(window.__nativeState));},names);
+  const tileIds = () => native.locator('.shelf-tile:not(.leaving)').evaluateAll(n=>n.map(x=>x.dataset.id));
+  const arrows = () => native.evaluate(()=>[...document.querySelectorAll('.shelf-scroll')].map(n=>!n.hidden));
+  // Arrows follow the scroll a frame later
+  const arrowsSettle = expected => native.waitForFunction(expected=>[...document.querySelectorAll('.shelf-scroll')].map(n=>!n.hidden).join()===expected.join(),expected,{timeout:2000}).catch(()=>{});
   const emptyDrop = await dropBox();
   assert.deepEqual([emptyDrop.w,emptyDrop.h,emptyDrop.dashed],[420,192,'dashed'],'An empty shelf fills the content box');
-  assert.equal(await native.locator('#extensionsPage').textContent().then(text=>text.trim()),'Drop files here to keep them handy');
+  assert.equal(await native.locator('.shelf-drop .drop-text').textContent(),'Drop files here');
+  assert.equal(await native.locator('.shelf-drop .drop-hint').textContent(),'Drag out anytime · click to open');
+  assert.equal(await native.locator('.shelf-drop .drop-text').evaluate(n=>getComputedStyle(n).fontSize),'14px','The title is at the primary size');
+  assert.equal(await native.getByRole('button',{name:'Clear shelf',exact:true}).isVisible(),false,'An empty shelf has nothing to clear');
+  await native.mouse.move(0,400);
+  await native.locator('#isl').screenshot({path:path.join(root,'docs/screens/shelf-empty-500.png')});
   await native.evaluate(()=>window.dispatchEvent(new CustomEvent('tuck-drop-active',{detail:true})));
   assert.notEqual((await dropBox()).colour,emptyDrop.colour,'A drag over the island highlights the box');
   assert.equal(await native.locator('.shelf-drop .drop-text').textContent(),'Release to add','A drag says what happens next');
   await native.evaluate(()=>window.dispatchEvent(new CustomEvent('tuck-drop-active',{detail:false})));
   await shelfDrop.click();
-  await native.locator('#extensionsPage .ext-row').waitFor();
-  assert.match(await native.locator('#extensionsPage .ext-body').textContent(),/sample.txt/);
-  const stripDrop = await dropBox();
-  assert.deepEqual([stripDrop.w,stripDrop.h,stripDrop.dashed],[420,32,'dashed'],'With files it is a slim strip above the list');
-  assert.equal(await native.evaluate(()=>document.querySelector('.shelf-drop').getBoundingClientRect().bottom<=document.querySelector('.ext-row').getBoundingClientRect().top),true);
+  await native.locator('.shelf-tile').waitFor();
+  assert.equal(await native.locator('.shelf-tile .tile-name').textContent(),'sample.txt');
+  assert.equal(await native.locator('.shelf-tile .tile-size').textContent(),'20 B');
+  assert.equal((await dropBox()).shown,false,'With files the drop target steps aside for the tiles');
   assert.equal(await native.evaluate(()=>[...document.querySelectorAll('.full *')].filter(n=>getComputedStyle(n).borderTopStyle==='dashed').length),1,'The drop target is the one dashed element');
+  const shelfFixtures = [
+    ['pdf','Application form.pdf',158822],
+    ['zip','Tuck-test-build-2026-11-08.zip',4.04*1024**2],
+    ['exe','HexSetup.exe',17.4*1024**2],
+    ['photo','Harbour at dusk.jpg',2.6*1024**2],
+    ['doc','Quarterly report with a rather long file name that never ends.docx',16384],
+    ['video','Island walkthrough.mp4',258.6*1024**2],
+    ['gone','Old notes.txt',812],
+    ['app','Installer.exe',794*1024],
+  ];
+  for (const width of [500,440]) {
+    await setLive({openWidth:width});
+    for (const count of [1,3,8]) {
+      await setShelf(shelfFixtures.slice(0,count));
+      await native.waitForFunction(count=>document.querySelectorAll('.shelf-tile').length===count,count);
+      const painted = shelfFixtures.slice(0,count).filter(([id])=>id!=='zip').length;
+      await native.waitForFunction(painted=>document.querySelectorAll('.shelf-tile img.loaded, .shelf-tile.missing').length===painted,painted,{timeout:3000});
+      const geometry = await native.evaluate(()=>{
+        const panel=document.querySelector('.tab-panel.on').getBoundingClientRect(),list=document.querySelector('.shelf-tiles').getBoundingClientRect();
+        const tiles=[...document.querySelectorAll('.shelf-tile')].map(t=>{const p=t.querySelector('.tile-preview').getBoundingClientRect();return [Math.round(t.getBoundingClientRect().width),Math.round(p.width),Math.round(p.height)];});
+        return {listWidth:Math.round(list.width),inside:list.left>=panel.left-0.5&&list.right<=panel.right+0.5&&list.top>=panel.top&&list.bottom<=panel.bottom,tiles,overflow:document.querySelector('.shelf-tiles').scrollWidth>document.querySelector('.shelf-tiles').clientWidth};
+      });
+      assert.equal(geometry.listWidth,width-80,`The row spans the content box at ${width}`);
+      assert.equal(geometry.inside,true,'The row fits the content box');
+      assert.equal(new Set(geometry.tiles.map(t=>t.join('x'))).size,1,'Tiles are equal');
+      assert.deepEqual(geometry.tiles[0],[96,96,96],'Tiles are 96px squares');
+      assert.equal(geometry.overflow,count===8,'Only eight files overflow');
+      // New tiles scroll into view; start each check from the beginning of the row
+      await native.locator('.shelf-tiles').evaluate(el=>{el.scrollTo({left:0,behavior:'instant'});});
+      await arrowsSettle([false,count===8]);
+      assert.deepEqual(await arrows(),[false,count===8],`Arrows show only where there is more (${count} at ${width})`);
+      await native.mouse.move(0,400);
+      await native.waitForFunction(()=>!document.querySelector('.tile-flash'),null,{timeout:3000});
+      await native.locator('#isl').screenshot({path:path.join(root,`docs/screens/shelf-${count}-${width}.png`)});
+    }
+    // Long names end in an ellipsis; sizes are tabular figures
+    const longName = native.locator('.shelf-tile[data-id="doc"] .tile-name');
+    assert.deepEqual(await longName.evaluate(n=>[getComputedStyle(n).textOverflow,n.scrollWidth>n.clientWidth]),['ellipsis',true]);
+    assert.match(await native.locator('.tile-size').first().evaluate(n=>getComputedStyle(n).fontVariantNumeric),/tabular-nums/);
+    assert.deepEqual(await native.locator('.tile-size').allTextContents(),['155 KB','4.0 MB','17.4 MB','2.6 MB','16 KB','258.6 MB','File missing','794 KB']);
+    assert.equal(await native.locator('.shelf-tile[data-id="gone"]').evaluate(n=>n.classList.contains('missing')),true,'A missing file shows a neutral missing state');
+    assert.equal(await native.locator('.shelf-tile[data-id="zip"] .tile-preview img').count(),0,'No thumbnail falls back to the file glyph');
+    // Arrows page through the row and disappear at the ends; the wheel scrolls it too
+    const list = native.locator('.shelf-tiles');
+    await native.getByRole('button',{name:'Scroll right',exact:true}).click();
+    await native.waitForFunction(()=>document.querySelector('.shelf-tiles').scrollLeft>0);
+    await arrowsSettle([true,true]);
+    assert.deepEqual(await arrows(),[true,true],'In the middle both arrows show');
+    await list.evaluate(el=>{el.scrollLeft=el.scrollWidth;});
+    await arrowsSettle([true,false]);
+    assert.deepEqual(await arrows(),[true,false],'At the end only the left arrow shows');
+    await native.mouse.move(0,400);
+    await native.locator('#isl').screenshot({path:path.join(root,`docs/screens/shelf-8-end-${width}.png`)});
+    await native.getByRole('button',{name:'Scroll left',exact:true}).click();
+    await list.evaluate(el=>{el.scrollLeft=0;});
+    await native.waitForFunction(()=>document.querySelector('.shelf-scroll.prev').hidden);
+    const tabBefore = await native.locator('.tab-panel.on').getAttribute('data-tab');
+    await native.waitForTimeout(400);
+    await list.hover({position:{x:150,y:40}}); await native.mouse.wheel(0,120); await native.waitForTimeout(100);
+    assert.ok(await list.evaluate(el=>el.scrollLeft)>0,'The wheel scrolls the row sideways');
+    await native.waitForTimeout(400);
+    const sideways = await list.evaluate(el=>el.scrollLeft);
+    await native.mouse.wheel(80,0); await native.waitForTimeout(100);
+    assert.ok(await list.evaluate(el=>el.scrollLeft)>sideways,'A sideways trackpad swipe scrolls the row');
+    assert.equal(await native.locator('.tab-panel.on').getAttribute('data-tab'),tabBefore,'Scrolling the row leaves the tab alone');
+    await list.evaluate(el=>{el.scrollLeft=0;});
+  }
+  // Hover shows the remove X (a 32px target with a name); it removes one file
+  await setLive({openWidth:500});
+  await native.mouse.move(0,400);
+  await setShelf(shelfFixtures.slice(0,3));
+  await native.waitForFunction(()=>document.querySelectorAll('.shelf-tile').length===3);
+  const firstTile = native.locator('.shelf-tile[data-id="pdf"]');
+  const removePdf = native.getByRole('button',{name:'Remove Application form.pdf',exact:true});
+  assert.equal(await removePdf.evaluate(n=>getComputedStyle(n).opacity),'0','The X waits for hover or focus');
+  await firstTile.hover();
+  await native.waitForFunction(()=>getComputedStyle(document.querySelector('.shelf-tile[data-id="pdf"] .tile-remove')).opacity==='1');
+  const removeBox = await removePdf.boundingBox();
+  assert.deepEqual([removeBox.width,removeBox.height],[32,32],'The X has a 32px target');
+  assert.equal(await native.getByRole('button',{name:'Show Application form.pdf in folder',exact:true}).isVisible(),true,'Show in folder stays reachable');
+  await native.locator('#isl').screenshot({path:path.join(root,'docs/screens/shelf-hover-500.png')});
+  // Clicking a tile opens the file by its shelf id, never by a path from the page
+  await firstTile.locator('.tile-open').click();
+  assert.deepEqual(await native.evaluate(()=>window.__calls.findLast(c=>c.command==='shelf_open').args),{id:'pdf'});
+  await native.getByRole('button',{name:'Show Application form.pdf in folder',exact:true}).click();
+  assert.deepEqual(await native.evaluate(()=>window.__calls.findLast(c=>c.command==='shelf_reveal').args),{id:'pdf'});
+  await firstTile.hover();
+  await removePdf.click();
+  assert.deepEqual(await native.evaluate(()=>window.__calls.findLast(c=>c.command==='shelf_remove').args),{id:'pdf'});
+  await native.waitForFunction(()=>document.querySelectorAll('.shelf-tile').length===2);
+  assert.deepEqual(await tileIds(),['zip','exe'],'The other files stay in order');
+  // Dragging a file over the island covers the tiles with the drop target for the whole drag
+  const fileDrag = (event, paths) => native.evaluate(([event,paths])=>window.__emitNative(event,{paths,position:{x:200,y:120}}),[event,paths]);
+  await fileDrag('tauri://drag-enter',['C:\\Fixture\\Dropped sketch.png']);
+  await native.waitForFunction(()=>document.getElementById('extensionsPage').classList.contains('drag-over'));
+  const covering = await dropBox();
+  assert.deepEqual([covering.shown,covering.w,covering.h],[true,420,192],'The full drop target covers the tiles');
+  assert.equal(await native.locator('.shelf').isVisible(),false,'Tiles are hidden while a file is over the island');
+  assert.equal(await native.locator('.shelf-drop .drop-text').textContent(),'Release to add');
+  await fileDrag('tauri://drag-over',[]);
+  assert.equal(await native.locator('.shelf').isVisible(),false,'The tiles stay covered for the whole drag');
+  await native.locator('#isl').screenshot({path:path.join(root,'docs/screens/shelf-drag-over-500.png')});
+  // Leaving without a drop brings the same tiles back
+  await native.evaluate(()=>window.__emitNative('tauri://drag-leave',null));
+  await native.waitForFunction(()=>!document.getElementById('extensionsPage').classList.contains('drag-over'));
+  assert.equal(await native.locator('.shelf').isVisible(),true);
+  assert.deepEqual(await tileIds(),['zip','exe'],'Leaving without a drop changes nothing');
+  assert.equal(await native.evaluate(()=>window.__calls.some(c=>c.command==='shelf_add')),false);
+  // A drop adds a tile, which arrives highlighted
+  await fileDrag('tauri://drag-enter',['C:\\Fixture\\Dropped sketch.png']);
+  await fileDrag('tauri://drag-drop',['C:\\Fixture\\Dropped sketch.png']);
+  await native.waitForFunction(()=>document.querySelectorAll('.shelf-tile').length===3&&!document.getElementById('extensionsPage').classList.contains('drag-over'));
+  assert.deepEqual(await native.evaluate(()=>window.__calls.findLast(c=>c.command==='shelf_add').args),{paths:['C:\\Fixture\\Dropped sketch.png']});
+  assert.equal(await native.locator('.shelf-tile').last().locator('.tile-name').textContent(),'Dropped sketch.png');
+  assert.equal(await native.locator('.shelf-tile').last().locator('.tile-flash').count(),1,'The new tile is highlighted');
+  await native.mouse.move(0,400);
+  await native.locator('.shelf-tile').last().locator('img.loaded').waitFor();
+  await native.locator('#isl').screenshot({path:path.join(root,'docs/screens/shelf-dropped-500.png')});
+  // Clear in the row removes everything and brings back the empty drop target
+  const clearShelf = native.getByRole('button',{name:'Clear shelf',exact:true});
+  assert.equal(await clearShelf.textContent(),'Clear');
+  const clearBox = await clearShelf.boundingBox(), snipNow = await native.getByRole('button',{name:'Screen snip',exact:true}).boundingBox();
+  assert.ok(clearBox.height===32 && clearBox.x+clearBox.width<=snipNow.x && snipNow.x-(clearBox.x+clearBox.width)<=8,'Clear sits next to Screen snip');
+  await clearShelf.click();
+  assert.equal(await native.evaluate(()=>window.__calls.findLast(c=>c.command==='shelf_remove').args.id),null);
+  await native.waitForFunction(()=>document.querySelectorAll('.shelf-tile').length===0);
+  assert.equal((await dropBox()).shown,true,'An empty shelf shows the drop target again');
+  await shelfDrop.click();
+  await native.locator('.shelf-tile').waitFor();
   await native.locator('.page.clipboard').evaluate(el=>{el.closest('.tab-panel').scrollTop=el.offsetTop;});
   await native.getByRole('button',{name:'Clear unpinned history',exact:true}).waitFor({timeout:3000});
   const snipBox = await native.getByRole('button',{name:'Screen snip',exact:true}).boundingBox();
@@ -1141,24 +1295,40 @@ try {
   for (const width of [440,500]) {
     await setLive({openWidth:width});
     await native.evaluate(()=>{
-      const canvas=document.createElement('canvas'); canvas.width=128; canvas.height=128; const ctx=canvas.getContext('2d');
-      ctx.fillStyle='#163832';ctx.fillRect(0,0,128,128);ctx.fillStyle='#64d2ff';ctx.fillRect(16,16,96,56);ctx.fillStyle='#ff9f0a';ctx.beginPath();ctx.arc(88,88,24,0,Math.PI*2);ctx.fill();
+      // A wide screenshot, the case that used to crop confusingly
+      const canvas=document.createElement('canvas'); canvas.width=128; canvas.height=72; const ctx=canvas.getContext('2d');
+      ctx.fillStyle='#f4f4f5';ctx.fillRect(0,0,128,72);ctx.fillStyle='#2b2b30';ctx.fillRect(0,0,128,10);ctx.fillStyle='#64d2ff';ctx.fillRect(8,18,40,6);ctx.fillStyle='#c7c7cc';for(let y=30;y<66;y+=8)ctx.fillRect(8,y,y%16===14?70:112,3);ctx.fillStyle='#ff9f0a';ctx.fillRect(92,16,28,22);
       window.__clipboardFixture={enabled:true,items:[
         {id:'image-fixture',kind:'image',text:'Image',thumbnail:canvas.toDataURL(),pinned:true,createdAt:5},
         {id:'text-fixture',kind:'text',text:'A small thought worth keeping\nSynthetic clipboard fixture',pinned:false,createdAt:4},
         {id:'link-fixture',kind:'link',text:'https://example.com/notes',pinned:false,createdAt:3},
         {id:'video-fixture',kind:'video',text:'Island walkthrough.mp4',paths:['Z:/Fixture/video.mp4'],pinned:false,createdAt:2},
+        {id:'doc-fixture',kind:'file',text:'Application form.pdf',paths:['Z:/Fixture/form.pdf'],pinned:false,createdAt:1.5},
         {id:'file-fixture',kind:'file',text:'Project notes.txt',paths:['Z:/Fixture/notes.txt'],missing:true,pinned:false,createdAt:1},
       ]}; window.__emitNative('clipboard_history_changed',window.__clipboardFixture);
     });
     assert.deepEqual(await native.locator('.clipboard-filters button').allTextContents(),['All clips','Text','Links','Images','Videos','Files']);
-    assert.equal(await native.locator('.clipboard-row').count(),5);
-    await native.locator('.clipboard-row img').evaluate(img=>img.decode());
-    assert.equal(await native.locator('.clipboard-row img').evaluate(img=>img.naturalWidth),128);
+    assert.equal(await native.locator('.clipboard-row').count(),6);
+    await native.locator('.clipboard-row[data-kind="image"] img').evaluate(img=>img.decode());
+    assert.equal(await native.locator('.clipboard-row[data-kind="image"] img').evaluate(img=>img.naturalWidth),128);
+    assert.equal(await native.locator('.clipboard-row[data-kind="image"] img').evaluate(img=>getComputedStyle(img).objectFit),'contain','The whole image shows, fitted');
+    // Copied files and videos show Explorer's thumbnail; a missing file asks for none and stays neutral
+    await native.locator('.clipboard-row[data-clip-id="video-fixture"] .clipboard-file-icon.has-thumb img').waitFor();
+    await native.locator('.clipboard-row[data-clip-id="doc-fixture"] .clipboard-file-icon.has-thumb img').waitFor();
+    assert.equal(await native.evaluate(()=>window.__calls.some(c=>c.command==='clipboard_thumbnail'&&c.args.id==='file-fixture')),false);
+    assert.equal(await native.locator('.clipboard-missing').evaluate(n=>getComputedStyle(n).color),'rgb(161, 161, 166)','Missing is quiet, not an error');
+    const thumbCalls = await native.evaluate(()=>window.__calls.filter(c=>c.command==='clipboard_thumbnail').length);
+    await native.evaluate(()=>window.__emitNative('clipboard_history_changed',{...window.__clipboardFixture,items:window.__clipboardFixture.items.map(item=>item.id==='text-fixture'?{...item,text:item.text+' '}:item)}));
+    assert.equal(await native.locator('.clipboard-row[data-clip-id="video-fixture"] .clipboard-file-icon.has-thumb img').count(),1,'A re-render paints a known thumbnail straight away');
+    assert.equal(await native.evaluate(()=>window.__calls.filter(c=>c.command==='clipboard_thumbnail').length),thumbCalls,'Re-renders reuse the thumbnails');
     assert.equal(await native.locator('.clipboard-row').first().getAttribute('data-kind'),'image');
     await native.locator('.clipboard-list').evaluate(el=>el.scrollLeft=0);
     await native.locator('.clipboard-row[data-kind="image"]').hover();
     await native.locator('#panel-tools').screenshot({path:path.join(root,`docs/screens/clipboard-${width}.png`)});
+    await native.locator('.clipboard-list').evaluate(el=>el.scrollLeft=el.scrollWidth);
+    await native.mouse.move(0,400);
+    await native.locator('#panel-tools').screenshot({path:path.join(root,`docs/screens/clipboard-files-${width}.png`)});
+    await native.locator('.clipboard-list').evaluate(el=>el.scrollLeft=0);
     const before=await native.locator('.clipboard-list').evaluate(el=>el.scrollLeft);
     await native.locator('.clipboard-list').hover({position:{x:100,y:60}}); await native.mouse.wheel(0,120); await native.waitForTimeout(100);
     assert.ok(await native.locator('.clipboard-list').evaluate(el=>el.scrollLeft)>before);
@@ -1177,7 +1347,7 @@ try {
     await native.getByRole('button',{name:'Files',exact:true}).click();
     assert.equal(await native.locator('.clipboard-missing').textContent(),'File no longer exists');
     await native.evaluate(()=>window.__missingClipboardFile=true);
-    await native.locator('.clipboard-text').click(); assert.equal(await native.locator('.page.clipboard .live-note').textContent(),'File no longer exists');
+    await native.locator('.clipboard-row.missing .clipboard-text').click(); assert.equal(await native.locator('.page.clipboard .live-note').textContent(),'File no longer exists');
     await native.evaluate(()=>window.__missingClipboardFile=false);
     await native.getByRole('button',{name:'All clips',exact:true}).click();
   }
@@ -1192,6 +1362,22 @@ try {
   await native.keyboard.press('ArrowRight');
   assert.equal(await native.locator('.tab-panel.on').getAttribute('data-tab'),'usage');
   assert.equal(await native.evaluate(()=>document.querySelector('.tab-panel.on').contains(document.activeElement)),true,'Keyboard navigation relocates focus into the visible tab');
+  // Focus rings are for the keyboard. After a mouse click there is none, even when script moves
+  // focus (a list re-rendering, the island focusing itself); Tab still shows one
+  const ring = () => native.evaluate(()=>{const el=document.activeElement,s=getComputedStyle(el);return {at:el.id||el.className,ring:s.outlineStyle!=='none'&&parseFloat(s.outlineWidth)>0};});
+  await native.getByRole('tab',{name:'Tools',exact:true}).click();
+  await native.getByRole('tab',{name:'Clipboard',exact:true}).click();
+  await native.evaluate(()=>window.__emitNative('clipboard_history_changed',window.__clipboardFixture));
+  await native.locator('.clipboard-row[data-clip-id="text-fixture"] .clipboard-text').click();
+  assert.equal((await ring()).ring,false,'No ring on a clicked card');
+  await native.evaluate(()=>window.__emitNative('clipboard_history_changed',{...window.__clipboardFixture,items:window.__clipboardFixture.items.map(item=>({...item,text:item.text+' '}))}));
+  assert.equal((await ring()).ring,false,'No ring after the list re-renders under the pointer');
+  await native.evaluate(()=>window.__emitNative('open-island',null));
+  assert.deepEqual(await ring(),{at:'isl',ring:false},'The island focusing itself draws no ring around it');
+  await native.locator('#isl').screenshot({path:path.join(root,'docs/screens/focus-after-click-500.png')});
+  await native.keyboard.press('Tab');
+  assert.equal((await ring()).ring,true,'Tab still shows where focus is');
+  await native.locator('#isl').screenshot({path:path.join(root,'docs/screens/focus-after-tab-500.png')});
 
   // Wheel: content scrolls first, then a fresh gesture at the edge switches tabs
   const panelTop = () => native.locator('.tab-panel.on').evaluate(el => el.scrollTop);

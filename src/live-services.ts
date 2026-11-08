@@ -43,10 +43,9 @@ export interface TelemetrySnapshot {
 }
 export interface DictationSnapshot {
   status: 'disabled' | 'idle' | 'starting' | 'recording' | 'transcribing' | 'processing' | 'cancelling' | 'inserting' | 'review' | 'error' | 'modelMissing' | 'downloadingModel';
-  previewsPaused?: boolean;
   audioLevel?: number;
   transcript: string; error?: string | null; modelReady?: boolean;
-  preview?: string | null; sessionId?: number; revision?: number;
+  sessionId?: number; revision?: number;
   canInsert?: boolean;
   message?: string | null; settings?: DictationSettings; modelDownloadedBytes?: number;
   models?: ModelRow[]; activeModelLabel?: string | null; modelNotice?: string | null; scanningModels?: boolean;
@@ -63,7 +62,7 @@ export class DictationUpdates {
     return true;
   }
 }
-export interface DictationSettings { toggleShortcut: string; holdToTalkShortcut: string; reviewBeforeInsert: boolean; partialPreview: boolean }
+export interface DictationSettings { toggleShortcut: string; holdToTalkShortcut: string; reviewBeforeInsert: boolean }
 export interface ClipboardItem { id: string; text: string; pinned: boolean; createdAt: number; kind?: 'text' | 'link' | 'image' | 'video' | 'file'; thumbnail?: string; paths?: string[]; missing?: boolean }
 export interface ClipboardSnapshot { enabled: boolean; items: ClipboardItem[] }
 

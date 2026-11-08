@@ -88,6 +88,7 @@ pub fn run() {
             system::restart_after_failed_update,
             idle_webview::island_activity,
             dictation::dictation_get_state,
+            dictation::dictation_keep_warm,
             dictation::dictation_set_settings,
             dictation::dictation_model_download,
             dictation::dictation_model_download_cancel,

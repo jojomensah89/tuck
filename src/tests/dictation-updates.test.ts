@@ -5,7 +5,7 @@ import { DictationUpdates, normalizeDictation } from '../live-services.js';
 describe('dictation event ordering', () => {
   it('rejects late initial responses, old sessions, and duplicate events', () => {
     const updates = new DictationUpdates();
-    const snapshot = (revision: number, sessionId = 1) => normalizeDictation({ revision, sessionId, status: 'recording', preview: 'provisional' });
+    const snapshot = (revision: number, sessionId = 1) => normalizeDictation({ revision, sessionId, status: 'recording' });
     expect(updates.accept(snapshot(3))).toBe(true);
     expect(updates.accept(snapshot(1))).toBe(false);
     expect(updates.accept(snapshot(3))).toBe(false);
@@ -14,9 +14,8 @@ describe('dictation event ordering', () => {
     expect(updates.accept(normalizeDictation({status: 'idle'}))).toBe(false);
   });
 
-  it('preserves preview separately from authoritative final text', () => {
-    const data = normalizeDictation({status: 'transcribing', revision: 4, preview: 'words may change', transcript: null});
-    expect(data.preview).toBe('words may change');
+  it('keeps recording text empty and reserves transcript for the final result', () => {
+    const data = normalizeDictation({status: 'recording', revision: 4, transcript: null});
     expect(data.transcript).toBe('');
   });
 });

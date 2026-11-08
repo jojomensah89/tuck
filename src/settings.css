@@ -173,10 +173,10 @@ body {
   color: var(--nav-ink);
   text-decoration: none;
   font-size: var(--t-md);
-  transition: background var(--d-fast) var(--ease-out), color var(--d-fast) var(--ease-out);
-}
+  transition: none;
+}@media (hover: hover) and (pointer: fine) { 
 
-.nav a:hover { color: var(--ink); }
+.nav a:hover { color: var(--ink); } }
 .nav a[aria-current="page"] { background: var(--nav-active); color: var(--ink); }
 .nav a[data-empty] { opacity: 0.45; }
 .nav a span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -345,7 +345,7 @@ h2 {
   border-radius: var(--r-md);
   background: var(--switch-off);
   cursor: pointer;
-  transition: background var(--d-fast) var(--ease-out);
+  transition: none;
 }
 
 .switch::before {
@@ -380,17 +380,17 @@ h2 {
   font-weight: var(--w-medium);
   white-space: nowrap;
   cursor: pointer;
-  transition: background var(--d-fast) var(--ease-out), transform var(--d-instant) var(--ease-out);
-}
+  transition:  transform var(--d-instant) var(--ease-out);
+}@media (hover: hover) and (pointer: fine) { 
 
-.button:hover { background: var(--control-hover); }
+.button:hover { background: var(--control-hover); } }
 .button:active { transform: scale(var(--press)); }
-.button:disabled { opacity: 0.5; cursor: default; transform: none; }
-.button:disabled:hover { background: var(--control); }
-.button.primary { background: var(--primary); color: var(--primary-ink); }
-.button.primary:hover { opacity: 0.88; }
-.button.danger { color: var(--ink-2); }
-.button.danger:hover { color: var(--warn-ink); }
+.button:disabled { opacity: 0.5; cursor: default; transform: none; }@media (hover: hover) and (pointer: fine) { 
+.button:disabled:hover { background: var(--control); } }
+.button.primary { background: var(--primary); color: var(--primary-ink); }@media (hover: hover) and (pointer: fine) { 
+.button.primary:hover { opacity: 0.88; } }
+.button.danger { color: var(--ink-2); }@media (hover: hover) and (pointer: fine) { 
+.button.danger:hover { color: var(--warn-ink); } }
 
 .file-button { position: relative; overflow: hidden; }
 .file-button input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
@@ -427,8 +427,8 @@ h2 {
 }
 .link-button[hidden] { display: none; }
 .link-button:disabled { opacity: 0.5; cursor: default; }
-.shortcut-field { text-align: left; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.shortcut-field:hover:not(:disabled) { background: var(--control-hover); }
+.shortcut-field { text-align: left; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }@media (hover: hover) and (pointer: fine) { 
+.shortcut-field:hover:not(:disabled) { background: var(--control-hover); } }
 .shortcut-field[aria-pressed="true"] { outline: 2px solid var(--focus); outline-offset: 2px; color: var(--ink-2); }
 .text-field::placeholder { color: var(--ink-3); }
 .text-field:disabled { opacity: 0.5; }
@@ -488,7 +488,7 @@ h2 {
   color: var(--ink-2);
   font-size: var(--t-md);
   font-weight: var(--w-medium);
-  transition: background var(--d-fast) var(--ease-out), color var(--d-fast) var(--ease-out);
+  transition: none;
 }
 
 .segmented input:checked + span { background: var(--thumb); color: var(--ink); }
@@ -515,10 +515,10 @@ h2 {
   text-align: left;
   cursor: pointer;
   box-shadow: inset 0 0 0 1px var(--rule);
-  transition: box-shadow var(--d-fast) var(--ease-out), background var(--d-fast) var(--ease-out);
-}
+  transition: none;
+}@media (hover: hover) and (pointer: fine) { 
 
-.shape-pick:hover { background: var(--control); }
+.shape-pick:hover { background: var(--control); } }
 .shape-pick[aria-pressed="true"] { box-shadow: inset 0 0 0 2px var(--ink); }
 .shape-pick:active { transform: scale(var(--press)); }
 
@@ -552,9 +552,9 @@ h2 {
   color: var(--ink-2);
   text-decoration: none;
   font-size: var(--t-md);
-}
+}@media (hover: hover) and (pointer: fine) { 
 
-.mirror:hover { background: var(--control); color: var(--ink); }
+.mirror:hover { background: var(--control); color: var(--ink); } }
 .mirror[data-state="on"] .mirror-state { color: var(--ink); }
 
 /* Inline confirmation for destructive actions. */
@@ -571,8 +571,8 @@ h2 {
 }
 
 .confirm p { flex: 1; min-width: 160px; margin: 0; }
-.confirm .button { background: var(--panel); }
-.confirm .button:hover { background: var(--control-hover); }
+.confirm .button { background: var(--panel); }@media (hover: hover) and (pointer: fine) { 
+.confirm .button:hover { background: var(--control-hover); } }
 
 /* Search */
 .search-summary { margin: 0 0 var(--s-3); color: var(--ink-2); font-size: var(--t-md); }
@@ -683,7 +683,7 @@ mark { background: none; color: inherit; text-decoration: underline; text-decora
   width: 0%;
   background: var(--on);
   border-radius: var(--r-md);
-  transition: width var(--d-fast) var(--ease-out);
+  transition: none;
 }
 
 .update-progress-label {
@@ -748,8 +748,8 @@ dialog[aria-label="Turn on Antigravity usage"] button { min-height: 36px; margin
 .set-row:has(.row-desc:not([hidden])) { min-height: 56px; }
 body { font-variant-numeric: tabular-nums; }
 .group-status:empty { display: none; }
-dialog button { border: 0; border-radius: var(--r-md); background: var(--control); color: var(--ink); padding: 0 var(--s-3); font: inherit; }
-dialog button:hover { background: var(--control-hover); }
+dialog button { border: 0; border-radius: var(--r-md); background: var(--control); color: var(--ink); padding: 0 var(--s-3); font: inherit; }@media (hover: hover) and (pointer: fine) { 
+dialog button:hover { background: var(--control-hover); } }
 dialog button:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 dialog::backdrop { background: #0008; }
 .welcome { max-width: 1120px; }
@@ -768,8 +768,8 @@ body.welcoming .sidebar { visibility: hidden; }
 #providerSwitches .row-title { display: flex; align-items: center; gap: var(--s-3); }
 #providerSwitches .provider-artwork, #providerSwitches svg.ico { width: 32px; height: 32px; object-fit: contain; flex: none; }
 #providerSwitches svg.ico { fill: currentColor; }
-.provider-refresh { display: grid; place-items: center; width: 36px; height: 36px; padding: 8px; border: 0; border-radius: 8px; background: transparent; color: var(--ink-2); cursor: pointer; }
-.provider-refresh:hover { background: var(--control-hover); color: var(--ink); }
+.provider-refresh { display: grid; place-items: center; width: 36px; height: 36px; padding: 8px; border: 0; border-radius: 8px; background: transparent; color: var(--ink-2); cursor: pointer; }@media (hover: hover) and (pointer: fine) { 
+.provider-refresh:hover { background: var(--control-hover); color: var(--ink); } }
 .provider-refresh:active { transform: scale(0.96); }
 .provider-refresh svg.ico { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.5px; stroke-linecap: round; stroke-linejoin: round; }
 .provider-refresh svg.ico path { vector-effect: non-scaling-stroke; }

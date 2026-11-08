@@ -165,7 +165,7 @@ export function createRing(size: number, stroke: number, className = ''): Ring {
   fill.setAttribute('transform', `rotate(-90 ${center} ${center})`);
   root.append(track, fill);
   fill.style.strokeDashoffset = c.toFixed(3);
-  let pending = 0;
+
   let last: number | null = null;
   return {
     root,
@@ -177,7 +177,7 @@ export function createRing(size: number, stroke: number, className = ''): Ring {
       // ring waits until it has been styled once, so it fills in from empty.
       const offset = ringDashOffset(value, c).toFixed(3);
       // A big drop (stopwatch minute wrap, quota reset) jumps instead of sweeping back round the ring
-      const wrap = last !== null && value !== null && last - value > 50;
+      const wrap = !root.dataset.styled || document.hidden || !root.checkVisibility() || !!root.closest('[inert]') || last !== null && value !== null && last - value > 50;
       last = value;
       const apply = () => {
         if (!wrap) { fill.style.strokeDashoffset = offset; return; }
@@ -186,9 +186,8 @@ export function createRing(size: number, stroke: number, className = ''): Ring {
         void fill.getBoundingClientRect();
         fill.style.transition = '';
       };
-      cancelAnimationFrame(pending);
-      if (root.isConnected && root.dataset.styled) apply();
-      else pending = requestAnimationFrame(() => { pending = requestAnimationFrame(() => { root.dataset.styled = '1'; apply(); }); });
+      apply();
+      root.dataset.styled = '1';
     },
   };
 }

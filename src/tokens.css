@@ -63,6 +63,7 @@
   --d-instant: 100ms;
   --d-fast: 160ms;
   --d-base: 280ms;
+  --d-ui: 200ms;
   --d-close: 300ms;
   --d-shell: 420ms;
   --d-content-in: 90ms;  /* the shell is ~65% open on --spring at this point */
@@ -76,9 +77,9 @@
   /* Content entering, zeta 0.78: ~2% overshoot */
   --spring-enter: linear(0, 0.095, 0.292, 0.502, 0.683, 0.819, 0.913, 0.97, 1.002, 1.016, 1.02, 1.018, 1.014, 1.01, 1.007, 1.004, 1);
   /* Critically damped settle, no overshoot: closing, hovers, value changes */
-  --ease-out: linear(0, 0.1, 0.287, 0.473, 0.627, 0.743, 0.827, 0.886, 0.925, 0.952, 0.969, 0.98, 0.987, 0.992, 0.995, 0.997, 1);
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
   /* Accelerating curve for content leaving */
-  --ease-exit: linear(0, 0.01, 0.044, 0.105, 0.2, 0.332, 0.506, 0.727, 1);
+  --ease-exit: var(--ease-out);
   --press: 0.96;
 }
 
@@ -87,6 +88,7 @@
     --d-instant: 0ms;
     --d-fast: 0ms;
     --d-base: 0ms;
+    --d-ui: 0ms;
     --d-close: 0ms;
     --d-shell: 0ms;
     --d-content-in: 0ms;

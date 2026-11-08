@@ -37,6 +37,7 @@ type Landing = 'keep' | 'start' | 'end';
 
 export interface TabRail {
   active(): TabId;
+  section(): string;
   show(id: TabId, options?: { landing?: Landing; user?: boolean }): void;
   /** Move by one tab. Keys wrap; wheel and swipe stop at the ends */
   step(delta: number, via: 'key' | 'wheel' | 'swipe', landing?: Landing): void;
@@ -51,6 +52,10 @@ const FOCUSABLE = 'button:not(:disabled), input:not(:disabled), select:not(:disa
 export function mountTabRail(options: TabRailOptions): TabRail {
   const full = document.querySelector<HTMLElement>('.full')!;
   const container = full.querySelector<HTMLElement>('.pages-container')!;
+  let keyboard = false;
+  document.addEventListener('keydown', () => { keyboard = true; document.documentElement.classList.add('keyboard-input'); }, true);
+  document.addEventListener('pointerdown', () => { keyboard = false; document.documentElement.classList.remove('keyboard-input'); }, true);
+  document.addEventListener('wheel', () => { keyboard = false; document.documentElement.classList.remove('keyboard-input'); }, { capture: true, passive: true });
   const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
 
   /* ---------- Rail ---------- */
@@ -160,7 +165,7 @@ export function mountTabRail(options: TabRailOptions): TabRail {
   function goToSection(index: number): void {
     const panel = panels[current];
     const target = sectionsOf(panel)[index];
-    if (target) panel.scrollTo({ top: target.offsetTop, behavior: reducedMotion.matches ? 'auto' : 'smooth' });
+    if (target) panel.scrollTo({ top: target.offsetTop, behavior: 'instant' as ScrollBehavior });
   }
 
   function buildSegment(name: string, index: number): HTMLButtonElement {
@@ -198,6 +203,7 @@ export function mountTabRail(options: TabRailOptions): TabRail {
     const names = parts.map(section => section.dataset.page ?? 'section');
     const count = names.length;
     const at = visibleSection(panel);
+    sectionSwitch.style.setProperty('--section-index', String(at));
     sectionRow.hidden = !panel.classList.contains('has-row');
     sectionSwitch.hidden = count < 2;
     // Tabs can have the same number of parts, so the segments are keyed by name
@@ -312,7 +318,7 @@ export function mountTabRail(options: TabRailOptions): TabRail {
         // The outgoing panel stays painted while it fades out in the travel direction
         panel.classList.remove('on', 'fwd', 'back');
         clearLeaving(panel);
-        if (!reducedMotion.matches) {
+        if (!reducedMotion.matches && !keyboard) {
           panel.classList.add('leaving', dir > 0 ? 'fwd' : 'back');
           const handler = (e: AnimationEvent) => { if (e.target === panel) clearLeaving(panel); };
           leavingHandlers.set(panel, handler);
@@ -378,7 +384,7 @@ export function mountTabRail(options: TabRailOptions): TabRail {
       e.stopPropagation();
       if (i === current) {
         // Re-selecting the active tab returns to its first part
-        panels[i].scrollTo({ top: 0, behavior: reducedMotion.matches ? 'auto' : 'smooth' });
+        panels[i].scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior });
         return;
       }
       show(TABS[i].id, { user: true });
@@ -482,5 +488,5 @@ export function mountTabRail(options: TabRailOptions): TabRail {
   }, true);
 
   show(TABS[current].id);
-  return { active: () => TABS[current].id, show, step, reveal, setSectionVisible };
+  return { active: () => TABS[current].id, section: () => sectionsOf(panels[current])[visibleSection(panels[current])]?.dataset.page ?? '', show, step, reveal, setSectionVisible };
 }

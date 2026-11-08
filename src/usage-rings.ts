@@ -1,6 +1,6 @@
 /**
  * One provider card per connected source. Subscription providers combine their
- * 5-hour and weekly quotas into concentric rings; other providers keep one ring.
+ * short and weekly quotas into concentric rings when both are available.
  */
 import { SVG_ICONS, providerArtwork } from './icons.js';
 import { createRing, meterWindow, providerInitial, providerMark, remainingPct, usageTone, type Ring } from './rings.js';

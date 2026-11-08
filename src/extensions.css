@@ -49,8 +49,8 @@
   }
 }
 
+/* The well keeps its size: scaled, its dashed edge would cross the clipped content box */
 .extensions.drag-over .shelf-drop {
-  transform: scale(1.01);
   background: var(--raise-hover);
   border-color: var(--ok);
 }
@@ -332,7 +332,6 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .extensions.drag-over .shelf-drop,
   .extensions.drag-over .shelf-drop svg.ico {
     transform: none;
   }

@@ -674,7 +674,7 @@ function fitCompactTitle(): void {
     // The leaving layer is still in the DOM during the cross-fade; measure the current one
     const title = document.querySelector<HTMLElement>('#cc .compact-slot.current .compact-title');
     const track = title?.querySelector<HTMLElement>('.compact-title-track');
-    if (!title || !track || state === 'open' || title.classList.contains('dictation-preview')) return;
+    if (!title || !track || state === 'open' || title.classList.contains('dictation-phase')) return;
     // Mid-morph the column is the wrong width; transitionend refits once the shell settles
     if (Math.abs(isl.offsetWidth - parseFloat(isl.style.width)) > 1) return;
     const line = track.textContent ?? '';
@@ -892,10 +892,10 @@ function renderCompact(): void {
       setCompactSlot(cc, 'dictation:waveform', String(level), () => compactMarkup(
         `<span class="dictation-waveform" aria-label="Listening"><i style="height:${2 + level * 8}px"></i><i style="height:${2 + level * 16}px"></i><i style="height:${2 + level * 12}px"></i><i style="height:${2 + level * 16}px"></i><i style="height:${2 + level * 8}px"></i></span>`));
     } else {
-    // Revised previews use a stable width and no marquee.
-    setCompactSlot(cc, 'dictation:preview', line, () => {
+    // Stable phase label; recording always uses the meter.
+    setCompactSlot(cc, 'dictation:phase', line, () => {
       const preview = compactTitle(line);
-      preview.classList.add('dictation-preview');
+      preview.classList.add('dictation-phase');
       return preview;
     });
     }
@@ -1353,7 +1353,7 @@ window.addEventListener('blur', () => {
 
 /* ================= Subscriptions & Native Events ================= */
 
-void listenToEvent<{reason?: string}>('dictation_transcript', data => { if (data.reason === 'Copied') showAnnouncement('Copied'); });
+void listenToEvent<{reason?: string}>('dictation_transcript', data => { if (data.reason === 'Copied') showAnnouncement('Copied, paste with Ctrl+V'); });
 void listenToEvent<null>('open-island', () => {
   keyboardMode = true;
   window.clearTimeout(closeTimer);

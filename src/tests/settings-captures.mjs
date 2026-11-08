@@ -10,7 +10,7 @@ await page.addInitScript(() => {
  if(location.hash !== '#welcome') return;
  window.__TAURI_INTERNALS__ = { transformCallback: () => 1, async invoke(command) {
  if(command==='installed_usage_providers') return [{provider:'claude',installed:true,enabled:false},{provider:'antigravity',installed:true,enabled:false}];
- if(command==='dictation_get_state') return {status:'idle',transcript:'',modelInstalled:false,settings:{toggleShortcut:'Ctrl+Shift+Space',holdToTalkShortcut:'Left+RightShift',reviewBeforeInsert:false,partialPreview:false},models:[{id:'base',label:'Base',bytes:147951465,speed:'Very fast',accuracy:'Good',state:'found',foundIn:'another app',active:false},{id:'tiny',label:'Tiny',bytes:77691713,speed:'Fastest',accuracy:'Lower',state:'available',active:false}]};
+ if(command==='dictation_get_state') return {status:'idle',transcript:'',modelInstalled:false,settings:{toggleShortcut:'Ctrl+Shift+Space',holdToTalkShortcut:'Left+RightShift',reviewBeforeInsert:false},models:[{id:'base',label:'Base',bytes:147951465,speed:'Very fast',accuracy:'Good',state:'found',foundIn:'another app',active:false},{id:'tiny',label:'Tiny',bytes:77691713,speed:'Fastest',accuracy:'Lower',state:'available',active:false}]};
  if(command==='get_autostart') return false;
  if(command==='extension_snapshot') return {settings:{notifications:false},shelf:[],notificationStatus:'Disabled',errors:[]};
  if(command==='clipboard_get_state') return {enabled:false,persistOnExit:false,items:[]};

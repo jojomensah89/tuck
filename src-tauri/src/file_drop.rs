@@ -192,7 +192,7 @@ pub(crate) fn refresh(window: &WebviewWindow) {
 
 thread_local! {
     static TARGETS: std::cell::RefCell<std::collections::HashMap<isize, IDropTarget>> = std::cell::RefCell::new(std::collections::HashMap::new());
-    static WATCH: std::cell::RefCell<Option<(WebviewWindow, windows::Win32::UI::Accessibility::HWINEVENTHOOK)>> = const { std::cell::RefCell::new(None) };
+    static WATCH: std::cell::RefCell<Option<(WebviewWindow, Vec<windows::Win32::UI::Accessibility::HWINEVENTHOOK>)>> = const { std::cell::RefCell::new(None) };
 }
 pub(crate) fn start(window: &WebviewWindow) {
     if baseline(window) {
@@ -236,28 +236,55 @@ pub(crate) fn start(window: &WebviewWindow) {
             }
         }
     }
-    let hook = unsafe {
-        SetWinEventHook(
-            EVENT_OBJECT_CREATE,
-            EVENT_OBJECT_SHOW,
-            None,
-            Some(created),
-            0,
-            0,
-            WINEVENT_OUTOFCONTEXT,
-        )
+    // Only Tuck and its WebView2 browser process own the island's child windows. Hooking
+    // every process would wake this thread whenever any app on the PC creates a window.
+    let install = |window: &WebviewWindow, browser: u32| {
+        let own = unsafe { windows::Win32::System::Threading::GetCurrentProcessId() };
+        let mut hooks = Vec::new();
+        for pid in [own, browser] {
+            if pid == 0 || (pid == browser && browser == own) {
+                continue;
+            }
+            let hook = unsafe {
+                SetWinEventHook(
+                    EVENT_OBJECT_CREATE,
+                    EVENT_OBJECT_SHOW,
+                    None,
+                    Some(created),
+                    pid,
+                    0,
+                    WINEVENT_OUTOFCONTEXT,
+                )
+            };
+            if hook.0.is_null() {
+                eprintln!("File drop HWND hook unavailable");
+            } else {
+                hooks.push(hook);
+            }
+        }
+        WATCH.with(|watch| *watch.borrow_mut() = Some((window.clone(), hooks)));
+        refresh(window);
     };
-    if hook.0.is_null() {
-        eprintln!("File drop HWND hook unavailable");
+    let target = window.clone();
+    let looked_up = window.with_webview(move |platform| unsafe {
+        let mut pid = 0u32;
+        if let Ok(view) = platform.controller().CoreWebView2() {
+            let _ = view.BrowserProcessId(&mut pid);
+        }
+        install(&target, pid);
+    });
+    if looked_up.is_err() {
+        // Without the browser id, activity refreshes still register late children.
+        eprintln!("File drop: WebView2 browser process unknown");
     }
-    WATCH.with(|watch| *watch.borrow_mut() = Some((window.clone(), hook)));
-    refresh(window);
 }
 pub(crate) fn stop() {
     TARGETS.with(|targets| targets.borrow_mut().clear());
-    if let Some((_, hook)) = WATCH.with(|watch| watch.borrow_mut().take()) {
-        unsafe {
-            let _ = windows::Win32::UI::Accessibility::UnhookWinEvent(hook);
+    if let Some((_, hooks)) = WATCH.with(|watch| watch.borrow_mut().take()) {
+        for hook in hooks {
+            unsafe {
+                let _ = windows::Win32::UI::Accessibility::UnhookWinEvent(hook);
+            }
         }
     }
 }

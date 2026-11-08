@@ -64,7 +64,7 @@ export class DictationUpdates {
   }
 }
 export interface DictationSettings { toggleShortcut: string; holdToTalkShortcut: string; reviewBeforeInsert: boolean; partialPreview: boolean }
-export interface ClipboardItem { id: string; text: string; pinned: boolean; createdAt: number }
+export interface ClipboardItem { id: string; text: string; pinned: boolean; createdAt: number; kind?: 'text' | 'link' | 'image' | 'video' | 'file'; thumbnail?: string; paths?: string[]; missing?: boolean }
 export interface ClipboardSnapshot { enabled: boolean; items: ClipboardItem[] }
 
 interface NativeDictation { status: string; transcript: string | null; message: string | null; modelInstalled: boolean; modelDownloadedBytes: number; settings: DictationSettings }

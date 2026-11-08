@@ -146,3 +146,13 @@ Activities combines notification previews and access. About supplies exact allow
 Captures are browser fixtures, not live account readings or native hardware verification. Native focus/fullscreen interactions require manual Windows acceptance testing.
 
 Refresh feedback is shared by Usage and Settings: disabled and aria-busy until `refresh_usage` completes on success or failure, at least 500ms, ending on a complete 600ms transform-only turn. Reduced motion uses a brief opacity transition, no rotation. Nothing animates at rest. Settings uses the same completion-aware command as the island.
+
+## Clipboard cards
+
+Tools > Clipboard uses a 32px category row above equal 128px cards, separated by 8px. Cards remain newest first, including pinned clips. All clips remains available; populated categories appear beside it. Only categories containing items appear; a filtered empty state remains until All clips is selected. Category buttons expose pressed state. The row scrolls horizontally; vertical wheel input follows the shared gesture/edge rules. Remove and pin occupy 32px targets, appear on hover/focus, and stay in the keyboard order; pinned state stays visible.
+
+Fixed type strips: text #30d158, link #64d2ff, image #ff9f0a, video #bf8af7, file #a1a1a6. These colours identify types only; the black island and raised card surfaces remain neutral. No gradients, glows or shadows.
+
+Image cards fill with a real, once-generated thumbnail (at most 128px per side and 96 KiB encoded); full bitmap data never crosses IPC. Videos and files show their name and the existing video/folder line icons, plus a missing-file message when applicable. Native history holds full bitmaps in memory, with image sidecars written only when Keep after restart is on. Images are limited to 8192px per side and 32 MiB decoded; unpinned images evict oldest first under the image budget. All stored clipboard data is capped at 256 MiB including metadata. Turning history off clears all entries and stored media.
+
+Images are held in memory while history is on, so their budget is 128 MiB, about four full-size 4K screenshots; oldest unpinned images go first. That also leaves room for both atomic metadata versions and settings within the 256 MiB disk cap. Copy-back offers alpha-preserving CF_DIBV5 and a flattened CF_DIB fallback. Interrupted-write temporary files are cleaned at startup and when deleting saved history.

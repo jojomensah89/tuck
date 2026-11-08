@@ -302,14 +302,14 @@
               <div class="set-row" id="row-clipboardEnabled" data-keywords="clipboard copy paste history privacy">
                 <div class="row-text">
                   <label class="row-title" for="clipboardEnabled">Keep clipboard history</label>
-                  <p class="row-desc">Off by default. Private clipboard formats and Tuck's own dictation paste are skipped; other sensitive text may not be</p>
+                  <p class="row-desc">Off by default; keeps text, images and file paths when on, without detecting sensitive content in images</p>
                 </div>
                 <input id="clipboardEnabled" class="switch" type="checkbox" role="switch" disabled />
               </div>
               <div class="set-row" id="row-clipboardPersist" data-keywords="clipboard save restart persist disk privacy">
                 <div class="row-text">
                   <label class="row-title" for="clipboardPersist">Keep after restart</label>
-                  <p class="row-desc">Otherwise history clears when Tuck exits. Pins follow the same choice</p>
+                  <p class="row-desc">Saves history in Tuck?s app data; otherwise everything, including pins, stays in memory until exit</p>
                 </div>
                 <input id="clipboardPersist" class="switch" type="checkbox" role="switch" disabled />
               </div>
@@ -364,7 +364,7 @@
               <div class="set-row" id="row-privacy-clipboard" data-keywords="privacy clipboard history">
                 <div class="row-text">
                   <span class="row-title">Clipboard history</span>
-                  <p class="row-desc">Kept in memory; written to disk only with Keep after restart</p>
+                  <p class="row-desc">Text, images and file paths stay in memory unless Keep after restart is on; sensitive content in images is not detected</p>
                 </div>
                 <a class="mirror" href="#tools" data-mirror="clipboardEnabled" data-focus="clipboardEnabled"><span class="mirror-state"></span><svg class="i" aria-hidden="true"><use href="#i-chevron" /></svg></a>
               </div>

@@ -23,6 +23,12 @@
   --warn: #ff453a;
   --warn-ink: #ff766e;
   --accent: #ffffff;
+  --clip-text: var(--ok);
+  --clip-link: #64d2ff;
+  --clip-image: var(--caution);
+  --clip-video: #bf8af7;
+  --clip-file: var(--ink-2);
+  --clip-card-width: 128px;
   /* Half a step above the surface: rail hover, below the --raise active step */
   --raise-subtle: #121214;
 

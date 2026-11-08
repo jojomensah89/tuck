@@ -1,5 +1,8 @@
-//! Opt-in text-only clipboard history. It never stores clipboard images/files.
+//! Opt-in, bounded text, image and file-path clipboard history.
 //! The background watcher reads the OS clipboard only while enabled.
+
+#[path = "clipboard_media.rs"]
+mod media;
 
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
@@ -24,8 +27,10 @@ pub(crate) fn clipboard_updated() {
 }
 pub(crate) fn listener_enabled(app: &AppHandle) -> bool {
     app.state::<Arc<ClipboardHistoryService>>()
-        .snapshot()
-        .enabled
+        .inner
+        .lock()
+        .map(|state| state.enabled)
+        .unwrap_or(false)
 }
 
 #[derive(Debug, PartialEq)]
@@ -33,6 +38,7 @@ enum ClipboardRead {
     Busy,
     Ignored,
     Text(u32, String),
+    Media(u32, media::Capture),
 }
 
 // Ten reads per sequence: at most 5.24 seconds of scheduled backoff, then no timer.
@@ -87,7 +93,7 @@ const EVENT_ERROR: &str = "clipboard_history_error";
 const MAX_ITEMS: usize = 40;
 const MAX_ITEM_BYTES: usize = 32 * 1024;
 const MAX_TOTAL_BYTES: usize = MAX_ITEMS * MAX_ITEM_BYTES;
-const MAX_STORE_BYTES: usize = 2 * 1024 * 1024;
+const MAX_STORE_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -96,12 +102,58 @@ pub struct ClipboardHistoryItem {
     pub text: String,
     pub created_at_ms: u64,
     pub pinned: bool,
+    #[serde(default = "text_kind")]
+    pub kind: String,
+    #[serde(default)]
+    pub paths: Vec<String>,
+    #[serde(default)]
+    pub thumbnail: Option<String>,
+    #[serde(skip)]
+    pub image: Option<Arc<Vec<u8>>>,
+    #[serde(default)]
+    pub missing: bool,
+}
+
+fn text_kind() -> String {
+    "text".into()
+}
+impl ClipboardHistoryItem {
+    fn new(text: String) -> Self {
+        let kind = if !text.chars().any(char::is_whitespace)
+            && text.split_once("://").is_some_and(|(scheme, _)| {
+                scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https")
+            })
+            && reqwest::Url::parse(&text).is_ok_and(|url| url.host_str().is_some())
+        {
+            "link"
+        } else {
+            "text"
+        };
+        Self {
+            id: Uuid::new_v4().to_string(),
+            text,
+            kind: kind.into(),
+            paths: vec![],
+            thumbnail: None,
+            image: None,
+            missing: false,
+            created_at_ms: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64,
+            pinned: false,
+        }
+    }
 }
 
 impl Drop for ClipboardHistoryItem {
     fn drop(&mut self) {
         self.id.zeroize();
         self.text.zeroize();
+        self.paths.zeroize();
+        if let Some(thumbnail) = &mut self.thumbnail {
+            thumbnail.zeroize();
+        }
     }
 }
 
@@ -179,7 +231,15 @@ impl ClipboardHistoryService {
             .map(|s| ClipboardHistorySnapshot {
                 enabled: s.enabled,
                 persist_on_exit: s.persist_on_exit,
-                items: s.items.iter().cloned().collect(),
+                items: s
+                    .items
+                    .iter()
+                    .cloned()
+                    .map(|mut item| {
+                        item.missing = media::missing(&item);
+                        item
+                    })
+                    .collect(),
             })
             .unwrap_or(ClipboardHistorySnapshot {
                 enabled: false,
@@ -211,6 +271,9 @@ impl ClipboardHistoryService {
                 .map_err(|_| "Clipboard history service unavailable")?;
             state.persist_on_exit
         };
+        if !enabled {
+            self.remove_items_file(&app)?;
+        }
         self.save_settings(&app, enabled, persist)?;
         {
             let mut state = self
@@ -232,8 +295,11 @@ impl ClipboardHistoryService {
             .map_err(|_| "Clipboard settings unavailable")?;
         let app = self.app()?;
         let previous = self.snapshot();
+        if !enabled {
+            self.remove_items_file(&app)?;
+        }
         if persist != previous.persist_on_exit {
-            if persist {
+            if persist && enabled {
                 self.save_items(&app, &previous.items)?;
             } else {
                 self.remove_items_file(&app)?;
@@ -287,7 +353,7 @@ impl ClipboardHistoryService {
                 state.items.iter().cloned().collect::<Vec<_>>(),
             )
         };
-        if persist {
+        if persist && enabled {
             self.save_items(&app, &items)?;
         } else {
             self.remove_items_file(&app)?;
@@ -313,13 +379,12 @@ impl ClipboardHistoryService {
         Ok(())
     }
 
-    fn push_text(&self, text: String, generation: u64) -> Result<(), String> {
+    fn push_item(&self, item: ClipboardHistoryItem, generation: u64) -> Result<(), String> {
         let _operation = self
             .operation
             .lock()
             .map_err(|_| "Clipboard history unavailable")?;
-        let mut text = Zeroizing::new(text);
-        if !accepts_clipboard_text(text.as_str()) {
+        if !valid_items(std::slice::from_ref(&item)) {
             return Ok(());
         }
         let app = self.app()?;
@@ -330,23 +395,16 @@ impl ClipboardHistoryService {
         if !accept_clipboard_generation(state.enabled, state.generation, generation) {
             return Ok(());
         }
-        if state
-            .items
-            .front()
-            .is_some_and(|item| item.text.as_str() == text.as_str())
-        {
+        if state.items.front().is_some_and(|previous| {
+            previous.kind == item.kind
+                && previous.text == item.text
+                && previous.paths == item.paths
+                && previous.image == item.image
+        }) {
             return Ok(());
         }
         let mut next = state.items.clone();
-        next.push_front(ClipboardHistoryItem {
-            id: Uuid::new_v4().to_string(),
-            text: std::mem::take(&mut *text),
-            created_at_ms: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis() as u64,
-            pinned: false,
-        });
+        next.push_front(item);
         evict_unpinned(&mut next);
         let snapshot = ClipboardHistorySnapshot {
             enabled: state.enabled,
@@ -434,10 +492,24 @@ impl ClipboardHistoryService {
             .lock()
             .map_err(|_| "Clipboard history unavailable")?;
         let app = self.app()?;
-        self.remove_items_file(&app)?;
-        if let Ok(mut state) = self.inner.lock() {
-            state.items.clear();
+        let items = self
+            .inner
+            .lock()
+            .map_err(|_| "Clipboard history unavailable")?
+            .items
+            .iter()
+            .filter(|item| item.pinned)
+            .cloned()
+            .collect::<Vec<_>>();
+        if items.is_empty() {
+            self.remove_items_file(&app)?;
+        } else {
+            self.persist_current(&app, &items)?;
         }
+        self.inner
+            .lock()
+            .map_err(|_| "Clipboard history unavailable")?
+            .items = items.into_iter().collect();
         clipboard_updated();
         crate::lifecycle::request_refresh();
         self.emit_changed();
@@ -485,18 +557,170 @@ impl ClipboardHistoryService {
         let dir = self.directory(app)?;
         std::fs::create_dir_all(&dir)
             .map_err(|e| format!("Could not create clipboard-history directory: {e}"))?;
-        let stored = PersistedItems {
-            schema_version: 1,
-            items: items.to_vec(),
-        };
-        atomic_json(&dir.join("items.json"), &stored)
+        save_history(&dir, items)
     }
 
     fn remove_items_file(&self, app: &AppHandle) -> Result<(), String> {
-        let path = self.directory(app)?.join("items.json");
-        remove_file_if_exists(&path)
-            .map_err(|_| "Could not remove saved clipboard history".to_owned())
+        remove_history(&self.directory(app)?)
     }
+}
+
+// Sidecars are immutable, UUID-named, and only created with persistence enabled.
+fn cleanup_images(dir: &std::path::Path, items: &[ClipboardHistoryItem]) -> Result<(), String> {
+    let media_dir = dir.join("images");
+    let entries = match std::fs::read_dir(&media_dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(_) => return Err("Could not clean saved clipboard images".into()),
+    };
+    for entry in entries {
+        let entry = entry.map_err(|_| "Could not clean saved clipboard images")?;
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        let managed = name
+            .strip_suffix(".dib")
+            .or_else(|| name.strip_suffix(".tmp"));
+        if let Some(id) = managed.filter(|id| Uuid::parse_str(id).is_ok()) {
+            if name.ends_with(".tmp")
+                || !items
+                    .iter()
+                    .any(|item| item.id == id && item.kind == "image")
+            {
+                remove_file_if_exists(&entry.path())
+                    .map_err(|_| "Could not remove saved clipboard image")?;
+            }
+        }
+    }
+    Ok(())
+}
+fn cleanup_history_temps(dir: &std::path::Path) -> Result<(), String> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(_) => return Err("Could not clean clipboard temporary files".into()),
+    };
+    for entry in entries {
+        let entry = entry.map_err(|_| "Could not clean clipboard temporary files")?;
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name
+            .strip_prefix("items.json.")
+            .and_then(|name| name.strip_suffix(".tmp"))
+            .is_some_and(|id| Uuid::parse_str(id).is_ok())
+        {
+            remove_file_if_exists(&entry.path())
+                .map_err(|_| "Could not remove clipboard temporary file")?;
+        }
+    }
+    Ok(())
+}
+fn remove_history(dir: &std::path::Path) -> Result<(), String> {
+    // Remove the index first: interrupted cleanup cannot resurrect removed content.
+    remove_file_if_exists(&dir.join("items.json"))
+        .map_err(|_| "Could not remove saved clipboard history")?;
+    cleanup_history_temps(dir)?;
+    cleanup_images(dir, &[])
+}
+fn save_history(dir: &std::path::Path, items: &[ClipboardHistoryItem]) -> Result<(), String> {
+    if !valid_items(items) || items.iter().map(media::bytes).sum::<usize>() > media::MAX_IMAGES {
+        return Err("Clipboard storage limit exceeded".into());
+    }
+    std::fs::create_dir_all(dir).map_err(|_| "Could not create clipboard directory")?;
+    cleanup_history_temps(dir)?;
+    // Preserve the old manifest and its immutable blobs until the new index commits.
+    // The image budget reserves 49 MiB for one new bitmap, both metadata versions,
+    // and settings, including temporary files, inside the 256 MiB disk cap.
+    let previous = match read_bounded(&dir.join("items.json"), MAX_STORE_BYTES) {
+        Ok(data) => {
+            let stored: PersistedItems = serde_json::from_slice(&data)
+                .map_err(|_| "Could not read saved clipboard index")?;
+            if !valid_persisted_items(&stored) {
+                return Err("Invalid saved clipboard index".into());
+            }
+            stored.items
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(_) => return Err("Could not read saved clipboard index".into()),
+    };
+    cleanup_images(dir, &previous)?;
+    let images = dir.join("images");
+    let existing = if images.exists() {
+        std::fs::read_dir(&images)
+            .map_err(|_| "Could not inspect clipboard storage")?
+            .try_fold(0u64, |sum, entry| {
+                let entry = entry?;
+                Ok::<_, std::io::Error>(sum.saturating_add(entry.metadata()?.len()))
+            })
+            .map_err(|_| "Could not inspect clipboard storage")?
+    } else {
+        0
+    };
+    let additional: usize = items
+        .iter()
+        .filter(|item| !images.join(format!("{}.dib", item.id)).exists())
+        .map(|item| item.image.as_ref().map_or(0, |image| image.len()))
+        .sum();
+    if existing + additional as u64 + 2 * MAX_STORE_BYTES as u64 + 4096 > 256 * 1024 * 1024 {
+        return Err("Clipboard storage limit exceeded".into());
+    }
+    let result = (|| {
+        for item in items {
+            if let Some(image) = &item.image {
+                std::fs::create_dir_all(&images).map_err(|_| "Could not save clipboard image")?;
+                let path = images.join(format!("{}.dib", item.id));
+                if !path.exists() {
+                    let temp = images.join(format!("{}.tmp", item.id));
+                    let _cleanup = TemporaryHistoryFile(temp.clone());
+                    std::fs::write(&temp, image.as_slice())
+                        .map_err(|_| "Could not save clipboard image")?;
+                    replace_file(&temp, &path).map_err(|_| "Could not save clipboard image")?;
+                }
+            }
+        }
+        atomic_json(
+            &dir.join("items.json"),
+            &PersistedItems {
+                schema_version: 1,
+                items: items.to_vec(),
+            },
+        )
+    })();
+    if result.is_ok() {
+        cleanup_images(dir, items)?;
+    } else {
+        cleanup_images(dir, &previous)?;
+    }
+    result
+}
+
+fn restore_images(
+    dir: &std::path::Path,
+    items: &mut Vec<ClipboardHistoryItem>,
+) -> Result<(), String> {
+    let mut total = 0;
+    items.retain_mut(|item| {
+        if item.kind != "image" {
+            return true;
+        }
+        let result = read_bounded(
+            &dir.join("images").join(format!("{}.dib", item.id)),
+            media::MAX_CAPTURE,
+        )
+        .ok()
+        .and_then(|bytes| media::prepare(media::Capture::Dib(bytes)).ok());
+        if let Some(decoded) = result {
+            if total + media::bytes(&decoded) > media::MAX_IMAGES {
+                return false;
+            }
+            total += media::bytes(&decoded);
+            item.image = decoded.image.clone();
+            item.thumbnail = decoded.thumbnail.clone();
+            true
+        } else {
+            false
+        }
+    });
+    Ok(())
 }
 
 fn atomic_json(path: &std::path::Path, value: &impl Serialize) -> Result<(), String> {
@@ -562,9 +786,18 @@ fn replace_file(from: &std::path::Path, to: &std::path::Path) -> std::io::Result
 
 fn evict_unpinned(items: &mut VecDeque<ClipboardHistoryItem>) {
     while items.len() > MAX_ITEMS
-        || items.iter().map(|item| item.text.len()).sum::<usize>() > MAX_TOTAL_BYTES
+        || items
+            .iter()
+            .map(|item| item.text.len() + item.paths.iter().map(String::len).sum::<usize>())
+            .sum::<usize>()
+            > MAX_TOTAL_BYTES
+        || items.iter().map(media::bytes).sum::<usize>() > media::MAX_IMAGES
     {
-        let Some(index) = items.iter().rposition(|item| !item.pinned) else {
+        let image_pressure = items.iter().map(media::bytes).sum::<usize>() > media::MAX_IMAGES;
+        let Some(index) = items
+            .iter()
+            .rposition(|item| !item.pinned && (!image_pressure || item.kind == "image"))
+        else {
             break;
         };
         items.remove(index);
@@ -593,6 +826,9 @@ fn accepts_clipboard_text(text: &str) -> bool {
 }
 
 fn update_enabled(state: &mut StateInner, enabled: bool) {
+    if !enabled {
+        state.items.clear();
+    }
     if state.enabled != enabled {
         state.enabled = enabled;
         state.generation = state.generation.wrapping_add(1);
@@ -638,6 +874,7 @@ pub fn start(app: AppHandle, service: &Arc<ClipboardHistoryService>) -> Result<(
         .write()
         .map_err(|_| "Clipboard history service unavailable")? = Some(app.clone());
     let dir = service.directory(&app)?;
+    cleanup_history_temps(&dir)?;
     let mut load_items = false;
     match read_bounded(&dir.join("settings.json"), 4096) {
         Ok(bytes) => {
@@ -649,7 +886,7 @@ pub fn start(app: AppHandle, service: &Arc<ClipboardHistoryService>) -> Result<(
                         .map_err(|_| "Clipboard history service unavailable")?;
                     state.enabled = settings.enabled;
                     state.persist_on_exit = settings.persist_on_exit;
-                    load_items = settings.persist_on_exit;
+                    load_items = settings.enabled && settings.persist_on_exit;
                 }
             }
         }
@@ -667,7 +904,9 @@ pub fn start(app: AppHandle, service: &Arc<ClipboardHistoryService>) -> Result<(
             Ok(bytes) => {
                 let bytes = Zeroizing::new(bytes);
                 match serde_json::from_slice::<PersistedItems>(bytes.as_slice()) {
-                    Ok(stored) if valid_persisted_items(&stored) => {
+                    Ok(mut stored) if valid_persisted_items(&stored) => {
+                        restore_images(&dir, &mut stored.items)?;
+                        cleanup_images(&dir, &stored.items)?;
                         service
                             .inner
                             .lock()
@@ -678,14 +917,18 @@ pub fn start(app: AppHandle, service: &Arc<ClipboardHistoryService>) -> Result<(
                         remove_file_if_exists(&items_path).map_err(|error| {
                             format!("Could not remove invalid clipboard history: {error}")
                         })?;
+                        cleanup_images(&dir, &[])?;
                     }
                 }
             }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                cleanup_images(&dir, &[])?;
+            }
             Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
                 remove_file_if_exists(&items_path).map_err(|error| {
                     format!("Could not remove oversized clipboard history: {error}")
                 })?;
+                cleanup_images(&dir, &[])?;
             }
             Err(error) => {
                 return Err(format!(
@@ -743,12 +986,33 @@ pub fn start(app: AppHandle, service: &Arc<ClipboardHistoryService>) -> Result<(
                             .last_sequence
                             .swap(sequence, Ordering::AcqRel);
                         if sequence != previous {
-                            if let Err(error) =
-                                worker_service.push_text(std::mem::take(&mut *text), generation)
-                            {
+                            if let Err(error) = worker_service.push_item(
+                                ClipboardHistoryItem::new(std::mem::take(&mut *text)),
+                                generation,
+                            ) {
                                 if let Ok(app) = worker_service.app() {
                                     let _ = app.emit(EVENT_ERROR, error);
                                 }
+                            }
+                        }
+                    }
+                    Ok(ClipboardRead::Media(sequence, capture)) => {
+                        retry.completed();
+                        let previous = worker_service
+                            .last_sequence
+                            .swap(sequence, Ordering::AcqRel);
+                        if sequence != previous {
+                            match media::prepare(capture) {
+                                Ok(item) => {
+                                    if let Err(error) = worker_service.push_item(item, generation) {
+                                        if let Ok(app) = worker_service.app() {
+                                            let _ = app.emit(EVENT_ERROR, error);
+                                        }
+                                    }
+                                }
+                                Err(_) => eprintln!(
+                                    "Clipboard item skipped: unsupported data or size limit"
+                                ),
                             }
                         }
                     }
@@ -781,6 +1045,16 @@ fn valid_items(items: &[ClipboardHistoryItem]) -> bool {
                 && accepts_clipboard_text(&item.text)
                 && item.text.len() <= MAX_ITEM_BYTES
                 && !item.text.contains('\0')
+                && matches!(
+                    item.kind.as_str(),
+                    "text" | "link" | "image" | "video" | "file"
+                )
+                && (item.paths.is_empty() || media::valid_paths(&item.paths))
+                && (matches!(item.kind.as_str(), "video" | "file") == !item.paths.is_empty())
+                && item.thumbnail.as_ref().is_none_or(|t| {
+                    t.len() <= media::MAX_THUMBNAIL * 4 / 3 + 32
+                        && t.starts_with("data:image/png;base64,")
+                })
         })
         && items.iter().map(|item| item.text.len()).sum::<usize>() <= MAX_TOTAL_BYTES
 }
@@ -829,6 +1103,21 @@ fn read_clipboard_text() -> Result<ClipboardRead, String> {
                 tuck_transient,
             ) {
                 return Ok(ClipboardRead::Ignored);
+            }
+            match media::read_native() {
+                Ok(Some(capture)) => {
+                    let after = GetClipboardSequenceNumber();
+                    return if clipboard_sequence_unchanged(before, after) {
+                        Ok(ClipboardRead::Media(after, capture))
+                    } else {
+                        Ok(ClipboardRead::Busy)
+                    };
+                }
+                Err(_) => {
+                    eprintln!("Clipboard item skipped: unsupported data or size limit");
+                    return Ok(ClipboardRead::Ignored);
+                }
+                Ok(None) => {}
             }
             if IsClipboardFormatAvailable(CF_UNICODETEXT.0 as u32).is_err() {
                 return Ok(ClipboardRead::Ignored);
@@ -932,17 +1221,19 @@ pub fn clipboard_copy(
     if !matches!(window.label(), "main" | "settings") {
         return Err("Access denied".into());
     }
-    let text = Zeroizing::new(
-        service
-            .inner
-            .lock()
-            .map_err(|_| "Clipboard history unavailable")?
-            .items
-            .iter()
-            .find(|item| item.id == id)
-            .map(|item| item.text.clone())
-            .ok_or("Clipboard item not found")?,
-    );
+    let item = service
+        .inner
+        .lock()
+        .map_err(|_| "Clipboard history unavailable")?
+        .items
+        .iter()
+        .find(|item| item.id == id)
+        .cloned()
+        .ok_or("Clipboard item not found")?;
+    if media::missing(&item) {
+        service.emit_changed();
+        return Err("File no longer exists".into());
+    }
     #[cfg(windows)]
     unsafe {
         use windows::Win32::{
@@ -952,32 +1243,54 @@ pub fn clipboard_copy(
                 Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE},
             },
         };
-        let units = Zeroizing::new(
-            text.encode_utf16()
-                .chain(std::iter::once(0))
-                .collect::<Vec<_>>(),
-        );
-        let memory = GlobalAlloc(GMEM_MOVEABLE, units.len() * 2)
-            .map_err(|_| "Clipboard allocation failed")?;
-        let ptr = GlobalLock(memory) as *mut u16;
+        let (format, bytes) = if !item.paths.is_empty() {
+            (15, Zeroizing::new(media::file_list(&item.paths)?))
+        } else if let Some(image) = &item.image {
+            (17, Zeroizing::new(image.as_ref().clone()))
+        } else {
+            if item.kind == "image" {
+                return Err("Image unavailable".into());
+            }
+            (
+                13,
+                Zeroizing::new(
+                    item.text
+                        .encode_utf16()
+                        .chain(std::iter::once(0))
+                        .flat_map(u16::to_le_bytes)
+                        .collect::<Vec<_>>(),
+                ),
+            )
+        };
+        let owner = window.hwnd().map_err(|_| "Clipboard window unavailable")?;
+        let memory =
+            GlobalAlloc(GMEM_MOVEABLE, bytes.len()).map_err(|_| "Clipboard allocation failed")?;
+        let ptr = GlobalLock(memory) as *mut u8;
         if ptr.is_null() {
             let _ = GlobalFree(memory);
             return Err("Clipboard allocation failed".into());
         }
-        std::ptr::copy_nonoverlapping(units.as_ptr(), ptr, units.len());
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), ptr, bytes.len());
         let _ = GlobalUnlock(memory);
-        let owner = window.hwnd().map_err(|_| "Clipboard window unavailable")?;
         if OpenClipboard(windows::Win32::Foundation::HWND(owner.0 as _)).is_err() {
             let _ = GlobalFree(memory);
             return Err("Clipboard is busy".into());
         }
         let result =
-            EmptyClipboard().and_then(|_| SetClipboardData(13, HANDLE(memory.0)).map(|_| ()));
+            EmptyClipboard().and_then(|_| SetClipboardData(format, HANDLE(memory.0)).map(|_| ()));
+        let legacy_result = if result.is_ok() {
+            item.image
+                .as_ref()
+                .map_or(Ok(()), |image| media::copy_legacy(image))
+        } else {
+            Ok(())
+        };
         let _ = CloseClipboard();
         if result.is_err() {
             let _ = GlobalFree(memory);
             return Err("Could not copy clipboard item".into());
         }
+        legacy_result?;
         service
             .last_sequence
             .store(current_clipboard_sequence(), Ordering::Release);
@@ -985,7 +1298,7 @@ pub fn clipboard_copy(
     }
     #[cfg(not(windows))]
     {
-        let _ = text;
+        let _ = item;
         Err("Windows clipboard required".into())
     }
 }
@@ -1125,12 +1438,10 @@ mod tests {
     }
 
     fn item(pinned: bool, text: &str) -> ClipboardHistoryItem {
-        ClipboardHistoryItem {
-            id: Uuid::new_v4().to_string(),
-            text: text.into(),
-            created_at_ms: 0,
-            pinned,
-        }
+        let mut item = ClipboardHistoryItem::new(text.into());
+        item.pinned = pinned;
+        item.created_at_ms = 0;
+        item
     }
 
     #[test]
@@ -1307,6 +1618,133 @@ mod retry_tests {
             assert_eq!(retry.remaining, CAPTURE_ATTEMPTS);
             retry.completed();
             assert!(retry.delay.is_none());
+        }
+    }
+}
+
+#[cfg(test)]
+mod visual_tests {
+    use super::*;
+    fn image() -> ClipboardHistoryItem {
+        let mut dib = vec![0; 44];
+        dib[..4].copy_from_slice(&40u32.to_le_bytes());
+        dib[4..8].copy_from_slice(&1i32.to_le_bytes());
+        dib[8..12].copy_from_slice(&1i32.to_le_bytes());
+        dib[12..14].copy_from_slice(&1u16.to_le_bytes());
+        dib[14..16].copy_from_slice(&32u16.to_le_bytes());
+        media::prepare(media::Capture::Dib(dib)).unwrap()
+    }
+    #[test]
+    fn legacy_history_loads_with_text_defaults_and_current_schema_round_trips() {
+        let id = Uuid::new_v4();
+        let json = format!(
+            r#"{{"schemaVersion":1,"items":[{{"id":"{id}","text":"Old fixture","createdAtMs":1,"pinned":true}}]}}"#
+        );
+        let stored: PersistedItems = serde_json::from_str(&json).unwrap();
+        assert!(valid_persisted_items(&stored));
+        assert_eq!(stored.items[0].kind, "text");
+        assert_eq!(
+            serde_json::from_slice::<PersistedItems>(&serde_json::to_vec(&stored).unwrap())
+                .unwrap()
+                .items,
+            stored.items
+        );
+    }
+    #[test]
+    fn image_pressure_evicts_oldest_unpinned_images_and_keeps_pins_and_text() {
+        let payload = Arc::new(vec![0; media::MAX_DECODED]);
+        let mut items = VecDeque::new();
+        let mut pinned = image();
+        pinned.pinned = true;
+        pinned.image = Some(payload.clone());
+        let id = pinned.id.clone();
+        items.push_back(pinned);
+        for _ in 0..8 {
+            let mut next = image();
+            next.image = Some(payload.clone());
+            items.push_front(next);
+        }
+        let oldest_unpinned = items[7].id.clone();
+        items.push_front(ClipboardHistoryItem::new("Keep text".into()));
+        evict_unpinned(&mut items);
+        assert!(items.iter().any(|item| item.id == id));
+        assert!(items.iter().any(|item| item.kind == "text"));
+        assert!(!items.iter().any(|item| item.id == oldest_unpinned));
+        assert!(items.iter().map(media::bytes).sum::<usize>() <= media::MAX_IMAGES);
+    }
+    #[test]
+    fn save_remove_clear_and_disable_delete_only_owned_media() {
+        let dir = std::env::temp_dir().join(format!("tuck-visual-test-{}", Uuid::new_v4()));
+        let mut pinned = image();
+        pinned.pinned = true;
+        let other = image();
+        // Merely capturing/preparing/snapshotting has no filesystem writes.
+        assert!(!dir.exists());
+        let mut state = StateInner {
+            enabled: true,
+            persist_on_exit: false,
+            generation: 0,
+            items: VecDeque::from([pinned.clone(), other.clone()]),
+        };
+        assert!(!dir.exists());
+        save_history(&dir, &[pinned.clone(), other.clone()]).unwrap();
+        assert!(dir
+            .join("images")
+            .join(format!("{}.dib", other.id))
+            .exists());
+        save_history(&dir, std::slice::from_ref(&pinned)).unwrap();
+        assert!(!dir
+            .join("images")
+            .join(format!("{}.dib", other.id))
+            .exists());
+        let mut stored: PersistedItems = serde_json::from_slice(
+            &read_bounded(&dir.join("items.json"), MAX_STORE_BYTES).unwrap(),
+        )
+        .unwrap();
+        restore_images(&dir, &mut stored.items).unwrap();
+        assert_eq!(stored.items[0].image, pinned.image);
+        assert!(stored.items[0].pinned);
+        let temp = dir.join(format!("items.json.{}.tmp", Uuid::new_v4()));
+        std::fs::write(&temp, b"Synthetic private fixture").unwrap();
+        remove_history(&dir).unwrap();
+        assert!(!temp.exists());
+        update_enabled(&mut state, false);
+        assert!(state.items.is_empty());
+        assert!(!dir.join("items.json").exists());
+        assert_eq!(std::fs::read_dir(dir.join("images")).unwrap().count(), 0);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[cfg(windows)]
+    #[test]
+    fn failed_index_replacement_keeps_previous_image_and_removes_new_orphans() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let dir = std::env::temp_dir().join(format!("tuck-visual-atomic-{}", Uuid::new_v4()));
+        let previous = image();
+        save_history(&dir, std::slice::from_ref(&previous)).unwrap();
+        let locked = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(1)
+            .open(dir.join("items.json"))
+            .unwrap();
+        let next = image();
+        assert!(save_history(&dir, std::slice::from_ref(&next)).is_err());
+        assert!(dir
+            .join("images")
+            .join(format!("{}.dib", previous.id))
+            .exists());
+        assert!(!dir.join("images").join(format!("{}.dib", next.id)).exists());
+        drop(locked);
+        remove_history(&dir).unwrap();
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn categories_and_links_are_unambiguous() {
+        assert_eq!(
+            ClipboardHistoryItem::new("HTTPS://example.com/a".into()).kind,
+            "link"
+        );
+        for text in ["https://", "https://a.test more", "file:///C:/a", "hello"] {
+            assert_eq!(ClipboardHistoryItem::new(text.into()).kind, "text");
         }
     }
 }

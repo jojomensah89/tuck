@@ -1,3 +1,4 @@
+import { clipCategory, CLIP_CATEGORIES } from './clipboard-categories.js';
 import { listenToEvent, mediaSeek, isTauri, openSettingsCmd, triggerQuickAction } from './ipc.js';
 import { SVG_ICONS } from './icons.js';
 import { islandModelLine } from './dictation-models.js';
@@ -31,7 +32,7 @@ function makePage(id: string, title: string): HTMLElement {
   const page = node('section', `page live-page ${id}`); page.dataset.page = id; page.setAttribute('aria-label', title);
   document.querySelector('.pages-container')!.append(page); return page;
 }
-const friendlyError = (error: unknown) => error instanceof Error ? error.message : 'Action failed, try again';
+const friendlyError = (error: unknown) => error instanceof Error ? error.message : typeof error === 'string' ? error : 'Action failed, try again';
 
 export function mountLivePages(onLayout: () => void): {
   media: (state: MediaState, position: number) => void;
@@ -369,34 +370,62 @@ export function mountLivePages(onLayout: () => void): {
     triggerQuickAction('capture').catch(error => window.dispatchEvent(new CustomEvent('tuck-preview', { detail: { title: 'Screen snip', text: friendlyError(error) } })));
   });
   snip.dataset.sectionActions = 'extensions clipboard';
-  const clipList = node('div', 'clipboard-list'); clipboard.append(clearClipboard, snip, clipboardEmpty, clipList, clipboardStatus);
+  const filters = node('div', 'clipboard-filters');
+  filters.setAttribute('role', 'group'); filters.setAttribute('aria-label', 'Clip categories');
+  const clipList = node('div', 'clipboard-list'); clipList.dataset.horizontalScroll = ''; clipList.dataset.noSwipe = '';
+  filters.dataset.horizontalScroll = ''; filters.dataset.noSwipe = '';
+  clipboard.append(clearClipboard, snip, filters, clipboardEmpty, clipList, clipboardStatus);
+  let category: string = 'all';
+  let latestClipboard: ClipboardSnapshot = { enabled: false, items: [] };
   let clipboardSignature = '';
   function renderClipboard(data: ClipboardSnapshot): void {
     if (!data || !Array.isArray(data.items)) return;
-    // One line only when there is nothing to show; a row explains itself (select to copy, pin to keep)
-    clipboardEmpty.textContent = data.enabled ? 'Nothing copied yet' : 'Enable clipboard history in Settings';
-    clipboardEmpty.hidden = data.enabled && data.items.length > 0;
-    clearClipboard.disabled = !data.enabled || !data.items.length;
-    const signature = JSON.stringify(data.items);
+    latestClipboard = data;
+    if (!data.enabled) clipList.replaceChildren();
+    if (document.getElementById('isl')?.dataset.state !== 'open' || clipboard.inert || !clipboard.closest('.tab-panel.on')) return;
+    const signature = category + data.enabled + JSON.stringify(data.items);
     if (signature === clipboardSignature) return; clipboardSignature = signature;
+    const visible = data.items.filter(item => category === 'all' || clipCategory(item) === category);
+    const focusedCategory = (document.activeElement as HTMLElement)?.dataset.category;
+    filters.hidden = !data.enabled;
+    filters.replaceChildren();
+    for (const [key, label] of (filters.hidden ? [] : CLIP_CATEGORIES)) {
+      if (key !== 'all' && !data.items.some(item => clipCategory(item) === key)) continue;
+      const pill = button(label, () => { category = key; clipboardStatus.textContent = ''; clipboardSignature = ''; renderClipboard(latestClipboard); filters.querySelector<HTMLButtonElement>(`[data-category="${key}"]`)?.focus(); });
+      pill.dataset.category = key; pill.setAttribute('aria-pressed', String(category === key)); filters.append(pill);
+    }
+    clipboardEmpty.textContent = data.enabled ? (category === 'all' ? 'Nothing copied yet' : `No ${CLIP_CATEGORIES.find(([key]) => key === category)?.[1].toLowerCase()} copied yet`) : 'Enable clipboard history in Settings';
+    clipboardEmpty.hidden = data.enabled && visible.length > 0;
+    clearClipboard.disabled = !data.enabled || !data.items.length;
     const focus = (document.activeElement as HTMLElement)?.dataset.focus;
     clipList.replaceChildren();
-    for (const item of [...data.items].sort((a, b) => Number(b.pinned) - Number(a.pinned)).slice(0, 100)) {
+    for (const item of [...visible].sort((a, b) => b.createdAt - a.createdAt).slice(0, 100)) {
       const row = node('div', 'clipboard-row');
-      const copy = button(item.text.slice(0, 160), () => { void act(nativeAction('clipboard_copy', { id: item.id }), clipboardStatus); });
+      const kind = clipCategory(item); row.dataset.kind = kind;
+      const copy = button(item.text.slice(0, 160), () => { void act(nativeAction('clipboard_copy', { id: item.id }).then(() => { clipboardStatus.textContent = 'Copied'; window.setTimeout(() => { if (clipboardStatus.textContent === 'Copied') clipboardStatus.textContent = ''; }, 1200); }), clipboardStatus, true); });
+      if (kind === 'image' && item.thumbnail?.startsWith('data:image/png;base64,') && item.thumbnail.length < 132000) {
+        const image = document.createElement('img'); image.src = item.thumbnail; image.alt = 'Copied image'; image.draggable = false;
+        copy.replaceChildren(image); copy.setAttribute('aria-label', 'Copy image');
+      } else if (kind === 'file' || kind === 'video') {
+        const icon = node('span', 'clipboard-file-icon'); icon.innerHTML = kind === 'video' ? SVG_ICONS.video : SVG_ICONS.folder; icon.setAttribute('aria-hidden', 'true');
+        const name = node('span', 'clipboard-file-name', item.text); copy.replaceChildren(icon, name);
+        if (item.missing) copy.append(node('span', 'clipboard-missing', 'File no longer exists'));
+      }
       copy.className = 'clipboard-text'; copy.dataset.focus = `copy-${item.id}`; copy.title = `Copy: ${item.text.slice(0, 500)}`;
       const pin = iconButton(item.pinned ? 'Unpin' : 'Pin', SVG_ICONS.pin, () => { void act(nativeAction('clipboard_pin', { id: item.id, pinned: !item.pinned }).then(refreshClipboard), clipboardStatus); }, 'row-action pin-btn');
       pin.setAttribute('aria-pressed', String(item.pinned)); pin.dataset.focus = `pin-${item.id}`;
-      const remove = iconButton('Remove', SVG_ICONS.close, () => { void act(nativeAction('clipboard_remove', { id: item.id }).then(refreshClipboard), clipboardStatus); }, 'row-action'); remove.dataset.focus = `remove-${item.id}`;
+      const remove = iconButton(`Remove ${kind}`, SVG_ICONS.close, () => { void act(nativeAction('clipboard_remove', { id: item.id }).then(refreshClipboard), clipboardStatus); }, 'row-action'); remove.dataset.focus = `remove-${item.id}`;
       row.dataset.pinned = String(item.pinned);
-      row.append(copy, pin, remove); clipList.append(row);
+      const label = node('span', 'clipboard-type', kind === 'link' ? 'Link' : kind.charAt(0).toUpperCase() + kind.slice(1));
+      row.append(copy, label, pin, remove); clipList.append(row);
     }
     if (focus) [...clipList.querySelectorAll<HTMLElement>('[data-focus]')].find(el => el.dataset.focus === focus)?.focus();
+    if (focusedCategory) (filters.querySelector<HTMLButtonElement>(`[data-category="${focusedCategory}"]`) || filters.querySelector<HTMLButtonElement>('button'))?.focus();
   }
   async function refreshClipboard(): Promise<void> { renderClipboard(await nativeService<ClipboardSnapshot>('clipboard_snapshot')); }
 
-  async function act(action: Promise<unknown>, status: HTMLElement): Promise<void> {
-    try { await action; status.textContent = ''; } catch (error) { status.textContent = friendlyError(error); }
+  async function act(action: Promise<unknown>, status: HTMLElement, keepStatus = false): Promise<void> {
+    try { await action; if (!keepStatus) status.textContent = ''; } catch (error) { status.textContent = friendlyError(error); }
   }
   const unlisteners: (() => void)[] = [];
   for (const [event, handler] of [
@@ -417,6 +446,7 @@ export function mountLivePages(onLayout: () => void): {
     window.clearInterval(interval); window.clearInterval(sessionInterval);
     interval = undefined; sessionInterval = undefined;
     if (!visible()) return;
+    if (!clipboard.inert && clipboard.closest('.tab-panel.on')) renderClipboard(latestClipboard);
     if (mediaPage.closest('.tab-panel.on')) { void sessions(); sessionInterval = window.setInterval(() => { void sessions(); }, 5000); }
     if (stats.inert || !stats.closest('.tab-panel.on')) return;
     void refreshTelemetry();
@@ -426,6 +456,7 @@ export function mountLivePages(onLayout: () => void): {
   };
   const sectionObserver = new MutationObserver(syncTimers);
   sectionObserver.observe(stats, {attributes: true, attributeFilter: ['inert']});
+  sectionObserver.observe(clipboard, {attributes: true, attributeFilter: ['inert']});
   window.addEventListener('tuck-visibility', syncTimers);
   window.addEventListener('pagehide', () => {
     sectionObserver.disconnect();

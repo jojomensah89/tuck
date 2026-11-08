@@ -682,6 +682,8 @@ try {
   assert.deepEqual([covering.shown,covering.w,covering.h],[true,420,192],'The full drop target covers the tiles');
   assert.equal(await native.locator('.shelf').isVisible(),false,'Tiles are hidden while a file is over the island');
   assert.equal(await native.locator('.shelf-drop .drop-text').textContent(),'Release to add');
+  assert.equal(covering.dashed,'none','Dragging removes the edge entirely');
+  assert.equal(await native.locator('.shelf-drop svg.ico').evaluate(n=>getComputedStyle(n).color),'rgb(255, 255, 255)','The drag icon stays neutral');
   await fileDrag('tauri://drag-over',[]);
   assert.equal(await native.locator('.shelf').isVisible(),false,'The tiles stay covered for the whole drag');
   await native.locator('#isl').screenshot({path:path.join(root,'docs/screens/shelf-drag-over-500.png')});
@@ -1311,12 +1313,16 @@ try {
     assert.equal(await native.locator('.clipboard-row').count(),6);
     await native.locator('.clipboard-row[data-kind="image"] img').evaluate(img=>img.decode());
     assert.equal(await native.locator('.clipboard-row[data-kind="image"] img').evaluate(img=>img.naturalWidth),128);
-    assert.equal(await native.locator('.clipboard-row[data-kind="image"] img').evaluate(img=>getComputedStyle(img).objectFit),'contain','The whole image shows, fitted');
+    assert.equal(await native.locator('.clipboard-row[data-kind="image"] img').evaluate(img=>getComputedStyle(img).objectFit),'cover','The preview fills the card');
+    assert.equal(await native.locator('.clipboard-row').first().evaluate(n=>getComputedStyle(n).borderBottomWidth),'0px','No type strip');
+    const preview = await native.locator('.clipboard-row[data-kind="image"]').evaluate(n=>{const a=n.getBoundingClientRect(),b=n.querySelector('img').getBoundingClientRect();return [a.width===b.width,a.height===b.height];});
+    assert.deepEqual(preview,[true,true],'The image reaches every card edge');
     // Copied files and videos show Explorer's thumbnail; a missing file asks for none and stays neutral
     await native.locator('.clipboard-row[data-clip-id="video-fixture"] .clipboard-file-icon.has-thumb img').waitFor();
     await native.locator('.clipboard-row[data-clip-id="doc-fixture"] .clipboard-file-icon.has-thumb img').waitFor();
     assert.equal(await native.evaluate(()=>window.__calls.some(c=>c.command==='clipboard_thumbnail'&&c.args.id==='file-fixture')),false);
     assert.equal(await native.locator('.clipboard-missing').evaluate(n=>getComputedStyle(n).color),'rgb(161, 161, 166)','Missing is quiet, not an error');
+    assert.equal(await native.locator('.clipboard-row[data-clip-id="doc-fixture"] img').evaluate(n=>getComputedStyle(n).objectFit),'cover');
     const thumbCalls = await native.evaluate(()=>window.__calls.filter(c=>c.command==='clipboard_thumbnail').length);
     await native.evaluate(()=>window.__emitNative('clipboard_history_changed',{...window.__clipboardFixture,items:window.__clipboardFixture.items.map(item=>item.id==='text-fixture'?{...item,text:item.text+' '}:item)}));
     assert.equal(await native.locator('.clipboard-row[data-clip-id="video-fixture"] .clipboard-file-icon.has-thumb img').count(),1,'A re-render paints a known thumbnail straight away');

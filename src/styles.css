@@ -23,11 +23,6 @@
   --warn: #ff453a;
   --warn-ink: #ff766e;
   --accent: #ffffff;
-  --clip-text: var(--ok);
-  --clip-link: #64d2ff;
-  --clip-image: var(--caution);
-  --clip-video: #bf8af7;
-  --clip-file: var(--ink-2);
   --clip-card-width: 128px;
   /* Shelf tiles: equal squares, four across at the 500px open width */
   --shelf-tile: 96px;

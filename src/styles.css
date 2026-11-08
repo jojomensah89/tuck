@@ -260,7 +260,7 @@ body.fullscreen-hidden .island {
   contain: layout paint;
   /* Returning from open: wait for the full layer to leave */
   transition: opacity var(--d-fast) var(--d-instant) var(--ease-out),
-    transform var(--d-base) var(--d-instant) var(--spring-enter);
+    transform var(--d-fast) var(--d-instant) var(--ease-out);
 }
 
 .island[data-state="peek"] .compact {
@@ -316,7 +316,7 @@ body.fullscreen-hidden .island {
   opacity: 1;
   transform: scale(1);
   transition: opacity var(--d-fast) var(--ease-out),
-    transform var(--d-base) var(--ease-out);
+    transform var(--d-fast) var(--ease-out);
 }
 
 .cc .compact-slot {
@@ -658,7 +658,7 @@ body.fullscreen-hidden .island {
 .island[data-state="open"] .full > .rail,
 .island[data-state="open"] .full > .section-row {
   opacity: 1;
-  transition: opacity var(--d-base) calc(var(--d-content-in) + 80ms) var(--ease-out);
+  transition: opacity var(--d-ui) calc(var(--d-content-in) + 80ms) var(--ease-out);
 }
 
 /* ================= Tab Rail ================= */
@@ -757,7 +757,7 @@ body.fullscreen-hidden .island {
   border-radius: var(--r-lg);
   background: var(--raise);
   transform: translateY(calc(var(--tab-index, 0) * var(--hit-sm)));
-  transition: transform var(--d-base) var(--ease-out);
+  transition: transform var(--d-fast) var(--ease-out);
   pointer-events: none;
 }
 
@@ -1328,6 +1328,7 @@ body.fullscreen-hidden .island {
   font-size: var(--t-sm);
   color: var(--ink-2);
   margin-top: var(--s-2);
+  line-height: var(--s-4);
 }
 
 .batt {
@@ -1368,8 +1369,8 @@ body.fullscreen-hidden .island {
   font-size: var(--t-xs);
   color: var(--ink-2);
   font-variant-numeric: tabular-nums;
-  min-height: 14px;
-  line-height: 14px;
+  min-height: var(--s-4);
+  line-height: var(--s-4);
 }
 
 .batt-sub:empty {
@@ -1558,7 +1559,7 @@ body.fullscreen-hidden .island {
 
 /* A used-up quota: its ring is empty, so the number carries the warning */
 .u-val[data-out="true"] {
-  color: var(--warn);
+  color: var(--warn-ink);
 }
 
 /* The word beside the values only appears when a reading cannot be trusted */
@@ -1608,7 +1609,7 @@ body.fullscreen-hidden .island {
 .u-list.dense .u-window,
 .u-list.dense .u-val {
   min-width: 0;
-  font-size: var(--t-2xs);
+  font-size: var(--t-xs);
 }
 
 /* Stale or unavailable readings remain visible but clearly recede. */
@@ -1688,7 +1689,7 @@ body.fullscreen-hidden .island {
   animation-play-state: paused !important;
 }
 
-.open-announcement { position: absolute; top: var(--s-1); left: var(--s-12); right: var(--s-12); pointer-events: none; color: var(--ink-2); background: var(--surface); font-size: var(--t-xs); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.open-announcement { position: absolute; top: var(--s-half); left: var(--content-left); right: var(--content-right); line-height: var(--s-3); text-align: center; pointer-events: none; color: var(--ink-2); background: var(--surface); font-size: var(--t-xs); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .open-announcement:empty { display: none; }
 
 body:not(:has(#isl[data-state="open"])) .open-announcement { display: none; }

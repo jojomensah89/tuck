@@ -50,11 +50,12 @@
 }@media (hover: hover) and (pointer: fine) { 
 
 /* No lyrics for this track: quiet, and its tooltip says why */
-.lyrics-toggle-btn[aria-disabled="true"],
 .lyrics-toggle-btn[aria-disabled="true"]:hover {
   color: var(--ink-3);
   cursor: default;
 } }
+
+.lyrics-toggle-btn[aria-disabled="true"] { color: var(--ink-3); cursor: default; }
 
 .lyrics-toggle-btn[aria-disabled="true"]:active {
   transform: none;
@@ -140,7 +141,7 @@
 }
 
 .lyrics-offset-value {
-  min-width: 36px;
+  min-width: var(--hit);
   text-align: center;
   color: var(--ink-2);
   font-size: var(--t-xs);
@@ -179,11 +180,12 @@
   transition: none;
 }@media (hover: hover) and (pointer: fine) { 
 
-.lyric-line.current,
 .lyric-line:hover,
 .lyric-line:focus-visible {
   color: var(--ink);
 } }
+
+.lyric-line.current { color: var(--ink); }
 
 .plain-lyrics {
   white-space: pre-wrap;
@@ -301,7 +303,7 @@
   max-width: 45%;
   margin: 0;
   color: var(--ink-2);
-  font-size: var(--t-xs);
+  font-size: var(--t-sm);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -342,7 +344,7 @@
   border-radius: var(--r-md);
   background: var(--raise-subtle);
   font-size: var(--t-base);
-  line-height: 20px;
+  line-height: var(--s-5);
   user-select: text;
   white-space: pre-wrap;
   overflow-wrap: anywhere;

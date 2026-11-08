@@ -8,7 +8,7 @@ try {
   const context = await browser.newContext({viewport:{width:520,height:288}, reducedMotion:'reduce'});
   const serveDist = async route => {
     const pathname = new URL(route.request().url()).pathname;
-    const file = path.join(root, 'dist', pathname === '/' ? 'index.html' : pathname);
+    const file = path.join(root, process.env.SMOKE_DIST || 'dist', pathname === '/' ? 'index.html' : pathname);
     const types = {'.html':'text/html','.js':'application/javascript','.css':'text/css','.svg':'image/svg+xml'};
     try { await route.fulfill({body:await readFile(file),contentType:types[path.extname(file)] || 'application/octet-stream'}); }
     catch { await route.fulfill({status:404,body:'Not found'}); }
@@ -23,11 +23,29 @@ try {
     window.__idleIntervals = active;
   };
   await context.addInitScript(instrumentTimers);
+
+  // Opt-in, reproducible review captures; all state is restored before assertions resume.
+  const capturePolish = async (page, name, settings = false) => {
+    if (!process.env.POLISH_CAPTURE) return;
+    const directory = path.join(root, 'docs/screens/polish', process.env.POLISH_CAPTURE);
+    await mkdir(directory, {recursive:true});
+    const viewport = page.viewportSize();
+    for (const width of [440,500]) {
+      if (settings) await page.setViewportSize({width,height:720});
+      const sizing = settings ? null : await page.addStyleTag({content:`#isl { --open-w: ${width}px !important; } #isl[data-state="open"] { width: ${width}px !important; }`});
+      await page.waitForTimeout(40);
+      await (settings ? page : page.locator('#isl')).screenshot({path:path.join(directory,`${name}-${width}.png`),...(settings ? {fullPage:true} : {})});
+      await sizing?.evaluate(node=>node.remove());
+    }
+    await page.setViewportSize(viewport);
+  };
+
   const errors = [];
   page.on('pageerror',error => errors.push(error.message));
   await page.goto('http://tuck.test/');
   await page.waitForTimeout(200);
   assert.equal(await page.locator('.full').evaluate(el => el.inert), true);
+  await capturePolish(page,'collapsed-media');
   await page.locator('#isl').focus();
   await page.keyboard.press('Enter');
   assert.equal(await page.locator('#isl').getAttribute('data-state'),'open');
@@ -75,6 +93,7 @@ try {
   assert.equal(await page.locator('.tab-panel.on').getAttribute('data-tab'),'today');
   assert.equal(await page.locator('#panel-today').getAttribute('aria-labelledby'),'tab-today');
   assert.deepEqual(await contentBox(),[420,192],'The row takes 40px from a tab with two parts');
+  await capturePolish(page,'today');
   // Today holds clock and battery, then the timer
   assert.deepEqual(await page.locator('#panel-today > .page').evaluateAll(n => n.map(x => x.dataset.page)),['today','activities']);
   await page.locator('.page.activities').scrollIntoViewIfNeeded();
@@ -107,6 +126,7 @@ try {
   assert.equal(await page.locator('#welcome').count(),0,'Welcome never appears in regular UI smoke');
   await page.goto('http://tuck.test/settings.html#welcome');
   await page.locator('#welcome').waitFor();
+  await capturePolish(page,'welcome',true);
   assert.equal(await page.locator('#welcome #autostart').count(),1,'Welcome uses the real autostart control');
   assert.equal(await page.locator('#welcome #modelRows').count(),1,'Welcome uses the real model picker');
   await page.getByRole('button',{name:'Skip',exact:true}).click();
@@ -239,7 +259,7 @@ try {
     }
     const calls = await settings.evaluate(() => window.__calls.filter(c=>c.command==='set_usage_provider'));
     assert.equal(calls.length, names.length * 2);
-    if (names.length === 2) { await mkdir(path.join(root,'docs/screens'),{recursive:true}); await settings.screenshot({path:path.join(root,'docs/screens/usage-settings.png')}); }
+    if (names.length === 2) { await mkdir(path.join(root,'docs/screens'),{recursive:true}); await capturePolish(settings,'settings-usage',true); await settings.screenshot({path:path.join(root,'docs/screens/usage-settings.png')}); }
     if (names.length === 3) {
       for (const theme of ['dark','light']) {
         await settings.emulateMedia({colorScheme:theme});
@@ -287,6 +307,7 @@ try {
   await emitUpdate(updateFixtures, fixture);
   await updateFixtures.waitForTimeout(100);
   await mkdir('docs/screens', {recursive:true});
+  await capturePolish(updateFixtures,'update-peek');
   await updateFixtures.screenshot({path:'docs/screens/update-peek.png'});
   await updateFixtures.evaluate(() => window.__emitNative('open-island', null));
   const action = updateFixtures.locator('#railUpdate button');
@@ -329,6 +350,7 @@ try {
   await native.goto('http://tuck.test/');
   await native.waitForFunction(() => window.__calls?.some(call => call.command === 'plugin:event|listen' && call.args.event === 'open-island') && window.__calls.some(call => call.command === 'usage_now'));
   assert.equal(await native.evaluate(() => window.__idleIntervals.size), 0, 'No intervals while collapsed without running activities');
+  await capturePolish(native,'idle');
   assert.equal(await native.locator('.page.todos').count(), 0, 'Todos feature must be completely removed');
   // Settings hears about an update from the background check, shows notes as text, and counts the row
   const updates=await context.newPage();
@@ -885,6 +907,7 @@ try {
     assert.deepEqual(bare,{paneHidden:true,fullWidth:true,disabled:'true',why:'No lyrics for this track',quiet:true,titleRowClear:true},`Without lyrics the player fills ${width}px`);
     await native.locator('.lyrics-toggle-btn').click({force:true});
     assert.equal(await native.locator('.lyrics-pane').isVisible(),false,'The quiet toggle does not open an empty pane');
+    await capturePolish(native,'media');
     await lyricEvent({status:'synced'});
     const geometry = await native.evaluate(() => {
       const rect = selector => document.querySelector(selector).getBoundingClientRect();
@@ -901,6 +924,7 @@ try {
     });
     assert.equal(geometry.width, width);
     assert.equal(geometry.titleClear && geometry.togglePresent && geometry.toggleClear && geometry.controlsFit, true, `Media regions must fit at ${width}px`);
+    await capturePolish(native,'lyrics');
     await native.screenshot({path:path.join(root,'artifacts',`island-unslop-${width}.png`)});
   }
   await lyricEvent({status:'synced'});
@@ -1047,9 +1071,12 @@ try {
     assert.deepEqual(await usageFit(),{inside:true,clear:true,switchClear:true,fits:true},`Two provider cards fit at ${width}px`);
     // A used-up quota has an empty ring, so its number warns; anything still left, does not
     const valueColours = await native.locator('#uList .u-val').evaluateAll(nodes=>nodes.map(n=>[n.textContent,n.dataset.out==='true',getComputedStyle(n).color]));
-    const warnColour = await native.locator('#uList').evaluate(n=>{const probe=document.createElement('span');probe.style.color='var(--warn)';n.append(probe);const colour=getComputedStyle(probe).color;probe.remove();return colour;});
+    const warnColour = await native.locator('#uList').evaluate(n=>{const probe=document.createElement('span');probe.style.color='var(--warn-ink)';n.append(probe);const colour=getComputedStyle(probe).color;probe.remove();return colour;});
     assert.deepEqual(valueColours.filter(([,out])=>out).map(([text,,colour])=>[text,colour]),[['0% left',warnColour]],'Only the used-up quota reads as out, in the warning colour');
     assert.equal(valueColours.filter(([,out])=>!out).some(([,,colour])=>colour===warnColour),false,'Other values keep their normal colour');
+    const bannerFit = await native.locator('#openAnnouncement').evaluate(n=>{const b=n.getBoundingClientRect(),i=document.getElementById('isl').getBoundingClientRect();return !n.textContent || (b.left>=i.left+56 && b.right<=i.right-24 && b.bottom<=i.top+16);});
+    assert.equal(bannerFit,true,'Open announcements stay inside the island above the content row');
+    await capturePolish(native,'usage');
     await native.locator('#isl').screenshot({path:path.join(root,`docs/screens/usage-providers-${width}.png`)});
     await native.evaluate(meters=>window.__emitNative('usage',meters),quotaProviders(Math.round(Date.now()/1000)).slice(0,4));
   }
@@ -1096,6 +1123,8 @@ try {
     await native.waitForTimeout(100);
     assert.equal(await native.locator('#uList .u-provider').count(),5);
     assert.deepEqual(await usageFit(),{inside:true,clear:true,switchClear:true,fits:true});
+    assert.equal(await native.locator('.u-list.dense .u-val').evaluateAll(nodes=>nodes.every(n=>parseFloat(getComputedStyle(n).fontSize)>=11)),true,'Dense quota values stay readable');
+    await capturePolish(native,'usage-dense');
     await native.locator('#isl').screenshot({path:path.join(root,`docs/screens/antigravity-five-${width}.png`)});
     extra[0]={...extra[0],usedPct:null,stale:true,status:'error',error:'Antigravity quota unavailable'};
     await native.evaluate(m=>window.__emitNative('usage',m),[...quotaProviders(now),extra[0]]);
@@ -1233,10 +1262,12 @@ try {
   await native.evaluate(()=>window.__emitNative('dictation_state',{status:'cancelling',modelReady:true}));
   assert.match(await native.locator('.page.dictation').textContent(),/Cancelling\u2026/);
   await mkdir(path.join(root,'docs/screens'),{recursive:true});
+  await capturePolish(native,'dictation-cancelling');
   await native.locator('#isl').screenshot({path:path.join(root,'docs/screens/dictation-cancelling.png')});
   assert.equal(await native.getByRole('button',{name:'Record',exact:true}).isDisabled(),true);
   await native.evaluate(()=>window.__emitNative('dictation_state',{status:'processing',modelReady:true}));
   assert.match(await native.locator('.page.dictation').textContent(),/Microphone closed/);
+  await capturePolish(native,'dictation-processing');
   await native.locator('#isl').screenshot({path:path.join(root,'docs/screens/dictation-processing.png')});
   await native.evaluate(()=>window.__emitNative('dictation_state',{status:'starting',modelReady:true}));
   assert.doesNotMatch(await native.locator('.page.dictation').textContent(),/Live transcript paused|Provisional words/);
@@ -1505,14 +1536,17 @@ try {
   assert.equal(await native.locator('.transcript').textContent(),'Listening\u2026');
   await native.evaluate(() => window.__emitNative('dictation_partial',{revision:11,status:'recording',preview:'Legacy words'}));
   assert.doesNotMatch(await native.locator('.transcript').textContent(),/Legacy words/);
+  await capturePolish(native,'dictation-recording');
   await native.locator('#isl').screenshot({path:path.join(root,'docs/screens/dictation-recording.png')});
   await dictationEvent(12,'review','Fixture: words ready to insert');
   assert.equal(await native.getByRole('button',{name:'Insert',exact:true}).isEnabled(),true);
+  await capturePolish(native,'dictation-review');
   await native.locator('#isl').screenshot({path:path.join(root,'docs/screens/dictation-review.png')});
   await native.getByRole('button',{name:'Insert',exact:true}).click();
   assert.equal(await native.evaluate(()=>window.__calls.some(c=>c.command==='dictation_review_insert')),true);
   await dictationEvent(13,'idle');
   await native.evaluate(()=>window.__emitNative('dictation_state',{revision:14,sessionId:1,status:'idle',message:'Inserted',modelInstalled:true,activeModelLabel:'Base'}));
+  await capturePolish(native,'dictation-done');
   await native.locator('#isl').screenshot({path:path.join(root,'docs/screens/dictation-done.png')});
   await native.locator('#isl').focus();
   await native.keyboard.press('Escape');
@@ -1523,6 +1557,7 @@ try {
   assert.equal(await native.locator('#isl').getAttribute('data-state'),'peek');
   assert.equal(await native.locator('#statusMessage').textContent(),'Copied, paste with Ctrl+V');
   assert.match(await native.locator('#cc, #openAnnouncement').allTextContents().then(a=>a.join(' ')),/Copied, paste with Ctrl\+V/);
+  await capturePolish(native,'dictation-copied');
   await native.locator('#isl').screenshot({path:path.join(root,'docs/screens/dictation-copied.png')});
   assert.deepEqual(nativeErrors,[]);
 

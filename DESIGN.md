@@ -19,7 +19,7 @@ Surface #000000; raised #1c1c1e / hover #2c2c2e / active #3a3a3c. Ink #ffffff, s
 
 ## Graphics instead of text
 
-Every value that has a range is drawn, not written. Rings come from `src/rings.ts` (pure geometry, tones and labels, unit tested; `createRing` is the one DOM builder): a track one tone step above the surface (`--raise-hover`), a round-capped fill starting at 12 o'clock, and the value changing by dash offset so it animates on `--spring-enter` over `--d-shell`. An empty or missing value is the track alone (a round cap at zero would draw a dot). Reduced motion sets the change instantly.
+Every value that has a range is drawn, not written. Rings come from `src/rings.ts` (pure geometry, tones and labels, unit tested; `createRing` is the one DOM builder): a track one tone step above the surface (`--raise-hover`), a round-capped fill starting at 12 o'clock, and the value changing by dash offset so it animates on `--ease-out` over `--d-ui`. An empty or missing value is the track alone (a round cap at zero would draw a dot). Reduced motion sets the change instantly.
 
 - AI usage: one card per connected provider, two across. The 72px double ring (6px strokes) has the 5h window outside and the weekly window inside; a single-window provider keeps one ring. The official mark sits in the centre at 32px. Two compact lines beside it give window and what is left (`5h 38% left`, `7d 69% left`). The rings drain as quota runs out. Each ring has its own threshold tone from the share used: green below 70% used, amber from 70%, red from 90%. A fifth card shrinks the rings to 44px in three columns so two rows still fit. A connected source with a stale or failed reading stays visible, dimmed to 45% with one word beside its values (`Stale`, `Error`, `Unavailable`) and a dash where there is no value. Sources that are not connected do not appear, and the AI section leaves the Usage tab when none is connected. A model-scoped window (`Opus`) is never drawn as the general weekly, and both rings come from one quota bucket. Reset times, other windows and source or error details live in the tooltip and accessible name. Refresh belongs to this part and sits in the segmented row as a quiet `--ink-2` icon, with no filled tile at rest or on hover.
 - System: CPU, memory and each GPU as 72px rings with the value inside, the name and a 72x20 sparkline under. Load is ink until it is high (amber 70%, red 90%), so an idle machine is not the loudest thing on screen. Unavailable is a dim track with a dash. Download and upload rates sit below the rings with line icons, tabular figures and decimal MB/s to one decimal place. Missing or warming values are dim dashes. There is no decorative status dot.
@@ -96,12 +96,16 @@ Files: one dashed drop target, the only dashed element in the product. It's a fi
 
 ## Motion
 
+Segment highlights translate horizontally in 200ms. Keyboard navigation is immediate, including panels and rail. Update states crossfade out in 100ms and in in 140ms. Clipboard inserts fade/rise 4px in 200ms; removed cards fade in 100ms while surviving cards translate to their new positions (FLIP). Usage percentage labels count only changed readings, never first paint, over 200ms alongside the ring dash. Hidden parts do no counting. Drag-over scales the Files well to 1.01; reduced motion keeps its colour without movement. Hover effects require a fine pointer and hover support. Press scale stays 0.96.
+
+File drag entry temporarily reveals Tools > Files and its selected segment without writing lastTab. Leaving restores the previous tab, part and collapsed/open state; dropping keeps Files visible. Native cursor sampling continues during OLE drag and disables click-through when the cursor enters the collapsed island bounds; no Explorer drag was exercised in the implementation environment.
+
 Springs are sampled into CSS `linear()`:
 
 - `--spring` (damping 0.68, ~5% overshoot): shell open and peek, 420ms.
 - `--spring-enter` (damping 0.78, ~2% overshoot): content and pages entering, 280ms.
-- `--ease-out` (critically damped): shell close 300ms, hovers 160ms, value changes.
-- `--ease-exit` (accelerating): content leaving, 100ms.
+- `--ease-out`: `cubic-bezier(0.23, 1, 0.32, 1)` for UI, 200ms changes. Shell closing remains 300ms.
+- `--ease-exit`: the shared strong ease-out, content leaving in 100ms.
 
 Durations: 100 (instant/exit), 160 (fast), 280 (base), 300 (close), 420 (shell). Press feedback is `scale(0.96)` everywhere.
 

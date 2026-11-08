@@ -1320,7 +1320,7 @@ window.addEventListener('tuck-preview',event=>{
   const detail=(event as CustomEvent).detail;
   if(detail&&typeof detail.title==='string'&&typeof detail.text==='string')showAnnouncement(`${detail.title}: ${detail.text}`);
 });
-let dragReturn: { section: string; state: typeof state } | null = null;
+let dragReturn: { section: string; state: IslandState } | null = null;
 window.addEventListener('tuck-drop-complete', () => { dragReturn = null; });
 function holdDrag(active:boolean):void {
   nativeDragActive=active;window.clearTimeout(closeTimer);

@@ -308,7 +308,7 @@ body.fullscreen-hidden .island {
   transform: scale(1);
   transition:
     opacity var(--d-fast) var(--ease-out),
-    transform var(--d-base) var(--spring-enter);
+    transform var(--d-base) var(--ease-out);
 }
 
 .cc .compact-slot {
@@ -753,7 +753,7 @@ body.fullscreen-hidden .island {
   border-radius: var(--r-lg);
   background: var(--raise);
   transform: translateY(calc(var(--tab-index, 0) * var(--hit-sm)));
-  transition: transform var(--d-base) var(--spring-enter);
+  transition: transform var(--d-base) var(--ease-out);
   pointer-events: none;
 }
 
@@ -912,11 +912,11 @@ body.fullscreen-hidden .island {
 }
 
 .tab-panel.on.fwd {
-  animation: tab-in-up var(--d-base) var(--spring-enter) both;
+  animation: tab-in-up var(--d-base) var(--ease-out) both;
 }
 
 .tab-panel.on.back {
-  animation: tab-in-down var(--d-base) var(--spring-enter) both;
+  animation: tab-in-down var(--d-base) var(--ease-out) both;
 }
 
 @keyframes tab-in-up {

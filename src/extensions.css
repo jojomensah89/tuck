@@ -31,7 +31,7 @@
   color: var(--ink);
   transition:
     color var(--d-fast) var(--ease-out),
-    transform var(--d-base) var(--spring-enter);
+    transform var(--d-base) var(--ease-out);
 }
 
 .has-files .shelf-drop {

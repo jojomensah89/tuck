@@ -261,6 +261,7 @@ try {
     assert.equal(calls.length, names.length * 2);
     if (names.length === 2) { await mkdir(path.join(root,'docs/screens'),{recursive:true}); await capturePolish(settings,'settings-usage',true); await settings.screenshot({path:path.join(root,'docs/screens/usage-settings.png')}); }
     if (names.length === 3) {
+      if(process.env.LOGO_CAPTURE !== 'before') assert.equal(await settings.locator('img[src="/providers/claude.svg"]').count(),1);
       for (const theme of ['dark','light']) {
         await settings.emulateMedia({colorScheme:theme});
         await settings.screenshot({path:path.join(root,`docs/screens/logos-${process.env.LOGO_CAPTURE || 'after'}-settings-${theme}.png`)});
@@ -1012,6 +1013,12 @@ try {
   for (const width of [440,500]) {
     await native.evaluate(()=>window.__emitNative('telemetry',{sampledAt:Date.now(),cpuPct:43,networkDownBps:12400000,networkUpBps:1200000,ramUsedBytes:8589934592,ramTotalBytes:17179869184,gpus:[{id:'gpu0',name:'Fixture GPU',usedPct:null}]}));
     await setLive({openWidth:width}); await native.waitForTimeout(60);
+    await native.locator('#isl').screenshot({path:path.join(root,`docs/screens/weekly-${process.env.LOGO_CAPTURE || 'after'}-system-${width}.png`)});
+    if (process.env.LOGO_CAPTURE !== 'before') {
+      assert.equal(await native.locator('.network-caption').textContent(),'Network');
+      assert.match(await native.locator('.network-rate').first().getAttribute('aria-label'),/^Download speed /);
+      assert.equal(await native.locator('.network-rate').last().getAttribute('title'),'Upload speed');
+    }
     assert.equal(await native.locator('.network-rates').evaluate(n=>{ const r=n.getBoundingClientRect(),p=n.closest('.page').getBoundingClientRect(); return r.left>=p.left && r.right<=p.right && r.bottom<=p.bottom; }),true,'Network rates fit the System part');
     await mkdir(path.join(root,'docs/screens'),{recursive:true});
     await native.locator('#isl').screenshot({path:path.join(root,`docs/screens/usage-system-${width}.png`)});
@@ -1090,12 +1097,20 @@ try {
       const now = Math.round(Date.now()/1000);
       const extra = ['antigravity','fixture-b','fixture-c'].map(provider=>({id:provider,provider,label:provider==='antigravity'?'Antigravity quota':provider,usedPct:35,resetsAt:now+3600,source:'official',stale:false,status:'ok'}));
       for (const state of ['ai','five','stale']) {
-        const meters = [...quotaProviders(now), ...extra.slice(0,state==='five'?3:1)];
+        const meters = [...quotaProviders(now), ...extra.slice(0,state==='five'?3:1), {id:'antigravity-weekly',provider:'antigravity',label:'Antigravity weekly',usedPct:61,resetsAt:now+86400*6,source:'official',stale:false,status:'ok'}];
+        meters.find(m=>m.provider==='antigravity').label='Antigravity 5 h';
         if(state==='stale') meters.forEach(m=>{m.stale=true;m.status='stale';});
         await native.evaluate(m=>window.__emitNative('usage',m),meters);
         await native.waitForTimeout(100);
         assert.deepEqual(await usageFit(),{inside:true,clear:true,switchClear:true,fits:true});
         if (process.env.LOGO_CAPTURE !== 'before') {
+          if(state==='ai') {
+            const cards=await native.locator('#uList .u-provider').evaluateAll(nodes=>nodes.map(n=>{const r=n.getBoundingClientRect();return {left:r.left,top:r.top};}));
+            assert.equal(cards[2].left,cards[0].left,'Third provider is under the first');
+            assert.ok(cards[2].top>cards[0].top);
+            assert.deepEqual(await native.locator('#uList .u-provider').nth(2).locator('.u-window').allTextContents(),['5h','7d']);
+            assert.equal(await native.locator('#uList .u-provider').nth(2).locator('.ring').count(),2);
+          }
           const session = await context.newCDPSession(native);
           for (const scale of [1,1.5,2]) {
             await session.send('Emulation.setDeviceMetricsOverride',{width:520,height:288,deviceScaleFactor:scale,mobile:false});

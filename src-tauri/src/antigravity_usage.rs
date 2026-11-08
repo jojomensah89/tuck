@@ -123,13 +123,13 @@ async fn response(request: reqwest::RequestBuilder) -> Result<Zeroizing<Vec<u8>>
     }
     Ok(bytes)
 }
-fn parse_quota(v: &Value, models: bool) -> Vec<Meter> {
+fn parse_quota(v: &Value, models: bool, now: i64) -> Vec<Meter> {
     let mut windows = Vec::new();
     if models {
         if let Some(map) = v["models"].as_object() {
             for model in map.values().take(128) {
                 for key in ["quotaInfo", "weeklyQuotaInfo"] {
-                    windows.push((&model[key], "Antigravity model quota"));
+                    windows.push((&model[key], key == "weeklyQuotaInfo"));
                 }
             }
         }
@@ -148,21 +148,33 @@ fn parse_quota(v: &Value, models: bool) -> Vec<Meter> {
         };
         for b in buckets.into_iter().take(128) {
             if b["disabled"] != true {
-                windows.push((b, "Antigravity bucket quota"));
+                windows.push((b, weekly_bucket(b, now)));
             }
         }
     }
-    // Conservative single ring: most-used scoped allowance, never a general weekly.
-    windows
+    let mut meters = Vec::new();
+    let candidates = windows
         .into_iter()
-        .filter_map(|(q, label)| {
+        .filter_map(|(q, weekly)| {
             let remaining = q["remainingFraction"]
                 .as_f64()
                 .filter(|n| n.is_finite() && (0.0..=1.0).contains(n))?;
             Some(Meter {
-                id: "antigravity-scoped".into(),
+                id: if weekly {
+                    "antigravity-weekly"
+                } else {
+                    "antigravity-short"
+                }
+                .into(),
                 provider: "antigravity".into(),
-                label: label.into(),
+                // No reply text crosses the native bridge. Short duration uses the
+                // same 5h convention as Claude/Codex; reset is in the tooltip.
+                label: if weekly {
+                    "Antigravity weekly"
+                } else {
+                    "Antigravity 5 h"
+                }
+                .into(),
                 used_pct: Some((1.0 - remaining) * 100.0),
                 spent_usd: None,
                 resets_at: crate::usage::parse_unix_timestamp(&q["resetTime"]),
@@ -172,13 +184,39 @@ fn parse_quota(v: &Value, models: bool) -> Vec<Meter> {
                 error: None,
             })
         })
-        .max_by(|a, b| {
-            a.used_pct
-                .partial_cmp(&b.used_pct)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        })
-        .into_iter()
-        .collect()
+        .collect();
+    merge_windows(&mut meters, candidates);
+    meters
+}
+// Only explicit window fields/identifiers or a distant reset imply a weekly bucket.
+fn weekly_bucket(q: &Value, now: i64) -> bool {
+    [
+        "window",
+        "windowType",
+        "quotaType",
+        "bucketId",
+        "duration",
+        "resetPeriod",
+    ]
+    .iter()
+    .filter_map(|key| q[*key].as_str())
+    .any(|value| {
+        let value = value.to_ascii_lowercase();
+        value.contains("week") || matches!(value.as_str(), "7d" | "7 days" | "604800s")
+    }) || crate::usage::parse_unix_timestamp(&q["resetTime"])
+        .is_some_and(|reset| reset.saturating_sub(now) > 2 * 86400)
+}
+fn merge_windows(meters: &mut Vec<Meter>, candidates: Vec<Meter>) {
+    for candidate in candidates {
+        if let Some(current) = meters.iter_mut().find(|m| m.id == candidate.id) {
+            if candidate.used_pct > current.used_pct {
+                *current = candidate;
+            }
+        } else {
+            meters.push(candidate);
+        }
+    }
+    meters.sort_by_key(|m| m.id == "antigravity-weekly");
 }
 /// An empty project ID is the same as none: the service treats a blank one as a real value.
 fn quota_body(project: Option<&Secret>) -> Value {
@@ -207,12 +245,13 @@ async fn fetch(c: Credentials) -> Result<Vec<Meter>, &'static str> {
     }
     drop(bytes);
     let mut failed = None;
+    let mut meters = Vec::new();
+    let now = chrono::Utc::now().timestamp();
     for (operation, models) in [
         ("retrieveUserQuotaSummary", false),
         ("fetchAvailableModels", true),
     ] {
         // The hosts can report different quota groups, so read both and keep the most used.
-        let mut meters = Vec::new();
         for host in [
             "daily-cloudcode-pa.googleapis.com",
             "cloudcode-pa.googleapis.com",
@@ -227,19 +266,20 @@ async fn fetch(c: Credentials) -> Result<Vec<Meter>, &'static str> {
             {
                 Ok(bytes) => {
                     if let Ok(v) = serde_json::from_slice::<Value>(&bytes) {
-                        meters.extend(parse_quota(&v, models));
+                        merge_windows(&mut meters, parse_quota(&v, models, now));
                     }
                 }
                 Err(failure) => failed = Some(failure),
             }
         }
-        if let Some(m) = meters.into_iter().max_by(|a, b| {
-            a.used_pct
-                .partial_cmp(&b.used_pct)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        }) {
-            return Ok(vec![m]);
+        // Both hosts may carry different model groups. Once both window classes
+        // are present, no fallback operation is needed.
+        if meters.len() == 2 {
+            return Ok(meters);
         }
+    }
+    if !meters.is_empty() {
+        return Ok(meters);
     }
     Err(match failed {
         Some(Failure::Offline) => OFFLINE,
@@ -383,21 +423,86 @@ mod tests {
         ));
     }
     #[test]
+    fn fake_models_select_most_used_per_window() {
+        let fixture = json!({"models": {
+            "fake-a": {"quotaInfo": {"remainingFraction": 0.25}, "weeklyQuotaInfo": {"remainingFraction": 0.7}},
+            "fake-b": {"quotaInfo": {"remainingFraction": 0.6}, "weeklyQuotaInfo": {"remainingFraction": 0.1}}
+        }});
+        let meters = parse_quota(&fixture, true, 1000);
+        assert_eq!(meters.len(), 2);
+        assert_eq!(meters[0].label, "Antigravity 5 h");
+        assert_eq!(meters[0].used_pct, Some(75.0));
+        assert_eq!(meters[1].label, "Antigravity weekly");
+        assert_eq!(meters[1].used_pct, Some(90.0));
+    }
+    #[test]
+    fn fake_buckets_classify_weekly_and_ignore_invalid_or_disabled() {
+        let now = 1_900_000_000;
+        let fixture = json!({"buckets": [
+            {"remainingFraction": 0.5, "resetTime": now + 3600},
+            {"remainingFraction": 0.4, "resetTime": now + 3 * 86400},
+            {"remainingFraction": 0.2, "windowType": "WEEKLY", "resetTime": now + 30},
+            {"remainingFraction": 0.0, "window": "weekly", "disabled": true},
+            {"remainingFraction": -1, "window": "weekly"}
+        ]});
+        let meters = parse_quota(&fixture, false, now);
+        assert_eq!(meters.len(), 2);
+        assert_eq!(meters[0].used_pct, Some(50.0));
+        assert_eq!(meters[1].used_pct, Some(80.0));
+        // Missing or invalid weekly data must not synthesize a second meter.
+        let single = parse_quota(
+            &json!({"models":{"fake":{
+                "quotaInfo":{"remainingFraction":0.5}, "weeklyQuotaInfo":{"remainingFraction":2}
+            }}}),
+            true,
+            now,
+        );
+        assert_eq!(single.len(), 1);
+    }
+    #[test]
+    fn fake_operations_and_hosts_merge_without_losing_short_window() {
+        let mut meters = parse_quota(&json!({"buckets":[{"remainingFraction":0.1}]}), false, 0);
+        merge_windows(
+            &mut meters,
+            parse_quota(
+                &json!({"models":{"fake":{
+                    "quotaInfo":{"remainingFraction":0.8}, "weeklyQuotaInfo":{"remainingFraction":0.4}
+                }}}),
+                true,
+                0,
+            ),
+        );
+        merge_windows(
+            &mut meters,
+            parse_quota(
+                &json!({"models":{"other-fake":{
+                    "weeklyQuotaInfo":{"remainingFraction":0.2}
+                }}}),
+                true,
+                0,
+            ),
+        );
+        assert_eq!(meters.len(), 2);
+        assert_eq!(meters[0].used_pct, Some(90.0));
+        assert_eq!(meters[1].used_pct, Some(80.0));
+    }
+    #[test]
     fn public_shapes_scoped_and_sanitized() {
         let summary = json!({"groups":[{"displayName":"FAKE_SECRET","buckets":[{"bucketId":"gemini-weekly","window":"weekly","remainingFraction":0.4,"resetTime":"2030-01-01T00:00:00Z"}]}]});
-        let m = parse_quota(&summary, false);
+        let m = parse_quota(&summary, false, 0);
         assert_eq!(m[0].used_pct, Some(60.0));
         let event = serde_json::to_string(&m).unwrap();
         assert!(!event.contains("FAKE_SECRET"));
-        assert!(!event.contains("weekly"));
+        assert_eq!(m[0].label, "Antigravity weekly");
         assert_eq!(
             parse_quota(
                 &json!({"models":{"gemini-test":{"quotaInfo":{"remainingFraction":0.25}}}}),
-                true
+                true,
+                0
             )[0]
             .used_pct,
             Some(75.0)
         );
-        assert!(parse_quota(&json!({"buckets":[{"remainingFraction":2}]}), false).is_empty());
+        assert!(parse_quota(&json!({"buckets":[{"remainingFraction":2}]}), false, 0).is_empty());
     }
 }

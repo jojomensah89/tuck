@@ -93,8 +93,8 @@ export async function mediaSeek(ms: number): Promise<void> {
  * Reports current island hit geometry to Rust.
  * Per the guide: hit height must include top offset (`h + top`).
  */
-export async function setHit(w: number, h: number, top = 0): Promise<void> {
-  await invokeCommand('set_hit', { w: Math.round(w), h: Math.round(h), top });
+export async function setHit(w: number, h: number): Promise<void> {
+  await invokeCommand('set_hit', { w: Math.round(w), h: Math.round(h) });
 }
 
 export async function fetchUsageNow(): Promise<Meter[]> {

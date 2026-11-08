@@ -318,7 +318,7 @@ function setState(next: IslandState): void {
   isl.setAttribute('aria-expanded', String(next === 'open'));
 
   const hit = hitGeometry(w, h, topOffset);
-  runAction(setHit(hit.w, hit.h, topOffset), 'Update island bounds');
+  runAction(setHit(hit.w, hit.h), 'Update island bounds');
 
   renderCompact();
   if (next === 'open') {
@@ -758,7 +758,7 @@ function syncIdleWidth(width: number): void {
   isl.style.setProperty('--w', `${width}px`);
   isl.style.width = `${width}px`;
   const hit = hitGeometry(width, SIZES.idle[1], topOffset);
-  runAction(setHit(hit.w, hit.h, topOffset), 'Update island bounds');
+  runAction(setHit(hit.w, hit.h), 'Update island bounds');
 }
 
 function renderCompact(): void {

@@ -460,4 +460,46 @@ mod tests {
         assert!(encode(120, 80, &flat).is_some());
         assert_eq!(encode(0, 0, &[]), None);
     }
+
+    /// Native check against the real Windows shell, run by hand:
+    /// `TUCK_THUMB_PROBE="C:\a.pdf;C:\b.exe" TUCK_THUMB_OUT=<dir> cargo test real_shell_thumbnails -- --ignored --nocapture`
+    /// Each file's thumbnail is written to the output folder as a PNG to look at.
+    #[test]
+    #[ignore = "needs a Windows desktop session and files chosen by the person running it"]
+    fn real_shell_thumbnails() {
+        let paths = std::env::var("TUCK_THUMB_PROBE").expect("TUCK_THUMB_PROBE");
+        let out = PathBuf::from(std::env::var("TUCK_THUMB_OUT").expect("TUCK_THUMB_OUT"));
+        std::fs::create_dir_all(&out).unwrap();
+        for (index, path) in paths.split(';').filter(|p| !p.is_empty()).enumerate() {
+            let key = shelf_key(&format!("probe-{index}"));
+            register(&key);
+            let started = std::time::Instant::now();
+            let thumb = thumbnail(&key, Path::new(path));
+            let first = started.elapsed();
+            let again = std::time::Instant::now();
+            assert_eq!(thumbnail(&key, Path::new(path)), thumb, "made once");
+            let cached = again.elapsed();
+            match &thumb {
+                Thumb::Image { url } => {
+                    let bytes = STANDARD
+                        .decode(url.trim_start_matches("data:image/png;base64,"))
+                        .unwrap();
+                    let info = png::Decoder::new(std::io::Cursor::new(&bytes))
+                        .read_info()
+                        .unwrap()
+                        .info()
+                        .clone();
+                    std::fs::write(out.join(format!("thumb-{index}.png")), &bytes).unwrap();
+                    println!(
+                        "{index}: image {}x{} {} bytes, made in {first:?}, cached in {cached:?}",
+                        info.width,
+                        info.height,
+                        bytes.len()
+                    );
+                }
+                other => println!("{index}: {other:?} in {first:?}"),
+            }
+            forget(&key);
+        }
+    }
 }

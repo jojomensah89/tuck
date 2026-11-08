@@ -333,6 +333,15 @@ export function mountLivePages(onLayout: () => void): {
     speechDot.set(dotState, `Offline, ${data.status}`);
     const text = data.status === 'review' ? data.transcript : '';
     transcript.textContent = text.slice(0, 32000) || (data.status === 'recording' ? 'Listening\u2026' : data.status === 'transcribing' ? 'Transcribing\u2026' : 'Your transcript appears here');
+    if (data.status === 'recording') {
+      const meter = node('span', 'dictation-waveform');
+      meter.setAttribute('aria-label', 'Microphone level');
+      const level = Math.max(0, Math.min(1, data.audioLevel || 0));
+      for (const scale of [8, 16, 12, 16, 8]) {
+        const bar = node('i', ''); bar.style.height = `${2 + level * scale}px`; meter.append(bar);
+      }
+      transcript.append(meter);
+    }
     transcript.classList.toggle('placeholder', !text);
     transcript.setAttribute('aria-label', 'Transcript');
     insert.disabled = data.status !== 'review' || data.canInsert === false;
@@ -453,11 +462,16 @@ export function mountLivePages(onLayout: () => void): {
   void refreshClipboard().catch(() => { clipboardEmpty.textContent = 'Clipboard service unavailable, see Settings'; clipboardEmpty.hidden = false; });
   let interval: number | undefined;
   let sessionInterval: number | undefined;
+  let warmInterval: number | undefined;
   const visible = () => document.getElementById('isl')?.dataset.state === 'open';
   const syncTimers = () => {
-    window.clearInterval(interval); window.clearInterval(sessionInterval);
+    window.clearInterval(interval); window.clearInterval(sessionInterval); window.clearInterval(warmInterval);
     interval = undefined; sessionInterval = undefined;
     if (!visible()) return;
+    if (!speech.inert && speech.closest('.tab-panel.on')) {
+      const warm = () => { void nativeAction('dictation_keep_warm').catch(() => {}); };
+      warm(); warmInterval = window.setInterval(warm, 30000);
+    }
     if (!clipboard.inert && clipboard.closest('.tab-panel.on')) renderClipboard(latestClipboard);
     if (mediaPage.closest('.tab-panel.on')) { void sessions(); sessionInterval = window.setInterval(() => { void sessions(); }, 5000); }
     if (stats.inert || !stats.closest('.tab-panel.on')) return;
@@ -467,12 +481,13 @@ export function mountLivePages(onLayout: () => void): {
     }, 1000);
   };
   const sectionObserver = new MutationObserver(syncTimers);
+  sectionObserver.observe(speech, {attributes: true, attributeFilter: ['inert']});
   sectionObserver.observe(stats, {attributes: true, attributeFilter: ['inert']});
   sectionObserver.observe(clipboard, {attributes: true, attributeFilter: ['inert']});
   window.addEventListener('tuck-visibility', syncTimers);
   window.addEventListener('pagehide', () => {
     sectionObserver.disconnect();
-    clearInterval(interval); clearInterval(sessionInterval);
+    clearInterval(interval); clearInterval(sessionInterval); clearInterval(warmInterval);
     window.removeEventListener('tuck-visibility', syncTimers);
     unlisteners.forEach(unlisten => unlisten());
   }, { once: true });

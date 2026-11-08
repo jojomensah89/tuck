@@ -21,8 +21,10 @@ fn claim(dir: &Path) -> bool {
         .open(dir.join("welcome-seen"))
         .is_ok()
 }
+// Async on purpose: a synchronous command runs on the event loop, and building a
+// WebView2 window from inside it deadlocks Windows (frozen island, blank Settings).
 #[tauri::command]
-pub fn maybe_show_welcome(
+pub async fn maybe_show_welcome(
     app: AppHandle,
     first: State<'_, FirstRun>,
     saved_preferences: bool,
@@ -49,7 +51,7 @@ pub fn maybe_show_welcome(
     if fullscreen || service.update_blocker().is_some() {
         return Ok(());
     }
-    crate::system::open_settings_view(&app, "welcome", false)
+    crate::system::open_settings_view_on_main(app, "welcome").await
 }
 #[tauri::command]
 pub fn open_about_link(app: AppHandle, url: String) -> Result<(), String> {

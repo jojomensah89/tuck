@@ -1329,7 +1329,7 @@ function holdDrag(active:boolean):void {
     setState('open');rail.reveal('extensions');
   } else {
     if(dragReturn){ const previous=dragReturn;dragReturn=null;rail.reveal(previous.section);setState(previous.state); }
-    else onHover(hoverInside);
+    else setState('open');
   }
 }
 window.addEventListener('tuck-drop-active',event=>holdDrag((event as CustomEvent).detail===true));

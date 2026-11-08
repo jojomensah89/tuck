@@ -1689,3 +1689,5 @@ body:not(:has(#isl[data-state="open"])) .open-announcement { display: none; }
 
 .section-switch::before { content: ''; position: absolute; inset: 0 auto 0 0; width: 50%; border-radius: var(--r-md); background: var(--raise-active); transform: translateX(calc(var(--section-index, 0) * 100%)); transition: transform var(--d-ui) var(--ease-out); }
 .keyboard-input *, .keyboard-input *::before { animation: none !important; transition: none; scroll-behavior: auto !important; }
+
+.keyboard-input { animation: none !important; transition: none !important; }

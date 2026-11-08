@@ -1,3 +1,4 @@
+import { setIfChanged } from './usage-rings.js';
 import { clipCategory, CLIP_CATEGORIES } from './clipboard-categories.js';
 import { listenToEvent, mediaSeek, isTauri, openSettingsCmd, triggerQuickAction } from './ipc.js';
 import { SVG_ICONS } from './icons.js';
@@ -246,7 +247,7 @@ export function mountLivePages(onLayout: () => void): {
     const tone = usageTone(pct);
     view.ring.set(pct, tone === 'ok' ? 'ink' : tone);
     const text = pct === null ? '\u2013' : `${Math.round(pct)}%`;
-    if (view.value.textContent !== text) view.value.textContent = text;
+    setIfChanged(view.value, text);
     view.row.dataset.unavailable = String(pct === null);
     const label = pct === null ? `${view.name} unavailable` : `${view.name} ${Math.round(pct)}%${view.detail ? `, ${view.detail}` : ''}`;
     view.face.setAttribute('aria-label', label); view.face.title = label;
@@ -378,6 +379,7 @@ export function mountLivePages(onLayout: () => void): {
   let category: string = 'all';
   let latestClipboard: ClipboardSnapshot = { enabled: false, items: [] };
   let clipboardSignature = '';
+  let clipboardPainted = false;
   function renderClipboard(data: ClipboardSnapshot): void {
     if (!data || !Array.isArray(data.items)) return;
     latestClipboard = data;
@@ -399,7 +401,8 @@ export function mountLivePages(onLayout: () => void): {
     clearClipboard.disabled = !data.enabled || !data.items.length;
     const focus = (document.activeElement as HTMLElement)?.dataset.focus;
     const oldRows = new Map([...clipList.children].map(el => [(el as HTMLElement).dataset.clipId, { el: el as HTMLElement, rect: el.getBoundingClientRect() }]));
-    const animateCards = !document.hidden && !document.querySelector('.keyboard-input') && !matchMedia('(prefers-reduced-motion: reduce)').matches && oldRows.size > 0;
+    const animateCards = !document.hidden && !document.querySelector('.keyboard-input') && !matchMedia('(prefers-reduced-motion: reduce)').matches && clipboardPainted;
+    clipboardPainted = true;
     clipList.replaceChildren();
     for (const item of [...visible].sort((a, b) => b.createdAt - a.createdAt).slice(0, 100)) {
       const row = node('div', 'clipboard-row'); row.dataset.clipId = String(item.id);

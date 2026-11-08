@@ -146,10 +146,10 @@ export function usageStateWord(meters: Meter[]): string {
 }
 
 const counts = new WeakMap<HTMLElement, number>();
-function setIfChanged(node: HTMLElement, text: string): void {
+export function setIfChanged(node: HTMLElement, text: string): void {
   if (node.dataset.target === text || node.textContent === text) return;
-  const previous = node.textContent?.match(/^(\d+)% left$/);
-  const next = text.match(/^(\d+)% left$/);
+  const previous = node.textContent?.match(/^(\d+)%(?: left)?$/);
+  const next = text.match(/^(\d+)%(?: left)?$/);
   cancelAnimationFrame(counts.get(node) ?? 0);
   node.dataset.target = text;
   if (!previous || !next || (!node.checkVisibility() || !!node.closest('[inert]')) || document.hidden || document.querySelector('.keyboard-input') || matchMedia('(prefers-reduced-motion: reduce)').matches) { node.textContent = text; return; }
@@ -157,7 +157,7 @@ function setIfChanged(node: HTMLElement, text: string): void {
   const tick = (now: number) => {
     if (document.hidden || (!node.checkVisibility() || !!node.closest('[inert]'))) { node.textContent = text; return; }
     const progress = Math.min(1, (now-start)/200);
-    node.textContent = `${Math.round(from+(to-from)*(1-Math.pow(1-progress, 3)))}% left`;
+    node.textContent = `${Math.round(from+(to-from)*(1-Math.pow(1-progress, 3)))}${text.endsWith(' left') ? '% left' : '%'}`;
     if (progress < 1) counts.set(node, requestAnimationFrame(tick)); else node.textContent = text;
   };
   counts.set(node, requestAnimationFrame(tick));

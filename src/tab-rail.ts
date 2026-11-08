@@ -53,8 +53,9 @@ export function mountTabRail(options: TabRailOptions): TabRail {
   const full = document.querySelector<HTMLElement>('.full')!;
   const container = full.querySelector<HTMLElement>('.pages-container')!;
   let keyboard = false;
-  document.addEventListener('keydown', () => { keyboard = true; full.classList.add('keyboard-input'); }, true);
-  document.addEventListener('pointerdown', () => { keyboard = false; full.classList.remove('keyboard-input'); }, true);
+  document.addEventListener('keydown', () => { keyboard = true; document.documentElement.classList.add('keyboard-input'); }, true);
+  document.addEventListener('pointerdown', () => { keyboard = false; document.documentElement.classList.remove('keyboard-input'); }, true);
+  document.addEventListener('wheel', () => { keyboard = false; document.documentElement.classList.remove('keyboard-input'); }, { capture: true, passive: true });
   const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
 
   /* ---------- Rail ---------- */

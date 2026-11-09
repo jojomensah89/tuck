@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10" xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10" xmlns:uap3="http://schemas.microsoft.com/appx/manifest/uap/windows10/3" xmlns:uap5="http://schemas.microsoft.com/appx/manifest/uap/windows10/5" xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities" IgnorableNamespaces="uap uap3 uap5 rescap">
   <Identity Name="{{NAME}}" Publisher="{{PUBLISHER}}" Version="{{VERSION}}" ProcessorArchitecture="x64" />
-  <Properties><DisplayName>Tuck</DisplayName><PublisherDisplayName>{{DISPLAY}}</PublisherDisplayName><Logo>Assets\StoreLogo.png</Logo></Properties>
+  <Properties><DisplayName>{{STORE_NAME}}</DisplayName><PublisherDisplayName>{{DISPLAY}}</PublisherDisplayName><Logo>Assets\StoreLogo.png</Logo></Properties>
   <Dependencies><TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.19041.0" MaxVersionTested="10.0.26100.0" /></Dependencies>
   <Resources><Resource Language="en-us" /></Resources>
   <Applications><Application Id="Tuck" Executable="tuck.exe" EntryPoint="Windows.FullTrustApplication">

@@ -41,6 +41,8 @@ pub fn startup_state() -> Result<windows::ApplicationModel::StartupTaskState, St
         .and_then(|task| task.State())
         .map_err(|e| e.to_string())
 }
+/// Asks Windows to turn the startup task on or off. Windows (Task Manager, or an
+/// organization's policy) can keep it the other way, so the state it ends in is checked.
 #[cfg(windows)]
 pub fn set_startup(enable: bool) -> Result<(), String> {
     use windows::ApplicationModel::{StartupTask, StartupTaskState};
@@ -53,24 +55,35 @@ pub fn set_startup(enable: bool) -> Result<(), String> {
         task.Disable().and_then(|_| task.State())
     }
     .map_err(|e| e.to_string())?;
-    if enable && state != StartupTaskState::Enabled && state != StartupTaskState::EnabledByPolicy {
-        return Err("Turned off in Task Manager > Startup apps".into());
+    let enabled = state == StartupTaskState::Enabled || state == StartupTaskState::EnabledByPolicy;
+    if enabled == enable {
+        return Ok(());
     }
-    Ok(())
+    Err(startup_message(state)
+        .unwrap_or("Windows did not change the startup setting")
+        .into())
+}
+
+/// Why the startup task is held in a state the app cannot change, if it is
+#[cfg(windows)]
+fn startup_message(state: windows::ApplicationModel::StartupTaskState) -> Option<&'static str> {
+    use windows::ApplicationModel::StartupTaskState;
+    match state {
+        StartupTaskState::DisabledByUser => Some("Turned off in Task Manager > Startup apps"),
+        StartupTaskState::DisabledByPolicy => {
+            Some("Turned off by your organization (Startup apps policy)")
+        }
+        StartupTaskState::EnabledByPolicy => {
+            Some("Turned on by your organization (Startup apps policy)")
+        }
+        _ => None,
+    }
 }
 #[tauri::command]
 pub fn autostart_status() -> Result<String, String> {
     #[cfg(windows)]
     if has_package_identity() {
-        use windows::ApplicationModel::StartupTaskState;
-        return Ok(match startup_state()? {
-            StartupTaskState::DisabledByUser => "Turned off in Task Manager > Startup apps",
-            StartupTaskState::DisabledByPolicy => {
-                "Turned off by your organization (Startup apps policy)"
-            }
-            _ => "",
-        }
-        .into());
+        return Ok(startup_message(startup_state()?).unwrap_or("").into());
     }
     Ok(String::new())
 }

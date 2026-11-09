@@ -15,9 +15,12 @@ bun run package:msix
 The script emits `artifacts/msix/Tuck_0.3.0.0_x64.msix` for version 0.3.0.
 It packages the release executable, not the NSIS installer. No signing key is
 used: the Store signs submissions. The default identity in
-`src-tauri/msix/identity.json` is explicitly a placeholder. Set the three
-repository variables with the same names for CI. Get the exact values from
-Partner Center > Product management > Product identity. Never submit placeholders.
+`src-tauri/msix/identity.json` is explicitly a placeholder. Set the four
+repository variables for CI: `MSIX_IDENTITY_NAME`, `MSIX_PUBLISHER` and
+`MSIX_PUBLISHER_DISPLAY_NAME` from Partner Center > Product management > Product
+identity, and `MSIX_STORE_NAME`, the product name you reserved, typed exactly as
+reserved (the package's `Properties/DisplayName` must match it). Tuck still shows
+as "Tuck" in the Start menu. Never submit placeholders.
 Reserve an **MSIX or PWA app**, then upload the unsigned MSIX through its package
 submission page. This is separate from Tauri's EXE/MSI submission route.
 

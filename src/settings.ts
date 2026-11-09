@@ -246,9 +246,13 @@ function initNativeToggles(): void {
     .catch(() => setStatus('autostartStatus', 'Could not read startup preference.', 'error'));
   startup.addEventListener('change', async () => {
     startup.disabled = true;
-    try { await invokeCommand('set_autostart', { enable: startup.checked }); setStatus('autostartStatus', ''); markSaved(startup); }
-    catch { startup.checked = !startup.checked; setStatus('autostartStatus', 'Could not update startup preference.', 'error'); }
-    finally { startup.disabled = false; void refreshStartupStatus(); }
+    let failed = false;
+    try { await invokeCommand('set_autostart', { enable: startup.checked }); markSaved(startup); }
+    catch (error) { failed = true; setStatus('autostartStatus', typeof error === 'string' && error ? error : 'Could not update startup preference.', 'error'); }
+    // The switch shows what Windows actually did, which policy or Task Manager can override
+    try { startup.checked = await invokeCommand<boolean>('get_autostart'); refreshPrivacy(); } catch { /* keep what was asked */ }
+    startup.disabled = false;
+    if (!failed) void refreshStartupStatus();
   });
 
   void listenToEvent<boolean>('autostart-changed', enabled => {

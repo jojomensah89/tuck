@@ -272,11 +272,11 @@ pub fn run() {
                         let a = app.clone();
                         tauri::async_runtime::spawn(async move {
                             let current = system::get_autostart(a.clone()).await.unwrap_or(false);
-                            if system::set_autostart(a.clone(), !current).await.is_ok() {
-                                let _ = a.emit("autostart-changed", !current);
-                            } else {
-                                system::update_tray_autostart(&a, current);
-                            }
+                            let _ = system::set_autostart(a.clone(), !current).await;
+                            // Windows may keep the old state (Task Manager or policy): show what it did
+                            let actual = system::get_autostart(a.clone()).await.unwrap_or(current);
+                            system::update_tray_autostart(&a, actual);
+                            let _ = a.emit("autostart-changed", actual);
                         });
                     }
                     "check_updates" => {

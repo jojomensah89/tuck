@@ -52,7 +52,8 @@
 
   /* ---------- Sponsors: rails from sponsors.json, open spots counted ---------- */
   // Only http(s) links reach the page; anything else in sponsors.json is skipped, one entry at a time
-  const httpUrl = value => { try { const u = new URL(String(value), location.href); return /^https?:$/.test(u.protocol) ? u : null; } catch { return null; } };
+  // Absolute http(s) addresses only: a missing, blank or relative value is no link at all
+  const httpUrl = value => { if (typeof value !== 'string' || !value.trim()) return null; try { const u = new URL(value.trim()); return /^https?:$/.test(u.protocol) ? u : null; } catch { return null; } };
   const count = (value, fallback, max) => { const n = Number(value); return Number.isInteger(n) && n >= 0 && n <= max ? n : fallback; };
   const el = (tag, props = {}, text) => { const node = Object.assign(document.createElement(tag), props); if (text !== undefined) node.textContent = text; return node; };
   const MEGAPHONE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m3 11 18-5v12L3 14v-3z"/><path d="M11.6 16.8a3 3 0 1 1-5.8-1.6"/></svg>';
@@ -63,13 +64,16 @@
     const today = new Date().toISOString().slice(0, 10);
     const live = [];
     for (const s of Array.isArray(config.sponsors) ? config.sponsors : []) {
-      const url = httpUrl(s?.url);
+      if (live.length >= slots) break;
+      if (!s || typeof s !== 'object') continue;
+      const url = httpUrl(s.url);
       if (!url || typeof s.name !== 'string' || !s.name.trim()) continue;
       if (s.until && !(typeof s.until === 'string' && s.until >= today)) continue;
-      const logo = httpUrl(s.logo) || httpUrl(`https://www.google.com/s2/favicons?domain=${url.hostname}&sz=128`);
+      // A logo can also be an image kept on this site (img/sponsors/...), as site/README.md describes
+      const local = typeof s.logo === 'string' && /^img\/sponsors\/[\w.-]+$/.test(s.logo) ? new URL(s.logo, location.href) : null;
+      const logo = httpUrl(s.logo) || local || httpUrl(`https://www.google.com/s2/favicons?domain=${url.hostname}&sz=128`);
       url.searchParams.set('ref', 'tuck');
       live.push({ name: s.name.trim(), tagline: typeof s.tagline === 'string' ? s.tagline : '', url: url.href, logo: logo?.href });
-      if (live.length === slots) break;
     }
     const open = slots - live.length;
     const taken = s => {

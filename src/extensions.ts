@@ -205,9 +205,12 @@ export function mountExtensionSettings():void{
  const all=()=>Object.fromEntries([...checks].map(([key,input])=>[key,input.checked])) as unknown as ExtensionSettings;
  for(const input of checks.values())input.addEventListener('change',async()=>{
   const row=input.closest('.set-row');checks.forEach(check=>{check.disabled=true;});
-  try{if(!isTauri())throw new Error('Open the desktop app to use Windows integrations.');await invoke('extension_settings',{settings:all()});setMessage('');markSaved(input);
-   // Turning previews on asks Windows for access straight away; the switch stays on whatever Windows answers
-   if(input.id==='ext-notifications'&&input.checked)await requestAccess();}
+  try{if(!isTauri())throw new Error('Open the desktop app to use Windows integrations.');
+   // Turning previews on asks Windows for access first, before the watcher starts reading notifications;
+   // the switch stays on whatever Windows answers
+   const asking=input.id==='ext-notifications'&&input.checked;
+   if(asking)await requestAccess();
+   await invoke('extension_settings',{settings:all()});if(!asking)setMessage('');markSaved(input);}
   catch(error){input.checked=!input.checked;row?.classList.remove('saved');setMessage(typeof error==='string'?error:error instanceof Error?error.message:'Could not save activity settings.',true);}
   finally{checks.forEach(check=>{check.disabled=false;});}
  });

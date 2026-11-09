@@ -182,14 +182,10 @@ p { margin: 0; text-wrap: pretty; }
 .strip { grid-column: 1 / -1; display: block; overflow-x: auto; overscroll-behavior-x: contain; scrollbar-width: none; padding: 14px var(--edge); background: var(--bg); }
 .strip[hidden] { display: none; }
 .strip::-webkit-scrollbar { display: none; }
-.strip__track, .strip__set { display: flex; gap: 12px; width: max-content; }
-.strip__set { padding-right: 12px; }
-.strip .slot { flex: none; width: 236px; min-height: 56px; padding: 8px 14px; display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; justify-items: start; place-content: initial; gap: 0 12px; text-align: left; border-radius: 12px; }
-.strip .slot img { grid-row: span 2; width: 34px; height: 34px; border-radius: 8px; }
-.strip .slot svg { width: 18px; height: 18px; }
-.strip .slot__line { max-width: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; width: 100%; }
-.strip .slot__name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; width: 100%; }
-.strip .slot__price { display: none; }
+.strip__track, .strip__set { display: flex; gap: 14px; width: max-content; }
+.strip__set { padding-right: 14px; }
+/* On desktop the strip's cards are the rail's cards: same design, same 232px width, the rail's 124px minimum height */
+.strip .slot { flex: none; width: 232px; min-height: 124px; }
 
 /* Footer: one quiet line */
 .foot { display: grid; grid-template-columns: 1fr auto 1fr; gap: 16px; align-items: baseline; padding: 0 var(--edge) 30px; font-size: var(--step-small); }
@@ -206,6 +202,15 @@ p { margin: 0; text-wrap: pretty; }
   /* Phones and tablets: the strip is a bar on the bottom edge that steps aside while reading down */
   .strip { position: fixed; inset: auto 0 0 0; z-index: 20; padding: 10px var(--gutter) calc(10px + env(safe-area-inset-bottom)); box-shadow: 0 -10px 30px rgba(38, 37, 30, 0.10); transition: transform 320ms var(--ease-out); } /* taste-skill-ignore: this bar floats over the page */
   .strip--away { transform: translateY(110%); }
+  /* Compact cards in the bar: icon or logo beside one or two lines */
+  .strip__track, .strip__set { gap: 12px; }
+  .strip__set { padding-right: 12px; }
+  .strip .slot { width: 236px; min-height: 56px; padding: 8px 14px; display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; justify-items: start; place-content: initial; gap: 0 12px; text-align: left; border-radius: 12px; }
+  .strip .slot img { grid-row: span 2; width: 34px; height: 34px; border-radius: 8px; }
+  .strip .slot svg { width: 18px; height: 18px; }
+  .strip .slot__line { max-width: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; width: 100%; }
+  .strip .slot__name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; width: 100%; }
+  .strip .slot__price { display: none; }
   .has-strip body { padding-bottom: calc(76px + env(safe-area-inset-bottom)); }
   /* Anything brought into view by the keyboard stops above the bar */
   html.has-strip { scroll-padding-bottom: calc(96px + env(safe-area-inset-bottom)); }

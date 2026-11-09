@@ -205,6 +205,8 @@ p { margin: 0; text-wrap: pretty; }
   .strip { position: fixed; inset: auto 0 0 0; z-index: 20; padding: 10px var(--gutter) calc(10px + env(safe-area-inset-bottom)); box-shadow: 0 -10px 30px rgba(38, 37, 30, 0.10); transition: transform 320ms var(--ease-out); } /* taste-skill-ignore: this bar floats over the page */
   .strip--away { transform: translateY(110%); }
   .has-strip body { padding-bottom: calc(76px + env(safe-area-inset-bottom)); }
+  /* Anything brought into view by the keyboard stops above the bar */
+  html.has-strip { scroll-padding-bottom: calc(96px + env(safe-area-inset-bottom)); }
   .foot { padding-inline: max(var(--gutter), calc((100% - 560px) / 2)); }
 }
 @media (max-width: 900px) {

@@ -8,29 +8,34 @@
   fetch('https://api.github.com/repos/jojomensah89/tuck/releases/latest', { headers: { Accept: 'application/vnd.github+json' } })
     .then(r => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
     .then(release => {
-      const exe = (release.assets || []).find(a => /setup\.exe$/i.test(a.name));
+      const exe = (release.assets || []).find(a => /setup\.exe$/i.test(a.name) && /^https:\/\/github\.com\//.test(a.browser_download_url));
       if (!exe) return;
       const version = String(release.tag_name || '').replace(/^v/, '');
+      // The hash always belongs to the file the button downloads: GitHub's digest of this asset, or nothing
+      const digest = String(exe.digest || '').replace(/^sha256:/, '');
+      const hash = /^[0-9a-f]{64}$/.test(digest) ? digest : 'Checksum unavailable for this release. Compare with SHA256SUMS.txt on the release page.';
       $$('[data-download]').forEach(a => { a.href = exe.browser_download_url; });
       $$('[data-size]').forEach(el => { el.textContent = mb(exe.size); });
       $$('[data-filename]').forEach(el => { el.textContent = exe.name; });
       $$('[data-release-line]').forEach(el => { el.textContent = `Version ${version}, ${mb(exe.size)}, for Windows 10 and 11 on x64.`; });
-      const digest = String(exe.digest || '').replace(/^sha256:/, '');
-      if (/^[0-9a-f]{64}$/.test(digest)) $$('[data-hash]').forEach(el => { el.textContent = digest; });
+      $$('[data-hash]').forEach(el => { el.textContent = hash; });
     })
-    .catch(() => { /* the build-time values stay */ });
+    .catch(() => { /* the build-time values stay, and they describe the same file as the build-time link */ });
 
   /* ---------- The island's artwork colour becomes the page's accent ---------- */
   const lum = c => { c /= 255; return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4; };
   const contrastWithWhite = ({ r, g, b }) => 1.05 / (0.2126 * lum(r) + 0.7152 * lum(g) + 0.0722 * lum(b) + 0.05);
+  const channel = v => typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 255;
   const readout = document.querySelector('[data-readout]');
   const frame = document.querySelector('.island-frame');
   window.addEventListener('message', event => {
-    if (!frame || event.source !== frame.contentWindow || event.data?.type !== 'tuck:accent') return;
-    let rgb = event.data.rgb;
-    if (!rgb) return;
+    // Only the island this page framed, from this site
+    if (!frame || event.source !== frame.contentWindow || event.origin !== location.origin) return;
+    if (event.data?.type !== 'tuck:accent') return;
+    const raw = event.data.rgb;
+    if (!raw || !channel(raw.r) || !channel(raw.g) || !channel(raw.b)) return;
     // Darken until white text on it passes AA, so the button stays readable whatever is playing
-    rgb = { r: rgb.r, g: rgb.g, b: rgb.b };
+    let rgb = { r: raw.r, g: raw.g, b: raw.b };
     for (let i = 0; i < 20 && contrastWithWhite(rgb) < 4.6; i++) rgb = { r: rgb.r * 0.88, g: rgb.g * 0.88, b: rgb.b * 0.88 };
     document.documentElement.style.setProperty('--accent', `rgb(${Math.round(rgb.r)} ${Math.round(rgb.g)} ${Math.round(rgb.b)})`);
     if (readout) readout.textContent = 'This colour is the artwork playing in Tuck. Skip a track to change it.';
@@ -46,35 +51,54 @@
   fit(); addEventListener('resize', fit);
 
   /* ---------- Sponsors: rails from sponsors.json, open spots counted ---------- */
-  const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-  const withRef = url => { try { const u = new URL(url); u.searchParams.set('ref', 'tuck'); return u.href; } catch { return url; } };
+  // Only http(s) links reach the page; anything else in sponsors.json is skipped, one entry at a time
+  const httpUrl = value => { try { const u = new URL(String(value), location.href); return /^https?:$/.test(u.protocol) ? u : null; } catch { return null; } };
+  const count = (value, fallback, max) => { const n = Number(value); return Number.isInteger(n) && n >= 0 && n <= max ? n : fallback; };
+  const el = (tag, props = {}, text) => { const node = Object.assign(document.createElement(tag), props); if (text !== undefined) node.textContent = text; return node; };
+  const linkCard = (href, className, title, line, rel) => {
+    const a = el('a', { className, href, target: '_blank', rel });
+    a.append(el('strong', {}, title), el('span', {}, line));
+    return a;
+  };
   fetch('sponsors.json', { cache: 'no-cache' }).then(r => r.json()).then(config => {
+    const slots = count(config.slots, 8, 50);
+    const price = count(config.priceUsd, 25, 100000);
+    const buy = httpUrl(config.checkoutUrl) || httpUrl(config.contactUrl);
     const today = new Date().toISOString().slice(0, 10);
-    const live = (config.sponsors || []).filter(s => s.name && s.url && (!s.until || s.until >= today)).slice(0, config.slots);
-    const open = Math.max(0, config.slots - live.length);
-    const buy = config.checkoutUrl || config.contactUrl;
-    const card = s => `<a class="sponsor" href="${esc(withRef(s.url))}" rel="sponsored noopener" target="_blank">
-      <img src="${esc(s.logo || `https://www.google.com/s2/favicons?domain=${new URL(s.url).hostname}&sz=64`)}" alt="" width="32" height="32" loading="lazy">
-      <strong>${esc(s.name)}</strong><span>${esc(s.tagline || '')}</span></a>`;
-    const openCard = `<a class="sponsor open" href="${esc(buy)}" target="_blank" rel="noopener">
-      <strong>Your product here</strong><span>$${config.priceUsd} a month beside every Tuck download. ${open} of ${config.slots} spots open.</span></a>`;
-    // Sponsors alternate left and right; the open spot goes on the shorter rail
+    const live = [];
+    for (const s of Array.isArray(config.sponsors) ? config.sponsors : []) {
+      const url = httpUrl(s?.url);
+      if (!url || typeof s.name !== 'string' || !s.name.trim()) continue;
+      if (s.until && !(typeof s.until === 'string' && s.until >= today)) continue;
+      const logo = httpUrl(s.logo) || httpUrl(`https://www.google.com/s2/favicons?domain=${url.hostname}&sz=64`);
+      url.searchParams.set('ref', 'tuck');
+      live.push({ name: s.name.trim(), tagline: typeof s.tagline === 'string' ? s.tagline : '', url: url.href, logo: logo?.href });
+      if (live.length === slots) break;
+    }
+    const open = Math.max(0, slots - live.length);
+    const card = s => {
+      const a = el('a', { className: 'sponsor', href: s.url, target: '_blank', rel: 'sponsored noopener' });
+      if (s.logo) a.append(el('img', { src: s.logo, alt: '', width: 32, height: 32, loading: 'lazy' }));
+      a.append(el('strong', {}, s.name), el('span', {}, s.tagline));
+      return a;
+    };
+    const openCard = () => buy && linkCard(buy.href, 'sponsor open', 'Your product here', `$${price} a month beside every Tuck download. ${open} of ${slots} spots open.`, 'noopener');
+    const aboutCard = () => buy && linkCard(buy.href, 'sponsor open', 'Sponsor Tuck', 'Your logo, name and one line, linked, on every screen of this page. Monthly, cancel any time.', 'noopener');
+    // Sponsors alternate left and right; the open spot goes on the shorter rail, and the other rail explains what a sponsor gets
     const left = live.filter((_, i) => i % 2 === 0), right = live.filter((_, i) => i % 2 === 1);
     const openOn = left.length <= right.length ? '0' : '1';
-    // The other rail explains what a sponsor gets, so neither side of the column stands empty
-    const aboutCard = `<a class="sponsor open" href="${esc(buy)}" target="_blank" rel="noopener">
-      <strong>Sponsor Tuck</strong><span>Your logo, name and one line, linked, on every screen of this page. Monthly, cancel any time.</span></a>`;
     const rails = {
-      0: left.map(card).join('') + (open && openOn === '0' ? openCard : '') + (open && openOn === '1' ? aboutCard : ''),
-      1: right.map(card).join('') + (open && openOn === '1' ? openCard : '') + (open && openOn === '0' ? aboutCard : ''),
-      inline: live.map(card).join('') + (open ? openCard + aboutCard : ''),
+      0: () => [...left.map(card), open && (openOn === '0' ? openCard() : aboutCard())],
+      1: () => [...right.map(card), open && (openOn === '1' ? openCard() : aboutCard())],
+      inline: () => [...live.map(card), open && openCard(), open && aboutCard()],
     };
     $$('[data-rail]').forEach(rail => {
-      const id = rail.dataset.rail;
-      if (!rails[id]) { rail.innerHTML = ''; return; }
-      rail.innerHTML = `<div class="rail-stack">${rails[id]}</div>`;
+      const cards = (rails[rail.dataset.rail]?.() || []).filter(Boolean);
+      const stack = el('div', { className: 'rail-stack' });
+      stack.append(...cards);
+      rail.replaceChildren(...(cards.length ? [stack] : []));
     });
-    $$('[data-sponsor-link]').forEach(a => { a.href = buy; a.target = '_blank'; a.rel = 'noopener'; });
+    if (buy) $$('[data-sponsor-link]').forEach(a => { a.href = buy.href; a.target = '_blank'; a.rel = 'noopener'; });
   }).catch(() => {});
 
   /* ---------- Install: the fragment walks through its three states; pointing at a statement holds it there ---------- */

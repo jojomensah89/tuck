@@ -1,0 +1,244 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Tuck, an island for the top of Windows</title>
+  <meta name="description" content="Tuck hangs from the top edge of your Windows screen with music and lyrics, offline dictation, clipboard history, a file shelf, timers and AI usage. Free and open source.">
+  <meta property="og:title" content="Tuck, an island for the top of Windows">
+  <meta property="og:description" content="Music and lyrics, offline dictation, clipboard, file shelf, timers and AI usage, tucked into the top edge of Windows. Free and open source.">
+  <meta property="og:image" content="https://tuck.jojomensah.com/img/media.png">
+  <meta property="og:url" content="https://tuck.jojomensah.com/">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="theme-color" content="#dfdedb">
+  <link rel="icon" type="image/svg+xml" href="island/tuck.svg">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="walkthroughs/walkthroughs.css">
+  <link rel="stylesheet" href="styles.css">
+  <script>document.documentElement.classList.add('js')</script>
+  <script src="main.js" defer></script>
+  <script type="module" src="walkthroughs/walkthroughs.js"></script>
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+
+  <header class="hero" aria-labelledby="title">
+    <div class="hero-copy">
+      <a class="mark" href="./" aria-label="Tuck, home"><img src="island/tuck.svg" alt="" width="32" height="32"><span>Tuck</span></a>
+      <div class="hero-text">
+        <h1 id="title" class="lines">
+          <span class="line"><span data-line style="--i:0">An island for the</span></span>
+          <span class="line"><span data-line style="--i:1">top of Windows</span></span>
+        </h1>
+        <p class="lead rise-late">Tuck hangs from the top edge of your screen with music and lyrics, offline dictation, clipboard history, timers and AI usage. Free and open source.</p>
+        <div class="actions rise-late">
+          <a class="button" data-download href="https://github.com/jojomensah89/tuck/releases/latest">Download for Windows</a>
+          <a class="text-link" href="https://github.com/jojomensah89/tuck">Source on GitHub</a>
+        </div>
+        <p class="small rise-late" data-release-line>Version 0.3.0, 4.1&nbsp;MB, for Windows 10 and 11 on x64.</p>
+      </div>
+    </div>
+    <div class="hero-screen">
+      <img class="wallpaper" src="img/wallpaper.jpg" alt="" width="1200" height="1500" fetchpriority="high">
+      <iframe class="island-frame" src="island/index.html?embed" title="Tuck, running with sample music, clipboard and usage. Use the icons on its left to switch pages." width="540" height="280"></iframe>
+      <noscript><img class="island-still" src="img/media.png" alt="Tuck open on Media: artwork, track, progress and synced lyrics" width="500" height="264"></noscript>
+      <div class="taskbar">
+        <a class="taskbar-mark" href="./" aria-label="Tuck, home"><img src="island/tuck.svg" alt="" width="28" height="28"></a>
+        <span class="swatch" aria-hidden="true"></span>
+        <p class="readout" aria-live="polite" data-readout>The page takes its colour from the artwork playing in Tuck. Skip a track to change it.</p>
+      </div>
+    </div>
+  </header>
+
+  <div class="frame">
+    <aside class="rail rail-left" aria-label="Sponsors" data-rail="0"></aside>
+
+    <main id="main" class="column">
+
+      <section class="states" aria-labelledby="states-title">
+        <h2 id="states-title">Out of the way until you need it</h2>
+        <p>Tuck rests as a small black shape at the top of the screen and draws nothing while nothing changes. Point at it and it opens.</p>
+        <figure class="state reveal">
+          <div class="desk"><img src="img/state-quiet.png" alt="Tuck resting with nothing playing: the time and a charging battery" width="212" height="32" class="shot shot-idle"></div>
+          <figcaption>Nothing playing: the time and your battery</figcaption>
+        </figure>
+        <figure class="state reveal">
+          <div class="desk"><img src="img/state-idle.png" alt="Tuck resting while music plays: album artwork and the line being sung" width="300" height="32" class="shot shot-idle"></div>
+          <figcaption>Music playing: the line being sung</figcaption>
+        </figure>
+        <figure class="state reveal">
+          <div class="desk"><img src="img/media.png" alt="Tuck open on the music page: artwork, progress and synced lyrics" width="500" height="264" class="shot" loading="lazy"></div>
+          <figcaption>Open: everything, one click from each page</figcaption>
+        </figure>
+      </section>
+
+      <section class="features" id="features" aria-labelledby="features-title">
+        <h2 id="features-title">What it holds</h2>
+
+        <article class="module reveal">
+          <div class="panel"><img src="img/media.png" alt="Media page: artwork, title, progress bar and synced lyrics beside it" width="500" height="264" loading="lazy"></div>
+          <div class="module-text">
+            <h3>Music and its lyrics</h3>
+            <p>Anything that shows in the Windows media overlay: Spotify, Apple Music, YouTube in a browser. Skip, pause and seek without finding the window.</p>
+            <p>Synced lyrics come from LRCLIB. Click a line to jump to it.</p>
+          </div>
+        </article>
+
+        <article class="module reveal" id="dictation">
+          <div class="panel" data-stage="dictation"><img src="img/dictation-review.png" alt="Dictation page showing a finished transcript ready to insert" width="500" height="264" loading="lazy"></div>
+          <div class="module-text">
+            <h3>Dictation that stays on your PC</h3>
+            <p>Hold a shortcut, speak, let go. Whisper or Parakeet turns it into text on your own processor, and Tuck types it where your cursor is.</p>
+            <p>With no text box focused it copies the text and says so. Nothing is sent anywhere.</p>
+          </div>
+        </article>
+
+        <article class="module reveal">
+          <div class="panel" data-stage="shelf"><img src="img/tools-files.png" alt="File shelf with four files shown as thumbnails" width="500" height="264" loading="lazy"></div>
+          <div class="module-text">
+            <h3>A shelf for files</h3>
+            <p>Drop files on the island to keep them close while you work, then drag them out into a chat, an email or a folder.</p>
+            <p>The shelf remembers where files live. It never moves or copies them.</p>
+          </div>
+        </article>
+
+        <article class="module reveal">
+          <div class="panel"><img src="img/tools-clipboard.png" alt="Clipboard history as cards: a link, a sentence and an image" width="500" height="264" loading="lazy"></div>
+          <div class="module-text">
+            <h3>Clipboard history</h3>
+            <p>Text, links, images and file paths you copied, as cards you can click to copy again or pin.</p>
+            <p>It is off until you turn it on, and forgotten when Tuck closes unless you choose to keep it.</p>
+          </div>
+        </article>
+
+        <article class="module reveal">
+          <div class="panel"><img src="img/today-timer.png" alt="Timer page with a 25 minute focus session running" width="500" height="264" loading="lazy"></div>
+          <div class="module-text">
+            <h3>Clock, timers and focus</h3>
+            <p>A 5, 15 or 25 minute timer in one click, a stopwatch, and Pomodoro rounds that keep counting in the resting island.</p>
+            <p>The clock page shows the date and your battery.</p>
+          </div>
+        </article>
+
+        <article class="module reveal">
+          <div class="panel"><img src="img/usage-ai.png" alt="AI usage rings for Claude and OpenAI, each with a five-hour and a weekly ring" width="500" height="264" loading="lazy"></div>
+          <div class="module-text">
+            <h3>What is left of your AI quota</h3>
+            <p>Claude, Codex and Antigravity limits as rings: the five-hour window outside, the week inside. They drain as you use them.</p>
+            <p>Each provider is off until you switch it on, and only offered when its app is installed.</p>
+          </div>
+        </article>
+
+        <article class="module reveal">
+          <div class="panel"><img src="img/usage-system.png" alt="System page with CPU, memory and GPU rings and network speeds" width="500" height="264" loading="lazy"></div>
+          <div class="module-text">
+            <h3>Your PC at a glance</h3>
+            <p>CPU, memory and graphics as rings, with download and upload speed read from Windows’ own counters.</p>
+            <p>Measured only while you are looking at it.</p>
+          </div>
+        </article>
+      </section>
+
+      <section class="figures" aria-labelledby="figures-title">
+        <h2 id="figures-title">Light on your PC</h2>
+        <dl class="figure-list reveal">
+          <div><dt>0%</dt><dd>CPU while Tuck rests, measured over 30 seconds on a 16-thread PC.</dd></div>
+          <div><dt>46&nbsp;MB</dt><dd>Memory in use at rest, counting the WebView2 processes that draw it. Task Manager shows about 15&nbsp;MB for Tuck itself.</dd></div>
+          <div><dt><span data-size>4.1&nbsp;MB</span></dt><dd>The installer. Speech models download separately, only when you pick one.</dd></div>
+          <div><dt>6&nbsp;h</dt><dd>How often Tuck asks GitHub for an update. It downloads one only when you click.</dd></div>
+          <div><dt>Off</dt><dd>Clipboard history and every AI provider until you turn them on.</dd></div>
+          <div><dt>256&nbsp;MB</dt><dd>The most clipboard history it will ever keep on disk, and only with Keep after restart.</dd></div>
+        </dl>
+      </section>
+
+      <section class="install" id="install" aria-labelledby="install-title">
+        <h2 id="install-title">Installing it</h2>
+        <div class="install-grid">
+          <div class="stage-col">
+            <div class="smartscreen" data-ui data-state="0" aria-hidden="true">
+              <div class="ss-download">
+                <div class="ss-file"><span class="ss-icon"></span><span><strong data-filename>Tuck_0.3.0_Setup.exe</strong><br><span data-size>4.1&nbsp;MB</span> · Done</span></div>
+                <div class="ss-open">Open file</div>
+              </div>
+              <div class="ss-dialog">
+                <p class="ss-title">Windows protected your PC</p>
+                <p>Microsoft Defender SmartScreen prevented an unrecognised app from starting.</p>
+                <p class="ss-more">More info</p>
+                <p class="ss-detail">App: <span data-filename>Tuck_0.3.0_Setup.exe</span><br>Publisher: Unknown publisher</p>
+                <div class="ss-buttons"><span class="ss-run">Run anyway</span><span>Don’t run</span></div>
+              </div>
+              <div class="ss-desk">
+                <img src="img/state-idle.png" alt="" width="300" height="32">
+              </div>
+            </div>
+          </div>
+          <div class="steps">
+            <div class="step" data-step="0">
+              <p class="statement">Download the installer from GitHub.</p>
+              <p>One file, <span data-filename>Tuck_0.3.0_Setup.exe</span>, about <span data-size>4.1&nbsp;MB</span>. Tuck installs for your user only.</p>
+            </div>
+            <div class="step" data-step="1">
+              <p class="statement">Windows will warn you about it.</p>
+              <p>Tuck is new and not yet signed with a paid certificate, so SmartScreen does not know it. Choose More info, then Run anyway.</p>
+            </div>
+            <div class="step" data-step="2">
+              <p class="statement">It appears at the top of your screen.</p>
+              <p>A short welcome asks whether to start with Windows, track AI usage and pick a dictation model. Every answer can change later.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="verify reveal">
+          <h3>Check the file you downloaded</h3>
+          <p>GitHub computes this fingerprint of the installer itself. In PowerShell, <code>Get-FileHash .\<span data-filename>Tuck_0.3.0_Setup.exe</span></code> should print the same.</p>
+          <pre><code data-hash>a5dad97d66cfde0ca89384d9006b3a9877026a863fbe56edfb0d46a5de44bf15</code></pre>
+          <p>Updates are signed, and Tuck checks the signature before it installs one. That signature does not remove the SmartScreen warning; only a code-signing certificate will.</p>
+        </div>
+      </section>
+
+      <section class="faq" id="faq" aria-labelledby="faq-title">
+        <h2 id="faq-title">Questions</h2>
+        <div class="answers">
+          <p><strong>Is it free?</strong> Yes. Tuck is MIT licensed and the whole source is on GitHub. The speech models keep their own licences.</p>
+          <p><strong>Which music players work?</strong> Any that appears in the Windows media overlay, including Spotify, Apple Music, Windows Media Player and most players in Chrome, Edge and Firefox.</p>
+          <p><strong>Why does a song have no lyrics?</strong> Lyrics come from LRCLIB, a free community library. Most popular songs have synced lyrics; some newer or local ones do not yet.</p>
+          <p><strong>Does dictation need the internet?</strong> Only once, to download the model you choose from Hugging Face. After that it runs on your processor. It needs a CPU with AVX2, which most PCs from the last ten years have.</p>
+          <p id="privacy"><strong>What leaves my PC?</strong> Update checks go to GitHub, model downloads to Hugging Face, and track details to LRCLIB when lyrics are on. With Claude or Codex switched on, their own apps report your limits and may contact Anthropic or OpenAI. Antigravity, if you confirm it, contacts Google for your quota. Nothing else, and no analytics.</p>
+          <p><strong>Where is my clipboard kept?</strong> In memory, gone when Tuck closes. With Keep after restart on, in Tuck’s own app data, capped at 256&nbsp;MB. Clear all keeps pins; turning history off deletes everything.</p>
+          <p><strong>Does it get in the way of games or films?</strong> It hides when an app goes full screen on its monitor, and clicks pass through everywhere outside the island.</p>
+          <p><strong>Notch or floating?</strong> Either. It can hang from the screen edge like a notch or float a little below it as a pill.</p>
+          <p><strong>How do I update?</strong> Tuck checks about 20 seconds after it starts and every six hours, then shows one alert. Download and restart are separate clicks.</p>
+          <p><strong>How do I quit it?</strong> Right-click the Tuck icon in the system tray and choose Quit. The same menu opens Settings, where Start with Windows can be turned off.</p>
+          <p><strong>Does it run on a Mac?</strong> No. It is built for Windows 10 and 11 on x64 and needs the WebView2 runtime, which Windows already includes.</p>
+        </div>
+      </section>
+
+      <aside class="rail rail-inline" aria-label="Sponsors" data-rail="inline"></aside>
+
+      <section class="close" aria-labelledby="close-title">
+        <h2 id="close-title" class="sr-only">Get Tuck</h2>
+        <p class="close-line">Put it at the top of your screen and forget about it until you need it.</p>
+        <div class="actions">
+          <a class="button" data-download href="https://github.com/jojomensah89/tuck/releases/latest">Download for Windows</a>
+          <a class="text-link" href="https://buymeacoffee.com/jojomensahh">Buy me a coffee</a>
+        </div>
+      </section>
+    </main>
+
+    <aside class="rail rail-right" aria-label="Sponsors" data-rail="1"></aside>
+  </div>
+
+  <footer class="foot">
+    <span class="muted">Tuck, a desktop island for Windows</span>
+    <nav aria-label="Footer">
+      <a href="https://github.com/jojomensah89/tuck">GitHub</a>
+      <a href="https://github.com/jojomensah89/tuck/releases">Releases</a>
+      <a href="https://github.com/jojomensah89/tuck/blob/main/CHANGELOG.md">Changelog</a>
+      <a href="#sponsor" data-sponsor-link>Sponsor</a>
+    </nav>
+    <span class="muted">© 2026 Tuck contributors · Photo by Billy Lam · Songs: public-domain recordings, <a href="https://www.loc.gov/collections/national-jukebox/">National Jukebox</a> · <a href="#privacy">Privacy</a></span>
+  </footer>
+</body>
+</html>

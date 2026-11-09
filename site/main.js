@@ -1,0 +1,131 @@
+// Tuck website: live release facts, the island's accent, sponsor rails, the install stage and entrances.
+(() => {
+  const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
+  const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  /* ---------- Latest release: version, size, file name and GitHub's own SHA-256 ---------- */
+  const mb = bytes => `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  fetch('https://api.github.com/repos/jojomensah89/tuck/releases/latest', { headers: { Accept: 'application/vnd.github+json' } })
+    .then(r => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
+    .then(release => {
+      const exe = (release.assets || []).find(a => /setup\.exe$/i.test(a.name) && /^https:\/\/github\.com\//.test(a.browser_download_url));
+      if (!exe) return;
+      const version = String(release.tag_name || '').replace(/^v/, '');
+      // The hash always belongs to the file the button downloads: GitHub's digest of this asset, or nothing
+      const digest = String(exe.digest || '').replace(/^sha256:/, '');
+      const hash = /^[0-9a-f]{64}$/.test(digest) ? digest : 'Checksum unavailable for this release. Compare with SHA256SUMS.txt on the release page.';
+      $$('[data-download]').forEach(a => { a.href = exe.browser_download_url; });
+      $$('[data-size]').forEach(el => { el.textContent = mb(exe.size); });
+      $$('[data-filename]').forEach(el => { el.textContent = exe.name; });
+      $$('[data-release-line]').forEach(el => { el.textContent = `Version ${version}, ${mb(exe.size)}, for Windows 10 and 11 on x64.`; });
+      $$('[data-hash]').forEach(el => { el.textContent = hash; });
+    })
+    .catch(() => { /* the build-time values stay, and they describe the same file as the build-time link */ });
+
+  /* ---------- The island's artwork colour becomes the page's accent ---------- */
+  const lum = c => { c /= 255; return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4; };
+  const contrastWithWhite = ({ r, g, b }) => 1.05 / (0.2126 * lum(r) + 0.7152 * lum(g) + 0.0722 * lum(b) + 0.05);
+  const channel = v => typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 255;
+  const readout = document.querySelector('[data-readout]');
+  const frame = document.querySelector('.island-frame');
+  window.addEventListener('message', event => {
+    // Only the island this page framed, from this site
+    if (!frame || event.source !== frame.contentWindow || event.origin !== location.origin) return;
+    if (event.data?.type !== 'tuck:accent') return;
+    const raw = event.data.rgb;
+    if (!raw || !channel(raw.r) || !channel(raw.g) || !channel(raw.b)) return;
+    // Darken until white text on it passes AA, so the button stays readable whatever is playing
+    let rgb = { r: raw.r, g: raw.g, b: raw.b };
+    for (let i = 0; i < 20 && contrastWithWhite(rgb) < 4.6; i++) rgb = { r: rgb.r * 0.88, g: rgb.g * 0.88, b: rgb.b * 0.88 };
+    document.documentElement.style.setProperty('--accent', `rgb(${Math.round(rgb.r)} ${Math.round(rgb.g)} ${Math.round(rgb.b)})`);
+    if (readout) readout.textContent = 'This colour is the artwork playing in Tuck. Skip a track to change it.';
+  });
+
+  /* ---------- Fit the island on narrow screens without changing its insides ---------- */
+  const fit = () => {
+    if (!frame) return;
+    const room = frame.parentElement.clientWidth;
+    const scale = window.innerWidth <= 900 ? Math.min(1, room / 540) : 1;
+    document.documentElement.style.setProperty('--island-scale', String(scale));
+  };
+  fit(); addEventListener('resize', fit);
+
+  /* ---------- Sponsors: rails from sponsors.json, open spots counted ---------- */
+  // Only http(s) links reach the page; anything else in sponsors.json is skipped, one entry at a time
+  const httpUrl = value => { try { const u = new URL(String(value), location.href); return /^https?:$/.test(u.protocol) ? u : null; } catch { return null; } };
+  const count = (value, fallback, max) => { const n = Number(value); return Number.isInteger(n) && n >= 0 && n <= max ? n : fallback; };
+  const el = (tag, props = {}, text) => { const node = Object.assign(document.createElement(tag), props); if (text !== undefined) node.textContent = text; return node; };
+  const linkCard = (href, className, title, line, rel) => {
+    const a = el('a', { className, href, target: '_blank', rel });
+    a.append(el('strong', {}, title), el('span', {}, line));
+    return a;
+  };
+  fetch('sponsors.json', { cache: 'no-cache' }).then(r => r.json()).then(config => {
+    const slots = count(config.slots, 8, 50);
+    const price = count(config.priceUsd, 25, 100000);
+    const buy = httpUrl(config.checkoutUrl) || httpUrl(config.contactUrl);
+    const today = new Date().toISOString().slice(0, 10);
+    const live = [];
+    for (const s of Array.isArray(config.sponsors) ? config.sponsors : []) {
+      const url = httpUrl(s?.url);
+      if (!url || typeof s.name !== 'string' || !s.name.trim()) continue;
+      if (s.until && !(typeof s.until === 'string' && s.until >= today)) continue;
+      const logo = httpUrl(s.logo) || httpUrl(`https://www.google.com/s2/favicons?domain=${url.hostname}&sz=64`);
+      url.searchParams.set('ref', 'tuck');
+      live.push({ name: s.name.trim(), tagline: typeof s.tagline === 'string' ? s.tagline : '', url: url.href, logo: logo?.href });
+      if (live.length === slots) break;
+    }
+    const open = Math.max(0, slots - live.length);
+    const card = s => {
+      const a = el('a', { className: 'sponsor', href: s.url, target: '_blank', rel: 'sponsored noopener' });
+      if (s.logo) a.append(el('img', { src: s.logo, alt: '', width: 32, height: 32, loading: 'lazy' }));
+      a.append(el('strong', {}, s.name), el('span', {}, s.tagline));
+      return a;
+    };
+    const openCard = () => buy && linkCard(buy.href, 'sponsor open', 'Your product here', `$${price} a month beside every Tuck download. ${open} of ${slots} spots open.`, 'noopener');
+    const aboutCard = () => buy && linkCard(buy.href, 'sponsor open', 'Sponsor Tuck', 'Your logo, name and one line, linked, on every screen of this page. Monthly, cancel any time.', 'noopener');
+    // Sponsors alternate left and right; the open spot goes on the shorter rail, and the other rail explains what a sponsor gets
+    const left = live.filter((_, i) => i % 2 === 0), right = live.filter((_, i) => i % 2 === 1);
+    const openOn = left.length <= right.length ? '0' : '1';
+    const rails = {
+      0: () => [...left.map(card), open && (openOn === '0' ? openCard() : aboutCard())],
+      1: () => [...right.map(card), open && (openOn === '1' ? openCard() : aboutCard())],
+      inline: () => [...live.map(card), open && openCard(), open && aboutCard()],
+    };
+    $$('[data-rail]').forEach(rail => {
+      const cards = (rails[rail.dataset.rail]?.() || []).filter(Boolean);
+      const stack = el('div', { className: 'rail-stack' });
+      stack.append(...cards);
+      rail.replaceChildren(...(cards.length ? [stack] : []));
+    });
+    if (buy) $$('[data-sponsor-link]').forEach(a => { a.href = buy.href; a.target = '_blank'; a.rel = 'noopener'; });
+  }).catch(() => {});
+
+  /* ---------- Install: the fragment walks through its three states; pointing at a statement holds it there ---------- */
+  const stage = document.querySelector('.smartscreen');
+  const steps = $$('.step');
+  if (stage && steps.length) {
+    let at = 0, held = false, timer = 0;
+    const show = i => { at = i; stage.dataset.state = String(i); steps.forEach((s, n) => s.classList.toggle('on', n === i)); };
+    const run = () => { clearInterval(timer); if (!reduced) timer = setInterval(() => { if (!held) show((at + 1) % steps.length); }, 3200); };
+    steps.forEach((step, i) => {
+      step.tabIndex = 0;
+      const hold = () => { held = true; show(i); };
+      const release = () => { held = false; };
+      step.addEventListener('pointerenter', hold); step.addEventListener('focus', hold);
+      step.addEventListener('pointerleave', release); step.addEventListener('blur', release);
+    });
+    show(0);
+    // Only cycle while the section is on screen
+    if ('IntersectionObserver' in window) new IntersectionObserver(([e]) => { if (e.isIntersecting) run(); else clearInterval(timer); }).observe(stage);
+  }
+
+  /* ---------- Entrances: each part of a section rises once, staggered ---------- */
+  const reveals = $$('.reveal, .figures, .faq');
+  reveals.forEach(el => [...(el.matches('.faq') ? el.querySelectorAll('.answers > p') : el.children)].forEach((child, i) => child.style.setProperty('--n', String(Math.min(i, 6)))));
+  if (reduced || !('IntersectionObserver' in window)) reveals.forEach(el => el.classList.add('in'));
+  else {
+    const io = new IntersectionObserver(entries => entries.forEach(e => { if (e.isIntersecting) { e.target.classList.add('in'); io.unobserve(e.target); } }), { rootMargin: '0px 0px -12% 0px' });
+    reveals.forEach(el => io.observe(el));
+  }
+})();

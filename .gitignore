@@ -28,3 +28,8 @@ artifacts/
 
 # Design inspection output
 .taste-skill/
+
+# Website build output (Cloudflare Pages builds it)
+site/island/
+.playwright-mcp/
+site/walkthroughs/

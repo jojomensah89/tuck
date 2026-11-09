@@ -67,6 +67,8 @@ export function readPreferences(): LivePreferences {
 /** Merge a partial update into the stored preferences; storage failures are ignored */
 export function writePreferences(update: Partial<LivePreferences>): LivePreferences {
   const next = normalizePreferences({ ...readPreferences(), ...update });
+  // The website demo (?embed, src/demo.ts) changes nothing it would keep
+  if (typeof document !== 'undefined' && document.documentElement.classList.contains('embed')) return next;
   try { localStorage.setItem(LIVE_SETTINGS_KEY, JSON.stringify(next)); } catch { /* storage disabled */ }
   return next;
 }

@@ -5,6 +5,7 @@ import {mountExtensions} from './extensions.js';
 import { mountLivePages } from './live-ui.js';
 import { LIVE_SETTINGS_KEY, readPreferences, writePreferences } from './live-state.js';
 import { mountTabRail } from './tab-rail.js';
+import { embedRequested, startEmbedDemo } from './demo.js';
 import { claimUpdateVersion } from './update-alert.js';
 import { subscribeUpdate, startBackgroundUpdateScheduler } from './updater.js';
 import './live.css';
@@ -73,6 +74,15 @@ let idleWidth = SIZES.idle[0];
 let pillStrip = { width: SIZES.idle[0], height: SIZES.idle[1] };
 
 let livePreferences = readPreferences();
+// The website frames the island with ?embed: sample data, open on Media with lyrics, nothing saved over the visitor's own settings
+const embed = embedRequested();
+const embedParams = new URLSearchParams(embed ? location.search : '');
+if (embed) {
+  const tab = embedParams.get('tab');
+  livePreferences = { ...livePreferences, pinned: embedParams.get('state') !== 'idle', lyricsOpen: true, compactContent: 'lyrics', closeDelayMs: 0,
+    lastTab: tab === 'today' || tab === 'dictation' || tab === 'tools' || tab === 'usage' ? tab : 'media' };
+  startEmbedDemo();
+}
 
 function $(id: string): HTMLElement {
   const el = document.getElementById(id);
@@ -389,7 +399,7 @@ const rail = mountTabRail({
     fitTitle();
     renderMediaHeader();
   },
-  onUserChange: id => { livePreferences = writePreferences({ lastTab: id }); },
+  onUserChange: id => { livePreferences = embed ? { ...livePreferences, lastTab: id } : writePreferences({ lastTab: id }); },
   openSettings: () => runAction(openSettingsCmd(), 'Open settings'),
 });
 
@@ -482,6 +492,8 @@ function renderMediaHeader(): void {
 }
 
 function setAccentColor(rgb: { r: number; g: number; b: number } | null): void {
+  // The website around the embedded island takes the artwork colour too
+  if (embed && window.parent !== window) window.parent.postMessage({ type: 'tuck:accent', rgb }, '*');
   if (rgb) {
     isl.style.setProperty('--accent', `rgb(${rgb.r}, ${rgb.g}, ${rgb.b})`);
     isl.style.setProperty('--art-wash', `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, 0.65)`);
@@ -1425,7 +1437,7 @@ if (!storedShape && isTauri()) {
   runAction(openSettingsCmd(), 'Open settings');
 }
 
-if (!isTauri()) {
+if (!isTauri() && !embed) {
   document.body.classList.add('dev-mode');
 
   // Add demo badge
@@ -1510,7 +1522,7 @@ renderPower();
 renderUsage();
 renderMedia();
 renderCompact();
-setState('idle');
+setState(embed && embedParams.get('state') !== 'idle' ? 'open' : 'idle');
 
 const usageRefresh = $('usageRefresh') as HTMLButtonElement;
 usageRefresh.innerHTML = SVG_ICONS.refresh;

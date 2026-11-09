@@ -1,0 +1,44 @@
+/* The walkthroughs take the page's face and the island's own black */
+.tk {
+  --ss-font: Archivo, "Segoe UI", system-ui, sans-serif;
+  font-family: var(--ss-font);
+}
+.tk-desk { position: absolute; inset: 0; background: #c9ccce url(../img/wallpaper.jpg) 50% 46% / cover; overflow: clip; }
+
+.tk-island {
+  position: absolute; top: 0; background: #000; color: #fff; z-index: 2;
+  transition: width 460ms cubic-bezier(0.34, 1.32, 0.64, 1), height 460ms cubic-bezier(0.34, 1.32, 0.64, 1), left 460ms cubic-bezier(0.34, 1.32, 0.64, 1), border-radius 460ms;
+}
+.tk-island.is-rest { transition-timing-function: cubic-bezier(0.23, 1, 0.32, 1); transition-duration: 320ms; }
+/* The notch's concave ears, so it reads as part of the screen edge */
+.tk-ear { position: absolute; top: 0; width: 14px; height: 14px; }
+.tk-ear--l { left: -14px; transform: scaleX(-1); }
+.tk-ear--r { right: -14px; }
+.tk-island__body { position: absolute; inset: 0; }
+.tk-island__body > div { position: absolute; inset: 0; opacity: 0; transform: scale(0.96); filter: blur(4px); transition: opacity 220ms, transform 220ms, filter 220ms; pointer-events: none; }
+.tk-island__body > div[data-on] { opacity: 1; transform: none; filter: none; transition-delay: 160ms; }
+
+.tk-rest { display: flex; align-items: center; justify-content: space-between; padding: 0 16px; font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.tk-drop { display: grid; place-content: center; justify-items: center; gap: 8px; font-size: 15px; font-weight: 600; background: #1c1c1e; margin: 14px; border-radius: 18px; inset: 0 !important; }
+.tk-tiles { display: flex; gap: 12px; align-items: flex-start; padding: 22px 24px; }
+.tk-tile { margin: 0; width: 104px; display: grid; gap: 6px; font-size: 12px; line-height: 1.25; color: #fff; }
+.tk-tile img { width: 104px; height: 66px; object-fit: cover; border-radius: 8px; }
+.tk-tile small { display: block; color: #a1a1a6; font-size: 11px; }
+.tk-tile--new { opacity: 0; transform: translateY(-10px) scale(0.9); transition: opacity 260ms, transform 420ms cubic-bezier(0.34, 1.32, 0.64, 1); }
+.tk-tile--new[data-on] { opacity: 1; transform: none; }
+
+.tk-file { position: absolute; display: grid; justify-items: center; gap: 6px; width: 96px; font-size: 12px; color: #1f2328; transition: opacity 200ms; }
+.tk-file[data-away] { opacity: 0.35; }
+.tk-thumb { width: 80px; height: 50px; object-fit: cover; border-radius: 4px; }
+.tk-ghost { position: absolute; left: 0; top: 0; opacity: 0; z-index: 3; pointer-events: none; transition: opacity 120ms; }
+.tk-ghost[data-on] { opacity: 0.85; }
+
+.tk-listen { display: flex; align-items: center; gap: 10px; padding: 0 16px; font-size: 14px; font-weight: 600; }
+.tk-dot { width: 8px; height: 8px; border-radius: 50%; background: #ff453a; flex: none; }
+.tk-dot--busy { background: #ff9f0a; }
+.tk-wave { margin-left: auto; display: flex; gap: 3px; align-items: center; height: 20px; }
+.tk-wave i { display: block; width: 3px; border-radius: 2px; background: #fff; transition: height 100ms; }
+.tk-message { position: absolute; z-index: 1; }
+.tk-message .ss-field { background: #fff; }
+.tk, .tk * { font-family: Archivo, "Segoe UI", sans-serif; }
+.tk kbd { font-family: Archivo, "Segoe UI", sans-serif; }

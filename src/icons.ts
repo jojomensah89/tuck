@@ -115,5 +115,5 @@ export function batteryGlyph(
 // community drawing: @lobehub/icons-static-svg@1.102.0 icons/codex-color.svg (MIT), unmodified.
 export function providerArtwork(provider: string): string | null {
   const file = provider === 'claude' ? 'claude.svg' : provider === 'antigravity' ? 'antigravity.svg' : provider === 'codex' ? 'codex.svg' : null;
-  return file ? `<img class="provider-artwork" src="/providers/${file}" alt="" aria-hidden="true"/>` : null;
+  return file ? `<img class="provider-artwork" src="${import.meta.env.BASE_URL}providers/${file}" alt="" aria-hidden="true"/>` : null;
 }

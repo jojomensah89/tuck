@@ -300,6 +300,19 @@ impl Drop for Apartment {
         }
     }
 }
+/// Windows' answer in the words Settings shows: Allowed, Denied or Unspecified
+#[cfg(windows)]
+fn access_label(
+    status: windows::UI::Notifications::Management::UserNotificationListenerAccessStatus,
+) -> String {
+    use windows::UI::Notifications::Management::UserNotificationListenerAccessStatus as Access;
+    match status {
+        Access::Allowed => "Allowed",
+        Access::Denied => "Denied",
+        _ => "Unspecified",
+    }
+    .into()
+}
 #[tauri::command]
 pub async fn notification_access(window: WebviewWindow) -> Result<String, String> {
     ensure(&window, true)?;
@@ -315,7 +328,7 @@ pub async fn notification_access(window: WebviewWindow) -> Result<String, String
                 );
             })
             .map_err(|_| "Permission dispatch failed")?;
-        let status=tauri::async_runtime::spawn_blocking(move|| {let _apartment=Apartment::enter()?;let operation=rx.recv().map_err(|_|"Permission request failed")?.map_err(|_|"Notification listener unavailable; Windows may require package identity and notification capability")?;operation.get().map(|status|format!("{status:?}")).map_err(|_|"Notification permission failed".to_string())}).await.map_err(|_|"Notification worker failed")??;
+        let status=tauri::async_runtime::spawn_blocking(move|| {let _apartment=Apartment::enter()?;let operation=rx.recv().map_err(|_|"Permission request failed")?.map_err(|_|"Notification listener unavailable; Windows may require package identity and notification capability")?;operation.get().map(access_label).map_err(|_|"Notification permission failed".to_string())}).await.map_err(|_|"Notification worker failed")??;
         state()
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -343,7 +356,7 @@ fn notifications() -> Result<(String, Vec<Preview>), String> {
         .GetAccessStatus()
         .map_err(|_| "Notification access unavailable")?;
     if access != UserNotificationListenerAccessStatus::Allowed {
-        return Ok((format!("{access:?}"), Vec::new()));
+        return Ok((access_label(access), Vec::new()));
     }
     let items = listener
         .GetNotificationsAsync(NotificationKinds::Toast)

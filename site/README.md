@@ -39,7 +39,7 @@ The download button, version, size, file name and SHA-256 are read from GitHub's
 ```json
 {
   "slots": 8,
-  "priceUsd": 25,
+  "priceUsd": 10,
   "checkoutUrl": "",
   "contactUrl": "https://github.com/jojomensah89/tuck/issues/new?...",
   "sponsors": [
@@ -48,7 +48,7 @@ The download button, version, size, file name and SHA-256 are read from GitHub's
 }
 ```
 
-- `checkoutUrl` is the payment link: the "Tuck" membership on Buy Me a Coffee ($25 a month). With it empty, "Your product here" opens `contactUrl` instead.
+- `checkoutUrl` is the payment link: the "Tuck" membership on Buy Me a Coffee ($10 a month). With it empty, "Your product here" opens `contactUrl` instead.
 - A sponsor disappears by itself the day after `until`. `logo` is optional; without it the site's favicon is used.
 - "N of 8 spots open" is counted from the list. Links get `?ref=tuck` and `rel="sponsored"`.
 
@@ -59,3 +59,7 @@ Merging a change to this file is all it takes; Cloudflare redeploys.
 The wallpaper photograph is by Billy Lam (Unsplash licence, via picsum.photos id 302).
 
 The demo's songs are public domain, as named in the Library of Congress National Jukebox: *Danny Boy*, Ernestine Schumann-Heink, 1917 (jukebox-189331); *Aloha ʻOe*, Hawaiian Quintette, 1913 (jukebox-133081); *Auld Lang Syne*, Peerless Quartet, 1918 (jukebox-28325). Only titles, performers and the public-domain words appear; no audio is used. The artwork is drawn in `src/demo.ts`.
+
+## Analytics
+
+`index.html` loads the self-hosted Minilytics counter (`https://minilytics.jojomensah.com`, website ID `4o4d6s5u6q5j262l`). It runs on this page only: the island demo in `island/` and the app itself send nothing. Goals are named in `data-ml-goal` attributes (`download_click`, `github_click`, `coffee_click`, `sponsor_link_click`); the open sponsor cards are built in `main.js`, which sends `sponsor_slot_click` itself. The counter ignores localhost, so test on the deployed preview. The privacy note in `index.html` says so; keep the two in step.

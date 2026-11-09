@@ -59,7 +59,7 @@
   const MEGAPHONE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m3 11 18-5v12L3 14v-3z"/><path d="M11.6 16.8a3 3 0 1 1-5.8-1.6"/></svg>';
   fetch('sponsors.json', { cache: 'no-cache' }).then(r => r.json()).then(config => {
     const slots = count(config.slots, 8, 50);
-    const price = count(config.priceUsd, 25, 100000);
+    const price = count(config.priceUsd, 10, 100000);
     const buy = httpUrl(config.checkoutUrl) || httpUrl(config.contactUrl);
     const today = new Date().toISOString().slice(0, 10);
     const live = [];
@@ -89,7 +89,11 @@
     };
     const vacant = () => {
       const a = el(buy ? 'a' : 'div', { className: 'slot slot--open' });
-      if (buy) Object.assign(a, { href: buy.href, target: '_blank', rel: 'noopener' });
+      if (buy) {
+        Object.assign(a, { href: buy.href, target: '_blank', rel: 'noopener' });
+        // Built after the counter loads, so the goal is sent from here rather than from an attribute
+        a.addEventListener('click', () => window.minilytics?.('goal', 'sponsor_slot_click', { price: price }));
+      }
       a.setAttribute('aria-label', `Your startup here: $${price} a month, ${open} of ${slots} spots open`);
       a.insertAdjacentHTML('afterbegin', MEGAPHONE);
       a.append(el('span', { className: 'slot__label' }, 'Your startup here'), el('span', { className: 'slot__price', ariaHidden: 'true' }, `$${price} a month`));

@@ -15,12 +15,14 @@ bun run package:msix
 The script emits `artifacts/msix/Tuck_0.3.0.0_x64.msix` for version 0.3.0.
 It packages the release executable, not the NSIS installer. No signing key is
 used: the Store signs submissions. The default identity in
-`src-tauri/msix/identity.json` is explicitly a placeholder. Set the four
-repository variables for CI: `MSIX_IDENTITY_NAME`, `MSIX_PUBLISHER` and
+`src-tauri/msix/identity.json` holds the product identity of **Tuck Island** in
+Partner Center (Store ID 9NKJQ3M3XQHX), so a local build is ready to submit. CI
+reads the same values from four repository variables: `MSIX_IDENTITY_NAME`, `MSIX_PUBLISHER` and
 `MSIX_PUBLISHER_DISPLAY_NAME` from Partner Center > Product management > Product
 identity, and `MSIX_STORE_NAME`, the product name you reserved, typed exactly as
 reserved (the package's `Properties/DisplayName` must match it). Tuck still shows
-as "Tuck" in the Start menu. Never submit placeholders.
+as "Tuck" in the Start menu. If any value changes in Partner Center (for example
+the publisher display name), update both identity.json and the variables.
 Reserve an **MSIX or PWA app**, then upload the unsigned MSIX through its package
 submission page. This is separate from Tauri's EXE/MSI submission route.
 
@@ -45,8 +47,20 @@ Certification review notes:
 - Test Windows S mode certification restrictions, including blocked executables
   and WebView2 behavior; passing compilation alone is not certification evidence.
 
-Local testing (use a disposable Windows account or VM): enable Developer Mode.
-For Windows 11 unsigned testing, build a separate test package with:
+Local testing: turn on Developer Mode (Windows Settings > System > Advanced, or
+For developers on older builds), then register the unpacked package. This needs no
+certificate and is how the installed package was verified:
+
+```powershell
+$dir = "$env:LOCALAPPDATA\tuck-msix-test"
+makeappx unpack /p .\artifacts\msix\Tuck_0.3.0.0_x64.msix /d $dir /o
+Stop-Process -Name tuck -ErrorAction SilentlyContinue   # Tuck allows one copy at a time
+Add-AppxPackage -Register "$dir\AppxManifest.xml"
+Start-Process "shell:AppsFolder\JojoMensh.TuckIsland_kb81ffxhyes9c!Tuck"
+# afterwards: Get-AppxPackage JojoMensh.TuckIsland | Remove-AppxPackage
+```
+
+Alternatively, for Windows 11 unsigned package installs, build a separate test package with:
 
 ```powershell
 ./scripts/package-msix.ps1 -OutputDirectory artifacts/msix-local-test `
@@ -87,10 +101,16 @@ Executed on 2026-11-09:
   failed with 0x80073D2C (publisher outside unsigned namespace).
 - A separate local-test package with the documented unsigned OID also built, but
   deployment failed with 0x80073D2B (unsigned executable activations rejected).
-- No certificate was installed; installed-package behavior and WACK remain untested.
+- No certificate was installed.
+- Installed package (Developer Mode, loose registration as above, Windows build
+  26300): ran with package identity from the package folder; the island drew;
+  Start with Windows set the `TuckStartup` task to Enabled (state 2) with no Run
+  key written; Settings > About read "Updates come from the Microsoft Store";
+  the tray had no update item; notification access was Allowed and a test toast
+  appeared on the island. WACK has not been run.
 - TypeScript, 236 Bun tests, frontend build, full UI smoke, packaged Settings
   smoke, cargo fmt, cargo check, strict Clippy and default cargo tests passed.
-- The additional mandatory ignored symlink test failed with Windows error 1314
-  (session lacks symlink privilege). Do not mark validation complete until it passes.
+- The ignored symlink test failed locally with Windows error 1314 (no symlink
+  privilege in that session); it passes in CI.
 - Full NSIS build produced its executable/installer, then failed updater signing
   because the private signing key is unavailable locally. The MSIX does not need it.

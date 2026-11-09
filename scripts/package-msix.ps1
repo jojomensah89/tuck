@@ -13,10 +13,11 @@ if (!$Exe) { $Exe = Join-Path $root 'src-tauri/target/release/tuck.exe' }
 if (!$OutputDirectory) { $OutputDirectory = Join-Path $root 'artifacts/msix' }
 if (!(Test-Path -LiteralPath $Exe)) { throw "Release executable missing: $Exe. Run bun run tauri build first." }
 $identity = Get-Content (Join-Path $root 'src-tauri/msix/identity.json') -Raw | ConvertFrom-Json
-if (!$IdentityName) { $IdentityName = $identity.name; Write-Warning 'Using placeholder MSIX Identity Name' }
-if (!$Publisher) { $Publisher = $identity.publisher; Write-Warning 'Using placeholder MSIX Publisher' }
-if (!$PublisherDisplayName) { $PublisherDisplayName = $identity.publisherDisplayName; Write-Warning 'Using placeholder MSIX PublisherDisplayName' }
-if (!$StoreName) { $StoreName = $identity.storeName; Write-Warning 'Using placeholder MSIX store name' }
+# identity.json holds Tuck Island's Partner Center product identity; arguments or MSIX_* variables override it
+if (!$IdentityName) { $IdentityName = $identity.name }
+if (!$Publisher) { $Publisher = $identity.publisher }
+if (!$PublisherDisplayName) { $PublisherDisplayName = $identity.publisherDisplayName }
+if (!$StoreName) { $StoreName = $identity.storeName }
 $version = (Get-Content (Join-Path $root 'package.json') -Raw | ConvertFrom-Json).version
 if ($version -notmatch '^\d+\.\d+\.\d+$') { throw 'MSIX requires a numeric major.minor.patch package version' }
 $version = "$version.0"

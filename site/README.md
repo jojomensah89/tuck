@@ -39,7 +39,7 @@ The download button, version, size, file name and SHA-256 are read from GitHub's
 ```json
 {
   "slots": 8,
-  "priceUsd": 49,
+  "priceUsd": 25,
   "checkoutUrl": "",
   "contactUrl": "https://github.com/jojomensah89/tuck/issues/new?...",
   "sponsors": [
@@ -48,7 +48,7 @@ The download button, version, size, file name and SHA-256 are read from GitHub's
 }
 ```
 
-- `checkoutUrl` is the payment link: Buy Me a Coffee for now. Once a "Sponsor" membership ($49 a month, limited to 8 members) exists, change it to `https://buymeacoffee.com/jojomensahh/membership`. With it empty, "Your product here" opens `contactUrl` instead.
+- `checkoutUrl` is the payment link: the "Tuck" membership on Buy Me a Coffee ($25 a month). With it empty, "Your product here" opens `contactUrl` instead.
 - A sponsor disappears by itself the day after `until`. `logo` is optional; without it the site's favicon is used.
 - "N of 8 spots open" is counted from the list. Links get `?ref=tuck` and `rel="sponsored"`.
 

@@ -12,8 +12,8 @@
 .tk-island.is-rest { transition-timing-function: cubic-bezier(0.23, 1, 0.32, 1); transition-duration: 320ms; }
 /* The notch's concave ears, so it reads as part of the screen edge */
 .tk-ear { position: absolute; top: 0; width: 14px; height: 14px; }
-.tk-ear--l { left: -14px; transform: scaleX(-1); }
-.tk-ear--r { right: -14px; }
+.tk-ear--l { left: -13px; transform: scaleX(-1); } /* 1px under the body, so no seam shows when the stage is scaled */
+.tk-ear--r { right: -13px; }
 .tk-island__body { position: absolute; inset: 0; }
 .tk-island__body > div { position: absolute; inset: 0; opacity: 0; transform: scale(0.96); filter: blur(4px); transition: opacity 220ms, transform 220ms, filter 220ms; pointer-events: none; }
 .tk-island__body > div[data-on] { opacity: 1; transform: none; filter: none; transition-delay: 160ms; }

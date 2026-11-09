@@ -14,6 +14,7 @@ mod lyrics_match;
 pub mod media;
 mod network_rates;
 pub mod osd_flyout;
+mod package;
 mod service_preferences;
 mod shell_thumbs;
 pub mod system;
@@ -76,6 +77,8 @@ pub fn run() {
         .manage(system::PendingUpdateState::default())
         .manage(update::UpdateService::default())
         .invoke_handler(tauri::generate_handler![
+            package::is_store_build,
+            package::autostart_status,
             welcome::maybe_show_welcome,
             welcome::open_about_link,
             set_hit,
@@ -177,8 +180,9 @@ pub fn run() {
             // 6. Separator
             // 7. About Tuck (shows the version)
             // 8. Quit Tuck
-            use tauri_plugin_autostart::ManagerExt;
-            let autostart_enabled = app.autolaunch().is_enabled().unwrap_or(false);
+            let autostart_enabled =
+                tauri::async_runtime::block_on(system::get_autostart(handle.clone()))
+                    .unwrap_or(false);
 
             let open_island_item =
                 MenuItem::with_id(app, "open_island", "Open island", true, None::<&str>)?;
@@ -217,6 +221,10 @@ pub fn run() {
                     &quit_item,
                 ],
             )?;
+
+            if package::has_package_identity() {
+                tray_menu.remove(&check_updates_item)?;
+            }
 
             app.manage(system::TrayItems {
                 autostart: autostart_item.clone(),
@@ -263,21 +271,12 @@ pub fn run() {
                     "autostart" => {
                         let a = app.clone();
                         tauri::async_runtime::spawn(async move {
-                            use tauri_plugin_autostart::ManagerExt;
-                            let autolaunch = a.autolaunch();
-                            let current = autolaunch.is_enabled().unwrap_or(false);
-                            let next = !current;
-                            let res = if next {
-                                autolaunch.enable()
-                            } else {
-                                autolaunch.disable()
-                            };
-                            if res.is_ok() {
-                                system::update_tray_autostart(&a, next);
-                                let _ = a.emit("autostart-changed", next);
-                            } else {
-                                system::update_tray_autostart(&a, current);
-                            }
+                            let current = system::get_autostart(a.clone()).await.unwrap_or(false);
+                            let _ = system::set_autostart(a.clone(), !current).await;
+                            // Windows may keep the old state (Task Manager or policy): show what it did
+                            let actual = system::get_autostart(a.clone()).await.unwrap_or(current);
+                            system::update_tray_autostart(&a, actual);
+                            let _ = a.emit("autostart-changed", actual);
                         });
                     }
                     "check_updates" => {

@@ -7,7 +7,7 @@ import { isTauri, invokeCommand, listenToEvent } from './ipc.js';
 import { STORAGE_KEYS } from './usage.js';
 import { describeResult, filterSettings, isRowHidden, navTarget, type SearchEntry } from './settings-search.js';
 import { markSaved, setStatus } from './settings-ui.js';
-import { checkForUpdates, updateAction, subscribeUpdate, type UpdateInfo } from './updater.js';
+import { isStoreBuild, checkForUpdates, updateAction, subscribeUpdate, type UpdateInfo } from './updater.js';
 import { mountUpdateButton } from './update-button.js';
 import { parseReleaseNotes } from './update-notes.js';
 import type { ShapeStyle } from './types.js';
@@ -240,13 +240,19 @@ function initNativeToggles(): void {
     $('providersEmpty')!.textContent = 'Available in the desktop app';
     return;
   }
+  const refreshStartupStatus = () => invokeCommand<string>('autostart_status').then(text => setStatus('autostartStatus', text));
+  void refreshStartupStatus();
   void invokeCommand<boolean>('get_autostart').then(enabled => { startup.checked = enabled; refreshPrivacy(); })
     .catch(() => setStatus('autostartStatus', 'Could not read startup preference.', 'error'));
   startup.addEventListener('change', async () => {
     startup.disabled = true;
-    try { await invokeCommand('set_autostart', { enable: startup.checked }); setStatus('autostartStatus', ''); markSaved(startup); }
-    catch { startup.checked = !startup.checked; setStatus('autostartStatus', 'Could not update startup preference.', 'error'); }
-    finally { startup.disabled = false; }
+    let failed = false;
+    try { await invokeCommand('set_autostart', { enable: startup.checked }); markSaved(startup); }
+    catch (error) { failed = true; setStatus('autostartStatus', typeof error === 'string' && error ? error : 'Could not update startup preference.', 'error'); }
+    // The switch shows what Windows actually did, which policy or Task Manager can override
+    try { startup.checked = await invokeCommand<boolean>('get_autostart'); refreshPrivacy(); } catch { /* keep what was asked */ }
+    startup.disabled = false;
+    if (!failed) void refreshStartupStatus();
   });
 
   void listenToEvent<boolean>('autostart-changed', enabled => {
@@ -317,10 +323,15 @@ function renderReleaseNotes(container: HTMLElement, body: string | undefined): v
   if (!container.hasChildNodes()) container.appendChild(document.createElement('p')).textContent = 'No release notes provided.';
 }
 
-function initUpdates(): void {
+async function initUpdates(): Promise<void> {
   const btnCheck = $<HTMLButtonElement>('btnCheckUpdates')!;
   const btnInstall = $<HTMLButtonElement>('btnInstallUpdate')!;
   const statusText = $('updateStatusText')!;
+  if (await isStoreBuild()) {
+    btnCheck.remove(); btnInstall.remove();
+    statusText.textContent = 'Updates come from the Microsoft Store';
+    return;
+  }
   const versionBadge = $('updateVersionBadge')!;
   const updateNotes = $('updateNotes')!;
   const progressWrap = $('updateProgressWrap')!;
@@ -460,3 +471,4 @@ function mountWelcome(): void {
   $('showWelcome')!.onclick = show;
   if (location.hash === '#welcome') queueMicrotask(show);
 }
+

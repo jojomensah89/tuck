@@ -94,8 +94,12 @@ create_draft() {
   delete_orphan_drafts "$tag"
   # For anyone checking by hand; the website reads GitHub's own digest of the same file
   (cd "$dir" && sha256sum "$installer" | sed 's/ \*/  /' > SHA256SUMS.txt) || die "Could not hash $installer."
+  local extra=()
+  shopt -s nullglob
+  extra=("$dir"/*.msix)
+  shopt -u nullglob
   gh release create "$tag" --draft --title "Tuck $tag" --notes-file "$dir/release-notes.md" \
-    "$dir/$installer" "$dir/$installer.sig" "$dir/latest.json" "$dir/SHA256SUMS.txt"
+    "$dir/$installer" "$dir/$installer.sig" "$dir/latest.json" "$dir/SHA256SUMS.txt" "${extra[@]}"
 }
 
 python_bin() {

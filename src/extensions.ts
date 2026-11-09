@@ -197,17 +197,25 @@ export function mountExtensionSettings():void{
  const message=document.getElementById('extStatus');if(!message)return;
  status=message;
  const setMessage=(text:string,error=false)=>{message.textContent=text;if(error&&text)message.dataset.kind='error';else delete message.dataset.kind;};
+ // Windows' notification access in plain words; anything else (an error) is shown as it comes
+ const accessText=(status:string)=>({Allowed:'Notification access allowed',Denied:'Windows is blocking notification access. Allow Tuck in Windows Settings > Privacy & security > Notifications',Unspecified:'Windows has not answered yet. Select Request access',Disabled:''} as Record<string,string>)[status]??status;
+ const requestAccess=async()=>{try{const status=await invoke<string>('notification_access');setMessage(accessText(status),status==='Denied');}catch(error){setMessage(typeof error==='string'?error:'Could not ask Windows for notification access.',true);}};
  const checks=new Map<keyof ExtensionSettings,HTMLInputElement>();
  for(const key of ['notifications'] as const){const input=document.getElementById(`ext-${key}`) as HTMLInputElement|null;if(input)checks.set(key,input);}
  const all=()=>Object.fromEntries([...checks].map(([key,input])=>[key,input.checked])) as unknown as ExtensionSettings;
  for(const input of checks.values())input.addEventListener('change',async()=>{
   const row=input.closest('.set-row');checks.forEach(check=>{check.disabled=true;});
-  try{if(!isTauri())throw new Error('Open the desktop app to use Windows integrations.');await invoke('extension_settings',{settings:all()});setMessage('');markSaved(input);}
+  try{if(!isTauri())throw new Error('Open the desktop app to use Windows integrations.');
+   // Turning previews on asks Windows for access first, before the watcher starts reading notifications;
+   // the switch stays on whatever Windows answers
+   const asking=input.id==='ext-notifications'&&input.checked;
+   if(asking)await requestAccess();
+   await invoke('extension_settings',{settings:all()});if(!asking)setMessage('');markSaved(input);}
   catch(error){input.checked=!input.checked;row?.classList.remove('saved');setMessage(typeof error==='string'?error:error instanceof Error?error.message:'Could not save activity settings.',true);}
   finally{checks.forEach(check=>{check.disabled=false;});}
  });
  const access=document.getElementById('requestNotificationAccess') as HTMLButtonElement|null;
- access?.addEventListener('click',()=>{void run(async()=>{setMessage(await invoke<string>('notification_access'));},access);});
- if(isTauri())void invoke<ExtensionSnapshot>('extension_snapshot').then(value=>{for(const[key,input]of checks)input.checked=value.settings[key];window.dispatchEvent(new Event('settings-loaded'));setMessage(value.notificationStatus==='Disabled'?'':value.notificationStatus);}).catch(()=>setMessage('Could not read activity settings.',true));
+ access?.addEventListener('click',()=>{void run(requestAccess,access);});
+ if(isTauri())void invoke<ExtensionSnapshot>('extension_snapshot').then(value=>{for(const[key,input]of checks)input.checked=value.settings[key];window.dispatchEvent(new Event('settings-loaded'));setMessage(accessText(value.notificationStatus),value.notificationStatus==='Denied');}).catch(()=>setMessage('Could not read activity settings.',true));
  else{checks.forEach(check=>{check.disabled=true;});if(access)access.disabled=true;setMessage('Windows activities need the desktop app.');}
 }

@@ -49,6 +49,9 @@ pub(crate) async fn update_check(
     app: AppHandle,
     state: State<'_, UpdateService>,
 ) -> Result<Option<PendingUpdateInfo>, String> {
+    if crate::package::has_package_identity() {
+        return Ok(None);
+    }
     let _operation = state.operation.lock().await;
     if state.inner.lock().unwrap().bytes.is_some() {
         return Ok(state.inner.lock().unwrap().snapshot.info.clone());
@@ -106,6 +109,9 @@ pub(crate) async fn update_action(
     app: AppHandle,
     state: State<'_, UpdateService>,
 ) -> Result<(), String> {
+    if crate::package::has_package_identity() {
+        return Err("Updates come from the Microsoft Store".into());
+    }
     let Ok(_operation) = state.operation.try_lock() else {
         return Ok(());
     };

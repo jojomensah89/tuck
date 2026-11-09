@@ -404,6 +404,18 @@ describe('release steps against a local bare remote', () => {
     expect(log.indexOf('release create')).toBeLessThan(log.indexOf('release edit'));
   });
 
+  it('attaches an optional unsigned MSIX without changing the updater assets', () => {
+    const r = setUp();
+    build(r, '0.2.0');
+    fs.writeFileSync(path.join(r.assets, 'Tuck_0.2.0.0_x64.msix'), 'unsigned package fixture');
+    freshCheckout(r, r.source);
+    expect(publish(r, '0.2.0').status).toBe(0);
+    const assets = path.join(r.state, 'releases', 'v0.2.0', 'assets');
+    expect(fs.readFileSync(path.join(assets, 'Tuck_0.2.0.0_x64.msix'), 'utf8')).toBe('unsigned package fixture');
+    expect(fs.existsSync(path.join(assets, 'latest.json'))).toBe(true);
+    expect(fs.existsSync(path.join(assets, 'Tuck_0.2.0_Setup.exe.sig'))).toBe(true);
+  });
+
   it('dry run: no step can touch the remote', () => {
     const r = setUp();
     build(r, '0.2.0');

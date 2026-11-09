@@ -7,7 +7,7 @@ import { isTauri, invokeCommand, listenToEvent } from './ipc.js';
 import { STORAGE_KEYS } from './usage.js';
 import { describeResult, filterSettings, isRowHidden, navTarget, type SearchEntry } from './settings-search.js';
 import { markSaved, setStatus } from './settings-ui.js';
-import { checkForUpdates, updateAction, subscribeUpdate, type UpdateInfo } from './updater.js';
+import { isStoreBuild, checkForUpdates, updateAction, subscribeUpdate, type UpdateInfo } from './updater.js';
 import { mountUpdateButton } from './update-button.js';
 import { parseReleaseNotes } from './update-notes.js';
 import type { ShapeStyle } from './types.js';
@@ -319,10 +319,15 @@ function renderReleaseNotes(container: HTMLElement, body: string | undefined): v
   if (!container.hasChildNodes()) container.appendChild(document.createElement('p')).textContent = 'No release notes provided.';
 }
 
-function initUpdates(): void {
+async function initUpdates(): Promise<void> {
   const btnCheck = $<HTMLButtonElement>('btnCheckUpdates')!;
   const btnInstall = $<HTMLButtonElement>('btnInstallUpdate')!;
   const statusText = $('updateStatusText')!;
+  if (await isStoreBuild()) {
+    btnCheck.hidden = true; btnInstall.hidden = true;
+    statusText.textContent = 'Updates come from the Microsoft Store';
+    return;
+  }
   const versionBadge = $('updateVersionBadge')!;
   const updateNotes = $('updateNotes')!;
   const progressWrap = $('updateProgressWrap')!;

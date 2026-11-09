@@ -222,6 +222,10 @@ pub fn run() {
                 ],
             )?;
 
+            if package::has_package_identity() {
+                tray_menu.remove(&check_updates_item)?;
+            }
+
             app.manage(system::TrayItems {
                 autostart: autostart_item.clone(),
                 check_updates: check_updates_item.clone(),

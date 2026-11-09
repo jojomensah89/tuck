@@ -48,7 +48,7 @@ The download button, version, size, file name and SHA-256 are read from GitHub's
 }
 ```
 
-- `checkoutUrl` is the payment link (empty until a processor is chosen; "Your product here" then opens `contactUrl`).
+- `checkoutUrl` is the payment link: Buy Me a Coffee for now. Once a "Sponsor" membership ($49 a month, limited to 8 members) exists, change it to `https://buymeacoffee.com/jojomensahh/membership`. With it empty, "Your product here" opens `contactUrl` instead.
 - A sponsor disappears by itself the day after `until`. `logo` is optional; without it the site's favicon is used.
 - "N of 8 spots open" is counted from the list. Links get `?ref=tuck` and `rel="sponsored"`.
 
@@ -57,3 +57,5 @@ Merging a change to this file is all it takes; Cloudflare redeploys.
 ## Credits
 
 The wallpaper photograph is by Billy Lam (Unsplash licence, via picsum.photos id 302).
+
+The demo's songs are public domain, as named in the Library of Congress National Jukebox: *Danny Boy*, Ernestine Schumann-Heink, 1917 (jukebox-189331); *Aloha ʻOe*, Hawaiian Quintette, 1913 (jukebox-133081); *Auld Lang Syne*, Peerless Quartet, 1918 (jukebox-28325). Only titles, performers and the public-domain words appear; no audio is used. The artwork is drawn in `src/demo.ts`.

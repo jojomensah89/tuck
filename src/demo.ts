@@ -1,8 +1,9 @@
 /**
  * The website demo: tuck.jojomensah.com frames the real island with `?embed`.
- * Everything here is invented sample data (tracks, lyrics, clips, files, quota)
- * answered through the same commands the desktop app uses. It never runs in the
- * desktop app, and the plain browser preview (no `?embed`) stays as it was.
+ * The songs are public domain (see TRACKS); clips, files and quota are invented
+ * sample data. All of it is answered through the same commands the desktop app
+ * uses. It never runs in the desktop app, and the plain browser preview (no
+ * `?embed`) stays as it was.
  */
 import { dispatchMockEvent, isTauri, setBrowserHandler } from './ipc.js';
 import type { MediaState, Meter, PowerState } from './types.js';
@@ -16,22 +17,28 @@ export function embedRequested(): boolean {
 
 interface DemoTrack { id: string; title: string; artist: string; durationMs: number; ground: string; mark: string; lyrics: string[] }
 
-// Invented songs; every lyric line is written for this demo
+// Public-domain songs in public-domain recordings (Library of Congress National Jukebox):
+// the words are long out of copyright, and the recordings predate 1923. No audio is played or shipped.
+// Durations are approximate; the artwork is drawn here, not taken from the records.
 const TRACKS: DemoTrack[] = [
   {
-    id: 'demo-northbound', title: 'Northbound Static', artist: 'Juniper Wells', durationMs: 222000, ground: '#1d5c58', mark: '#f2a541',
-    lyrics: ['Radio hums along the motorway', 'every station fading into grey', 'I keep the window down to hear you', 'over the static, over the rain',
-      'northbound lights are blinking slowly', 'counting exits one by one', 'if the signal finds you tonight', 'tell me where the road has gone'],
+    // Victor, 26 September 1917. Words by Frederic Weatherly (1910). loc.gov/item/jukebox-189331
+    id: 'pd-danny-boy', title: 'Danny Boy', artist: 'Ernestine Schumann-Heink', durationMs: 198000, ground: '#1f5a3a', mark: '#e9c46a',
+    lyrics: ['Oh, Danny boy, the pipes, the pipes are calling', 'From glen to glen, and down the mountain side', 'The summer’s gone, and all the roses falling',
+      'It’s you, it’s you must go and I must bide', 'But come ye back when summer’s in the meadow', 'Or when the valley’s hushed and white with snow',
+      'It’s I’ll be here in sunshine or in shadow', 'Oh, Danny boy, oh Danny boy, I love you so'],
   },
   {
-    id: 'demo-copper', title: 'Copper Afternoon', artist: 'The Quiet Hours', durationMs: 245000, ground: '#7a2e1f', mark: '#f4d9b0',
-    lyrics: ['Kettle on and the blinds half open', 'copper light across the floor', 'nobody calling, nothing broken', 'just the hour and nothing more',
-      'we could stay here till the evening', 'let the dust do what it does', 'hold the cup and keep the feeling', 'of a day that simply was'],
+    // Victor, 11 April 1913. Words and music by Queen Liliʻuokalani (1878). loc.gov/item/jukebox-133081
+    id: 'pd-aloha-oe', title: 'Aloha ʻOe', artist: 'Hawaiian Quintette', durationMs: 186000, ground: '#1f4f86', mark: '#f4a261',
+    lyrics: ['Haʻaheo ka ua i nā pali', 'Ke nihi aʻela i ka nahele', 'E hahai ana paha i ka liko', 'Pua ʻāhihi lehua o uka',
+      'Aloha ʻoe, aloha ʻoe', 'E ke onaona noho i ka lipo', 'One fond embrace, a hoʻi aʻe au', 'Until we meet again'],
   },
   {
-    id: 'demo-harbour', title: 'Glass Harbour', artist: 'Mara Okafor', durationMs: 198000, ground: '#233f7a', mark: '#9fd3e6',
-    lyrics: ['Boats asleep in the glass harbour', 'ropes are creaking soft and low', 'I wrote your name on the water', 'watched the little letters go',
-      'tide comes in to read the message', 'carries every word away', 'meet me where the lighthouse flickers', 'at the quiet end of day'],
+    // Victor, 19 March 1918. Words by Robert Burns (1788). loc.gov/item/jukebox-28325
+    id: 'pd-auld-lang-syne', title: 'Auld Lang Syne', artist: 'Peerless Quartet', durationMs: 172000, ground: '#7b2d26', mark: '#f2d0a4',
+    lyrics: ['Should auld acquaintance be forgot', 'And never brought to mind?', 'Should auld acquaintance be forgot', 'And auld lang syne?',
+      'For auld lang syne, my dear', 'For auld lang syne', 'We’ll tak a cup o’ kindness yet', 'For auld lang syne'],
   },
 ];
 const LINE_MS = 4200;
@@ -43,19 +50,19 @@ function drawArtwork(track: DemoTrack): string {
   if (!g) return '';
   g.fillStyle = track.ground; g.fillRect(0, 0, 240, 240);
   g.fillStyle = track.mark;
-  if (track.id === 'demo-northbound') {
-    // A low sun over a road
-    g.beginPath(); g.arc(120, 150, 62, Math.PI, 0); g.fill();
-    g.fillRect(0, 150, 240, 8);
-    g.beginPath(); g.moveTo(104, 240); g.lineTo(118, 166); g.lineTo(122, 166); g.lineTo(136, 240); g.fill();
-  } else if (track.id === 'demo-copper') {
-    // Light through blinds
-    for (let i = 0; i < 6; i++) g.fillRect(40, 36 + i * 30, 160, 14);
+  if (track.id === 'pd-danny-boy') {
+    // A sun going down behind two hills, the glen between them
+    g.beginPath(); g.arc(120, 138, 40, 0, Math.PI * 2); g.fill();
+    g.fillStyle = '#143d27';
+    g.beginPath(); g.moveTo(0, 240); g.lineTo(0, 150); g.quadraticCurveTo(70, 100, 140, 170); g.lineTo(140, 240); g.fill();
+    g.beginPath(); g.moveTo(240, 240); g.lineTo(240, 140); g.quadraticCurveTo(170, 110, 100, 190); g.lineTo(100, 240); g.fill();
+  } else if (track.id === 'pd-aloha-oe') {
+    // The sun on the sea, its path on the water
+    g.beginPath(); g.arc(120, 112, 44, Math.PI, 0); g.fill();
+    for (let i = 0; i < 5; i++) g.fillRect(120 - (60 - i * 10), 124 + i * 20, (60 - i * 10) * 2, 6);
   } else {
-    // A lighthouse beam over water
-    g.beginPath(); g.moveTo(150, 70); g.lineTo(240, 40); g.lineTo(240, 100); g.closePath(); g.globalAlpha = 0.55; g.fill(); g.globalAlpha = 1;
-    g.fillRect(138, 70, 16, 96);
-    for (let i = 0; i < 4; i++) g.fillRect(24 + i * 8, 182 + i * 14, 192 - i * 16, 4);
+    // Two cups raised
+    for (const x of [62, 134]) { g.fillRect(x, 92, 44, 64); g.fillRect(x + 16, 156, 12, 30); g.fillRect(x + 4, 186, 36, 8); }
   }
   return canvas.toDataURL('image/png');
 }

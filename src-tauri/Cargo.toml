@@ -49,6 +49,8 @@ webview-core = { package = "windows-core", version = "0.62" }
 version = "0.58"
 features = [
   "implement",
+  "Win32_Storage_Packaging_Appx",
+  "ApplicationModel",
   "UI_Notifications",
   "UI_Notifications_Management",
   "Foundation",
@@ -97,3 +99,4 @@ strip = true
 
 [patch.crates-io]
 transcribe-cpp-sys = { git = 'https://github.com/anomalyco/transcribe.cpp', rev = '2778ae4bf5ca5f394d129a39467f4ad9552dc34f' }
+

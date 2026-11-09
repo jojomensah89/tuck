@@ -14,6 +14,7 @@ mod lyrics_match;
 pub mod media;
 mod network_rates;
 pub mod osd_flyout;
+mod package;
 mod service_preferences;
 mod shell_thumbs;
 pub mod system;
@@ -76,6 +77,7 @@ pub fn run() {
         .manage(system::PendingUpdateState::default())
         .manage(update::UpdateService::default())
         .invoke_handler(tauri::generate_handler![
+            package::is_store_build,
             welcome::maybe_show_welcome,
             welcome::open_about_link,
             set_hit,

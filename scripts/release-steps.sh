@@ -92,8 +92,10 @@ delete_orphan_drafts() {
 create_draft() {
   local tag=$1 dir=$2 installer=$3
   delete_orphan_drafts "$tag"
+  # For anyone checking by hand; the website reads GitHub's own digest of the same file
+  (cd "$dir" && sha256sum "$installer" | sed 's/ \*/  /' > SHA256SUMS.txt) || die "Could not hash $installer."
   gh release create "$tag" --draft --title "Tuck $tag" --notes-file "$dir/release-notes.md" \
-    "$dir/$installer" "$dir/$installer.sig" "$dir/latest.json"
+    "$dir/$installer" "$dir/$installer.sig" "$dir/latest.json" "$dir/SHA256SUMS.txt"
 }
 
 python_bin() {

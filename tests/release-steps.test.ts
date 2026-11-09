@@ -388,11 +388,17 @@ describe('release steps against a local bare remote', () => {
     expect(remoteRef(r, 'refs/heads/main')).toBe(built);
     expect(remoteRef(r, 'refs/tags/v0.2.0')).toBe(built);
     expect(releaseDraftFlag(r, 'v0.2.0')).toBe('false');
-    expect(fs.readdirSync(path.join(r.state, 'releases', 'v0.2.0', 'assets')).sort()).toEqual([
+    const assets = path.join(r.state, 'releases', 'v0.2.0', 'assets');
+    expect(fs.readdirSync(assets).sort()).toEqual([
+      'SHA256SUMS.txt',
       'Tuck_0.2.0_Setup.exe',
       'Tuck_0.2.0_Setup.exe.sig',
       'latest.json',
     ]);
+    // One line in sha256sum's text form, for the installer that was uploaded
+    const installer = fs.readFileSync(path.join(assets, 'Tuck_0.2.0_Setup.exe'));
+    const digest = new Bun.CryptoHasher('sha256').update(installer).digest('hex');
+    expect(fs.readFileSync(path.join(assets, 'SHA256SUMS.txt'), 'utf8')).toBe(`${digest}  Tuck_0.2.0_Setup.exe\n`);
     // Uploaded while still a draft, published only after the push
     const log = fs.readFileSync(path.join(r.state, 'gh.log'), 'utf8');
     expect(log.indexOf('release create')).toBeLessThan(log.indexOf('release edit'));

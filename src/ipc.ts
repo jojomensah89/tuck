@@ -67,8 +67,23 @@ export async function invokeCommand<T>(cmd: string, args?: Record<string, unknow
   if (isTauri()) {
     return await tauriInvoke<T>(cmd, args);
   }
+  if (browserHandler) return (await browserHandler(cmd, args)) as T;
   // Safe mock in browser
   return undefined as unknown as T;
+}
+
+/**
+ * The embedded website demo (`?embed`) answers commands with its own sample data.
+ * Only src/demo.ts registers one; the plain browser preview and the desktop app never do.
+ */
+type BrowserHandler = (cmd: string, args?: Record<string, unknown>) => Promise<unknown>;
+let browserHandler: BrowserHandler | null = null;
+export function setBrowserHandler(handler: BrowserHandler): void {
+  if (!isTauri()) browserHandler = handler;
+}
+/** True only inside the website demo, never in the desktop app */
+export function browserDemoActive(): boolean {
+  return browserHandler !== null && !isTauri();
 }
 
 /* ================= Specific IPC Commands ================= */
@@ -98,7 +113,7 @@ export async function setHit(w: number, h: number): Promise<void> {
 }
 
 export async function fetchUsageNow(): Promise<Meter[]> {
-  if (isTauri()) {
+  if (isTauri() || browserHandler) {
     try {
       const res = await invokeCommand<Meter[]>('usage_now');
       return Array.isArray(res) ? res : [];

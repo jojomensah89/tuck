@@ -1,4 +1,7 @@
-import {invoke,isTauri} from '@tauri-apps/api/core';
+import {invoke as tauriInvoke,isTauri} from '@tauri-apps/api/core';
+import {browserDemoActive,invokeCommand} from './ipc.js';
+/** Native in the app; the website demo's sample shelf in the browser */
+const invoke=<T,>(cmd:string,args?:Record<string,unknown>):Promise<T>=>isTauri()?tauriInvoke<T>(cmd,args):invokeCommand<T>(cmd,args);
 import {listen} from '@tauri-apps/api/event';
 import {getCurrentWebviewWindow} from '@tauri-apps/api/webviewWindow';
 import {formatBytes,scrollEdges,scrollPage,ThumbnailMemo} from './extensions-types.js';
@@ -12,8 +15,8 @@ function button(text:string,action:()=>Promise<unknown>|void,key=text):HTMLButto
 let status:HTMLElement|null=null;
 let nativeDragging=false;
 let actionError='';
-async function run(action:()=>Promise<unknown>|void,button?:HTMLButtonElement):Promise<void>{if(button)button.disabled=true;actionError='';try{if(!isTauri())throw new Error('Open the desktop app to use Windows integrations');await action();await refresh();}catch(error){actionError=typeof error==='string'?error:error instanceof Error?error.message:'This action failed, try again';if(status)status.textContent=actionError;}finally{if(button)button.disabled=false;}}
-async function refresh():Promise<void>{if(isTauri()){current=await invoke<ExtensionSnapshot>('extension_snapshot');render();}}
+async function run(action:()=>Promise<unknown>|void,button?:HTMLButtonElement):Promise<void>{if(button)button.disabled=true;actionError='';try{if(!isTauri()&&!browserDemoActive())throw new Error('Open the desktop app to use Windows integrations');await action();await refresh();}catch(error){actionError=typeof error==='string'?error:error instanceof Error?error.message:'This action failed, try again';if(status)status.textContent=actionError;}finally{if(button)button.disabled=false;}}
+async function refresh():Promise<void>{if(isTauri()||browserDemoActive()){current=await invoke<ExtensionSnapshot>('extension_snapshot');render();}}
 let render:()=>void=()=>{};
 /** An icon button from the line family; its name is the tooltip and the accessible name */
 function iconButton(label:string,icon:string,action:()=>Promise<unknown>|void,key=label):HTMLButtonElement{const node=button('',action,key);node.className='icon-btn';node.innerHTML=icon;node.title=label;node.setAttribute('aria-label',label);return node;}
@@ -174,6 +177,7 @@ export function mountExtensions():void {
   else if(!over)syncArrows();
  });
  render();
+ if(browserDemoActive())void refresh().catch(()=>{});
  if(isTauri()){
   void listen<ExtensionSnapshot>('extension-state',event=>{current=event.payload;render();}).catch(()=>{if(status)status.textContent='Could not subscribe to Windows state';});
   void listen<{title:string;body:string}>('notification-preview',event=>window.dispatchEvent(new CustomEvent('tuck-preview',{detail:{title:event.payload.title,text:event.payload.body,priority:90}}))).catch(()=>{});

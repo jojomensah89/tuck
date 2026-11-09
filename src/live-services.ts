@@ -1,8 +1,10 @@
-import { invokeCommand, isTauri } from './ipc.js';
+import { browserDemoActive, invokeCommand, isTauri } from './ipc.js';
 import type { ModelRow } from './dictation-models.js';
 
 /** Only desktop services may resolve native actions. Browser previews never fake them. */
 export async function nativeService<T>(command: string, args?: Record<string, unknown>): Promise<T> {
+  // The website demo answers in the frontend's own shapes, so nothing is renamed or normalized
+  if (browserDemoActive()) return await invokeCommand<T>(command, args);
   if (!isTauri()) throw new Error('Open Tuck on Windows to use this feature.');
   const names: Record<string, string> = { lyrics_settings: 'lyrics_status', telemetry_snapshot: 'telemetry_now', lyrics_lookup: 'lyrics_get', dictation_snapshot: 'dictation_get_state', clipboard_snapshot: 'clipboard_get_state', clipboard_settings: 'clipboard_get_state' };
   let result: unknown = await invokeCommand(names[command] || command, args);
@@ -19,6 +21,7 @@ export async function nativeService<T>(command: string, args?: Record<string, un
   return result as T;
 }
 export async function nativeAction(command: string, args?: Record<string, unknown>): Promise<void> {
+  if (browserDemoActive()) { await invokeCommand(command, args); return; }
   if (!isTauri()) throw new Error('Open Tuck on Windows to use this feature.');
   if (command === 'media_select_session') args = { sessionId: args?.id || null };
   if (command === 'clipboard_set_settings') {

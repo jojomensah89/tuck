@@ -58,7 +58,7 @@ p { margin: 0; text-wrap: pretty; }
 .actions { display: flex; align-items: center; gap: 24px; flex-wrap: wrap; }
 
 /* ---------- Hero: two tones, copy left, the real island hanging from the top of the right half ---------- */
-.hero { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); min-height: 100svh; }
+.hero { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) auto; min-height: 100svh; }
 .hero-copy { display: flex; flex-direction: column; justify-content: space-between; padding: var(--gutter) var(--gutter) clamp(40px, 7vh, 80px) var(--edge); }
 .mark { display: inline-flex; align-items: center; gap: 10px; text-decoration: none; font-weight: 600; align-self: flex-start; }
 .mark img { width: 32px; height: 32px; }
@@ -176,7 +176,18 @@ p { margin: 0; text-wrap: pretty; }
 .slot img { width: 44px; height: 44px; border-radius: 10px; object-fit: cover; }
 .slot__name { font-size: var(--step-small); font-weight: 600; line-height: 1.25; }
 .slot__line { font-size: 0.8125rem; line-height: 1.3; color: var(--muted); max-width: 22ch; }
-.rail-inline { display: none; }
+/* The sponsor strip: a row of compact slot cards along the foot of the first screen, drifting slowly */
+.strip { grid-column: 1 / -1; display: block; overflow-x: auto; overscroll-behavior-x: contain; scrollbar-width: none; padding: 14px var(--edge); background: var(--bg); }
+.strip[hidden] { display: none; }
+.strip::-webkit-scrollbar { display: none; }
+.strip__track, .strip__set { display: flex; gap: 12px; width: max-content; }
+.strip__set { padding-right: 12px; }
+.strip .slot { flex: none; width: 236px; min-height: 56px; padding: 8px 14px; display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; justify-items: start; place-content: initial; gap: 0 12px; text-align: left; border-radius: 12px; }
+.strip .slot img { grid-row: span 2; width: 34px; height: 34px; border-radius: 8px; }
+.strip .slot svg { width: 18px; height: 18px; }
+.strip .slot__line { max-width: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; width: 100%; }
+.strip .slot__name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; width: 100%; }
+.strip .slot__price { display: none; }
 
 /* Footer: one quiet line */
 .foot { display: grid; grid-template-columns: 1fr auto 1fr; gap: 16px; align-items: baseline; padding: 0 var(--edge) 30px; font-size: var(--step-small); }
@@ -190,10 +201,10 @@ p { margin: 0; text-wrap: pretty; }
   .frame { grid-template-columns: minmax(0, 560px); justify-content: center; }
   .column { grid-column: 1; }
   .rail-left, .rail-right { display: none; }
-  .rail-inline { display: block; padding-top: var(--gap-section); }
-  .rail-inline .rail-stack { position: static; max-width: none; grid-template-columns: repeat(4, minmax(0, 1fr)); }
-  .rail-inline .rail-label { grid-column: 1 / -1; }
-  .rail-inline .slot { min-height: 108px; }
+  /* Phones and tablets: the strip is a bar on the bottom edge that steps aside while reading down */
+  .strip { position: fixed; inset: auto 0 0 0; z-index: 20; padding: 10px var(--gutter) calc(10px + env(safe-area-inset-bottom)); box-shadow: 0 -10px 30px rgba(38, 37, 30, 0.10); transition: transform 320ms var(--ease-out); } /* taste-skill-ignore: this bar floats over the page */
+  .strip--away { transform: translateY(110%); }
+  .has-strip body { padding-bottom: calc(76px + env(safe-area-inset-bottom)); }
   .foot { padding-inline: max(var(--gutter), calc((100% - 560px) / 2)); }
 }
 @media (max-width: 900px) {
@@ -211,7 +222,9 @@ p { margin: 0; text-wrap: pretty; }
   .hero h1 { font-size: clamp(2.25rem, 1.6rem + 3vw, 3.5rem); }
 }
 @media (max-width: 600px) {
-  .rail-inline .rail-stack { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  /* Shorter desktop picture, so the Download button clears the sponsor bar on the first screen */
+  .hero-screen { min-height: 40svh; }
+  .strip .slot { width: 220px; }
   :root { --gap-section: 104px; }
   .panel { padding: 16px; }
   .figure-list div { grid-template-columns: 88px 1fr; column-gap: 16px; }
@@ -237,5 +250,6 @@ p { margin: 0; text-wrap: pretty; }
 @keyframes drop { from { opacity: 0; transform: translateY(-24px) scale(var(--island-scale, 1)); } to { opacity: 1; transform: translateY(0) scale(var(--island-scale, 1)); } }
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }
+  .strip { transition: none; }
   .smartscreen > div { transition: none; }
 }

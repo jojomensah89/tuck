@@ -98,7 +98,7 @@
     // Every slot is a card: sponsors in order, then the open ones. Wide screens split them over two rails.
     const cards = () => [...live.map(taken), ...Array.from({ length: open }, vacant)];
     const half = Math.ceil(slots / 2);
-    const rails = { 0: () => cards().slice(0, half), 1: () => cards().slice(half), inline: cards };
+    const rails = { 0: () => cards().slice(0, half), 1: () => cards().slice(half) };
     $$('[data-rail]').forEach(rail => {
       const list = rails[rail.dataset.rail]?.() || [];
       const stack = el('div', { className: 'rail-stack' });
@@ -106,7 +106,71 @@
       rail.replaceChildren(...(list.length ? [stack] : []));
     });
     if (buy) $$('[data-sponsor-link]').forEach(a => { a.href = buy.href; a.target = '_blank'; a.rel = 'noopener'; });
+    buildStrip(cards);
   }).catch(() => {});
+
+  /* ---------- Sponsor strip: along the foot of the first screen on desktop, pinned to the bottom on phones ---------- */
+  function buildStrip(cards) {
+    const strip = document.querySelector('[data-strip]');
+    if (!strip) return;
+    const list = cards();
+    if (!list.length) { strip.hidden = true; return; }
+    const set = () => { const g = el('div', { className: 'strip__set' }); g.append(...cards()); return g; };
+    const track = el('div', { className: 'strip__track' });
+    const first = set();
+    track.append(first);
+    strip.replaceChildren(track);
+    strip.hidden = false;
+    document.documentElement.classList.add('has-strip');
+
+    // A second, hidden copy makes the drift seamless; it is only added when the row is wider than the strip
+    let copy = null;
+    const fitCopy = () => {
+      const needs = first.scrollWidth > strip.clientWidth;
+      if (needs && !copy) {
+        copy = set(); copy.setAttribute('aria-hidden', 'true'); copy.inert = true; track.append(copy);
+      } else if (!needs && copy) { copy.remove(); copy = null; }
+    };
+    fitCopy(); addEventListener('resize', fitCopy);
+
+    // Drift slowly; stop while pointed at, touched or focused, while off screen, and for reduced motion.
+    // The strip is an ordinary sideways scroller, so a hand can always swipe it.
+    let held = false, visible = true, resumeAt = 0, last = 0;
+    const hold = () => { held = true; };
+    const release = (delay = 0) => { held = false; resumeAt = performance.now() + delay; };
+    strip.addEventListener('pointerenter', e => { if (e.pointerType === 'mouse') hold(); });
+    strip.addEventListener('pointerleave', e => { if (e.pointerType === 'mouse') release(); });
+    strip.addEventListener('pointerdown', hold);
+    strip.addEventListener('pointerup', e => { if (e.pointerType !== 'mouse') release(2500); });
+    strip.addEventListener('pointercancel', () => release(2500));
+    strip.addEventListener('focusin', hold);
+    strip.addEventListener('focusout', () => release(1500));
+    strip.addEventListener('wheel', () => { held = true; clearTimeout(strip._wheel); strip._wheel = setTimeout(() => release(1500), 300); }, { passive: true });
+    if ('IntersectionObserver' in window) new IntersectionObserver(([e]) => { visible = e.isIntersecting; }).observe(strip);
+    const step = now => {
+      const dt = last ? Math.min(64, now - last) : 0; last = now;
+      if (copy && !reduced && !held && visible && !document.hidden && now >= resumeAt) {
+        strip.scrollLeft += dt * 0.03; // about 30px a second
+        const loop = copy.offsetLeft - first.offsetLeft;
+        if (strip.scrollLeft >= loop) strip.scrollLeft -= loop;
+      }
+      requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+
+    // On phones the strip is a bar at the bottom: it steps aside while reading down and returns on the way up,
+    // when scrolling stops, and at the end of the page
+    let lastY = scrollY, settle = 0;
+    const phone = matchMedia('(max-width: 1279px)');
+    addEventListener('scroll', () => {
+      if (!phone.matches) return;
+      const y = scrollY, atEnd = innerHeight + y >= document.documentElement.scrollHeight - 80;
+      if (y > lastY + 4 && y > 200 && !atEnd) strip.classList.add('strip--away');
+      else if (y < lastY - 4 || atEnd) strip.classList.remove('strip--away');
+      lastY = y;
+      clearTimeout(settle); settle = setTimeout(() => strip.classList.remove('strip--away'), 1200);
+    }, { passive: true });
+  }
 
   /* ---------- Install: the fragment walks through its three states; pointing at a statement holds it there ---------- */
   const stage = document.querySelector('.smartscreen');

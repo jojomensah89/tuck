@@ -5,7 +5,7 @@ Build on Windows with the README prerequisites and Windows SDK:
 ```powershell
 bun install --frozen-lockfile
 . ./scripts/prepare-native.ps1 -InstallBuildTools
-bun run tauri build
+bun run tauri build --no-bundle
 $env:MSIX_IDENTITY_NAME = 'your Partner Center identity'
 $env:MSIX_PUBLISHER = 'CN=your Partner Center publisher'
 $env:MSIX_PUBLISHER_DISPLAY_NAME = 'Your publisher name'
@@ -42,11 +42,21 @@ Certification review notes:
 - Test Windows S mode certification restrictions, including blocked executables
   and WebView2 behavior; passing compilation alone is not certification evidence.
 
-Local testing (use a disposable Windows account or VM): enable Developer Mode,
-then run `Add-AppxPackage -Path .\artifacts\msix\Tuck_0.3.0.0_x64.msix -AllowUnsigned`.
-If unsigned deployment is unsupported by that Windows version, create a test
-code-signing certificate whose subject exactly matches Publisher, trust its public
-certificate in the test machine's Trusted People store, sign a COPY with
+Local testing (use a disposable Windows account or VM): enable Developer Mode.
+For Windows 11 unsigned testing, build a separate test package with:
+
+```powershell
+./scripts/package-msix.ps1 -OutputDirectory artifacts/msix-local-test `
+  -Publisher 'CN=TuckPlaceholder, OID.2.25.311729368913984317654407730594956997722=1'
+Add-AppxPackage -Path .\artifacts\msix-local-test\Tuck_0.3.0.0_x64.msix -AllowUnsigned
+```
+
+[Microsoft's unsigned package guide](https://learn.microsoft.com/en-us/windows/msix/package/unsigned-package)
+requires that OID for local unsigned deployment and administrator privileges for
+executable content. Do not use the test OID for Partner Center submissions.
+If this deployment route is blocked, create a test code-signing certificate whose
+subject exactly matches the normal Publisher, trust its public certificate in the
+test machine's Trusted People store, sign a COPY with
 `signtool sign /fd SHA256 /f test.pfx package.msix`, and install the copy.
 Never upload the test-signed package or commit the private certificate.
 
@@ -65,3 +75,19 @@ References: [startup task schema](https://learn.microsoft.com/en-us/uwp/schemas/
 See the PR for current executed check results. Screenshots in `docs/screens/msix`
 use mocked native identity/startup responses and show the real built Settings UI;
 they are not proof of installed-package behavior.
+
+Executed on 2026-11-09:
+
+- Release executable built with the prepared native environment; makeappx validated
+  the manifest and created the unsigned 0.3.0.0 x64 MSIX.
+- `Add-AppxPackage -AllowUnsigned` with the placeholder Store-style publisher
+  failed with 0x80073D2C (publisher outside unsigned namespace).
+- A separate local-test package with the documented unsigned OID also built, but
+  deployment failed with 0x80073D2B (unsigned executable activations rejected).
+- No certificate was installed; installed-package behavior and WACK remain untested.
+- TypeScript, 236 Bun tests, frontend build, full UI smoke, packaged Settings
+  smoke, cargo fmt, cargo check, strict Clippy and default cargo tests passed.
+- The additional mandatory ignored symlink test failed with Windows error 1314
+  (session lacks symlink privilege). Do not mark validation complete until it passes.
+- Full NSIS build produced its executable/installer, then failed updater signing
+  because the private signing key is unavailable locally. The MSIX does not need it.

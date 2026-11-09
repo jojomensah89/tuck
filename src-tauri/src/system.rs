@@ -845,6 +845,12 @@ pub(crate) async fn open_settings_cmd(app: AppHandle, view: Option<String>) -> R
 #[tauri::command]
 pub(crate) async fn get_autostart(app: AppHandle) -> Result<bool, String> {
     use tauri_plugin_autostart::ManagerExt;
+    #[cfg(windows)]
+    if crate::package::has_package_identity() {
+        use windows::ApplicationModel::StartupTaskState;
+        return crate::package::startup_state()
+            .map(|s| s == StartupTaskState::Enabled || s == StartupTaskState::EnabledByPolicy);
+    }
     app.autolaunch().is_enabled().map_err(|e| e.to_string())
 }
 
@@ -865,6 +871,12 @@ pub fn update_tray_autostart(app: &AppHandle, enabled: bool) {
 #[tauri::command]
 pub(crate) async fn set_autostart(app: AppHandle, enable: bool) -> Result<(), String> {
     use tauri_plugin_autostart::ManagerExt;
+    #[cfg(windows)]
+    if crate::package::has_package_identity() {
+        crate::package::set_startup(enable)?;
+        update_tray_autostart(&app, get_autostart(app.clone()).await?);
+        return Ok(());
+    }
     let res = if enable {
         app.autolaunch().enable().map_err(|e| e.to_string())
     } else {

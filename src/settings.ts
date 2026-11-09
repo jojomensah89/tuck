@@ -240,13 +240,15 @@ function initNativeToggles(): void {
     $('providersEmpty')!.textContent = 'Available in the desktop app';
     return;
   }
+  const refreshStartupStatus = () => invokeCommand<string>('autostart_status').then(text => setStatus('autostartStatus', text));
+  void refreshStartupStatus();
   void invokeCommand<boolean>('get_autostart').then(enabled => { startup.checked = enabled; refreshPrivacy(); })
     .catch(() => setStatus('autostartStatus', 'Could not read startup preference.', 'error'));
   startup.addEventListener('change', async () => {
     startup.disabled = true;
     try { await invokeCommand('set_autostart', { enable: startup.checked }); setStatus('autostartStatus', ''); markSaved(startup); }
     catch { startup.checked = !startup.checked; setStatus('autostartStatus', 'Could not update startup preference.', 'error'); }
-    finally { startup.disabled = false; }
+    finally { startup.disabled = false; void refreshStartupStatus(); }
   });
 
   void listenToEvent<boolean>('autostart-changed', enabled => {

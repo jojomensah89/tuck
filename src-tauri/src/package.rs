@@ -33,3 +33,44 @@ mod tests {
         assert!(!identity_from_status(5));
     }
 }
+
+#[cfg(windows)]
+pub fn startup_state() -> Result<windows::ApplicationModel::StartupTaskState, String> {
+    windows::ApplicationModel::StartupTask::GetAsync(&windows::core::HSTRING::from("TuckStartup"))
+        .and_then(|op| op.get())
+        .and_then(|task| task.State())
+        .map_err(|e| e.to_string())
+}
+#[cfg(windows)]
+pub fn set_startup(enable: bool) -> Result<(), String> {
+    use windows::ApplicationModel::{StartupTask, StartupTaskState};
+    let task = StartupTask::GetAsync(&windows::core::HSTRING::from("TuckStartup"))
+        .and_then(|op| op.get())
+        .map_err(|e| e.to_string())?;
+    let state = if enable {
+        task.RequestEnableAsync().and_then(|op| op.get())
+    } else {
+        task.Disable().and_then(|_| task.State())
+    }
+    .map_err(|e| e.to_string())?;
+    if enable && state != StartupTaskState::Enabled && state != StartupTaskState::EnabledByPolicy {
+        return Err("Turned off in Task Manager > Startup apps".into());
+    }
+    Ok(())
+}
+#[tauri::command]
+pub fn autostart_status() -> Result<String, String> {
+    #[cfg(windows)]
+    if has_package_identity() {
+        use windows::ApplicationModel::StartupTaskState;
+        return Ok(match startup_state()? {
+            StartupTaskState::DisabledByUser => "Turned off in Task Manager > Startup apps",
+            StartupTaskState::DisabledByPolicy => {
+                "Turned off by your organization (Startup apps policy)"
+            }
+            _ => "",
+        }
+        .into());
+    }
+    Ok(String::new())
+}

@@ -154,6 +154,8 @@ p { margin: 0; text-wrap: pretty; }
 .rail { min-width: 0; }
 .rail-left, .rail-right { padding-top: var(--gap-section); }
 .rail-stack { position: sticky; top: 24px; display: grid; gap: 14px; width: 100%; max-width: 232px; }
+/* Beside the column the rail fills the screen's height: the cards share it, from 124px each up to a 900px column */
+.rail-left .rail-stack, .rail-right .rail-stack { height: min(calc(100svh - 48px), 900px); grid-template-rows: auto; grid-auto-rows: minmax(124px, 1fr); }
 .rail-left .rail-stack { margin-left: auto; }
 .rail-label { margin: 0 0 2px; font-size: 0.75rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); } /* taste-skill-ignore: the owner asked for this label */
 .slot {

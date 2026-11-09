@@ -18,6 +18,7 @@
   <link rel="stylesheet" href="walkthroughs/walkthroughs.css">
   <link rel="stylesheet" href="styles.css">
   <script>document.documentElement.classList.add('js')</script>
+  <script defer data-website-id="4o4d6s5u6q5j262l" src="https://minilytics.jojomensah.com/js/script.js"></script>
   <script src="main.js" defer></script>
   <script type="module" src="walkthroughs/walkthroughs.js"></script>
 </head>
@@ -34,8 +35,8 @@
         </h1>
         <p class="lead rise-late">Tuck hangs from the top edge of your screen with music and lyrics, offline dictation, clipboard history, timers and AI usage. Free and open source.</p>
         <div class="actions rise-late">
-          <a class="button" data-download href="https://github.com/jojomensah89/tuck/releases/latest">Download for Windows</a>
-          <a class="text-link" href="https://github.com/jojomensah89/tuck">Source on GitHub</a>
+          <a class="button" data-download data-ml-goal="download_click" href="https://github.com/jojomensah89/tuck/releases/latest">Download for Windows</a>
+          <a class="text-link" data-ml-goal="github_click" href="https://github.com/jojomensah89/tuck">Source on GitHub</a>
         </div>
         <p class="small rise-late" data-release-line>Version 0.3.0, 4.1&nbsp;MB, for Windows 10 and 11 on x64.</p>
       </div>
@@ -206,7 +207,7 @@
           <p><strong>Which music players work?</strong> Any that appears in the Windows media overlay, including Spotify, Apple Music, Windows Media Player and most players in Chrome, Edge and Firefox.</p>
           <p><strong>Why does a song have no lyrics?</strong> Lyrics come from LRCLIB, a free community library. Most popular songs have synced lyrics; some newer or local ones do not yet.</p>
           <p><strong>Does dictation need the internet?</strong> Only once, to download the model you choose from Hugging Face. After that it runs on your processor. It needs a CPU with AVX2, which most PCs from the last ten years have.</p>
-          <p id="privacy"><strong>What leaves my PC?</strong> Update checks go to GitHub, model downloads to Hugging Face, and track details to LRCLIB when lyrics are on. With Claude or Codex switched on, their own apps report your limits and may contact Anthropic or OpenAI. Antigravity, if you confirm it, contacts Google for your quota. Nothing else, and no analytics.</p>
+          <p id="privacy"><strong>What leaves my PC?</strong> Update checks go to GitHub, model downloads to Hugging Face, and track details to LRCLIB when lyrics are on. With Claude or Codex switched on, their own apps report your limits and may contact Anthropic or OpenAI. Antigravity, if you confirm it, contacts Google for your quota. Nothing else: the app has no analytics. This website counts visits with a self-hosted counter that sets two first-party cookies and shares nothing with ad networks.</p>
           <p><strong>Where is my clipboard kept?</strong> In memory, gone when Tuck closes. With Keep after restart on, in Tuck’s own app data, capped at 256&nbsp;MB. Clear all keeps pins; turning history off deletes everything.</p>
           <p><strong>Does it get in the way of games or films?</strong> It hides when an app goes full screen on its monitor, and clicks pass through everywhere outside the island.</p>
           <p><strong>Notch or floating?</strong> Either. It can hang from the screen edge like a notch or float a little below it as a pill.</p>
@@ -221,8 +222,8 @@
         <h2 id="close-title" class="sr-only">Get Tuck</h2>
         <p class="close-line">Put it at the top of your screen and forget about it until you need it.</p>
         <div class="actions">
-          <a class="button" data-download href="https://github.com/jojomensah89/tuck/releases/latest">Download for Windows</a>
-          <a class="text-link" href="https://buymeacoffee.com/jojomensahh">Buy me a coffee</a>
+          <a class="button" data-download data-ml-goal="download_click" href="https://github.com/jojomensah89/tuck/releases/latest">Download for Windows</a>
+          <a class="text-link" data-ml-goal="coffee_click" href="https://buymeacoffee.com/jojomensahh">Buy me a coffee</a>
         </div>
       </section>
     </main>
@@ -236,7 +237,7 @@
       <a href="https://github.com/jojomensah89/tuck">GitHub</a>
       <a href="https://github.com/jojomensah89/tuck/releases">Releases</a>
       <a href="https://github.com/jojomensah89/tuck/blob/main/CHANGELOG.md">Changelog</a>
-      <a href="#sponsor" data-sponsor-link>Sponsor</a>
+      <a href="#sponsor" data-sponsor-link data-ml-goal="sponsor_link_click">Sponsor</a>
     </nav>
     <span class="muted">© 2026 Tuck contributors · Photo by Billy Lam · Songs: public-domain recordings, <a href="https://www.loc.gov/collections/national-jukebox/">National Jukebox</a> · <a href="#privacy">Privacy</a></span>
   </footer>

@@ -16,7 +16,7 @@ The script emits `artifacts/msix/Tuck_0.3.0.0_x64.msix` for version 0.3.0.
 It packages the release executable, not the NSIS installer. No signing key is
 used: the Store signs submissions. The default identity in
 `src-tauri/msix/identity.json` holds the product identity of **Tuck Island** in
-Partner Center (Store ID 9NKJQ3M3XQHX), so a local build is ready to submit. CI
+Partner Center (Store ID 9PFGS4CZ120T), so a local build is ready to submit. CI
 reads the same values from four repository variables: `MSIX_IDENTITY_NAME`, `MSIX_PUBLISHER` and
 `MSIX_PUBLISHER_DISPLAY_NAME` from Partner Center > Product management > Product
 identity, and `MSIX_STORE_NAME`, the product name you reserved, typed exactly as

@@ -52,14 +52,11 @@
 
   /* ---------- Sponsors: rails from sponsors.json, open spots counted ---------- */
   // Only http(s) links reach the page; anything else in sponsors.json is skipped, one entry at a time
-  const httpUrl = value => { try { const u = new URL(String(value), location.href); return /^https?:$/.test(u.protocol) ? u : null; } catch { return null; } };
+  // Absolute http(s) addresses only: a missing, blank or relative value is no link at all
+  const httpUrl = value => { if (typeof value !== 'string' || !value.trim()) return null; try { const u = new URL(value.trim()); return /^https?:$/.test(u.protocol) ? u : null; } catch { return null; } };
   const count = (value, fallback, max) => { const n = Number(value); return Number.isInteger(n) && n >= 0 && n <= max ? n : fallback; };
   const el = (tag, props = {}, text) => { const node = Object.assign(document.createElement(tag), props); if (text !== undefined) node.textContent = text; return node; };
-  const linkCard = (href, className, title, line, rel) => {
-    const a = el('a', { className, href, target: '_blank', rel });
-    a.append(el('strong', {}, title), el('span', {}, line));
-    return a;
-  };
+  const MEGAPHONE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m3 11 18-5v12L3 14v-3z"/><path d="M11.6 16.8a3 3 0 1 1-5.8-1.6"/></svg>';
   fetch('sponsors.json', { cache: 'no-cache' }).then(r => r.json()).then(config => {
     const slots = count(config.slots, 8, 50);
     const price = count(config.priceUsd, 25, 100000);
@@ -67,36 +64,46 @@
     const today = new Date().toISOString().slice(0, 10);
     const live = [];
     for (const s of Array.isArray(config.sponsors) ? config.sponsors : []) {
-      const url = httpUrl(s?.url);
+      if (live.length >= slots) break;
+      if (!s || typeof s !== 'object') continue;
+      const url = httpUrl(s.url);
       if (!url || typeof s.name !== 'string' || !s.name.trim()) continue;
       if (s.until && !(typeof s.until === 'string' && s.until >= today)) continue;
-      const logo = httpUrl(s.logo) || httpUrl(`https://www.google.com/s2/favicons?domain=${url.hostname}&sz=64`);
+      // A logo can also be an image kept on this site (img/sponsors/...), as site/README.md describes
+      const local = typeof s.logo === 'string' && /^img\/sponsors\/[\w.-]+$/.test(s.logo) ? new URL(s.logo, location.href) : null;
+      const logo = httpUrl(s.logo) || local || httpUrl(`https://www.google.com/s2/favicons?domain=${url.hostname}&sz=128`);
       url.searchParams.set('ref', 'tuck');
       live.push({ name: s.name.trim(), tagline: typeof s.tagline === 'string' ? s.tagline : '', url: url.href, logo: logo?.href });
-      if (live.length === slots) break;
     }
-    const open = Math.max(0, slots - live.length);
-    const card = s => {
-      const a = el('a', { className: 'sponsor', href: s.url, target: '_blank', rel: 'sponsored noopener' });
-      if (s.logo) a.append(el('img', { src: s.logo, alt: '', width: 32, height: 32, loading: 'lazy' }));
-      a.append(el('strong', {}, s.name), el('span', {}, s.tagline));
+    const open = slots - live.length;
+    const taken = s => {
+      const a = el('a', { className: 'slot slot--taken', href: s.url, target: '_blank', rel: 'sponsored noopener' });
+      if (s.logo) {
+        const img = el('img', { src: s.logo, alt: '', width: 44, height: 44, loading: 'lazy' });
+        img.addEventListener('error', () => img.remove(), { once: true });
+        a.append(img);
+      }
+      a.append(el('span', { className: 'slot__name' }, s.name));
+      if (s.tagline) a.append(el('span', { className: 'slot__line' }, s.tagline));
       return a;
     };
-    const openCard = () => buy && linkCard(buy.href, 'sponsor open', 'Your product here', `$${price} a month beside every Tuck download. ${open} of ${slots} spots open.`, 'noopener');
-    const aboutCard = () => buy && linkCard(buy.href, 'sponsor open', 'Sponsor Tuck', 'Your logo, name and one line, linked, on every screen of this page. Monthly, cancel any time.', 'noopener');
-    // Sponsors alternate left and right; the open spot goes on the shorter rail, and the other rail explains what a sponsor gets
-    const left = live.filter((_, i) => i % 2 === 0), right = live.filter((_, i) => i % 2 === 1);
-    const openOn = left.length <= right.length ? '0' : '1';
-    const rails = {
-      0: () => [...left.map(card), open && (openOn === '0' ? openCard() : aboutCard())],
-      1: () => [...right.map(card), open && (openOn === '1' ? openCard() : aboutCard())],
-      inline: () => [...live.map(card), open && openCard(), open && aboutCard()],
+    const vacant = () => {
+      const a = el(buy ? 'a' : 'div', { className: 'slot slot--open' });
+      if (buy) Object.assign(a, { href: buy.href, target: '_blank', rel: 'noopener' });
+      a.setAttribute('aria-label', `Your startup here: $${price} a month, ${open} of ${slots} spots open`);
+      a.insertAdjacentHTML('afterbegin', MEGAPHONE);
+      a.append(el('span', { className: 'slot__label' }, 'Your startup here'), el('span', { className: 'slot__price', ariaHidden: 'true' }, `$${price} a month`));
+      return a;
     };
+    // Every slot is a card: sponsors in order, then the open ones. Wide screens split them over two rails.
+    const cards = () => [...live.map(taken), ...Array.from({ length: open }, vacant)];
+    const half = Math.ceil(slots / 2);
+    const rails = { 0: () => cards().slice(0, half), 1: () => cards().slice(half), inline: cards };
     $$('[data-rail]').forEach(rail => {
-      const cards = (rails[rail.dataset.rail]?.() || []).filter(Boolean);
+      const list = rails[rail.dataset.rail]?.() || [];
       const stack = el('div', { className: 'rail-stack' });
-      stack.append(...cards);
-      rail.replaceChildren(...(cards.length ? [stack] : []));
+      stack.append(el('p', { className: 'rail-label' }, 'Sponsors'), ...list);
+      rail.replaceChildren(...(list.length ? [stack] : []));
     });
     if (buy) $$('[data-sponsor-link]').forEach(a => { a.href = buy.href; a.target = '_blank'; a.rel = 'noopener'; });
   }).catch(() => {});

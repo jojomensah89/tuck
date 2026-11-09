@@ -98,7 +98,7 @@
     // Every slot is a card: sponsors in order, then the open ones. Wide screens split them over two rails.
     const cards = () => [...live.map(taken), ...Array.from({ length: open }, vacant)];
     const half = Math.ceil(slots / 2);
-    const rails = { 0: () => cards().slice(0, half), 1: () => cards().slice(half), inline: cards };
+    const rails = { 0: () => cards().slice(0, half), 1: () => cards().slice(half) };
     $$('[data-rail]').forEach(rail => {
       const list = rails[rail.dataset.rail]?.() || [];
       const stack = el('div', { className: 'rail-stack' });
@@ -106,7 +106,88 @@
       rail.replaceChildren(...(list.length ? [stack] : []));
     });
     if (buy) $$('[data-sponsor-link]').forEach(a => { a.href = buy.href; a.target = '_blank'; a.rel = 'noopener'; });
+    buildStrip(cards);
   }).catch(() => {});
+
+  /* ---------- Sponsor strip: along the foot of the first screen on desktop, pinned to the bottom on phones ---------- */
+  function buildStrip(cards) {
+    const strip = document.querySelector('[data-strip]');
+    if (!strip) return;
+    if (!cards().length) { strip.hidden = true; return; }
+    const set = () => { const g = el('div', { className: 'strip__set' }); g.append(...cards()); return g; };
+    const track = el('div', { className: 'strip__track' });
+    const first = set();
+    track.append(first);
+    strip.replaceChildren(track);
+    strip.hidden = false;
+    document.documentElement.classList.add('has-strip');
+
+    // A second copy makes the drift seamless. Its cards stay clickable when they scroll into view, but screen
+    // readers and the keyboard only meet the first set. It exists only while the row is wider than the strip.
+    let copy = null;
+    const fitCopy = () => {
+      const style = getComputedStyle(strip);
+      const room = strip.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+      const needs = first.scrollWidth > room;
+      if (needs && !copy) {
+        copy = set(); copy.setAttribute('aria-hidden', 'true');
+        copy.querySelectorAll('a').forEach(a => { a.tabIndex = -1; });
+        track.append(copy);
+      } else if (!needs && copy) { copy.remove(); copy = null; strip.scrollLeft = 0; }
+      kick();
+    };
+
+    // Drift slowly. Each reason to stand still is tracked on its own, and the drift resumes only when none is left.
+    const motion = matchMedia('(prefers-reduced-motion: reduce)');
+    const hold = { hover: false, touch: false, focus: false, wheel: false, offscreen: false };
+    let touchTimer = 0, wheelTimer = 0, focusTimer = 0, frame = 0, last = 0;
+    const moving = () => copy && !motion.matches && !document.hidden && !Object.values(hold).some(Boolean);
+    const step = now => {
+      frame = 0;
+      if (!moving()) { last = 0; return; }
+      const dt = last ? Math.min(64, now - last) : 0; last = now;
+      strip.scrollLeft += dt * 0.03; // about 30px a second
+      const loop = copy.offsetLeft - first.offsetLeft;
+      if (strip.scrollLeft >= loop) strip.scrollLeft -= loop;
+      frame = requestAnimationFrame(step);
+    };
+    // Frames are asked for only while something can move
+    function kick() { if (!frame && moving()) { last = 0; frame = requestAnimationFrame(step); } }
+    const set_ = (key, value) => { hold[key] = value; kick(); };
+    strip.addEventListener('pointerenter', e => { if (e.pointerType === 'mouse') set_('hover', true); });
+    strip.addEventListener('pointerleave', e => { if (e.pointerType === 'mouse') set_('hover', false); });
+    strip.addEventListener('pointerdown', e => { if (e.pointerType !== 'mouse') { clearTimeout(touchTimer); set_('touch', true); } });
+    const touchEnd = () => { clearTimeout(touchTimer); touchTimer = setTimeout(() => set_('touch', false), 2500); };
+    strip.addEventListener('pointerup', e => { if (e.pointerType !== 'mouse') touchEnd(); });
+    strip.addEventListener('pointercancel', touchEnd);
+    strip.addEventListener('focusin', () => { clearTimeout(focusTimer); set_('focus', true); strip.classList.remove('strip--away'); });
+    strip.addEventListener('focusout', () => { clearTimeout(focusTimer); focusTimer = setTimeout(() => set_('focus', strip.contains(document.activeElement)), 1500); });
+    strip.addEventListener('wheel', () => { clearTimeout(wheelTimer); set_('wheel', true); wheelTimer = setTimeout(() => set_('wheel', false), 1500); }, { passive: true });
+    if ('IntersectionObserver' in window) new IntersectionObserver(([e]) => set_('offscreen', !e.isIntersecting)).observe(strip);
+    document.addEventListener('visibilitychange', kick);
+    motion.addEventListener?.('change', kick);
+    addEventListener('resize', fitCopy);
+    fitCopy();
+
+    // On phones the strip is a bar at the bottom: it steps aside while reading down and returns on the way up,
+    // when scrolling stops, and at the end of the page. It never hides while one of its links has focus.
+    const phone = matchMedia('(max-width: 1279px)');
+    const maxY = () => Math.max(0, document.documentElement.scrollHeight - innerHeight);
+    let anchorY = Math.min(scrollY, maxY()), settle = 0;
+    const show = () => strip.classList.remove('strip--away');
+    phone.addEventListener?.('change', () => { show(); anchorY = Math.min(scrollY, maxY()); });
+    addEventListener('scroll', () => {
+      if (!phone.matches) return;
+      const y = Math.min(Math.max(scrollY, 0), maxY()); // ignores iOS overscroll bounce
+      const atEnd = y >= maxY() - 80;
+      // Direction counts once the page has moved 24px one way, so slow scrolling is still read
+      if (atEnd || strip.contains(document.activeElement)) { show(); anchorY = y; }
+      else if (y - anchorY > 24 && y > 200) { strip.classList.add('strip--away'); anchorY = y; }
+      else if (anchorY - y > 24) { show(); anchorY = y; }
+      else if ((y > anchorY && strip.classList.contains('strip--away')) || (y < anchorY && !strip.classList.contains('strip--away'))) anchorY = y;
+      clearTimeout(settle); settle = setTimeout(show, 1200);
+    }, { passive: true });
+  }
 
   /* ---------- Install: the fragment walks through its three states; pointing at a statement holds it there ---------- */
   const stage = document.querySelector('.smartscreen');

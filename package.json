@@ -8,6 +8,7 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "test": "bun test",
+    "package:msix": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-msix.ps1",
     "tauri": "tauri",
     "test:ui": "bun run build && node src/tests/ui-smoke.mjs",
     "build:site": "vite build --config vite.site.config.ts && vite build --config vite.walkthroughs.config.ts"
@@ -40,3 +41,4 @@
   },
   "homepage": "https://github.com/jojomensah89/tuck"
 }
+

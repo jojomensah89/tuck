@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Privacy, Tuck</title>
+  <meta name="description" content="What Tuck keeps on your PC, what leaves it, and what this website counts.">
+  <meta name="theme-color" content="#dfdedb">
+  <link rel="icon" type="image/svg+xml" href="island/tuck.svg">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+  <style>
+    .policy { padding: 40px var(--edge) var(--gap-section); display: grid; gap: 48px; }
+    .policy h1 { font-size: var(--step-display); line-height: 1.04; }
+    .policy h2 { font-size: var(--step-head); margin-bottom: 14px; }
+    .policy section { display: grid; gap: 14px; max-width: 64ch; }
+    .policy ul { margin: 0; padding-left: 1.2em; display: grid; gap: 10px; }
+    .policy strong { font-weight: 600; }
+    .policy .muted { color: var(--muted); font-size: var(--step-small); }
+  </style>
+  <script defer data-website-id="4o4d6s5u6q5j262l" src="https://minilytics.jojomensah.com/js/script.js"></script>
+</head>
+<body>
+  <header class="policy" style="padding-bottom:0">
+    <a class="mark" href="./" aria-label="Tuck, home"><img src="island/tuck.svg" alt="" width="32" height="32"><span>Tuck</span></a>
+  </header>
+  <main class="policy">
+    <div style="display:grid;gap:16px;max-width:64ch">
+      <h1>Privacy</h1>
+      <p class="muted">Last updated 9 November 2026</p>
+      <p>Tuck is a desktop app for Windows. It has no account and no analytics, and nothing it keeps is sent to the developer. This page says what stays on your PC, what leaves it and why, and what this website counts.</p>
+    </div>
+
+    <section aria-labelledby="stays">
+      <h2 id="stays">What stays on your PC</h2>
+      <ul>
+        <li><strong>Clipboard history</strong> is kept in memory and is gone when Tuck closes. With <em>Keep after restart</em> on, it is saved in Tuck’s own app data, capped at 256&nbsp;MB. Turning history off deletes it.</li>
+        <li><strong>The file shelf, timers, reminders and settings</strong> are stored in Tuck’s app data folder on your PC.</li>
+        <li><strong>Dictation</strong> uses the microphone only while you record. Speech is turned into text on your processor, and the audio is not uploaded.</li>
+        <li><strong>Notification previews</strong> are off until you turn them on. When on, Tuck reads Windows notifications through the permission you grant and shows them on the island. They are not stored or sent anywhere.</li>
+        <li><strong>Media and system readings</strong> (what is playing, battery, CPU and memory) are read locally and shown on the island.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="leaves">
+      <h2 id="leaves">What leaves your PC, and when</h2>
+      <ul>
+        <li><strong>Lyrics.</strong> With lyrics on, the title, artist and length of the playing track go to LRCLIB, a free community lyrics library.</li>
+        <li><strong>Speech models.</strong> When you pick a dictation model, it is downloaded from Hugging Face. After that, dictation works offline.</li>
+        <li><strong>AI usage.</strong> If you switch on Claude or Codex usage, their own apps report your limits to Tuck and may contact Anthropic or OpenAI. For Antigravity, only after you confirm, Tuck contacts Google for your quota.</li>
+        <li><strong>Updates.</strong> The version downloaded from GitHub checks GitHub for a new release. The Microsoft Store version does not; the Store updates it.</li>
+      </ul>
+      <p>Nothing else. Tuck contains no advertising, no tracking and no crash reporting.</p>
+    </section>
+
+    <section aria-labelledby="site">
+      <h2 id="site">This website</h2>
+      <p>tuck.jojomensah.com counts visits with a self-hosted counter. It sets two first-party cookies, one for the visitor and one for the session, and records the page, the referring site and which buttons are clicked. It shares nothing with advertising networks. The app itself does not load the counter.</p>
+    </section>
+
+    <section aria-labelledby="contact">
+      <h2 id="contact">Questions</h2>
+      <p>Tuck is open source under the MIT licence. Ask or report anything in an <a class="text-link" href="https://github.com/jojomensah89/tuck/issues">issue on GitHub</a>.</p>
+    </section>
+  </main>
+  <footer class="foot">
+    <span class="muted">Tuck, a desktop island for Windows</span>
+    <nav aria-label="Footer"><a href="./">Home</a><a href="https://github.com/jojomensah89/tuck">GitHub</a></nav>
+    <span class="muted">© 2026 Tuck contributors</span>
+  </footer>
+</body>
+</html>

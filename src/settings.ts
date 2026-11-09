@@ -324,7 +324,7 @@ async function initUpdates(): Promise<void> {
   const btnInstall = $<HTMLButtonElement>('btnInstallUpdate')!;
   const statusText = $('updateStatusText')!;
   if (await isStoreBuild()) {
-    btnCheck.hidden = true; btnInstall.hidden = true;
+    btnCheck.remove(); btnInstall.remove();
     statusText.textContent = 'Updates come from the Microsoft Store';
     return;
   }
@@ -467,3 +467,4 @@ function mountWelcome(): void {
   $('showWelcome')!.onclick = show;
   if (location.hash === '#welcome') queueMicrotask(show);
 }
+

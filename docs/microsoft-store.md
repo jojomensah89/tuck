@@ -1,0 +1,67 @@
+# Microsoft Store MSIX
+
+Build on Windows with the README prerequisites and Windows SDK:
+
+```powershell
+bun install --frozen-lockfile
+. ./scripts/prepare-native.ps1 -InstallBuildTools
+bun run tauri build
+$env:MSIX_IDENTITY_NAME = 'your Partner Center identity'
+$env:MSIX_PUBLISHER = 'CN=your Partner Center publisher'
+$env:MSIX_PUBLISHER_DISPLAY_NAME = 'Your publisher name'
+bun run package:msix
+```
+
+The script emits `artifacts/msix/Tuck_0.3.0.0_x64.msix` for version 0.3.0.
+It packages the release executable, not the NSIS installer. No signing key is
+used: the Store signs submissions. The default identity in
+`src-tauri/msix/identity.json` is explicitly a placeholder. Set the three
+repository variables with the same names for CI. Get the exact values from
+Partner Center > Product management > Product identity. Never submit placeholders.
+Reserve an **MSIX or PWA app**, then upload the unsigned MSIX through its package
+submission page. This is separate from Tauri's EXE/MSI submission route.
+
+Suggested runFullTrust justification:
+
+> Tuck is a Windows desktop utility that displays an interactive desktop island,
+> controls media and volume, supports local speech dictation and user-enabled
+> clipboard and notification tools. Full trust is needed for desktop window
+> management, global keyboard shortcuts and integration with Windows desktop APIs.
+
+Certification review notes:
+
+- A low-level keyboard hook supports dictation shortcuts and volume keys.
+- Clipboard history is off by default; notification listener access requires user permission.
+- Dictation processing is local. Model downloads and optional online integrations
+  still need network access; do not describe the entire application as offline.
+- Packaged startup uses the declared `TuckStartup` task. Task Manager or policy
+  can prevent enabling it; Settings displays the restriction.
+- Updates come from the Microsoft Store. The website installer keeps its updater.
+- Settings do not carry over from the website installation. MSIX redirects app data;
+  test first-run and model storage in the installed package.
+- Test Windows S mode certification restrictions, including blocked executables
+  and WebView2 behavior; passing compilation alone is not certification evidence.
+
+Local testing (use a disposable Windows account or VM): enable Developer Mode,
+then run `Add-AppxPackage -Path .\artifacts\msix\Tuck_0.3.0.0_x64.msix -AllowUnsigned`.
+If unsigned deployment is unsupported by that Windows version, create a test
+code-signing certificate whose subject exactly matches Publisher, trust its public
+certificate in the test machine's Trusted People store, sign a COPY with
+`signtool sign /fd SHA256 /f test.pfx package.msix`, and install the copy.
+Never upload the test-signed package or commit the private certificate.
+
+Launch from Start; verify startup on/off, Task Manager disabled state, About,
+absence of update controls, tray behavior, notification permission, dictation,
+restart and uninstall. Run Windows App Certification Kit from the Windows SDK:
+select the installed packaged application in **Windows App Cert Kit**, run all
+applicable tests, and retain its report. Resolve certification failures before
+submission. Store identity and certification approval remain owner actions.
+
+References: [startup task schema](https://learn.microsoft.com/en-us/uwp/schemas/appxpackage/uapmanifestschema/element-uap5-startuptask),
+[Tauri Store distribution](https://v2.tauri.app/distribute/microsoft-store/).
+
+## Implementation validation
+
+See the PR for current executed check results. Screenshots in `docs/screens/msix`
+use mocked native identity/startup responses and show the real built Settings UI;
+they are not proof of installed-package behavior.

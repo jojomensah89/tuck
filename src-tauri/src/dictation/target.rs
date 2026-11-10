@@ -224,11 +224,19 @@ mod clipboard {
             }
         }
     }
+    /// Another app may hold the clipboard for a moment, so one refusal is not final.
     fn open(owner: isize) -> Result<Open, String> {
-        unsafe {
-            OpenClipboard(HWND(owner as _)).map_err(|e| e.to_string())?;
+        let mut attempt = 0;
+        loop {
+            match unsafe { OpenClipboard(HWND(owner as _)) } {
+                Ok(()) => return Ok(Open),
+                Err(error) if attempt == 9 => return Err(error.to_string()),
+                Err(_) => {
+                    attempt += 1;
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+            }
         }
-        Ok(Open)
     }
     unsafe fn snapshot() -> Option<Snapshot> {
         let mut result = Vec::new();
@@ -269,7 +277,7 @@ mod clipboard {
             result.push((format, bytes));
         }
     }
-    unsafe fn set(format: u32, bytes: &[u8]) -> Result<(), String> {
+    unsafe fn alloc(bytes: &[u8]) -> Result<HGLOBAL, String> {
         let mem = GlobalAlloc(GMEM_MOVEABLE, bytes.len()).map_err(|e| e.to_string())?;
         let ptr = GlobalLock(mem) as *mut u8;
         if ptr.is_null() {
@@ -278,26 +286,87 @@ mod clipboard {
         }
         std::ptr::copy_nonoverlapping(bytes.as_ptr(), ptr, bytes.len());
         let _ = GlobalUnlock(mem);
-        if let Err(e) = SetClipboardData(format, HANDLE(mem.0)) {
-            let _ = GlobalFree(mem);
-            return Err(e.to_string());
-        }
-        Ok(())
+        Ok(mem)
     }
-    unsafe fn mark() -> Result<(), String> {
-        for name in [
+    /// The formats that keep a write out of Windows clipboard history and cloud sync.
+    unsafe fn privacy_formats() -> Result<[u32; 3], String> {
+        let mut ids = [0; 3];
+        for (id, name) in ids.iter_mut().zip([
             "ExcludeClipboardContentFromMonitorProcessing",
             "CanIncludeInClipboardHistory",
             "CanUploadToCloudClipboard",
-        ] {
+        ]) {
             let wide: Vec<u16> = name.encode_utf16().chain(Some(0)).collect();
-            let id = RegisterClipboardFormatW(windows::core::PCWSTR(wide.as_ptr()));
-            if id == 0 {
+            *id = RegisterClipboardFormatW(windows::core::PCWSTR(wide.as_ptr()));
+            if *id == 0 {
                 return Err("Clipboard privacy format unavailable".into());
             }
-            set(id, &0u32.to_ne_bytes())?;
         }
-        Ok(())
+        Ok(ids)
+    }
+    /// A failed replacement, and whether the clipboard had already been emptied.
+    struct ReplaceError {
+        cleared: bool,
+        message: String,
+    }
+    /// Replaces the open clipboard with `items` plus the privacy formats. Every block is
+    /// allocated before the clipboard is emptied, so running out of memory changes nothing.
+    unsafe fn replace(items: &[(u32, &[u8])]) -> Result<(), ReplaceError> {
+        let mut prepared = Vec::with_capacity(items.len() + 3);
+        let free = |prepared: Vec<(u32, HGLOBAL)>| {
+            for (_, mem) in prepared {
+                let _ = GlobalFree(mem);
+            }
+        };
+        let allocated = (|| {
+            let privacy = privacy_formats()?;
+            for id in privacy {
+                prepared.push((id, alloc(&0u32.to_ne_bytes())?));
+            }
+            for (format, bytes) in items {
+                if !privacy.contains(format) {
+                    prepared.push((*format, alloc(bytes)?));
+                }
+            }
+            Ok(())
+        })();
+        if let Err(message) = allocated {
+            free(prepared);
+            return Err(ReplaceError {
+                cleared: false,
+                message,
+            });
+        }
+        if let Err(error) = EmptyClipboard() {
+            free(prepared);
+            return Err(ReplaceError {
+                cleared: false,
+                message: error.to_string(),
+            });
+        }
+        let mut failure = None;
+        for (format, mem) in prepared {
+            // The clipboard owns a block only once it accepts it.
+            if failure.is_some() {
+                let _ = GlobalFree(mem);
+            } else if let Err(error) = SetClipboardData(format, HANDLE(mem.0)) {
+                let _ = GlobalFree(mem);
+                failure = Some(error.to_string());
+            }
+        }
+        match failure {
+            None => Ok(()),
+            Some(message) => Err(ReplaceError {
+                cleared: true,
+                message,
+            }),
+        }
+    }
+    fn items(snapshot: &Snapshot) -> Vec<(u32, &[u8])> {
+        snapshot
+            .iter()
+            .map(|(format, bytes)| (*format, bytes.as_slice()))
+            .collect()
     }
     pub(super) fn write(
         text: &str,
@@ -322,11 +391,21 @@ mod clipboard {
 
         check_cancel(cancel)?;
         unsafe {
-            EmptyClipboard().map_err(|e| e.to_string())?;
-            mark()?;
             let units = Zeroizing::new(text.encode_utf16().chain(Some(0)).collect::<Vec<_>>());
             let bytes = std::slice::from_raw_parts(units.as_ptr() as *const u8, units.len() * 2);
-            set(13, bytes)?;
+            if let Err(error) = replace(&[(13, bytes)]) {
+                if error.cleared {
+                    // Put back what was there; a half-written transcript must not stay.
+                    let restored = previous
+                        .as_ref()
+                        .is_some_and(|snapshot| replace(&items(snapshot)).is_ok());
+                    if !restored {
+                        let _ = EmptyClipboard();
+                    }
+                    *history = GetClipboardSequenceNumber();
+                }
+                return Err(error.message.into());
+            }
         }
         let sequence = unsafe { GetClipboardSequenceNumber() };
         drop(opened);
@@ -398,37 +477,12 @@ mod clipboard {
                 } else {
                     500
                 }));
-                let mut state = RESTORE.lock().unwrap_or_else(|p| p.into_inner());
-                if state.generation != generation {
-                    return;
+                // A busy clipboard or a failed write is retried for a while. The saved
+                // contents are given up only once they are back or someone else wrote.
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+                while !restore_once(owner, generation) && std::time::Instant::now() < deadline {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
                 }
-                let mut history = crate::clipboard_history::DICTATION_CLIPBOARD
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner());
-                let Ok(opened) = open(owner) else {
-                    return;
-                };
-                if !restore_allowed(state.generation, generation, state.sequence, unsafe {
-                    GetClipboardSequenceNumber()
-                }) {
-                    state.original = None;
-                    state.sequence = None;
-                    return;
-                }
-                if let Some(snapshot) = state.original.take() {
-                    unsafe {
-                        if EmptyClipboard().is_ok() {
-                            for (format, bytes) in snapshot {
-                                if set(format, &bytes).is_err() {
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                    *history = unsafe { GetClipboardSequenceNumber() };
-                    drop(opened);
-                }
-                state.sequence = None;
             });
         }
         check_cancel(cancel)?;
@@ -441,6 +495,45 @@ mod clipboard {
             });
         }
         Ok(allowed)
+    }
+    /// One attempt to put the saved clipboard back. False means try again.
+    fn restore_once(owner: isize, generation: u64) -> bool {
+        let mut state = RESTORE.lock().unwrap_or_else(|p| p.into_inner());
+        if state.generation != generation {
+            return true;
+        }
+        let mut history = crate::clipboard_history::DICTATION_CLIPBOARD
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let Ok(_opened) = open(owner) else {
+            return false;
+        };
+        if !restore_allowed(state.generation, generation, state.sequence, unsafe {
+            GetClipboardSequenceNumber()
+        }) {
+            state.original = None;
+            state.sequence = None;
+            return true;
+        }
+        let Some(snapshot) = state.original.as_ref() else {
+            state.sequence = None;
+            return true;
+        };
+        let result = unsafe { replace(&items(snapshot)) };
+        // Tuck's own history skips this write, and a retry still recognises the clipboard as ours.
+        let sequence = unsafe { GetClipboardSequenceNumber() };
+        *history = sequence;
+        match result {
+            Ok(()) => {
+                state.original = None;
+                state.sequence = None;
+                true
+            }
+            Err(_) => {
+                state.sequence = Some(sequence);
+                false
+            }
+        }
     }
     fn modifiers_held() -> bool {
         use windows::Win32::UI::Input::KeyboardAndMouse::*;

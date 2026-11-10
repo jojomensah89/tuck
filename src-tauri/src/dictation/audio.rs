@@ -123,7 +123,14 @@ impl EngineCache {
             self.resident.store(false, Ordering::Release);
         }
     }
-    fn acquire(&self, path: &std::path::Path) -> Result<EngineLease<'_>, String> {
+    fn acquire(
+        &self,
+        path: &std::path::Path,
+        cancel: &AtomicBool,
+    ) -> Result<EngineLease<'_>, String> {
+        if cancel.load(Ordering::Acquire) {
+            return Err("Dictation cancelled".into());
+        }
         let mut slot = self.entry.lock().map_err(|_| "Speech engine unavailable")?;
         if slot
             .as_ref()
@@ -131,9 +138,13 @@ impl EngineCache {
         {
             self.resident.store(false, Ordering::Release);
             *slot = None; // release the old weights before loading another model
+            let engine = LocalEngine::load_cancellable(path, cancel)?;
+            if cancel.load(Ordering::Acquire) {
+                return Err("Dictation cancelled".into());
+            }
             *slot = Some(CachedEngine {
                 path: path.to_owned(),
-                engine: LocalEngine::load(path)?,
+                engine,
                 used: Instant::now(),
             });
             self.resident.store(true, Ordering::Release);
@@ -162,7 +173,7 @@ impl EngineCache {
         });
     }
     pub(super) fn warm(&self, path: &std::path::Path) -> Result<(), String> {
-        drop(self.acquire(path)?);
+        drop(self.acquire(path, &AtomicBool::new(false))?);
         Ok(())
     }
 }
@@ -238,10 +249,11 @@ fn record_and_transcribe_inner(
     let events = AppEvents { service };
     let path = active.path.clone();
     let entry = active.entry;
+    let load_cancel = cancel.clone();
     run_session(
         move || {
             model::verify(&path, entry, &service.verified, false)?;
-            service.engine_cache.acquire(&path)
+            service.engine_cache.acquire(&path, &load_cancel)
         },
         &events,
         capture,
@@ -450,6 +462,9 @@ fn engine_thread<E: Engine>(
     load_error: &Mutex<Option<String>>,
     cancel: &AtomicBool,
 ) -> Result<String, String> {
+    if cancel.load(Ordering::Acquire) {
+        return Err("Dictation cancelled".into());
+    }
     let mut engine = match load() {
         Ok(engine) => engine,
         Err(error) => {
@@ -460,6 +475,9 @@ fn engine_thread<E: Engine>(
             return Err(error);
         }
     };
+    if cancel.load(Ordering::Acquire) {
+        return Err("Dictation cancelled".into());
+    }
     if let Some(result) = engine.streaming(&job_rx, events, flags, cancel) {
         return result;
     }
@@ -1020,7 +1038,7 @@ mod tests {
             &cancel,
         );
         player.join().unwrap();
-        assert_eq!(result.unwrap_err(), "Dictation cancelled");
+        assert!(matches!(result, Err(error) if error == "Dictation cancelled"));
         assert_eq!(harness.final_samples.load(Ordering::SeqCst), 0);
     }
 
@@ -1094,7 +1112,7 @@ mod tests {
         let result = run_session(
             || {
                 let load = Instant::now();
-                let engine = cache.acquire(std::path::Path::new(&model));
+                let engine = cache.acquire(std::path::Path::new(&model), &cancel);
                 *loaded_in.lock().unwrap() = Some(load.elapsed());
                 engine
             },
@@ -1254,13 +1272,24 @@ mod meter_tests {
 fn recover_gpu<T>(
     failed: &AtomicBool,
     gpu: bool,
-    cancelled: bool,
+    cancel: &AtomicBool,
     result: Result<T, String>,
     cpu: impl FnOnce() -> Result<T, String>,
 ) -> Result<T, String> {
-    if gpu && !cancelled && result.is_err() {
+    if gpu && result.is_err() {
+        if cancel.load(Ordering::Acquire) {
+            return Err("Dictation cancelled".into());
+        }
         failed.store(true, Ordering::Release);
-        cpu()
+        if cancel.load(Ordering::Acquire) {
+            return Err("Dictation cancelled".into());
+        }
+        let result = cpu();
+        if cancel.load(Ordering::Acquire) {
+            Err("Dictation cancelled".into())
+        } else {
+            result
+        }
     } else {
         result
     }
@@ -1272,7 +1301,8 @@ mod gpu_tests {
     fn gpu_failure_preserves_clip_and_disables_future_gpu_attempts() {
         let failed = AtomicBool::new(false);
         let audio = vec![0.1, 0.2, 0.3];
-        let result = recover_gpu(&failed, true, false, Err("device lost".into()), || {
+        let cancel = AtomicBool::new(false);
+        let result = recover_gpu(&failed, true, &cancel, Err("device lost".into()), || {
             assert_eq!(audio, [0.1, 0.2, 0.3]);
             Ok("recording recovered on CPU".to_string())
         });
@@ -1282,9 +1312,14 @@ mod gpu_tests {
     #[test]
     fn load_failure_is_remembered_and_cpu_result_is_returned() {
         let failed = AtomicBool::new(false);
-        let loaded = recover_gpu(&failed, true, false, Err("GPU load failed".into()), || {
-            Ok("CPU session")
-        });
+        let cancel = AtomicBool::new(false);
+        let loaded = recover_gpu(
+            &failed,
+            true,
+            &cancel,
+            Err("GPU load failed".into()),
+            || Ok("CPU session"),
+        );
         assert_eq!(loaded.unwrap(), "CPU session");
         let next_backend = if failed.load(Ordering::Acquire) {
             "CPU"
@@ -1308,13 +1343,23 @@ mod gpu_tests {
     #[test]
     fn cancellation_does_not_retry_or_poison_gpu() {
         let failed = AtomicBool::new(false);
-        assert!(
-            recover_gpu::<()>(&failed, true, true, Err("cancelled".into()), || panic!(
-                "retry"
-            ))
-            .is_err()
-        );
+        assert!(recover_gpu::<()>(
+            &failed,
+            true,
+            &AtomicBool::new(true),
+            Err("cancelled".into()),
+            || panic!("retry")
+        )
+        .is_err());
         assert!(!failed.load(Ordering::Acquire));
+    }
+    #[test]
+    fn cancelled_load_never_enters_gpu_or_cpu_model_loading() {
+        let result = LocalEngine::load_cancellable(
+            std::path::Path::new("missing-model.gguf"),
+            &AtomicBool::new(true),
+        );
+        assert!(matches!(result, Err(error) if error == "Dictation cancelled"));
     }
 }
 static GPU_FAILED: AtomicBool = AtomicBool::new(false);
@@ -1356,7 +1401,11 @@ impl ParakeetEngine {
     fn session(
         path: &std::path::Path,
         device: Option<transcribe_cpp::Device>,
+        cancel: &AtomicBool,
     ) -> Result<transcribe_cpp::Session, String> {
+        if cancel.load(Ordering::Acquire) {
+            return Err("Dictation cancelled".into());
+        }
         let gpu = device.is_some();
         let model = transcribe_cpp::Model::load_with(
             path,
@@ -1371,6 +1420,9 @@ impl ParakeetEngine {
             },
         )
         .map_err(|e| e.to_string())?;
+        if cancel.load(Ordering::Acquire) {
+            return Err("Dictation cancelled".into());
+        }
         model
             .session_with(&transcribe_cpp::SessionOptions {
                 n_threads: if gpu { 1 } else { 0 },
@@ -1378,7 +1430,10 @@ impl ParakeetEngine {
             })
             .map_err(|e| e.to_string())
     }
-    fn load(path: &std::path::Path) -> Result<Self, String> {
+    fn load(path: &std::path::Path, cancel: &AtomicBool) -> Result<Self, String> {
+        if cancel.load(Ordering::Acquire) {
+            return Err("Dictation cancelled".into());
+        }
         if !GPU_FAILED.load(Ordering::Acquire) && std::env::var_os("TUCK_TEST_CPU").is_none() {
             let mut devices = transcribe_cpp::devices()
                 .into_iter()
@@ -1392,8 +1447,14 @@ impl ParakeetEngine {
                 .collect::<Vec<_>>();
             devices.sort_by_key(|d| d.device_type != transcribe_cpp::DeviceType::Gpu);
             if let Some(device) = devices.into_iter().next() {
+                if cancel.load(Ordering::Acquire) {
+                    return Err("Dictation cancelled".into());
+                }
                 let label = format!("GPU: {}", device.description);
-                let loaded = Self::session(path, Some(device)).and_then(|mut session| {
+                let loaded = Self::session(path, Some(device), cancel).and_then(|mut session| {
+                    if cancel.load(Ordering::Acquire) {
+                        return Err("Dictation cancelled".into());
+                    }
                     {
                         let mut stream = session
                             .stream(&transcribe_cpp::RunOptions::default(), &Default::default())
@@ -1403,10 +1464,16 @@ impl ParakeetEngine {
                     }
                     Ok(session)
                 });
-                let session = recover_gpu(&GPU_FAILED, true, false, loaded, || {
+                let session = recover_gpu(&GPU_FAILED, true, cancel, loaded, || {
                     set_backend("CPU (GPU load or warmup failed)".into());
-                    Self::session(path, None)
+                    if cancel.load(Ordering::Acquire) {
+                        return Err("Dictation cancelled".into());
+                    }
+                    Self::session(path, None, cancel)
                 })?;
+                if cancel.load(Ordering::Acquire) {
+                    return Err("Dictation cancelled".into());
+                }
                 let gpu = !GPU_FAILED.load(Ordering::Acquire);
                 if gpu {
                     set_backend(label);
@@ -1429,26 +1496,46 @@ impl ParakeetEngine {
         } else {
             set_backend("CPU (GPU disabled for this run)".into());
         }
+        let session = Self::session(path, None, cancel)?;
+        if cancel.load(Ordering::Acquire) {
+            return Err("Dictation cancelled".into());
+        }
         Ok(Self {
-            session: Self::session(path, None)?,
+            session,
             path: path.into(),
             gpu: false,
         })
     }
-    fn fallback(&mut self) -> Result<(), String> {
+    fn fallback(&mut self, cancel: &AtomicBool) -> Result<(), String> {
+        if cancel.load(Ordering::Acquire) {
+            return Err("Dictation cancelled".into());
+        }
         GPU_FAILED.store(true, Ordering::Release);
         set_backend("CPU (GPU inference failed)".into());
-        self.session = Self::session(&self.path, None)?;
+        if cancel.load(Ordering::Acquire) {
+            return Err("Dictation cancelled".into());
+        }
+        let session = Self::session(&self.path, None, cancel)?;
+        if cancel.load(Ordering::Acquire) {
+            return Err("Dictation cancelled".into());
+        }
+        self.session = session;
         self.gpu = false;
         Ok(())
     }
     fn run(&mut self, audio: &[f32], abort: &AbortSignal<'_>) -> Result<String, String> {
         if self.gpu && GPU_FAILED.load(Ordering::Acquire) {
-            self.fallback()?;
+            if abort.cancel.load(Ordering::Acquire) {
+                return Err("Dictation cancelled".into());
+            }
+            self.fallback(abort.cancel)?;
         }
         let result = parakeet_run(&mut self.session, audio, abort);
-        recover_gpu(&GPU_FAILED, self.gpu, abort.requested(), result, || {
-            self.fallback()?;
+        recover_gpu(&GPU_FAILED, self.gpu, abort.cancel, result, || {
+            if abort.cancel.load(Ordering::Acquire) {
+                return Err("Dictation cancelled".into());
+            }
+            self.fallback(abort.cancel)?;
             parakeet_run(&mut self.session, audio, abort)
         })
     }
@@ -1470,14 +1557,20 @@ impl BufferedBackend for ParakeetEngine {
     fn gpu(&self) -> bool {
         self.gpu
     }
-    fn stream_failed(&mut self) {
-        if self.gpu {
+    fn stream_failed(&mut self, cancel: &AtomicBool) {
+        if self.gpu && !cancel.load(Ordering::Acquire) {
             GPU_FAILED.store(true, Ordering::Release);
         }
     }
     fn batch(&mut self, audio: &[f32], cancel: &AtomicBool) -> Result<String, String> {
+        if cancel.load(Ordering::Acquire) {
+            return Err("Dictation cancelled".into());
+        }
         if self.gpu && GPU_FAILED.load(Ordering::Acquire) {
-            self.fallback()?;
+            if cancel.load(Ordering::Acquire) {
+                return Err("Dictation cancelled".into());
+            }
+            self.fallback(cancel)?;
         }
         self.run(
             audio,
@@ -1494,11 +1587,18 @@ enum LocalEngine {
     Parakeet(ParakeetEngine),
 }
 impl LocalEngine {
+    #[cfg(test)]
     fn load(path: &std::path::Path) -> Result<Self, String> {
+        Self::load_cancellable(path, &AtomicBool::new(false))
+    }
+    fn load_cancellable(path: &std::path::Path, cancel: &AtomicBool) -> Result<Self, String> {
+        if cancel.load(Ordering::Acquire) {
+            return Err("Dictation cancelled".into());
+        }
         if is_parakeet_path(path) {
             ensure_cpu_supports_whisper()?;
             initialize_backends()?;
-            Ok(Self::Parakeet(ParakeetEngine::load(path)?))
+            Ok(Self::Parakeet(ParakeetEngine::load(path, cancel)?))
         } else {
             WhisperEngine::load(path).map(Self::Whisper)
         }
@@ -1540,7 +1640,10 @@ impl Engine for LocalEngine {
             return None;
         };
         if session.gpu && GPU_FAILED.load(Ordering::Acquire) {
-            if let Err(error) = session.fallback() {
+            if cancel.load(Ordering::Acquire) {
+                return Some(Err("Dictation cancelled".into()));
+            }
+            if let Err(error) = session.fallback(cancel) {
                 return Some(Err(error));
             }
         }
@@ -1645,7 +1748,7 @@ trait BufferedBackend {
     fn gpu(&self) -> bool {
         false
     }
-    fn stream_failed(&mut self) {}
+    fn stream_failed(&mut self, _cancel: &AtomicBool) {}
     fn batch(&mut self, audio: &[f32], cancel: &AtomicBool) -> Result<String, String>;
 }
 impl BufferedBackend for transcribe_cpp::Session {
@@ -1783,8 +1886,14 @@ fn buffered_driver<B: BufferedBackend>(
             #[cfg(test)]
             eprintln!("buffered stream rejected; whole-clip fallback");
             session.clear();
+            if cancel.load(Ordering::Acquire) {
+                return Err("Dictation cancelled".into());
+            }
             if device_failed || token.is_cancelled() {
-                session.stream_failed();
+                session.stream_failed(cancel);
+            }
+            if cancel.load(Ordering::Acquire) {
+                return Err("Dictation cancelled".into());
             }
             let result = session.batch(&audio, cancel);
             if cancel.load(Ordering::Acquire) {
@@ -1809,6 +1918,8 @@ mod buffered_tests {
         fed: Arc<std::sync::Mutex<Vec<f32>>>,
         clock: &'a AtomicU64,
         batches: Vec<Vec<f32>>,
+        cancel_during_finalize: Option<Arc<AtomicBool>>,
+        poisoned: bool,
     }
     struct FakeStream<'a> {
         backend: &'a FakeBackend<'a>,
@@ -1836,6 +1947,14 @@ mod buffered_tests {
             Ok(())
         }
         fn finalize(&mut self) -> Result<(), String> {
+            if self.backend.failure == "gpu-user-cancel-finalize" {
+                self.backend
+                    .cancel_during_finalize
+                    .as_ref()
+                    .unwrap()
+                    .store(true, Ordering::Release);
+                return Err("user cancelled".into());
+            }
             if matches!(
                 self.backend.failure,
                 "deadline-finalize" | "gpu-deadline-finalize"
@@ -1899,6 +2018,9 @@ mod buffered_tests {
         fn invalid(&self) -> bool {
             false
         }
+        fn stream_failed(&mut self, _cancel: &AtomicBool) {
+            self.poisoned = true;
+        }
         fn batch(&mut self, audio: &[f32], cancel: &AtomicBool) -> Result<String, String> {
             assert!(
                 !self.alive.load(Ordering::Acquire),
@@ -1941,6 +2063,8 @@ mod buffered_tests {
                 fed: Arc::new(std::sync::Mutex::new(Vec::new())),
                 clock: &clock,
                 batches: Vec::new(),
+                cancel_during_finalize: None,
+                poisoned: false,
             };
             let audio: Vec<f32> = (0..16000).map(|i| 0.01 + i as f32 / 32000.0).collect();
             let cancel = AtomicBool::new(false);
@@ -2008,6 +2132,8 @@ mod buffered_tests {
             fed: Arc::new(std::sync::Mutex::new(Vec::new())),
             clock: &clock,
             batches: Vec::new(),
+            cancel_during_finalize: None,
+            poisoned: false,
         };
         let (tx, rx) = bounded(1);
         let audio = vec![0.1; 48000]; // timing ends at 1s: uncovered activity forces fallback
@@ -2024,6 +2150,42 @@ mod buffered_tests {
         )
         .is_err());
         assert_eq!(backend.batches, vec![audio]);
+    }
+
+    #[test]
+    fn cancellation_during_gpu_stream_failure_skips_poisoning_and_batch_recovery() {
+        let clock = AtomicU64::new(0);
+        let cancel = Arc::new(AtomicBool::new(false));
+        let mut backend = FakeBackend {
+            failure: "gpu-user-cancel-finalize",
+            token: None,
+            alive: Arc::new(AtomicBool::new(false)),
+            fed: Arc::new(std::sync::Mutex::new(Vec::new())),
+            clock: &clock,
+            batches: Vec::new(),
+            cancel_during_finalize: Some(cancel.clone()),
+            poisoned: false,
+        };
+        let (tx, rx) = bounded(1);
+        tx.send(EngineJob::Finish(Zeroizing::new(vec![0.1; 48000])))
+            .unwrap();
+        assert_eq!(
+            buffered_driver(
+                &mut backend,
+                &rx,
+                &super::tests::RecordedEvents::default(),
+                &driver_flags(),
+                &cancel,
+                &|| 0,
+            )
+            .unwrap_err(),
+            "Dictation cancelled"
+        );
+        assert!(!backend.poisoned, "cancelled work must not disable the GPU");
+        assert!(
+            backend.batches.is_empty(),
+            "cancelled work must not start CPU recovery"
+        );
     }
 
     #[test]

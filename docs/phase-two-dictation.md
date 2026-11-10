@@ -1,5 +1,7 @@
 > Historical plan or verification record. This is not the current feature list or setup guide. Some described features are being retired. Start with the [README](../README.md).
 
+> Superseded delivery behavior: Dictation temporarily writes to the Windows clipboard and sends Ctrl+V to the foreground app after modifiers are released. It restores transferable clipboard contents after about 500 ms only if no newer dictation or clipboard change supersedes it. Unsupported clipboard formats are not restored. Missing foreground, Tuck windows and detected password fields copy without pasting or restoring. Dictation and restore writes are excluded from Tuck history; dictation writes request exclusion from Windows history and cloud sync. Review Insert uses the same path. See docs/dictation-like-hex.md. Historical evidence below describes the prior implementation.
+
 # Phase two dictation and clipboard native contracts
 
 This packet implements the native dictation and clipboard-history services. It preserves the existing v1 flows. The coordinator-owned `src-tauri/src/lib.rs` already registers both services, commands, global shortcuts, startup and shutdown; this patch leaves `lib.rs` and capabilities unchanged.
@@ -82,7 +84,7 @@ Clipboard history is text-only, disabled by default and keeps at most 40 entries
 
 `ClipboardHistoryItem` contains `id`, `text`, `createdAtMs` and `pinned`. `ClipboardHistorySnapshot` contains `enabled`, `persistOnExit` and `items`. `clipboard_history_changed` carries a snapshot; `clipboard_history_error` carries an error string.
 
-The watcher skips Windows clipboard entries marked `ExcludeClipboardContentFromMonitorProcessing`, `CanIncludeInClipboardHistory=0`, `PasswordProtected`, or Tuck's `TuckDictationTransient` format. It also skips its own clipboard writes. These markers are cooperative: some password managers do not mark their clipboard contents, so password exclusion cannot be guaranteed. Automatic dictation insertion never touches the clipboard; only the explicit `clipboard_copy` command does.
+The watcher skips Windows clipboard entries marked `ExcludeClipboardContentFromMonitorProcessing`, `CanIncludeInClipboardHistory=0`, `PasswordProtected`, or Tuck's `TuckDictationTransient` format. It also skips its own clipboard writes. These markers are cooperative: some password managers do not mark their clipboard contents, so password exclusion cannot be guaranteed. Current dictation uses temporary clipboard paste; see the superseding delivery note above.
 
 Clipboard reads happen without holding the history state mutex. The watcher compares clipboard sequence numbers around each read and rejects stale snapshots; a generation check also rejects reads captured before a disable/re-enable transition. File updates use unique temporary files and atomic replacement. No extra Tauri capability or clipboard plugin is needed.
 

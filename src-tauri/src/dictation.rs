@@ -776,21 +776,6 @@ impl DictationService {
             return;
         }
         let settings = self.settings();
-        let changed = self.runtime.lock().map(|r| r.focus_changed).unwrap_or(true);
-        let safety = original_target
-            .as_ref()
-            .ok_or_else(|| "The original foreground window could not be captured.".to_owned())
-            .and_then(|t| {
-                if changed {
-                    Err("Focus changed during recording".into())
-                } else {
-                    target::verify_foreground_target(t)
-                }
-            })
-            .and_then(|_| match original_target.as_ref() {
-                Some(target) => target::is_editable_target(target),
-                None => Err("The original foreground window could not be captured.".into()),
-            });
         {
             let mut runtime = self.runtime.lock().unwrap();
             if cancel.load(Ordering::Acquire) {
@@ -803,59 +788,26 @@ impl DictationService {
         self.emit_state();
         let mut inserted = false;
         let mut partial_insertion = false;
-        // Review waits only when a usable field is focused at the END. The later
-        // explicit Insert action captures its own fresh target again.
-        let editable_at_end = if settings.review_before_insert {
-            target::capture_foreground().as_ref().is_some_and(|target| {
-                target::verify_foreground_target(target).is_ok()
-                    && target::is_editable_target(target).is_ok()
-            })
-        } else {
-            safety.is_ok()
-        };
-        let mut reason = if settings.review_before_insert && editable_at_end {
-            None
-        } else {
-            safety.err()
-        };
+        let mut reason = None;
+        let mut delivered_copy = false;
         if self.session_cancelled() {
             self.finish_cancelled();
             return;
         }
-        if !settings.review_before_insert && reason.is_none() {
-            if let Some(target) = original_target.as_ref() {
-                match target::insert_unicode(target, text.as_str(), cancel, &self.insertion_gate) {
-                    Ok(()) => {
-                        inserted = true;
-                        reason = Some("Inserted".into());
-                    }
-                    Err(error) => {
-                        partial_insertion = error.may_have_inserted;
-                        reason = Some(error.message);
-                    }
+        if !settings.review_before_insert {
+            match self.paste_transcript(text.as_str(), cancel) {
+                Ok(pasted) => {
+                    inserted = pasted;
+                    delivered_copy = !pasted;
+                    reason = Some(if pasted { "Inserted" } else { "Copied" }.into());
+                }
+                Err(error) => {
+                    partial_insertion = error.may_have_inserted;
+                    reason = Some(error.message);
                 }
             }
         }
-        let mut copied = false;
-        if should_copy_final(
-            settings.review_before_insert,
-            editable_at_end,
-            inserted,
-            partial_insertion,
-            cancel.load(Ordering::Acquire),
-        ) {
-            let _guard = self.insertion_gate.lock().unwrap();
-            if !cancel.load(Ordering::Acquire) {
-                let result = self.copy_transcript_locked(text.as_str());
-                match result {
-                    Ok(()) => {
-                        copied = true;
-                        reason = Some("Copied".into());
-                    }
-                    Err(e) => reason = Some(e),
-                }
-            }
-        }
+        let copied = delivered_copy;
         let review = !copied && (settings.review_before_insert || !inserted);
         if let Ok(mut runtime) = self.runtime.lock() {
             if cancel.load(Ordering::Acquire) {
@@ -996,31 +948,22 @@ impl DictationService {
         Ok(())
     }
 
-    fn copy_transcript(&self, text: &str, cancel: &AtomicBool) -> Result<(), String> {
-        let _guard = self
-            .insertion_gate
-            .lock()
-            .map_err(|_| "Insertion unavailable")?;
-        if cancel.load(Ordering::Acquire) {
-            return Err("Dictation cancelled".into());
-        }
-        self.copy_transcript_locked(text)
-    }
-    fn copy_transcript_locked(&self, text: &str) -> Result<(), String> {
+    fn paste_transcript(
+        &self,
+        text: &str,
+        cancel: &AtomicBool,
+    ) -> Result<bool, target::InsertionFailure> {
         #[cfg(windows)]
-        let result = self
-            .app()
-            .and_then(|app| {
-                app.get_webview_window("main")
-                    .ok_or("Main window unavailable".into())
-            })
-            .and_then(|window| window.hwnd().map_err(|e| e.to_string()))
-            .and_then(|owner| {
-                target::copy_final(text, windows::Win32::Foundation::HWND(owner.0 as _))
-            });
+        let owner = self
+            .app()?
+            .get_webview_window("main")
+            .ok_or_else(|| "Main window unavailable".to_owned())?
+            .hwnd()
+            .map_err(|e| e.to_string())?
+            .0 as isize;
         #[cfg(not(windows))]
-        let result = target::copy_final(text, ());
-        result
+        let owner = 0;
+        target::paste(text, cancel, &self.insertion_gate, owner)
     }
 
     fn finish_review(self: &Arc<Self>) -> Result<(), String> {
@@ -1049,11 +992,7 @@ impl DictationService {
             Zeroizing::new(text)
         };
         self.emit_state();
-        let result = deliver_review(
-            target::capture_foreground,
-            |target| target::insert_unicode(&target, &text, &cancel, &self.insertion_gate),
-            || self.copy_transcript(&text, &cancel),
-        );
+        let result = deliver_review(self.paste_transcript(&text, &cancel));
         let copied = matches!(result, Ok(ReviewDelivery::Copied));
         let mut runtime = self
             .runtime
@@ -1652,6 +1591,7 @@ impl DictationService {
     pub fn shutdown(&self) {
         self.microphone.shutdown();
         self.is_shutdown.store(true, Ordering::Release);
+        target::shutdown_restore_workers();
         dual_shift::stop();
         let _ = self.cancel();
         // Give a download a moment to delete its part file. If the process wins the race,
@@ -3432,38 +3372,21 @@ mod tests {
     }
 }
 
-fn should_copy_final(
-    review: bool,
-    editable: bool,
-    inserted: bool,
-    uncertain: bool,
-    cancelled: bool,
-) -> bool {
-    (!review || !editable) && !inserted && !uncertain && !cancelled
-}
 #[derive(Debug, PartialEq)]
 enum ReviewDelivery {
     Typed,
     Copied,
 }
-fn deliver_review<T>(
-    capture: impl FnOnce() -> Option<T>,
-    insert: impl FnOnce(T) -> Result<(), target::InsertionFailure>,
-    copy: impl FnOnce() -> Result<(), String>,
+fn deliver_review(
+    result: Result<bool, target::InsertionFailure>,
 ) -> Result<ReviewDelivery, target::InsertionFailure> {
-    let insertion = capture()
-        .ok_or_else(|| target::InsertionFailure {
-            message: "No editable control is focused".into(),
-            may_have_inserted: false,
-        })
-        .and_then(insert);
-    match insertion {
-        Ok(()) => Ok(ReviewDelivery::Typed),
-        Err(e) if e.may_have_inserted => Err(e),
-        Err(_) => copy()
-            .map(|_| ReviewDelivery::Copied)
-            .map_err(target::InsertionFailure::from),
-    }
+    result.map(|pasted| {
+        if pasted {
+            ReviewDelivery::Typed
+        } else {
+            ReviewDelivery::Copied
+        }
+    })
 }
 #[cfg(test)]
 mod final_delivery_tests {
@@ -3538,17 +3461,6 @@ mod final_delivery_tests {
     }
 
     #[test]
-    fn delivery_decisions_cover_review_and_clipboard() {
-        for review in [false, true] {
-            assert!(should_copy_final(review, false, false, false, false));
-            assert!(!should_copy_final(review, true, true, false, false));
-            assert!(!should_copy_final(review, false, false, true, false));
-            assert!(!should_copy_final(review, false, false, false, true));
-        }
-        assert!(!should_copy_final(true, true, false, false, false));
-        assert!(should_copy_final(false, true, false, false, false));
-    }
-    #[test]
     fn legacy_review_preference_survives_without_preview_contract() {
         let settings: DictationSettings = serde_json::from_value(
             serde_json::json!({"reviewBeforeInsert":true,"partialPreview":true}),
@@ -3582,52 +3494,17 @@ mod final_delivery_tests {
     }
 
     #[test]
-    fn review_inserts_into_the_current_field_after_focus_moves() {
-        let original = 1;
-        let current = 2;
-        assert_ne!(original, current);
-        assert_eq!(
-            deliver_review(
-                || Some(current),
-                |target| {
-                    assert_eq!(target, 2);
-                    Ok(())
-                },
-                || panic!("unexpected copy")
-            )
-            .unwrap(),
-            ReviewDelivery::Typed
-        );
-    }
-    #[test]
-    fn review_without_target_or_with_rejected_target_copies() {
-        assert_eq!(
-            deliver_review(|| None::<()>, |_| panic!("no target"), || Ok(())).unwrap(),
-            ReviewDelivery::Copied
-        );
-        assert_eq!(
-            deliver_review(
-                || Some(()),
-                |_| Err("Password or noneditable control".to_owned().into()),
-                || Ok(())
-            )
-            .unwrap(),
-            ReviewDelivery::Copied
-        );
-        assert!(deliver_review(
-            || Some(()),
-            |_| Err(target::InsertionFailure {
-                message: "partial".into(),
+    fn review_uses_paste_outcome_and_retains_errors() {
+        assert_eq!(deliver_review(Ok(true)).unwrap(), ReviewDelivery::Typed);
+        assert_eq!(deliver_review(Ok(false)).unwrap(), ReviewDelivery::Copied);
+        assert!(deliver_review(Err("Clipboard changed".to_owned().into())).is_err());
+        assert!(
+            deliver_review(Err(target::InsertionFailure {
+                message: "partial shortcut".into(),
                 may_have_inserted: true
-            }),
-            || panic!("unsafe copy")
-        )
-        .is_err());
-        assert!(deliver_review(
-            || None::<()>,
-            |_| unreachable!(),
-            || Err("Clipboard busy".into())
-        )
-        .is_err());
+            }))
+            .unwrap_err()
+            .may_have_inserted
+        );
     }
 }

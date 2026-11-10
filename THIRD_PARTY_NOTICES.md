@@ -566,8 +566,9 @@ Antigravity quota protocol reference: https://github.com/pingdotgg/t3code/blob/e
 
 ## Hex
 
-Capture timing, Vulkan loader guard, GPU device preference, stream prewarm and trailing silence adapted from [Hex](https://github.com/anomalyco/hex), MIT licensed.
+Capture timing, Vulkan loader guard, GPU device preference, stream prewarm, trailing silence, clipboard paste policy and generation-safe restore adapted from [Hex](https://github.com/anomalyco/hex), MIT licensed. Copyright (c) 2026 Christopher Langton. See the [upstream license](https://github.com/anomalyco/hex/blob/main/LICENSE).
 
+```text
 MIT License
 
 Copyright (c) 2026 Christopher Langton
@@ -589,3 +590,5 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+```

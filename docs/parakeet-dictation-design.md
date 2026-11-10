@@ -1,5 +1,7 @@
 # Approved dictation flow
 
+> Superseded delivery behavior: Dictation temporarily writes to the Windows clipboard and sends Ctrl+V to the foreground app after modifiers are released. It restores transferable clipboard contents after about 500 ms only if no newer dictation or clipboard change supersedes it. Unsupported clipboard formats are not restored. Missing foreground, Tuck windows and detected password fields copy without pasting or restoring. Dictation and restore writes are excluded from Tuck history; dictation writes request exclusion from Windows history and cloud sync. Review Insert uses the same path. See docs/dictation-like-hex.md. Historical evidence below describes the prior implementation.
+
 Keep the existing hold/toggle shortcuts and selected Whisper model. Offer Parakeet Unified English explicitly, recommended for English; downloading and selecting remain user actions. All inference is local. The island stays collapsed and never requests focus. Show real sample RMS before provisional words; with previews off retain the meter. Never insert provisional text or submit.
 
 At finalization insert into the unchanged original editable target. Missing/changed targets copy final text with a short Copied announcement. No-speech/cancel do not copy. Partial input stays in review with automatic retry disabled, avoiding a duplicate full transcript. Review-before-insert remains opt-in.

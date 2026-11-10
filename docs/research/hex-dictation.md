@@ -1,5 +1,8 @@
 # Hex dictation comparison and Tuck live preview
 
+> Superseded delivery behavior: Dictation now uses temporary clipboard paste into the foreground app, with generation/sequence-guarded restore after about 500 ms. Tuck windows, missing foreground and detected password fields copy instead. Unsupported formats cannot be restored. See docs/dictation-like-hex.md. Historical evidence below describes the prior implementation.
+
+
 Inspected 2026-11-04. Hex source pinned to
 [`03ce5ea4f34029cc8145a3d26ec7e043939f34a6`](https://github.com/anomalyco/hex/commit/03ce5ea4f34029cc8145a3d26ec7e043939f34a6).
 Tuck baseline: `139deb32d013188284e441c75e69ea9abdf4349e`.

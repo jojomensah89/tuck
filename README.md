@@ -67,3 +67,5 @@ Installers are written to `src-tauri/target/release/bundle/nsis/`.
 [MIT](LICENSE), copyright 2026 Tuck contributors. Third-party components and model weights retain their own terms.
 
 Dictation keeps the microphone ready by default once a speech model is available. Windows shows microphone use while Tuck runs. Turn off **Keep microphone ready** in Settings to open it only while dictating. Idle audio stays in an erased, ten-second memory buffer; recordings include up to 450 ms before press and a short tail after release.
+
+Windows source builds require the Vulkan SDK (`winget install KhronosGroup.VulkanSDK`). Dot-source `scripts/prepare-native.ps1 -InstallBuildTools` before Cargo commands. CI installs the SDK and SPIRV headers. Installed apps use the graphics driver's Vulkan 1.2 loader, with CPU fallback; do not distribute vulkan-1.dll.

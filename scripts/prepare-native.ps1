@@ -32,7 +32,21 @@ foreach ($candidate in ($candidates | Select-Object -Unique)) {
     Write-Warning "Rejected CMake at $exe. Tuck requires CMake 3.22 or newer. Install with: winget install Kitware.CMake"
 }
 if (-not $foundCmake) { throw 'CMake 3.22 or newer is required. Install with: winget install Kitware.CMake, then open a new shell.' }
-Write-Output 'Native speech build environment ready for this PowerShell session.'
 
-# Portable Parakeet CPU build; never tune the shipped backend to this host.
+# Portable speech build; never tune the shipped backend to this host.
 $env:TRANSCRIBE_CMAKE_ARGS = "-DGGML_NATIVE=OFF -DGGML_AVX512=OFF -DGGML_AVX512_VBMI=OFF -DGGML_AVX512_VNNI=OFF"
+
+$vulkanSdk = $env:VULKAN_SDK
+if (-not $vulkanSdk) { $vulkanSdk = [Environment]::GetEnvironmentVariable('VULKAN_SDK', 'Machine') }
+if (-not $vulkanSdk) {
+    $vulkanSdk = Get-ChildItem 'C:\VulkanSDK' -Directory -ErrorAction SilentlyContinue | Sort-Object Name -Descending | Select-Object -First 1 -ExpandProperty FullName
+}
+if (-not $vulkanSdk -and $InstallBuildTools) {
+    winget install KhronosGroup.VulkanSDK --silent --accept-package-agreements --accept-source-agreements
+    if ($LASTEXITCODE -ne 0) { throw 'Vulkan SDK installation failed' }
+    $vulkanSdk = [Environment]::GetEnvironmentVariable('VULKAN_SDK', 'Machine')
+}
+if (-not $vulkanSdk -or -not (Test-Path "$vulkanSdk\Bin\glslc.exe")) { throw 'Vulkan SDK required: run prepare-native.ps1 -InstallBuildTools.' }
+$env:VULKAN_SDK = $vulkanSdk
+
+Write-Output 'Native speech build environment ready for this PowerShell session.'

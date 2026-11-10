@@ -273,6 +273,7 @@ export function mountDictationSettings(): void {
    * result or a typed value, which is what made older errors flash and vanish. */
   const render = (data: DictationSnapshot) => {
     latest = data;
+    el('dictationBackend').textContent = data.backend ?? 'CPU (model not loaded)';
     if (!saved && data.settings) adopt(data);
     el('dictationSetupStatus').textContent = data.scanningModels
       ? `${modelHeader(data.activeModelLabel)}. Looking for models on this computer…`

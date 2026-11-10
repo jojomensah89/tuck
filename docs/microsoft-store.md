@@ -116,3 +116,5 @@ Executed on 2026-11-09:
   because the private signing key is unavailable locally. The MSIX does not need it.
 
 Dictation keeps the microphone ready by default once a speech model is available. Windows shows microphone use while Tuck runs. Turn off Keep microphone ready to open it only while dictating. Idle audio stays only in a ten-second memory buffer and is erased as it expires.
+
+Windows source builds require the Vulkan SDK (`winget install KhronosGroup.VulkanSDK`). Dot-source `scripts/prepare-native.ps1 -InstallBuildTools` before Cargo commands. CI installs the SDK and SPIRV headers. Installed apps use the graphics driver's Vulkan 1.2 loader, with CPU fallback; do not distribute vulkan-1.dll.

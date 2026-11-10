@@ -35,9 +35,12 @@ crossbeam-channel = "0.5"
 zeroize = "1.8"
 cpal = "0.16"
 whisper-rs = "0.16"
-transcribe-cpp = { git = 'https://github.com/anomalyco/transcribe.cpp', rev = '2778ae4bf5ca5f394d129a39467f4ad9552dc34f' }
+transcribe-cpp = { git = 'https://github.com/anomalyco/transcribe.cpp', rev = 'bcb639faa4c74a2300ba19e30360cb2355b1663a' }
 tauri-plugin-global-shortcut = "2.4"
 tauri-plugin-single-instance = "2"
+
+[target.'cfg(all(windows, target_arch = "x86_64"))'.dependencies]
+transcribe-cpp = { git = 'https://github.com/anomalyco/transcribe.cpp', rev = 'bcb639faa4c74a2300ba19e30360cb2355b1663a', features = ['vulkan'] }
 
 [target.'cfg(windows)'.dependencies]
 drag = "=2.1.1"
@@ -98,5 +101,5 @@ panic = "abort"
 strip = true
 
 [patch.crates-io]
-transcribe-cpp-sys = { git = 'https://github.com/anomalyco/transcribe.cpp', rev = '2778ae4bf5ca5f394d129a39467f4ad9552dc34f' }
+transcribe-cpp-sys = { git = 'https://github.com/anomalyco/transcribe.cpp', rev = 'bcb639faa4c74a2300ba19e30360cb2355b1663a' }
 

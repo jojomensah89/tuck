@@ -88,6 +88,7 @@ pub struct ShortcutProblems {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct DictationSnapshot {
+    pub backend: String,
     pub session_id: u64,
     pub revision: u64,
     pub audio_level: f32,
@@ -433,6 +434,7 @@ impl DictationService {
         drop(locked);
         let active = resolution.active.as_ref();
         DictationSnapshot {
+            backend: self.engine_cache.backend(),
             session_id,
             revision,
             audio_level,
@@ -623,6 +625,9 @@ impl DictationService {
                 service.model_busy.store(false, Ordering::Release);
             }
             service.engine_cache.warming.store(false, Ordering::Release);
+            if can_warm {
+                service.emit_state();
+            }
         });
     }
 
@@ -2790,6 +2795,7 @@ mod tests {
         service.finish_transcript("discard me".into(), None, &AtomicBool::new(true));
         let snapshot = service.snapshot();
         assert_eq!(snapshot.status, "idle");
+        assert!(!snapshot.backend.is_empty());
         assert!(snapshot.transcript.is_none());
     }
 

@@ -566,7 +566,7 @@ Antigravity quota protocol reference: https://github.com/pingdotgg/t3code/blob/e
 
 ## Hex
 
-Capture timing adapted from [Hex](https://github.com/anomalyco/hex), MIT licensed.
+Capture timing, Vulkan loader guard, GPU device preference, stream prewarm and trailing silence adapted from [Hex](https://github.com/anomalyco/hex), MIT licensed.
 
 MIT License
 

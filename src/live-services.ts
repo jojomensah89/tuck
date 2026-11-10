@@ -45,6 +45,7 @@ export interface TelemetrySnapshot {
   stale?: boolean;
 }
 export interface DictationSnapshot {
+  backend?: string;
   status: 'disabled' | 'idle' | 'starting' | 'recording' | 'transcribing' | 'processing' | 'cancelling' | 'inserting' | 'review' | 'error' | 'modelMissing' | 'downloadingModel';
   audioLevel?: number;
   transcript: string; error?: string | null; modelReady?: boolean;

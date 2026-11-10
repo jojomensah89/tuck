@@ -31,3 +31,5 @@ Use a Conventional Commit title such as `fix: correct media seeking` or `docs: c
 ## Bug reports
 
 Use the bug report form. Include Tuck and Windows versions, reproduction steps, expected and actual behavior. Remove private text from logs and images. Report vulnerabilities privately through [Security](SECURITY.md). Follow the [code of conduct](CODE_OF_CONDUCT.md).
+
+Windows source builds require the Vulkan SDK (`winget install KhronosGroup.VulkanSDK`). Dot-source `scripts/prepare-native.ps1 -InstallBuildTools` before Cargo commands. CI installs the SDK and SPIRV headers. Installed apps use the graphics driver's Vulkan 1.2 loader, with CPU fallback; do not distribute vulkan-1.dll.

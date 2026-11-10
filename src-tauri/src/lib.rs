@@ -335,10 +335,10 @@ pub fn run() {
                         WindowEvent::ScaleFactorChanged { .. } | WindowEvent::Moved(_) => {
                             let _ = system::center_on_primary_monitor(&win_clone);
                         }
-                        WindowEvent::DragDrop(event) => {
+                        WindowEvent::DragDrop(_event) => {
                             #[cfg(debug_assertions)]
                             if std::env::var_os("TUCK_DROP_TRACE").is_some() {
-                                eprintln!("drop-event {event:?}");
+                                eprintln!("drop-event {_event:?}");
                             }
                         }
                         WindowEvent::Focused(false) =>

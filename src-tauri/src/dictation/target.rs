@@ -1,12 +1,9 @@
-//! Conservative Windows target capture and Unicode insertion.
-//! Clipboard is never touched: text is sent with Unicode keyboard input, so
-//! concurrent clipboard changes are preserved without a restore race.
-
+//! Clipboard paste delivery. Policy adapted from Hex (MIT); see THIRD_PARTY_NOTICES.md.
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Mutex,
 };
-use zeroize::{Zeroize, Zeroizing};
+use zeroize::Zeroizing;
 
 #[derive(Debug)]
 pub(super) struct InsertionFailure {
@@ -47,36 +44,6 @@ fn wait_for_modifiers(
     check_cancel(cancel)
 }
 
-fn guarded_send(
-    cancel: &AtomicBool,
-    gate: &Mutex<()>,
-    send: impl FnOnce() -> usize,
-) -> Result<usize, String> {
-    let _guard = gate.lock().map_err(|_| "Insertion unavailable")?;
-    check_cancel(cancel)?;
-    Ok(send())
-}
-
-pub(super) fn send_batches(
-    units: &[u16],
-    mut verify: impl FnMut() -> Result<(), String>,
-    mut send: impl FnMut(&[u16]) -> usize,
-) -> Result<(), InsertionFailure> {
-    let mut accepted = false;
-    for chunk in units.chunks(256) {
-        verify().map_err(|message| InsertionFailure {
-            message: if accepted { format!("{message} Some text may already be inserted. Reconcile the target manually; automatic retry is disabled.") } else { message },
-            may_have_inserted: accepted,
-        })?;
-        let inserted = send(chunk);
-        if inserted != chunk.len() * 2 {
-            return Err(InsertionFailure { message: if accepted || inserted > 0 { "Windows accepted only part of the insertion. Check the target text manually; automatic retry is disabled." } else { "Windows did not accept the insertion. Check the input target and permissions." }.into(), may_have_inserted: accepted || inserted > 0 });
-        }
-        accepted = true;
-    }
-    Ok(())
-}
-
 #[derive(Clone, Debug)]
 pub(super) struct ForegroundTarget {
     #[cfg(windows)]
@@ -85,8 +52,6 @@ pub(super) struct ForegroundTarget {
     focus: isize,
     #[cfg(windows)]
     process_id: u32,
-    #[cfg(windows)]
-    runtime_id: Option<Vec<i32>>,
 }
 
 #[cfg(windows)]
@@ -94,10 +59,7 @@ use windows::Win32::{
     Foundation::HWND,
     System::Threading::GetCurrentProcessId,
     UI::{
-        Input::KeyboardAndMouse::{
-            SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP,
-            KEYEVENTF_UNICODE,
-        },
+        Input::KeyboardAndMouse::{SendInput, INPUT, VK_CONTROL, VK_V},
         WindowsAndMessaging::{
             GetClassNameW, GetForegroundWindow, GetGUIThreadInfo, GetWindowLongPtrW,
             GetWindowThreadProcessId, IsIconic, GUITHREADINFO, GWL_STYLE,
@@ -114,21 +76,18 @@ pub(super) fn capture_foreground() -> Option<ForegroundTarget> {
         }
         let mut process_id = 0;
         let thread_id = GetWindowThreadProcessId(window, Some(&mut process_id));
-        if thread_id == 0 || process_id == GetCurrentProcessId() {
+        if !paste_allowed(thread_id != 0, process_id == GetCurrentProcessId(), false) {
             return None;
         }
         let mut info = GUITHREADINFO {
             cbSize: std::mem::size_of::<GUITHREADINFO>() as u32,
             ..Default::default()
         };
-        if GetGUIThreadInfo(thread_id, &mut info).is_err() || info.hwndFocus.0.is_null() {
-            return None;
-        }
+        let _ = GetGUIThreadInfo(thread_id, &mut info);
         Some(ForegroundTarget {
             window: window.0 as isize,
             focus: info.hwndFocus.0 as isize,
             process_id,
-            runtime_id: focused_edit_identity().ok(),
         })
     }
 }
@@ -160,13 +119,6 @@ pub(super) fn verify_foreground_target(target: &ForegroundTarget) -> Result<(), 
         {
             return Err("Focus moved away from the original input control. Automatic insertion was skipped.".into());
         }
-        if let Some(expected) = &target.runtime_id {
-            if focused_edit_identity().as_ref() != Ok(expected) {
-                return Err(
-                    "The focused text field changed. Automatic insertion was skipped.".into(),
-                );
-            }
-        }
         Ok(())
     }
 }
@@ -183,525 +135,471 @@ pub(super) fn is_editable_target(target: &ForegroundTarget) -> Result<(), String
         let mut class_name = [0u16; 256];
         let length = GetClassNameW(focus, &mut class_name);
         if length <= 0 {
-            return Err("The focused input control could not be identified. Automatic insertion was skipped.".into());
+            return if focused_password() {
+                Err("Password controls are excluded from dictation.".into())
+            } else {
+                Ok(())
+            };
         }
         let class_name = String::from_utf16_lossy(&class_name[..length as usize]);
         let style = GetWindowLongPtrW(focus, GWL_STYLE) as u32;
         let recognized = class_name == "Edit" || class_name.starts_with("RichEdit");
-        const ES_READONLY: u32 = 0x0800;
         const ES_PASSWORD: u32 = 0x0020;
-        if recognized && (style & (ES_READONLY | ES_PASSWORD)) != 0 {
-            return Err("Read-only and password controls are excluded from dictation.".into());
-        }
-        if !recognized && target.runtime_id.is_none() {
-            return Err("This app's focused control is not a supported editable Windows text field. Review the transcript and place focus in a standard edit field before inserting.".into());
+        if !paste_allowed(
+            true,
+            false,
+            recognized && style & ES_PASSWORD != 0 || focused_password(),
+        ) {
+            return Err("Password controls are excluded from dictation.".into());
         }
         Ok(())
     }
 }
 
-/// UI Automation identifies browser/Electron input fields without retaining their contents.
 #[cfg(windows)]
-fn focused_edit_identity() -> Result<Vec<i32>, String> {
+fn focused_password() -> bool {
     use windows::Win32::{
-        System::{
-            Com::{
-                CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER,
-                COINIT_MULTITHREADED,
-            },
-            Ole::{
-                SafeArrayAccessData, SafeArrayDestroy, SafeArrayGetLBound, SafeArrayGetUBound,
-                SafeArrayUnaccessData,
-            },
+        System::Com::{
+            CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER,
+            COINIT_MULTITHREADED,
         },
-        UI::Accessibility::{
-            CUIAutomation, IUIAutomation, IUIAutomationTextPattern, IUIAutomationValuePattern,
-            UIA_DocumentControlTypeId, UIA_EditControlTypeId, UIA_IsReadOnlyAttributeId,
-            UIA_TextPatternId, UIA_ValuePatternId,
-        },
+        UI::Accessibility::{CUIAutomation, IUIAutomation},
     };
     unsafe {
         let initialized = CoInitializeEx(None, COINIT_MULTITHREADED).is_ok();
-        // RPC_E_CHANGED_MODE means the calling UI thread already has an STA; it remains usable.
-        let result = (|| {
+        let result = (|| -> windows::core::Result<bool> {
             let automation: IUIAutomation =
-                CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER)
-                    .map_err(|_| "Windows accessibility is unavailable")?;
-            let focused = automation
-                .GetFocusedElement()
-                .map_err(|_| "No accessible focused field")?;
-            if focused.CurrentIsPassword().map_or(true, |v| v.as_bool())
-                || !focused.CurrentIsEnabled().is_ok_and(|v| v.as_bool())
-                || !focused.CurrentHasKeyboardFocus().is_ok_and(|v| v.as_bool())
-            {
-                return Err("The focused field cannot accept dictation".to_owned());
-            }
-            let value: Option<IUIAutomationValuePattern> =
-                focused.GetCurrentPatternAs(UIA_ValuePatternId).ok();
-            let editable = value
-                .as_ref()
-                .is_some_and(|v| v.CurrentIsReadOnly().is_ok_and(|r| !r.as_bool()));
-            let text_editable = focused
-                .GetCurrentPatternAs::<IUIAutomationTextPattern>(UIA_TextPatternId)
-                .ok()
-                .and_then(|p| p.DocumentRange().ok())
-                .and_then(|r| r.GetAttributeValue(UIA_IsReadOnlyAttributeId).ok())
-                .is_some_and(|v| bool::try_from(&v).ok() == Some(false));
-            let kind = focused.CurrentControlType().ok();
-            if !(editable || text_editable)
-                || !(kind == Some(UIA_EditControlTypeId) || kind == Some(UIA_DocumentControlTypeId))
-            {
-                return Err("The focused control is not an editable text input".into());
-            }
-            let array = focused
-                .GetRuntimeId()
-                .map_err(|_| "Could not identify input field")?;
-            if array.is_null() {
-                return Err("Input identity unavailable".into());
-            }
-            let copy = (|| {
-                let lower = SafeArrayGetLBound(array, 1).map_err(|_| "Invalid field identity")?;
-                let upper = SafeArrayGetUBound(array, 1).map_err(|_| "Invalid field identity")?;
-                let length = (upper as i64 - lower as i64 + 1).clamp(0, 1025) as usize;
-                if length == 0 || length > 1024 {
-                    return Err("Invalid field identity".to_owned());
-                }
-                let mut data = std::ptr::null_mut();
-                SafeArrayAccessData(array, &mut data).map_err(|_| "Field identity unavailable")?;
-                let ids = std::slice::from_raw_parts(data as *const i32, length).to_vec();
-                let _ = SafeArrayUnaccessData(array);
-                Ok(ids)
-            })();
-            let _ = SafeArrayDestroy(array);
-            copy
-        })();
+                CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER)?;
+            Ok(automation
+                .GetFocusedElement()?
+                .CurrentIsPassword()?
+                .as_bool())
+        })()
+        .unwrap_or(false);
         if initialized {
             CoUninitialize();
         }
         result
     }
 }
-
 #[cfg(not(windows))]
 pub(super) fn is_editable_target(_: &ForegroundTarget) -> Result<(), String> {
     Err("Automatic text insertion is supported only on Windows.".into())
 }
 
 #[cfg(windows)]
-pub(super) fn insert_unicode(
-    target: &ForegroundTarget,
+mod clipboard {
+    use super::*;
+    use windows::Win32::{
+        Foundation::{GlobalFree, HANDLE, HGLOBAL},
+        System::{DataExchange::*, Memory::*},
+    };
+    type Snapshot = Vec<(u32, Zeroizing<Vec<u8>>)>;
+    #[derive(Default)]
+    struct Restore {
+        generation: u64,
+        sequence: Option<u32>,
+        original: Option<Snapshot>,
+    }
+    impl Restore {
+        fn register(&mut self, previous: Option<Snapshot>, before: u32, written: u32) -> u64 {
+            self.generation = self.generation.wrapping_add(1);
+            if self.sequence != Some(before) {
+                self.original = previous;
+            }
+            self.sequence = Some(written);
+            self.generation
+        }
+    }
+    static RESTORE: Mutex<Restore> = Mutex::new(Restore {
+        generation: 0,
+        sequence: None,
+        original: None,
+    });
+    struct Open;
+    impl Drop for Open {
+        fn drop(&mut self) {
+            unsafe {
+                let _ = CloseClipboard();
+            }
+        }
+    }
+    fn open(owner: isize) -> Result<Open, String> {
+        unsafe {
+            OpenClipboard(HWND(owner as _)).map_err(|e| e.to_string())?;
+        }
+        Ok(Open)
+    }
+    unsafe fn snapshot() -> Option<Snapshot> {
+        let mut result = Vec::new();
+        let mut format = 0;
+        let mut total = 0usize;
+        loop {
+            format = EnumClipboardFormats(format);
+            if format == 0 {
+                return Some(result);
+            }
+            // Windows synthesizes bitmap/palette handles alongside DIB bytes.
+            // The DIB retains the pixels and palette without copying GDI handles.
+            if matches!(format, 2 | 9)
+                && (IsClipboardFormatAvailable(8).is_ok() || IsClipboardFormatAvailable(17).is_ok())
+            {
+                continue;
+            }
+            // These formats contain GDI/owner handles, not transferable global bytes.
+            if matches!(format, 2 | 3 | 9 | 14 | 0x80..=0x8e | 0x300..=0x3ff) {
+                return None;
+            }
+            let handle = GetClipboardData(format).ok()?;
+            let memory = HGLOBAL(handle.0);
+            let size = GlobalSize(memory);
+            if size == 0 || size > 64 * 1024 * 1024 || result.len() >= 128 {
+                return None;
+            }
+            total = total.checked_add(size)?;
+            if total > 256 * 1024 * 1024 {
+                return None;
+            }
+            let ptr = GlobalLock(memory) as *const u8;
+            if ptr.is_null() {
+                return None;
+            }
+            let bytes = Zeroizing::new(std::slice::from_raw_parts(ptr, size).to_vec());
+            let _ = GlobalUnlock(memory);
+            result.push((format, bytes));
+        }
+    }
+    unsafe fn set(format: u32, bytes: &[u8]) -> Result<(), String> {
+        let mem = GlobalAlloc(GMEM_MOVEABLE, bytes.len()).map_err(|e| e.to_string())?;
+        let ptr = GlobalLock(mem) as *mut u8;
+        if ptr.is_null() {
+            let _ = GlobalFree(mem);
+            return Err("Clipboard allocation failed".into());
+        }
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), ptr, bytes.len());
+        let _ = GlobalUnlock(mem);
+        if let Err(e) = SetClipboardData(format, HANDLE(mem.0)) {
+            let _ = GlobalFree(mem);
+            return Err(e.to_string());
+        }
+        Ok(())
+    }
+    unsafe fn mark() -> Result<(), String> {
+        for name in [
+            "ExcludeClipboardContentFromMonitorProcessing",
+            "CanIncludeInClipboardHistory",
+            "CanUploadToCloudClipboard",
+        ] {
+            let wide: Vec<u16> = name.encode_utf16().chain(Some(0)).collect();
+            let id = RegisterClipboardFormatW(windows::core::PCWSTR(wide.as_ptr()));
+            if id == 0 {
+                return Err("Clipboard privacy format unavailable".into());
+            }
+            set(id, &0u32.to_ne_bytes())?;
+        }
+        Ok(())
+    }
+    pub(super) fn write(
+        text: &str,
+        owner: isize,
+        cancel: &AtomicBool,
+        gate: &Mutex<()>,
+    ) -> Result<bool, InsertionFailure> {
+        check_cancel(cancel)?;
+        let _gate = gate
+            .lock()
+            .map_err(|_| "Insertion unavailable".to_owned())?;
+        check_cancel(cancel)?;
+        let mut state = RESTORE
+            .lock()
+            .map_err(|_| "Clipboard unavailable".to_owned())?;
+        let mut history = crate::clipboard_history::DICTATION_CLIPBOARD
+            .lock()
+            .map_err(|_| "Clipboard unavailable".to_owned())?;
+        let opened = open(owner)?;
+        let before = unsafe { GetClipboardSequenceNumber() };
+        let previous = unsafe { snapshot() };
+
+        check_cancel(cancel)?;
+        unsafe {
+            EmptyClipboard().map_err(|e| e.to_string())?;
+            mark()?;
+            let units = Zeroizing::new(text.encode_utf16().chain(Some(0)).collect::<Vec<_>>());
+            let bytes = std::slice::from_raw_parts(units.as_ptr() as *const u8, units.len() * 2);
+            set(13, bytes)?;
+        }
+        let sequence = unsafe { GetClipboardSequenceNumber() };
+        drop(opened);
+        *history = sequence;
+        let generation = state.register(previous, before, sequence);
+        drop(history);
+        drop(_gate);
+        drop(state);
+        let remote = remote_desktop();
+        if remote {
+            std::thread::sleep(std::time::Duration::from_millis(400));
+        }
+        let wait = {
+            wait_for_modifiers(cancel, modifiers_held, || {
+                std::thread::sleep(std::time::Duration::from_millis(10))
+            })
+        };
+        // Accessibility providers can stall. Never hold the cancellation gate while querying them.
+        let eligible = if wait.is_ok() && !cancel.load(Ordering::Acquire) {
+            capture_foreground().filter(|target| is_editable_target(target).is_ok())
+        } else {
+            None
+        };
+        let _gate = gate
+            .lock()
+            .map_err(|_| "Insertion unavailable".to_owned())?;
+        if unsafe { GetClipboardSequenceNumber() } != sequence {
+            return Err("The clipboard changed before paste. Review the transcript."
+                .to_owned()
+                .into());
+        }
+        let allowed = !modifiers_held()
+            && !cancel.load(Ordering::Acquire)
+            && eligible
+                .as_ref()
+                .is_some_and(|target| verify_foreground_target(target).is_ok());
+        let mut uncertain = false;
+        if allowed {
+            let inputs = [
+                key(VK_CONTROL, false),
+                key(VK_V, false),
+                key(VK_V, true),
+                key(VK_CONTROL, true),
+            ];
+            let sent = unsafe { SendInput(&inputs, std::mem::size_of::<INPUT>() as i32) };
+            if sent != 4 {
+                unsafe {
+                    SendInput(
+                        &[key(VK_V, true), key(VK_CONTROL, true)],
+                        std::mem::size_of::<INPUT>() as i32,
+                    );
+                }
+                uncertain = true;
+            }
+        }
+        let cancelled = cancel.load(Ordering::Acquire);
+        let mut state = RESTORE.lock().unwrap_or_else(|p| p.into_inner());
+        if !allowed && !cancelled {
+            state.original = None;
+            state.sequence = None;
+        }
+        drop(state);
+        if allowed || cancelled {
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(if !allowed {
+                    0
+                } else if remote {
+                    3000
+                } else {
+                    500
+                }));
+                let mut state = RESTORE.lock().unwrap_or_else(|p| p.into_inner());
+                if state.generation != generation {
+                    return;
+                }
+                let mut history = crate::clipboard_history::DICTATION_CLIPBOARD
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner());
+                let Ok(opened) = open(owner) else {
+                    return;
+                };
+                if !restore_allowed(state.generation, generation, state.sequence, unsafe {
+                    GetClipboardSequenceNumber()
+                }) {
+                    state.original = None;
+                    state.sequence = None;
+                    return;
+                }
+                if let Some(snapshot) = state.original.take() {
+                    unsafe {
+                        if EmptyClipboard().is_ok() {
+                            for (format, bytes) in snapshot {
+                                if set(format, &bytes).is_err() {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    *history = unsafe { GetClipboardSequenceNumber() };
+                    drop(opened);
+                }
+                state.sequence = None;
+            });
+        }
+        check_cancel(cancel)?;
+        if uncertain {
+            return Err(InsertionFailure {
+                message:
+                    "Windows did not accept the entire paste shortcut. Check the target manually."
+                        .into(),
+                may_have_inserted: true,
+            });
+        }
+        Ok(allowed)
+    }
+    fn modifiers_held() -> bool {
+        use windows::Win32::UI::Input::KeyboardAndMouse::*;
+        [VK_CONTROL, VK_SHIFT, VK_MENU, VK_LWIN, VK_RWIN]
+            .iter()
+            .any(|k| unsafe { GetAsyncKeyState(k.0 as i32) } < 0)
+    }
+    fn remote_desktop() -> bool {
+        use windows::Win32::{
+            Foundation::CloseHandle,
+            System::Threading::{
+                OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
+                PROCESS_QUERY_LIMITED_INFORMATION,
+            },
+        };
+        unsafe {
+            let mut pid = 0;
+            GetWindowThreadProcessId(GetForegroundWindow(), Some(&mut pid));
+            let Ok(process) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else {
+                return false;
+            };
+            let mut buffer = [0u16; 32768];
+            let mut length = buffer.len() as u32;
+            let result = QueryFullProcessImageNameW(
+                process,
+                PROCESS_NAME_WIN32,
+                windows::core::PWSTR(buffer.as_mut_ptr()),
+                &mut length,
+            );
+            let _ = CloseHandle(process);
+            result.is_ok()
+                && std::path::Path::new(&String::from_utf16_lossy(&buffer[..length as usize]))
+                    .file_stem()
+                    .is_some_and(|stem| matches!(stem.to_str(), Some("mstsc" | "msrdc")))
+        }
+    }
+    fn key(vk: windows::Win32::UI::Input::KeyboardAndMouse::VIRTUAL_KEY, up: bool) -> INPUT {
+        use windows::Win32::UI::Input::KeyboardAndMouse::*;
+        unsafe {
+            let thread = windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId(
+                windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow(),
+                None,
+            );
+            INPUT {
+                r#type: INPUT_KEYBOARD,
+                Anonymous: INPUT_0 {
+                    ki: KEYBDINPUT {
+                        wVk: vk,
+                        wScan: MapVirtualKeyExW(
+                            vk.0 as u32,
+                            MAPVK_VK_TO_VSC,
+                            GetKeyboardLayout(thread),
+                        ) as u16,
+                        dwFlags: if up {
+                            KEYEVENTF_KEYUP
+                        } else {
+                            Default::default()
+                        },
+                        ..Default::default()
+                    },
+                },
+            }
+        }
+    }
+    #[cfg(test)]
+    mod restore_tests {
+        use super::*;
+        #[test]
+        fn rapid_pastes_preserve_original_and_supersede_old_restore() {
+            let mut state = Restore::default();
+            let first = state.register(Some(vec![(13, Zeroizing::new(vec![1]))]), 10, 11);
+            let second = state.register(Some(vec![(13, Zeroizing::new(vec![2]))]), 11, 12);
+            assert_ne!(first, second);
+            assert_eq!(state.original.as_ref().unwrap()[0].1.as_slice(), &[1]);
+            assert!(!restore_allowed(
+                state.generation,
+                first,
+                state.sequence,
+                12
+            ));
+            assert!(restore_allowed(
+                state.generation,
+                second,
+                state.sequence,
+                12
+            ));
+            assert!(!restore_allowed(
+                state.generation,
+                second,
+                state.sequence,
+                13
+            ));
+        }
+        #[test]
+        fn unsupported_snapshot_does_not_restore_old_contents() {
+            let mut state = Restore::default();
+            state.register(Some(vec![]), 1, 2);
+            state.register(None, 5, 6);
+            assert!(state.original.is_none());
+        }
+    }
+}
+#[cfg(any(windows, test))]
+fn restore_allowed(current: u64, requested: u64, expected: Option<u32>, actual: u32) -> bool {
+    current == requested && expected == Some(actual)
+}
+#[cfg(windows)]
+pub(super) fn paste(
     text: &str,
     cancel: &AtomicBool,
     gate: &Mutex<()>,
-) -> Result<(), InsertionFailure> {
-    use windows::Win32::UI::Input::KeyboardAndMouse::{
-        GetAsyncKeyState, VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT,
-    };
-    check_cancel(cancel)?;
-    wait_for_modifiers(
-        cancel,
-        || {
-            [VK_CONTROL, VK_SHIFT, VK_MENU, VK_LWIN, VK_RWIN]
-                .iter()
-                .any(|key| unsafe { GetAsyncKeyState(key.0 as i32) } < 0)
-        },
-        || std::thread::sleep(std::time::Duration::from_millis(10)),
-    )?;
-    check_cancel(cancel)?;
-    verify_foreground_target(target)?;
-    check_cancel(cancel)?;
-    is_editable_target(target)?;
-    check_cancel(cancel)?;
-    let units = Zeroizing::new(text.encode_utf16().collect::<Vec<u16>>());
-    if units.len() > 32 * 1024 {
-        return Err(String::from("Transcript is too long to insert safely").into());
-    }
-    let before = Zeroizing::new(focused_text().map_err(InsertionFailure::from)?);
-    let selection = focused_selection(&before).ok();
-    send_batches(
-        &units,
-        || {
-            check_cancel(cancel)
-                .and_then(|_| verify_foreground_target(target))
-                .and_then(|_| is_editable_target(target))
-                .and_then(|_| check_cancel(cancel))
-        },
-        |chunk| {
-            let mut inputs = Vec::with_capacity(chunk.len() * 2);
-            for unit in chunk {
-                inputs.push(key_input(*unit, Default::default()));
-                inputs.push(key_input(*unit, KEYEVENTF_KEYUP));
-            }
-            unsafe {
-                let inserted = guarded_send(cancel, gate, || {
-                    SendInput(&inputs, std::mem::size_of::<INPUT>() as i32) as usize
-                })
-                .unwrap_or(0);
-                for input in &mut inputs {
-                    input.Anonymous.ki.wScan.zeroize();
-                }
-                inserted
-            }
-        },
-    )?;
-    // Event acceptance is not application acceptance. Never retry after uncertain delivery.
-    for _ in 0..20 {
-        if check_cancel(cancel).is_err() || verify_foreground_target(target).is_err() {
-            break;
-        }
-        if let Ok(after) = focused_text() {
-            let after = Zeroizing::new(after);
-            if confirms_replacement(&before, &after, text, selection) {
-                return Ok(());
-            }
-        }
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
-    Err(InsertionFailure { message: "Input was sent but the target did not confirm the text. Check it manually; automatic retry and copy are disabled.".into(), may_have_inserted: true })
+    owner: isize,
+) -> Result<bool, InsertionFailure> {
+    clipboard::write(text, owner, cancel, gate)
 }
-
-fn confirms_insertion(before: &str, after: &str, text: &str) -> bool {
-    !text.is_empty()
-        && after.len() == before.len() + text.len()
-        && after
-            .match_indices(text)
-            .any(|(i, _)| before.strip_prefix(&after[..i]) == Some(&after[i + text.len()..]))
-}
-
-fn confirms_replacement(
-    before: &str,
-    after: &str,
-    text: &str,
-    selection: Option<(usize, usize)>,
-) -> bool {
-    if let Some((start, end)) = selection {
-        return !text.is_empty()
-            && start <= end
-            && before.is_char_boundary(start)
-            && before.is_char_boundary(end)
-            && end <= before.len()
-            && after.len() == before.len() - (end - start) + text.len()
-            && after
-                .strip_prefix(&before[..start])
-                .and_then(|s| s.strip_prefix(text))
-                == Some(&before[end..]);
-    }
-    // Without a supported selection, only an exact additive change is confirmed.
-    confirms_insertion(before, after, text)
-}
-
-#[cfg(windows)]
-fn focused_selection(before: &str) -> Result<(usize, usize), String> {
-    use windows::Win32::{
-        System::Com::{
-            CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER,
-            COINIT_MULTITHREADED,
-        },
-        UI::Accessibility::{
-            CUIAutomation, IUIAutomation, IUIAutomationTextPattern, TextPatternRangeEndpoint_End,
-            TextPatternRangeEndpoint_Start, UIA_TextPatternId,
-        },
-    };
-    unsafe {
-        let initialized = CoInitializeEx(None, COINIT_MULTITHREADED).is_ok();
-        let result = (|| -> windows::core::Result<(usize, usize)> {
-            let automation: IUIAutomation =
-                CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER)?;
-            let focused = automation.GetFocusedElement()?;
-            let pattern: IUIAutomationTextPattern =
-                focused.GetCurrentPatternAs(UIA_TextPatternId)?;
-            let document = Zeroizing::new(pattern.DocumentRange()?.GetText(65537)?.to_string());
-            if document.as_str() != before {
-                return Err(windows::core::Error::from_hresult(windows::core::HRESULT(
-                    0x80004005u32 as i32,
-                )));
-            }
-            let selections = pattern.GetSelection()?;
-            if selections.Length()? != 1 {
-                return Err(windows::core::Error::from_hresult(windows::core::HRESULT(
-                    0x80004005u32 as i32,
-                )));
-            }
-            let selected = selections.GetElement(0)?;
-            let prefix = pattern.DocumentRange()?;
-            prefix.MoveEndpointByRange(
-                TextPatternRangeEndpoint_End,
-                &selected,
-                TextPatternRangeEndpoint_Start,
-            )?;
-            let prefix = Zeroizing::new(prefix.GetText(65537)?.to_string());
-            let selected = Zeroizing::new(selected.GetText(65537)?.to_string());
-            if !before
-                .strip_prefix(prefix.as_str())
-                .is_some_and(|suffix| suffix.starts_with(selected.as_str()))
-            {
-                return Err(windows::core::Error::from_hresult(windows::core::HRESULT(
-                    0x80004005u32 as i32,
-                )));
-            }
-            Ok((prefix.len(), prefix.len() + selected.len()))
-        })()
-        .map_err(|e| e.to_string())
-        .and_then(|(start, end)| {
-            if start <= end
-                && end <= before.len()
-                && before.is_char_boundary(start)
-                && before.is_char_boundary(end)
-            {
-                Ok((start, end))
-            } else {
-                Err("Selection unavailable".into())
-            }
-        });
-        if initialized {
-            CoUninitialize();
-        }
-        result
-    }
-}
-
-#[cfg(windows)]
-fn focused_text() -> Result<String, String> {
-    use windows::Win32::{
-        System::Com::{
-            CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER,
-            COINIT_MULTITHREADED,
-        },
-        UI::Accessibility::{
-            CUIAutomation, IUIAutomation, IUIAutomationTextPattern, IUIAutomationValuePattern,
-            UIA_TextPatternId, UIA_ValuePatternId,
-        },
-    };
-    unsafe {
-        let initialized = CoInitializeEx(None, COINIT_MULTITHREADED).is_ok();
-        let result = (|| {
-            let automation: IUIAutomation =
-                CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER)
-                    .map_err(|e| e.to_string())?;
-            let focused = automation.GetFocusedElement().map_err(|e| e.to_string())?;
-            let value = if let Ok(p) =
-                focused.GetCurrentPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId)
-            {
-                p.CurrentValue().map_err(|e| e.to_string())?.to_string()
-            } else {
-                focused
-                    .GetCurrentPatternAs::<IUIAutomationTextPattern>(UIA_TextPatternId)
-                    .and_then(|p| p.DocumentRange())
-                    .and_then(|r| r.GetText(65537))
-                    .map_err(|e| e.to_string())?
-                    .to_string()
-            };
-            if value.len() > 65536 {
-                return Err("Target is too large to verify safely".into());
-            }
-            Ok(value)
-        })();
-        if initialized {
-            CoUninitialize();
-        }
-        result
-    }
-}
-
-#[cfg(windows)]
-fn key_input(
-    unit: u16,
-    flags: windows::Win32::UI::Input::KeyboardAndMouse::KEYBD_EVENT_FLAGS,
-) -> INPUT {
-    INPUT {
-        r#type: INPUT_KEYBOARD,
-        Anonymous: INPUT_0 {
-            ki: KEYBDINPUT {
-                wVk: Default::default(),
-                wScan: unit,
-                dwFlags: KEYEVENTF_UNICODE | flags,
-                time: 0,
-                dwExtraInfo: 0,
-            },
-        },
-    }
-}
-
 #[cfg(not(windows))]
-pub(super) fn insert_unicode(
-    _: &ForegroundTarget,
+pub(super) fn paste(
     _: &str,
     _: &AtomicBool,
     _: &Mutex<()>,
-) -> Result<(), InsertionFailure> {
-    Err(String::from("Automatic text insertion is supported only on Windows.").into())
+    _: isize,
+) -> Result<bool, InsertionFailure> {
+    Err("Windows required".to_owned().into())
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
     #[test]
-    fn cancel_while_waiting_for_shift_stops_even_when_shift_is_released() {
-        let cancel = AtomicBool::new(false);
-        let held = std::cell::Cell::new(true);
-        let result = wait_for_modifiers(
-            &cancel,
-            || held.get(),
-            || {
-                cancel.store(true, Ordering::Release);
-                held.set(false);
-            },
-        );
-        assert_eq!(result.unwrap_err(), "Dictation cancelled");
+    fn changed_clipboard_and_newer_paste_prevent_restore() {
+        assert!(restore_allowed(2, 2, Some(4), 4));
+        assert!(!restore_allowed(2, 2, Some(4), 5));
+        assert!(!restore_allowed(3, 2, Some(4), 4));
     }
-
     #[test]
-    fn cancellation_during_validation_or_between_batches_never_sends_more() {
-        let cancel = AtomicBool::new(false);
-        let gate = Mutex::new(());
-        let sent = std::cell::Cell::new(0);
-        let result = send_batches(
-            &[65; 600],
-            || Ok(()),
-            |chunk| {
-                let n = guarded_send(&cancel, &gate, || {
-                    sent.set(sent.get() + 1);
-                    chunk.len() * 2
-                })
-                .unwrap_or(0);
-                {
-                    let _guard = gate.lock().unwrap();
-                    cancel.store(true, Ordering::Release);
-                }
-                n
-            },
-        );
-        assert!(result.unwrap_err().may_have_inserted);
-        assert_eq!(sent.get(), 1);
-        assert!(guarded_send(&cancel, &gate, || panic!("typed after cancel")).is_err());
-        assert!(check_cancel(&cancel).is_err()); // also used during modifier-release wait
+    fn cancel_before_paste() {
+        assert!(check_cancel(&AtomicBool::new(true)).is_err());
     }
-
     #[test]
-    fn partial_batch_or_later_focus_failure_disables_whole_text_retry() {
-        let partial = send_batches(&[65, 66], || Ok(()), |_| 1).unwrap_err();
-        assert!(partial.may_have_inserted);
-        let blocked = send_batches(&[65], || Ok(()), |_| 0).unwrap_err();
-        assert!(!blocked.may_have_inserted);
-        let mut checks = 0;
-        let after_prefix = send_batches(
-            &vec![65; 300],
-            || {
-                checks += 1;
-                if checks == 1 {
-                    Ok(())
-                } else {
-                    Err("Focus changed".into())
-                }
-            },
-            |chunk| chunk.len() * 2,
+    fn cancel_during_modifier_wait() {
+        let c = AtomicBool::new(false);
+        assert!(wait_for_modifiers(
+            &c,
+            || !c.load(Ordering::Acquire),
+            || c.store(true, Ordering::Release)
         )
-        .unwrap_err();
-        assert!(after_prefix.may_have_inserted);
+        .is_err());
     }
 }
 
-#[cfg(windows)]
-pub(super) fn copy_final(
-    text: &str,
-    owner: windows::Win32::Foundation::HWND,
-) -> Result<(), String> {
-    #[cfg(windows)]
-    unsafe {
-        use windows::Win32::{
-            Foundation::{GlobalFree, HANDLE},
-            System::{
-                DataExchange::{CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData},
-                Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE},
-            },
-        };
-        let units = Zeroizing::new(
-            text.encode_utf16()
-                .chain(std::iter::once(0))
-                .collect::<Vec<_>>(),
-        );
-        let memory = GlobalAlloc(GMEM_MOVEABLE, units.len() * 2)
-            .map_err(|_| "Clipboard allocation failed")?;
-        let ptr = GlobalLock(memory) as *mut u16;
-        if ptr.is_null() {
-            let _ = GlobalFree(memory);
-            return Err("Clipboard allocation failed".into());
-        }
-        std::ptr::copy_nonoverlapping(units.as_ptr(), ptr, units.len());
-        let _ = GlobalUnlock(memory);
-        if OpenClipboard(windows::Win32::Foundation::HWND(owner.0 as _)).is_err() {
-            let _ = GlobalFree(memory);
-            return Err("Clipboard is busy".into());
-        }
-        let result =
-            EmptyClipboard().and_then(|_| SetClipboardData(13, HANDLE(memory.0)).map(|_| ()));
-        let _ = CloseClipboard();
-        if result.is_err() {
-            let _ = GlobalFree(memory);
-            return Err("Could not copy clipboard item".into());
-        }
-
-        Ok(())
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = text;
-        Err("Windows clipboard required".into())
-    }
+fn paste_allowed(foreground: bool, own_process: bool, password: bool) -> bool {
+    foreground && !own_process && !password
 }
-
-#[cfg(not(windows))]
-pub(super) fn copy_final(_text: &str, _owner: ()) -> Result<(), String> {
-    Err("Windows clipboard required".into())
-}
-
 #[cfg(test)]
-mod confirmation_tests {
+mod policy_tests {
     #[test]
-    fn confirms_full_and_partial_selection_replacement() {
-        assert!(super::confirms_replacement(
-            "old",
-            "new",
-            "new",
-            Some((0, 3))
-        ));
-        assert!(super::confirms_replacement(
-            "aoldz",
-            "anewz",
-            "new",
-            Some((1, 4))
-        ));
-        assert!(super::confirms_replacement(
-            "az",
-            "anewz",
-            "new",
-            Some((1, 1))
-        ));
-        assert!(!super::confirms_replacement(
-            "old",
-            "ne",
-            "new",
-            Some((0, 3))
-        ));
-        assert!(!super::confirms_replacement("old", "new", "new", None));
-        assert!(super::confirms_replacement(
-            "éold",
-            "é新",
-            "新",
-            Some((2, 5))
-        ));
-        assert!(!super::confirms_replacement(
-            "éold",
-            "é新",
-            "新",
-            Some((1, 5))
-        ));
-    }
-    #[test]
-    fn requires_observed_text_change() {
-        assert!(super::confirms_insertion("ab", "ahellob", "hello"));
-        assert!(!super::confirms_insertion("ab", "ab", "hello"));
-        assert!(!super::confirms_insertion("ab", "ahelb", "hello"));
-        assert!(super::confirms_insertion("?", "???", "??"));
+    fn own_missing_and_password_targets_copy() {
+        assert!(!super::paste_allowed(true, true, false));
+        assert!(!super::paste_allowed(false, false, false));
+        assert!(!super::paste_allowed(true, false, true));
+        assert!(super::paste_allowed(true, false, false));
     }
 }

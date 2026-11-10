@@ -15,6 +15,8 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use uuid::Uuid;
 use zeroize::{Zeroize, Zeroizing};
 
+pub(crate) static DICTATION_CLIPBOARD: Mutex<u32> = Mutex::new(0);
+
 static CLIPBOARD_WAKE: Mutex<Option<std::sync::mpsc::Sender<()>>> = Mutex::new(None);
 pub(crate) fn clipboard_updated() {
     if let Some(tx) = CLIPBOARD_WAKE
@@ -1083,7 +1085,13 @@ fn read_clipboard_text() -> Result<ClipboardRead, String> {
         UI::WindowsAndMessaging::GetWindowThreadProcessId,
     };
     unsafe {
+        let dictation = DICTATION_CLIPBOARD
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         let before = GetClipboardSequenceNumber();
+        if before == *dictation {
+            return Ok(ClipboardRead::Ignored);
+        }
         if OpenClipboard(None).is_err() {
             return Ok(ClipboardRead::Busy);
         }

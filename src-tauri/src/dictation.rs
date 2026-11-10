@@ -50,6 +50,7 @@ pub struct DictationSettings {
     pub toggle_shortcut: String,
     pub hold_to_talk_shortcut: String,
     pub review_before_insert: bool,
+    pub keep_microphone_ready: bool,
     pub stopped_models: Vec<String>,
     #[serde(default)]
     pub settings_version: u32,
@@ -67,6 +68,7 @@ impl Default for DictationSettings {
             toggle_shortcut: DEFAULT_TOGGLE.to_owned(),
             hold_to_talk_shortcut: DEFAULT_HOLD.to_owned(),
             review_before_insert: false,
+            keep_microphone_ready: true,
             stopped_models: Vec::new(),
             settings_version: SETTINGS_VERSION,
             active_model: None,
@@ -192,6 +194,8 @@ pub struct DictationService {
     focus_observer_busy: Arc<AtomicBool>,
     model_busy: AtomicBool,
     engine_cache: Arc<audio::EngineCache>,
+    microphone: Arc<audio::ReadyMicrophone>,
+    capture_times: Arc<Mutex<(std::time::Instant, Option<std::time::Instant>)>>,
     registered_shortcuts: Mutex<Vec<Shortcut>>,
     settings_operation: Mutex<()>,
     is_shutdown: AtomicBool,
@@ -264,6 +268,8 @@ impl DictationService {
             focus_observer_busy: Arc::new(AtomicBool::new(false)),
             model_busy: AtomicBool::new(false),
             engine_cache: Arc::default(),
+            microphone: Arc::default(),
+            capture_times: Arc::new(Mutex::new((std::time::Instant::now(), None))),
             registered_shortcuts: Mutex::new(Vec::new()),
             settings_operation: Mutex::new(()),
             is_shutdown: AtomicBool::new(false),
@@ -621,6 +627,7 @@ impl DictationService {
     }
 
     fn begin(self: &Arc<Self>, mode: RecordingMode) -> Result<(), String> {
+        let pressed = std::time::Instant::now();
         self.app()?;
         if self
             .runtime
@@ -647,6 +654,7 @@ impl DictationService {
         let cancel = Arc::new(AtomicBool::new(false));
         let original_target = target::capture_foreground();
         self.claim_session(stop.clone(), cancel.clone(), mode)?;
+        self.capture_times.lock().unwrap().0 = pressed;
         {
             let mut r = self.runtime.lock().unwrap();
             r.recording_target = original_target.clone();
@@ -733,6 +741,7 @@ impl DictationService {
         runtime.review_target = None;
         runtime.insertion_uncertain = false;
         runtime.message = None;
+        *self.capture_times.lock().unwrap() = (std::time::Instant::now(), None);
         runtime.active = Some(ActiveSession { stop, cancel, mode });
         runtime.session_id += 1;
 
@@ -914,6 +923,10 @@ impl DictationService {
     }
 
     fn stop(self: &Arc<Self>) -> Result<(), String> {
+        self.stop_at(std::time::Instant::now())
+    }
+
+    fn stop_at(self: &Arc<Self>, released: std::time::Instant) -> Result<(), String> {
         let runtime = self
             .runtime
             .lock()
@@ -922,6 +935,7 @@ impl DictationService {
             .active
             .as_ref()
             .ok_or("Dictation is not recording")?;
+        self.capture_times.lock().unwrap().1.get_or_insert(released);
         if active.stop.swap(true, Ordering::AcqRel) {
             return Err("Dictation is already stopping".into());
         }
@@ -930,6 +944,7 @@ impl DictationService {
 
     /// Ends the recording only if a hold started it; a toggle recording keeps running.
     fn stop_hold(self: &Arc<Self>) {
+        let released = std::time::Instant::now();
         let holding = self.runtime.lock().is_ok_and(|runtime| {
             runtime
                 .active
@@ -937,7 +952,7 @@ impl DictationService {
                 .is_some_and(|session| matches!(session.mode, RecordingMode::HoldToTalk))
         });
         if holding {
-            let _ = self.stop();
+            let _ = self.stop_at(released);
         }
     }
 
@@ -1630,6 +1645,7 @@ impl DictationService {
     }
 
     pub fn shutdown(&self) {
+        self.microphone.shutdown();
         self.is_shutdown.store(true, Ordering::Release);
         dual_shift::stop();
         let _ = self.cancel();
@@ -1761,6 +1777,7 @@ pub fn start(app: AppHandle, service: &Arc<DictationService>) -> Result<(), Stri
     }
     sync_dual_shift(service);
     service.repair_missing()?;
+    audio::start_ready_microphone(service);
     service.emit_state();
     Ok(())
 }
@@ -1997,6 +2014,8 @@ fn parse_settings(bytes: &[u8]) -> (DictationSettings, Option<String>) {
             .unwrap_or(defaults.toggle_shortcut),
         hold_to_talk_shortcut: settings_field(&map, "holdToTalkShortcut", &mut bad)
             .unwrap_or(defaults.hold_to_talk_shortcut),
+        keep_microphone_ready: settings_field(&map, "keepMicrophoneReady", &mut bad)
+            .unwrap_or(true),
         review_before_insert: settings_field(&map, "reviewBeforeInsert", &mut bad)
             .unwrap_or(defaults.review_before_insert),
         stopped_models: settings_field(&map, "stoppedModels", &mut bad).unwrap_or_default(),
@@ -3256,6 +3275,16 @@ mod tests {
         assert_eq!(toggle.toggle_shortcut, DEFAULT_TOGGLE);
         assert_eq!(toggle.hold_to_talk_shortcut, "Ctrl+Alt+F9");
         assert!(notice.is_some());
+    }
+
+    #[test]
+    fn microphone_ready_defaults_on_and_false_round_trips() {
+        let (legacy, _) = parse_settings(br#"{"settingsVersion":1}"#);
+        assert!(legacy.keep_microphone_ready);
+        let (disabled, _) = parse_settings(br#"{"settingsVersion":1,"keepMicrophoneReady":false}"#);
+        assert!(!disabled.keep_microphone_ready);
+        let bytes = serde_json::to_vec(&disabled).unwrap();
+        assert_eq!(parse_settings(&bytes).0, disabled);
     }
 
     #[test]

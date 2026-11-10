@@ -114,3 +114,5 @@ Executed on 2026-11-09:
   privilege in that session); it passes in CI.
 - Full NSIS build produced its executable/installer, then failed updater signing
   because the private signing key is unavailable locally. The MSIX does not need it.
+
+Dictation keeps the microphone ready by default once a speech model is available. Windows shows microphone use while Tuck runs. Turn off Keep microphone ready to open it only while dictating. Idle audio stays only in a ten-second memory buffer and is erased as it expires.

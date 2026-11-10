@@ -3,8 +3,7 @@
 //! Capture and inference never share a thread. The session thread only moves audio from
 //! the microphone callback into memory, so no amount of inference can overflow the
 //! callback's queue and lose a recording. An engine thread loads the model and runs every
-//! transcription. The microphone opens before the model loads, so the first words are kept
-//! however long loading takes.
+//! transcription. A ready microphone keeps bounded pre-roll; cold mode opens on press.
 
 use super::{model, DictationService};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -73,7 +72,7 @@ struct SessionLimits {
 impl SessionLimits {
     const APP: Self = Self {
         max_seconds: MAX_SECONDS,
-        poll: Duration::from_millis(100),
+        poll: Duration::from_millis(5),
     };
 }
 
@@ -182,7 +181,7 @@ impl Engine for EngineLease<'_> {
 }
 
 pub(super) fn record_and_transcribe(
-    service: &DictationService,
+    service: &Arc<DictationService>,
     active: &model::Active,
     stop: Arc<AtomicBool>,
     cancel: Arc<AtomicBool>,
@@ -200,7 +199,7 @@ struct AppEvents<'a> {
 
 impl SessionEvents for AppEvents<'_> {
     fn meter(&self, level: f32) {
-        self.service.publish_audio_level(level);
+        let _ = level; // Timed capture publishes the live level, before buffered delivery.
     }
     fn recording(&self) {
         self.service.session_status("recording");
@@ -214,7 +213,7 @@ impl SessionEvents for AppEvents<'_> {
 }
 
 fn record_and_transcribe_inner(
-    service: &DictationService,
+    service: &Arc<DictationService>,
     active: &model::Active,
     stop: Arc<AtomicBool>,
     cancel: Arc<AtomicBool>,
@@ -222,14 +221,7 @@ fn record_and_transcribe_inner(
     if cancel.load(Ordering::Acquire) {
         return Err("Dictation cancelled".into());
     }
-    if stop.load(Ordering::Acquire) {
-        return Err("Dictation stopped before microphone capture began".into());
-    }
-    let queued_frames = Arc::new(AtomicUsize::new(0));
-    let (audio_tx, audio_rx) = bounded::<Vec<f32>>(AUDIO_QUEUE_BLOCKS);
-    let (error_tx, error_rx) = bounded::<String>(1);
-    let (stream, sample_rate) = open_input_stream(audio_tx, error_tx, queued_frames.clone())?;
-    stream.play().map_err(|e| format!("Could not start microphone capture: {e}. Check Windows microphone privacy settings and the selected input device."))?;
+    let (capture, completed) = timed_capture(service, stop, cancel.clone())?;
     let events = AppEvents { service };
     let path = active.path.clone();
     let entry = active.entry;
@@ -239,26 +231,22 @@ fn record_and_transcribe_inner(
             service.engine_cache.acquire(&path)
         },
         &events,
-        Capture {
-            stream: Some(stream),
-            audio_rx,
-            error_rx,
-            queued_frames,
-            sample_rate,
-        },
+        capture,
         SessionLimits::APP,
-        &stop,
+        &completed,
         &cancel,
     )
 }
 
-/// The audio side of a session. Dropping `stream` is what stops the microphone.
+/// The audio side of a session. Dropping `stream` ends this capture lease;
+/// the ready owner can keep its microphone open between recordings.
 struct Capture<S> {
     stream: Option<S>,
     audio_rx: Receiver<Vec<f32>>,
     error_rx: Receiver<String>,
     queued_frames: Arc<AtomicUsize>,
     sample_rate: u32,
+    final_length: Option<Arc<AtomicUsize>>,
 }
 
 fn run_session<E: Engine, S>(
@@ -356,6 +344,7 @@ fn capture_loop<S>(
                 release_audio_frames(&capture.queued_frames, block.len());
                 let remaining = cap.saturating_sub(samples.len());
                 if block.len() > remaining {
+                    block[remaining..].zeroize();
                     block.truncate(remaining);
                 }
                 if last_meter.elapsed() >= Duration::from_millis(100) {
@@ -413,10 +402,16 @@ fn capture_loop<S>(
         release_audio_frames(&capture.queued_frames, block.len());
         let remaining = cap.saturating_sub(samples.len());
         if block.len() > remaining {
+            block[remaining..].zeroize();
             block.truncate(remaining);
         }
         samples.extend_from_slice(&block);
         block.zeroize();
+    }
+    if let Some(length) = &capture.final_length {
+        let keep = length.load(Ordering::Acquire).min(samples.len());
+        samples[keep..].zeroize();
+        samples.truncate(keep);
     }
     if cancel.load(Ordering::Acquire) {
         samples.zeroize();
@@ -899,6 +894,7 @@ mod tests {
                 error_rx,
                 queued_frames: queued,
                 sample_rate: TEST_RATE,
+                final_length: None,
             },
             player,
         )
@@ -1086,6 +1082,7 @@ mod tests {
                 error_rx,
                 queued_frames: queued,
                 sample_rate: TEST_RATE,
+                final_length: None,
             },
             SessionLimits::APP,
             &stop,
@@ -1941,3 +1938,8 @@ fn stream_is_reliable(audio: &[f32], text: &str, intervals: &[(i64, i64)]) -> bo
     uncovered += activity(&audio[cursor..]);
     !long_pause && uncovered < 4800
 }
+
+#[path = "warm_capture.rs"]
+mod warm_capture;
+use warm_capture::timed_capture;
+pub(super) use warm_capture::{start_ready_microphone, ReadyMicrophone};

@@ -1492,6 +1492,8 @@ try {
   assert.match(await native.locator('#dictationSetupStatus').textContent(),/Use an existing model or download/);
   await native.setViewportSize({width:1000,height:850});
   await native.screenshot({path:path.join(root,'docs/screens/model-reuse-settings.png')});
+  assert.equal(await native.locator('#dictationReady').isChecked(), true);
+  await native.screenshot({path:path.join(root,'docs/screens/dictation-ready-settings.png')});
   await native.setViewportSize({width:520,height:288});
   await native.evaluate(()=>window.__emitNative('dictation_state',{status:'review',modelInstalled:true,modelDownloadedBytes:0,activeModelLabel:'Tiny',models:[{id:'ggml-tiny.bin',label:'Tiny',bytes:77691713,speed:'Fastest',accuracy:'Lower',note:null,state:'installed',foundIn:null,active:true},{id:'ggml-base.bin',label:'Base (full size)',bytes:147951465,speed:'Very fast',accuracy:'Good',note:null,state:'found',foundIn:'podcli',active:false}]}));
   assert.equal(await native.locator('.model-row[data-id="ggml-tiny.bin"] button',{hasText:'Remove'}).isDisabled(),true,'Review must be discarded before model removal');
@@ -1658,6 +1660,30 @@ try {
   assert.notEqual(await idleClock.locator('.compact').innerText(), beforeMinute, 'Collapsed clock advances at the next minute');
   assert.equal(await idleClock.evaluate(() => window.__idleIntervals.size), 0, 'The minute clock does not start an interval');
   await idleClock.close();
+
+  const readySettings = await context.newPage();
+  await readySettings.setViewportSize({width:1000,height:850});
+  await readySettings.addInitScript(() => {
+    let settings = {toggleShortcut:'Ctrl+Shift+Space',holdToTalkShortcut:'Shift+Shift',reviewBeforeInsert:false,keepMicrophoneReady:true};
+    const snapshot = () => ({status:'idle',modelInstalled:false,models:[],settings});
+    window.__readySaves = [];
+    window.__TAURI_INTERNALS__ = {transformCallback:()=>1, async invoke(command,args) {
+      if(command === 'dictation_get_state') return snapshot();
+      if(command === 'dictation_set_settings') { settings = args.settings; window.__readySaves.push(settings.keepMicrophoneReady); return snapshot(); }
+      return null;
+    }};
+  });
+  await readySettings.goto('http://tuck.test/settings.html#tools');
+  await readySettings.locator('#dictationReady:enabled').waitFor();
+  assert.equal(await readySettings.locator('#dictationReady').isChecked(),true);
+  await readySettings.locator('#dictationReady').click();
+  await readySettings.waitForFunction(()=>window.__readySaves.length===1);
+  assert.equal(await readySettings.locator('#dictationReady').isChecked(),false);
+  await readySettings.locator('#dictationReady:enabled').click();
+  await readySettings.waitForFunction(()=>window.__readySaves.length===2);
+  assert.deepEqual(await readySettings.evaluate(()=>window.__readySaves),[false,true]);
+  await readySettings.screenshot({path:path.join(root,'docs/screens/dictation-ready-settings.png')});
+  await readySettings.close();
 
   console.log('UI smoke passed: geometry, tab rail (keys, wheel edges, swipe, memory), accessibility, keyboard seeking, timers, collapsed media text and its running animations, usage rings, segmented switch, dictation tab, empty states, icon buttons, persistence errors, volume/brightness HUD, wheel and middle-click volume, the pill-sized strip on the open island, queued flyout failure, return to open after HUD, HUD setting, charger-ramp brightness, flyout default-on, shelf, drag hold and previews.');
 } finally { await browser.close(); }

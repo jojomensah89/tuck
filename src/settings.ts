@@ -457,7 +457,7 @@ function mountWelcome(): void {
     welcome = document.createElement('section'); welcome.className = 'welcome'; welcome.id = 'welcome';
     welcome.innerHTML = '<span class="about-mark" aria-hidden="true"></span><h1 tabindex="-1">Welcome to Tuck</h1><p class="lead">Hover over the island at the top of your screen to open Tuck</p>';
     const moved: { node: HTMLElement; placeholder: Comment }[] = [];
-    for (const [title, ids] of [['', ['row-autostart', 'autostartStatus']], ['Track AI usage', ['providerSwitches', 'providersEmpty', 'installedUsageStatus']], ['Dictation', ['row-dictationModel', 'modelRows', 'dictationStatus', 'dictationRetryRow']]] as [string, string[]][]) {
+    for (const [title, ids] of [['', ['row-autostart', 'autostartStatus']], ['Track AI usage', ['providerSwitches', 'providersEmpty', 'installedUsageStatus']], ['Dictation', ['row-dictationReady', 'row-dictationModel', 'modelRows', 'dictationStatus', 'dictationRetryRow']]] as [string, string[]][]) {
       const group = document.createElement('div'); group.className = 'group';
       if (title) { const heading = document.createElement('h2'); heading.textContent = title; group.append(heading); }
       const panel = document.createElement('div'); panel.className = 'panel'; group.append(panel);

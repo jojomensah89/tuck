@@ -65,3 +65,5 @@ Installers are written to `src-tauri/target/release/bundle/nsis/`.
 ## Licence
 
 [MIT](LICENSE), copyright 2026 Tuck contributors. Third-party components and model weights retain their own terms.
+
+Dictation keeps the microphone ready by default once a speech model is available. Windows shows microphone use while Tuck runs. Turn off **Keep microphone ready** in Settings to open it only while dictating. Idle audio stays in an erased, ten-second memory buffer; recordings include up to 450 ms before press and a short tail after release.

@@ -22,7 +22,7 @@ export function mountDictationSettings(): void {
   const el = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
   const toggle = (id: string) => el<HTMLInputElement>(id);
   const button = (id: string) => el<HTMLButtonElement>(id);
-  const controls = () => [...SHORTCUT_FIELDS.map(button), button('dictationUseBothShifts'), toggle('dictationReview')];
+  const controls = () => [...SHORTCUT_FIELDS.map(button), button('dictationUseBothShifts'), toggle('dictationReview'), toggle('dictationReady')];
 
   let saved: DictationSettings | null = null;
   let latest: DictationSnapshot | null = null;
@@ -57,6 +57,7 @@ export function mountDictationSettings(): void {
     }
     syncHoldExtras();
     toggle('dictationReview').checked = data.reviewBeforeInsert;
+    toggle('dictationReady').checked = data.keepMicrophoneReady ?? true;
   };
   const syncHoldExtras = () => {
     const dual = isDualShift(button('dictationHoldShortcut').dataset.value ?? '');
@@ -68,6 +69,7 @@ export function mountDictationSettings(): void {
     toggleShortcut: button('dictationShortcut').dataset.value ?? '',
     holdToTalkShortcut: button('dictationHoldShortcut').dataset.value ?? '',
     reviewBeforeInsert: toggle('dictationReview').checked,
+    keepMicrophoneReady: toggle('dictationReady').checked,
   });
 
   /** Fields start disabled in the HTML. This is the one place they unlock. */
@@ -103,7 +105,7 @@ export function mountDictationSettings(): void {
       renderFieldErrors(); renderGroupStatus();
     }
   };
-  for (const id of ['dictationReview']) toggle(id).addEventListener('change', () => { void save(toggle(id), null); });
+  for (const id of ['dictationReview', 'dictationReady']) toggle(id).addEventListener('change', () => { void save(toggle(id), null); });
 
   /* ---------- Key recorder ---------- */
   const saveWhenReleased = (pressed: Set<string>, commit: () => void) => {

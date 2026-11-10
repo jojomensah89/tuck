@@ -563,3 +563,29 @@ Models are downloaded separately, not embedded in the installer. The catalogue a
 The Claude, Antigravity and OpenAI marks in `src/icons.ts` identify providers. They remain trademarks of their respective owners, Anthropic, Google and OpenAI. No affiliation or endorsement is implied. The Claude spark is a community drawing from @lobehub/icons-static-svg 1.102.0, icons/claude-color.svg (MIT, https://github.com/lobehub/lobe-icons), fetched from https://unpkg.com/@lobehub/icons-static-svg@1.102.0/icons/claude-color.svg. The mark remains Anthropic's; Antigravity full-colour SVG is published at https://antigravity.google/assets/image/brand/antigravity-icon__full-color.svg via https://antigravity.google/press. The Codex icon is not OpenAI's own file: OpenAI publishes no downloadable colour version, so it comes from the community set @lobehub/icons-static-svg 1.102.0 (MIT, https://github.com/lobehub/lobe-icons), and the Codex mark it depicts remains OpenAI's. These files in `public/providers/` are unmodified. The legacy Claude path is sourced from Simple Icons; OpenAI artwork is sourced from OpenAI's brand assets as recorded in that file. Tuck's MIT licence does not grant trademark rights. Follow each owner's brand terms for reuse.
 
 Antigravity quota protocol reference: https://github.com/pingdotgg/t3code/blob/e455200077ce60806a01c8f28435b58860dcfc74/apps/server/src/provider/antigravityUsageLimits.ts (MIT). Tuck independently implements the response shapes; no new dependency.
+
+## Hex
+
+Capture timing adapted from [Hex](https://github.com/anomalyco/hex), MIT licensed.
+
+MIT License
+
+Copyright (c) 2026 Christopher Langton
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

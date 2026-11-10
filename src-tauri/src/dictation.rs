@@ -1570,6 +1570,7 @@ impl DictationService {
 
     pub fn shutdown(&self) {
         self.is_shutdown.store(true, Ordering::Release);
+        target::shutdown_restore_workers();
         dual_shift::stop();
         let _ = self.cancel();
         // Give a download a moment to delete its part file. If the process wins the race,

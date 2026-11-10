@@ -191,7 +191,7 @@ pub(super) fn is_editable_target(_: &ForegroundTarget) -> Result<(), String> {
 mod clipboard {
     use super::*;
     use windows::Win32::{
-        Foundation::{GlobalFree, HANDLE, HGLOBAL},
+        Foundation::{GetLastError, GlobalFree, SetLastError, HANDLE, HGLOBAL, WIN32_ERROR},
         System::{DataExchange::*, Memory::*},
     };
     type Snapshot = Vec<(u32, Zeroizing<Vec<u8>>)>;
@@ -216,6 +216,7 @@ mod clipboard {
         sequence: None,
         original: None,
     });
+    static RESTORE_SHUTDOWN: AtomicBool = AtomicBool::new(false);
     struct Open;
     impl Drop for Open {
         fn drop(&mut self) {
@@ -238,14 +239,19 @@ mod clipboard {
             }
         }
     }
-    unsafe fn snapshot() -> Option<Snapshot> {
+    unsafe fn snapshot() -> Result<Option<Snapshot>, String> {
         let mut result = Vec::new();
         let mut format = 0;
         let mut total = 0usize;
         loop {
+            SetLastError(WIN32_ERROR(0));
             format = EnumClipboardFormats(format);
             if format == 0 {
-                return Some(result);
+                return if GetLastError().0 == 0 {
+                    Ok(Some(result))
+                } else {
+                    Err("Could not enumerate clipboard formats".into())
+                };
             }
             // Windows synthesizes bitmap/palette handles alongside DIB bytes.
             // The DIB retains the pixels and palette without copying GDI handles.
@@ -256,21 +262,24 @@ mod clipboard {
             }
             // These formats contain GDI/owner handles, not transferable global bytes.
             if matches!(format, 2 | 3 | 9 | 14 | 0x80..=0x8e | 0x300..=0x3ff) {
-                return None;
+                return Ok(None);
             }
-            let handle = GetClipboardData(format).ok()?;
+            let handle = GetClipboardData(format)
+                .map_err(|error| format!("Could not read clipboard format {format}: {error}"))?;
             let memory = HGLOBAL(handle.0);
             let size = GlobalSize(memory);
             if size == 0 || size > 64 * 1024 * 1024 || result.len() >= 128 {
-                return None;
+                return Ok(None);
             }
-            total = total.checked_add(size)?;
+            total = total
+                .checked_add(size)
+                .ok_or_else(|| "Clipboard snapshot size overflow".to_owned())?;
             if total > 256 * 1024 * 1024 {
-                return None;
+                return Ok(None);
             }
             let ptr = GlobalLock(memory) as *const u8;
             if ptr.is_null() {
-                return None;
+                return Err(format!("Could not lock clipboard format {format}"));
             }
             let bytes = Zeroizing::new(std::slice::from_raw_parts(ptr, size).to_vec());
             let _ = GlobalUnlock(memory);
@@ -387,18 +396,20 @@ mod clipboard {
             .map_err(|_| "Clipboard unavailable".to_owned())?;
         let opened = open(owner)?;
         let before = unsafe { GetClipboardSequenceNumber() };
-        let previous = unsafe { snapshot() };
-
+        let snapshot = unsafe { snapshot() };
         check_cancel(cancel)?;
+        let (previous, write_result): (Snapshot, Result<(), ReplaceError>) =
+            with_complete_snapshot(snapshot, |previous| unsafe {
+                let units = Zeroizing::new(text.encode_utf16().chain(Some(0)).collect::<Vec<_>>());
+                let bytes =
+                    std::slice::from_raw_parts(units.as_ptr() as *const u8, units.len() * 2);
+                (previous, replace(&[(13, bytes)]))
+            })?;
         unsafe {
-            let units = Zeroizing::new(text.encode_utf16().chain(Some(0)).collect::<Vec<_>>());
-            let bytes = std::slice::from_raw_parts(units.as_ptr() as *const u8, units.len() * 2);
-            if let Err(error) = replace(&[(13, bytes)]) {
+            if let Err(error) = write_result {
                 if error.cleared {
                     // Put back what was there; a half-written transcript must not stay.
-                    let restored = previous
-                        .as_ref()
-                        .is_some_and(|snapshot| replace(&items(snapshot)).is_ok());
+                    let restored = replace(&items(&previous)).is_ok();
                     if !restored {
                         let _ = EmptyClipboard();
                     }
@@ -410,7 +421,7 @@ mod clipboard {
         let sequence = unsafe { GetClipboardSequenceNumber() };
         drop(opened);
         *history = sequence;
-        let generation = state.register(previous, before, sequence);
+        let generation = state.register(Some(previous), before, sequence);
         drop(history);
         drop(_gate);
         drop(state);
@@ -477,11 +488,25 @@ mod clipboard {
                 } else {
                     500
                 }));
-                // A busy clipboard or a failed write is retried for a while. The saved
-                // contents are given up only once they are back or someone else wrote.
-                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
-                while !restore_once(owner, generation) && std::time::Instant::now() < deadline {
-                    std::thread::sleep(std::time::Duration::from_millis(50));
+                // Keep the zeroizing snapshot until restoration succeeds, another app
+                // writes, a newer paste supersedes it, or app shutdown is requested.
+                let outcome = retry_restore_until(
+                    || restore_once(owner, generation),
+                    |delay| {
+                        if RESTORE_SHUTDOWN.load(Ordering::Acquire) {
+                            return false;
+                        }
+                        std::thread::sleep(delay);
+                        !RESTORE_SHUTDOWN.load(Ordering::Acquire)
+                    },
+                );
+                if outcome == RestoreAttempt::Shutdown {
+                    eprintln!("Clipboard restoration stopped during application shutdown");
+                    let mut state = RESTORE.lock().unwrap_or_else(|p| p.into_inner());
+                    if state.generation == generation {
+                        state.original = None;
+                        state.sequence = None;
+                    }
                 }
             });
         }
@@ -496,28 +521,37 @@ mod clipboard {
         }
         Ok(allowed)
     }
-    /// One attempt to put the saved clipboard back. False means try again.
-    fn restore_once(owner: isize, generation: u64) -> bool {
+    pub(super) fn shutdown_restore_workers() {
+        RESTORE_SHUTDOWN.store(true, Ordering::Release);
+        let mut state = RESTORE.lock().unwrap_or_else(|p| p.into_inner());
+        if state.original.take().is_some() {
+            eprintln!("Clipboard restoration abandoned during application shutdown");
+        }
+        state.sequence = None;
+        state.generation = state.generation.wrapping_add(1);
+    }
+    /// One attempt to restore, distinguishing contention from terminal outcomes.
+    fn restore_once(owner: isize, generation: u64) -> RestoreAttempt {
         let mut state = RESTORE.lock().unwrap_or_else(|p| p.into_inner());
         if state.generation != generation {
-            return true;
+            return RestoreAttempt::Superseded;
         }
         let mut history = crate::clipboard_history::DICTATION_CLIPBOARD
             .lock()
             .unwrap_or_else(|p| p.into_inner());
         let Ok(_opened) = open(owner) else {
-            return false;
+            return RestoreAttempt::Retry;
         };
         if !restore_allowed(state.generation, generation, state.sequence, unsafe {
             GetClipboardSequenceNumber()
         }) {
             state.original = None;
             state.sequence = None;
-            return true;
+            return RestoreAttempt::ClipboardChanged;
         }
         let Some(snapshot) = state.original.as_ref() else {
             state.sequence = None;
-            return true;
+            return RestoreAttempt::Restored;
         };
         let result = unsafe { replace(&items(snapshot)) };
         // Tuck's own history skips this write, and a retry still recognises the clipboard as ours.
@@ -527,11 +561,11 @@ mod clipboard {
             Ok(()) => {
                 state.original = None;
                 state.sequence = None;
-                true
+                RestoreAttempt::Restored
             }
             Err(_) => {
                 state.sequence = Some(sequence);
-                false
+                RestoreAttempt::Retry
             }
         }
     }
@@ -634,6 +668,119 @@ mod clipboard {
             state.register(None, 5, 6);
             assert!(state.original.is_none());
         }
+        #[test]
+        fn incomplete_snapshot_never_replaces_clipboard_and_empty_is_valid() {
+            let mut replaced = false;
+            let snapshots: [Result<Option<Snapshot>, String>; 3] = [
+                Ok(None),
+                Err("enumeration failed".to_owned()),
+                Err("clipboard read failed".to_owned()),
+            ];
+            for snapshot in snapshots {
+                let result = with_complete_snapshot(snapshot, |_| replaced = true);
+                assert!(result.is_err());
+                assert!(
+                    !replaced,
+                    "incomplete snapshot must fail before replacement"
+                );
+            }
+            let empty: Snapshot = Vec::new();
+            with_complete_snapshot(Ok(Some(empty)), |snapshot| {
+                replaced = true;
+                assert!(snapshot.is_empty());
+            })
+            .unwrap();
+            assert!(replaced);
+        }
+        #[test]
+        fn restoration_retry_backoff_is_capped() {
+            assert_eq!(restore_retry_delay(0).as_millis(), 25);
+            assert_eq!(restore_retry_delay(1).as_millis(), 50);
+            assert_eq!(restore_retry_delay(20).as_millis(), 800);
+        }
+        #[test]
+        fn restoration_retries_until_success_and_stops_on_sequence_change() {
+            let mut attempts = [
+                RestoreAttempt::Retry,
+                RestoreAttempt::Retry,
+                RestoreAttempt::Restored,
+            ]
+            .into_iter();
+            let mut waits = Vec::new();
+            let outcome = retry_restore_until(
+                || attempts.next().unwrap(),
+                |delay| {
+                    waits.push(delay);
+                    true
+                },
+            );
+            assert_eq!(outcome, RestoreAttempt::Restored);
+            assert_eq!(waits, [restore_retry_delay(0), restore_retry_delay(1)]);
+
+            let mut waits = 0;
+            assert_eq!(
+                retry_restore_until(
+                    || RestoreAttempt::ClipboardChanged,
+                    |_| {
+                        waits += 1;
+                        true
+                    }
+                ),
+                RestoreAttempt::ClipboardChanged
+            );
+            assert_eq!(waits, 0, "resolved sequence changes are not retried");
+            assert_eq!(
+                retry_restore_until(|| RestoreAttempt::Retry, |_| false),
+                RestoreAttempt::Shutdown
+            );
+        }
+    }
+}
+#[cfg(any(windows, test))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RestoreAttempt {
+    Retry,
+    Restored,
+    ClipboardChanged,
+    Superseded,
+    Shutdown,
+}
+#[cfg(any(windows, test))]
+fn retry_restore_until(
+    mut attempt: impl FnMut() -> RestoreAttempt,
+    mut wait: impl FnMut(std::time::Duration) -> bool,
+) -> RestoreAttempt {
+    let mut retries = 0u32;
+    loop {
+        match attempt() {
+            RestoreAttempt::Retry => {
+                if !wait(restore_retry_delay(retries)) {
+                    return RestoreAttempt::Shutdown;
+                }
+                retries = retries.saturating_add(1);
+            }
+            done => return done,
+        }
+    }
+}
+fn restore_retry_delay(attempt: u32) -> std::time::Duration {
+    std::time::Duration::from_millis(25u64.saturating_mul(1u64 << attempt.min(5)).min(800))
+}
+fn with_complete_snapshot<T, R>(
+    snapshot: Result<Option<T>, String>,
+    replace: impl FnOnce(T) -> R,
+) -> Result<R, InsertionFailure> {
+    match snapshot {
+        Ok(Some(snapshot)) => Ok(replace(snapshot)),
+        Ok(None) => Err(
+            "Clipboard formats cannot be safely preserved. Review the transcript."
+                .to_owned()
+                .into(),
+        ),
+        Err(error) => Err(format!(
+            "Could not safely preserve the clipboard: {error}. Review the transcript."
+        )
+        .into()),
     }
 }
 #[cfg(any(windows, test))]
@@ -649,6 +796,12 @@ pub(super) fn paste(
 ) -> Result<bool, InsertionFailure> {
     clipboard::write(text, owner, cancel, gate)
 }
+#[cfg(windows)]
+pub(super) fn shutdown_restore_workers() {
+    clipboard::shutdown_restore_workers();
+}
+#[cfg(not(windows))]
+pub(super) fn shutdown_restore_workers() {}
 #[cfg(not(windows))]
 pub(super) fn paste(
     _: &str,

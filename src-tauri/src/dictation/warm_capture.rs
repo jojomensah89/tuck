@@ -137,7 +137,7 @@ pub(crate) fn start_ready_microphone(service: &Arc<DictationService>) {
                     release_audio_frames(frames, block.len());
                     let mut state = owner.state.lock().unwrap();
                     let now = Instant::now();
-                    let start =
+                    let arrived =
                         now - Duration::from_secs_f64(block.len() as f64 / state.rate as f64);
                     let start = state
                         .blocks
@@ -145,7 +145,7 @@ pub(crate) fn start_ready_microphone(service: &Arc<DictationService>) {
                         .map(|(at, previous)| {
                             *at + Duration::from_secs_f64(previous.len() as f64 / state.rate as f64)
                         })
-                        .unwrap_or(start);
+                        .map_or(arrived, |chained| block_start(chained, arrived));
                     state.blocks.push_back((start, Zeroizing::new(block)));
                     state.prune(now);
                 }
@@ -280,6 +280,17 @@ pub(super) fn timed_capture(
                         });
                     blocks.push((at, Zeroizing::new(block)));
                 }
+                // These blocks were just delivered. If their chained times end well
+                // before now, the stream paused; move them to when they arrived.
+                if let Some((at, last)) = blocks.last() {
+                    let end = *at + Duration::from_secs_f64(last.len() as f64 / rate as f64);
+                    let late = Instant::now().saturating_duration_since(end);
+                    if late > STREAM_GAP {
+                        for (at, _) in &mut blocks {
+                            *at += late;
+                        }
+                    }
+                }
             }
             for (at, block) in blocks {
                 let part = timeline.push(at, &block);
@@ -311,6 +322,11 @@ pub(super) fn timed_capture(
                 break;
             }
             if release.is_none() && stop.load(Ordering::Acquire) {
+                // The release time is written before the stop flag, so a release that
+                // landed after this pass read `release` is visible now and keeps its tail.
+                if released_since(&times) {
+                    continue;
+                }
                 break;
             }
             std::thread::sleep(Duration::from_millis(5));
@@ -342,6 +358,25 @@ pub(super) fn timed_capture(
         },
         done,
     ))
+}
+
+fn released_since(times: &Mutex<(Instant, Option<Instant>)>) -> bool {
+    times.lock().unwrap().1.is_some()
+}
+
+/// A block later than this against the previous block's end means the stream paused.
+const STREAM_GAP: Duration = Duration::from_millis(100);
+/// Pauses up to this long are filled with silence; longer ones are cut out of the clip.
+const MAX_PADDED_GAP: Duration = Duration::from_millis(250);
+
+/// Blocks normally follow one another exactly. After a pause in delivery the block
+/// belongs where it arrived, or every later boundary would land too early.
+fn block_start(chained: Instant, arrived: Instant) -> Instant {
+    if arrived.saturating_duration_since(chained) > STREAM_GAP {
+        arrived
+    } else {
+        chained
+    }
 }
 
 /// Hex's release policy: five speech frames into the base tail, then eight quiet
@@ -493,13 +528,25 @@ impl CaptureTimeline {
             origin,
             cursor: origin,
             rate,
-            audio: Zeroizing::new(Vec::new()),
+            // Reserved in full: growing would free copies of speech without erasing them.
+            audio: Zeroizing::new(Vec::with_capacity(rate as usize * MAX_SECONDS)),
         }
     }
     fn push<'a>(&mut self, at: Instant, block: &'a [f32]) -> &'a [f32] {
         if self.audio.is_empty() {
             self.origin = self.origin.max(at);
             self.cursor = self.origin;
+        }
+        // Sample indexes are times measured from `origin`, so a pause in the stream
+        // is either filled with silence or taken out of the timeline.
+        let gap = at.saturating_duration_since(self.cursor);
+        if gap > MAX_PADDED_GAP {
+            self.origin += gap;
+        } else if !gap.is_zero() {
+            let silence = ((gap.as_secs_f64() * self.rate as f64).round() as usize)
+                .min((self.rate as usize * MAX_SECONDS).saturating_sub(self.audio.len()));
+            let padded = self.audio.len() + silence;
+            self.audio.resize(padded, 0.0);
         }
         let from = ((self.cursor.saturating_duration_since(at).as_secs_f64() * self.rate as f64)
             .round() as usize)
@@ -647,6 +694,56 @@ mod timing_tests {
             assert_eq!(stream.timeline.audio.len(), 1150 * rate as usize / 1000);
             assert_eq!(resample_to_16k(&stream.timeline.audio, rate).len(), 18400);
         }
+    }
+    #[test]
+    fn a_stream_that_pauses_keeps_its_release_boundary() {
+        for rate in [16000u32, 44100, 48000] {
+            let block = |ms: usize| vec![0.0f32; ms * rate as usize / 1000];
+            // A long pause (1000..1400 ms) is cut out; the clip still ends at release + 200 ms.
+            let mut long = FakeStream::new(true, rate);
+            long.timeline.push(long.epoch, &block(1000));
+            long.timeline
+                .push(long.epoch + Duration::from_millis(1400), &block(600));
+            long.now = long.epoch + Duration::from_millis(2000);
+            assert!(long.stop(1700));
+            let expected = (450 + 500) * rate as usize / 1000;
+            assert!(long.timeline.audio.len().abs_diff(expected) <= 1);
+            // A short pause (1000..1100 ms) is filled with silence.
+            let mut short = FakeStream::new(true, rate);
+            short.timeline.push(short.epoch, &block(1000));
+            short
+                .timeline
+                .push(short.epoch + Duration::from_millis(1100), &block(900));
+            short.now = short.epoch + Duration::from_millis(2000);
+            assert!(short.stop(1700));
+            let expected = (1900 - 550) * rate as usize / 1000;
+            assert!(short.timeline.audio.len().abs_diff(expected) <= 1);
+        }
+    }
+    #[test]
+    fn a_paused_stream_restarts_its_timestamps_where_audio_arrived() {
+        let chained = Instant::now();
+        assert_eq!(
+            block_start(chained, chained + Duration::from_millis(20)),
+            chained
+        );
+        let arrived = chained + Duration::from_millis(400);
+        assert_eq!(block_start(chained, arrived), arrived);
+    }
+    #[test]
+    fn the_timeline_never_reallocates_recorded_audio() {
+        let mut stream = FakeStream::new(true, 16000);
+        let reserved = stream.timeline.audio.capacity();
+        stream.deliver(5000, None);
+        assert_eq!(stream.timeline.audio.capacity(), reserved);
+        assert!(reserved >= 16000 * MAX_SECONDS);
+    }
+    #[test]
+    fn a_release_published_after_the_snapshot_is_still_seen() {
+        let times = Mutex::new((Instant::now(), None));
+        assert!(!released_since(&times));
+        times.lock().unwrap().1 = Some(Instant::now());
+        assert!(released_since(&times));
     }
     #[test]
     fn cold_speech_without_a_quiet_baseline_still_gets_the_full_tail() {

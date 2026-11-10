@@ -254,6 +254,7 @@ pub(super) fn timed_capture(
                         blocks.push((*at, Zeroizing::new(block.to_vec())));
                     }
                 }
+                backdate_batch_to_now(&mut blocks, Instant::now(), rate);
             } else {
                 if let Ok(e) = cold_erx.try_recv() {
                     if release.is_some() {
@@ -280,8 +281,8 @@ pub(super) fn timed_capture(
                         });
                     blocks.push((at, Zeroizing::new(block)));
                 }
-                // These blocks were just delivered. If their chained times end well
-                // before now, the stream paused; move them to when they arrived.
+                // A drain is one observed batch: anchoring its final sample at or
+                // before now preserves spacing without manufacturing future audio.
                 if let Some((at, last)) = blocks.last() {
                     let end = *at + Duration::from_secs_f64(last.len() as f64 / rate as f64);
                     let late = Instant::now().saturating_duration_since(end);
@@ -291,6 +292,7 @@ pub(super) fn timed_capture(
                         }
                     }
                 }
+                backdate_batch_to_now(&mut blocks, Instant::now(), rate);
             }
             for (at, block) in blocks {
                 let part = timeline.push(at, &block);
@@ -358,6 +360,22 @@ pub(super) fn timed_capture(
         },
         done,
     ))
+}
+
+fn backdate_batch_to_now(blocks: &mut [(Instant, Zeroizing<Vec<f32>>)], now: Instant, rate: u32) {
+    let Some((last_at, last)) = blocks.last() else {
+        return;
+    };
+    let endpoint = *last_at + Duration::from_secs_f64(last.len() as f64 / rate as f64);
+    let shift = endpoint.saturating_duration_since(now);
+    if shift.is_zero() {
+        return;
+    }
+    for (at, _) in blocks {
+        if let Some(backdated) = at.checked_sub(shift) {
+            *at = backdated;
+        }
+    }
 }
 
 fn released_since(times: &Mutex<(Instant, Option<Instant>)>) -> bool {
@@ -693,6 +711,44 @@ mod timing_tests {
             assert!(stream.stop(1500));
             assert_eq!(stream.timeline.audio.len(), 1150 * rate as usize / 1000);
             assert_eq!(resample_to_16k(&stream.timeline.audio, rate).len(), 18400);
+        }
+    }
+    #[test]
+    fn drained_batches_are_backdated_and_release_waits_for_post_release_audio() {
+        for rate in [16000, 44100, 48000] {
+            let now = Instant::now();
+            let samples = rate as usize / 10;
+            let mut batch = vec![
+                (
+                    now - Duration::from_millis(100),
+                    Zeroizing::new(vec![0.0; samples]),
+                ),
+                (now, Zeroizing::new(vec![0.0; samples])),
+                (
+                    now + Duration::from_millis(100),
+                    Zeroizing::new(vec![0.0; samples]),
+                ),
+            ];
+            backdate_batch_to_now(&mut batch, now, rate);
+            for (at, block) in &batch {
+                assert!(
+                    *at + Duration::from_secs_f64(block.len() as f64 / rate as f64) <= now,
+                    "queued audio must not end in the future at {rate} Hz"
+                );
+            }
+            assert_eq!(batch[1].0 - batch[0].0, Duration::from_millis(100));
+            assert_eq!(batch[2].0 - batch[1].0, Duration::from_millis(100));
+
+            let mut timeline = CaptureTimeline::new(batch[0].0, batch[0].0, false, rate);
+            for (at, block) in &batch {
+                timeline.push(*at, block);
+            }
+            let release = now;
+            assert!(!timeline.finished(Some(release), now, false));
+            timeline.push(now, &vec![0.0; samples]);
+            assert!(!timeline.finished(Some(release), now + Duration::from_millis(100), false));
+            timeline.push(now + Duration::from_millis(100), &vec![0.0; samples]);
+            assert!(timeline.finished(Some(release), now + Duration::from_millis(200), false));
         }
     }
     #[test]

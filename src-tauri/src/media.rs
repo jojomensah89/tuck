@@ -1,3 +1,4 @@
+use crate::media_apps;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Mutex};
@@ -122,33 +123,36 @@ fn current_session() -> Option<GlobalSystemMediaTransportControlsSession> {
         .ok()?
         .get()
         .ok()?;
-
-    let selected = SELECTED_SESSION_ID.lock().ok()?.clone();
-    if let Some(target_id) = selected {
-        let pinned = SESSION_CATALOG
-            .lock()
-            .ok()?
-            .iter()
-            .find(|(id, _)| *id == target_id)
-            .map(|(_, session)| session.clone())?;
-        let sessions = mgr.GetSessions().ok()?;
-        for index in 0..sessions.Size().ok()? {
-            if let Ok(current) = sessions.GetAt(index) {
-                if same_session(&current, &pinned) {
-                    return Some(current);
-                }
-            }
-        }
-        return None;
-    }
-
-    mgr.GetCurrentSession().ok()
+    pick_session(&mgr)
 }
 
+/// The session that drives the card, its controls and the media keys. A pinned session wins
+/// unless its app is switched off in Follow apps; otherwise the OS-current session does, or
+/// the next session from an allowed app when that one is switched off.
 #[cfg(windows)]
-fn session_from_manager(
+fn pick_session(
     mgr: &GlobalSystemMediaTransportControlsSessionManager,
 ) -> Option<GlobalSystemMediaTransportControlsSession> {
+    let sessions = mgr.GetSessions().ok()?;
+    let count = sessions.Size().ok()?;
+    let mut list = Vec::new();
+    for index in 0..count {
+        if let Ok(session) = sessions.GetAt(index) {
+            let app = session
+                .SourceAppUserModelId()
+                .map(|id| id.to_string())
+                .unwrap_or_default();
+            list.push((session, app));
+        }
+    }
+    let ids: Vec<&str> = list.iter().map(|(_, app)| app.as_str()).collect();
+    media_apps::remember(&ids);
+    let off = media_apps::off_apps();
+    let position_of = |target: &GlobalSystemMediaTransportControlsSession| {
+        list.iter()
+            .position(|(session, _)| same_session(session, target))
+    };
+
     let selected = SELECTED_SESSION_ID.lock().ok()?.clone();
     if let Some(target_id) = selected {
         let pinned = SESSION_CATALOG
@@ -157,17 +161,18 @@ fn session_from_manager(
             .iter()
             .find(|(id, _)| *id == target_id)
             .map(|(_, session)| session.clone())?;
-        let sessions = mgr.GetSessions().ok()?;
-        for index in 0..sessions.Size().ok()? {
-            if let Ok(current) = sessions.GetAt(index) {
-                if same_session(&current, &pinned) {
-                    return Some(current);
-                }
-            }
+        let index = position_of(&pinned)?;
+        if media_apps::choose_session(&ids, Some(index), &off) == Some(index) {
+            return list.into_iter().nth(index).map(|(session, _)| session);
         }
-        return None;
     }
-    mgr.GetCurrentSession().ok()
+
+    let preferred = mgr
+        .GetCurrentSession()
+        .ok()
+        .and_then(|current| position_of(&current));
+    let index = media_apps::choose_session(&ids, preferred, &off)?;
+    list.into_iter().nth(index).map(|(session, _)| session)
 }
 
 #[cfg(windows)]
@@ -314,6 +319,12 @@ pub async fn media_sessions() -> Result<Vec<MediaSessionInfo>, String> {
                 .map_err(|e| format!("Failed to get sessions count: {e}"))?;
 
             let selected = SELECTED_SESSION_ID.lock().ok().and_then(|g| g.clone());
+            let seen: Vec<String> = (0..count)
+                .filter_map(|i| sessions.GetAt(i).ok())
+                .filter_map(|s| s.SourceAppUserModelId().ok())
+                .map(|id| id.to_string())
+                .collect();
+            media_apps::remember(&seen.iter().map(String::as_str).collect::<Vec<_>>());
 
             let mut list = Vec::new();
             let old_catalog = SESSION_CATALOG
@@ -645,6 +656,7 @@ pub fn manager_retry_delay(failures: u32) -> std::time::Duration {
 /// Starts an event-driven GSMTC service. A 30-second safety refresh remains because
 /// some players miss artwork/timeline notifications during process startup.
 pub fn start(app: AppHandle) {
+    media_apps::init(&app);
     #[cfg(windows)]
     {
         let (sender, receiver) = mpsc::channel();
@@ -716,7 +728,7 @@ fn run_event_service(
 
         if !suspended && rebind_session {
             drop(session_subscriptions.take());
-            current = manager.as_ref().and_then(session_from_manager);
+            current = manager.as_ref().and_then(pick_session);
             if let Some(value) = current.as_ref() {
                 session_subscriptions = SessionSubscriptions::new(value, &sender)
                     .map_err(|error| eprintln!("Media session subscription: {error}"))
@@ -791,6 +803,12 @@ pub fn suspend() {
 pub fn resume() {
     #[cfg(windows)]
     request(MediaSignal::RebindAll);
+}
+
+/// Re-picks the card's session after an app is switched on or off in Follow apps.
+pub fn follow_changed() {
+    #[cfg(windows)]
+    request(MediaSignal::ManagerChanged);
 }
 
 pub fn stop() {

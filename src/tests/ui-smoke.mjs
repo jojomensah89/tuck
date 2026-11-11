@@ -223,6 +223,8 @@ try {
       if(command==='clipboard_configure')throw 'Fixture atomic save failure';
       if(command==='plugin:updater|check')return null;
       if(command==='installed_usage_providers')return window.__providers || [];
+      if(command==='media_apps_list')return structuredClone(window.__mediaApps || []);
+      if(command==='media_app_set_follow'){if(window.__mediaAppFail)throw 'Could not save media apps';window.__mediaApps=(window.__mediaApps||[]).map(app=>app.id===args.id?{...app,follow:args.follow}:app);return structuredClone(window.__mediaApps);}
       if(command==='set_usage_provider')return null;
       if(command==='get_autostart'||command==='installed_usage_enabled'||command==='fullscreen_now')return false;
       if(command==='volume_step')return {kind:'volume',level:40+args.delta,muted:false};
@@ -1525,6 +1527,24 @@ try {
   await native.getByText('Activity settings could not be saved',{exact:true}).waitFor();
   assert.equal(await native.locator('#ext-notifications').isChecked(),false);
   assert.equal(await native.evaluate(()=>window.__calls.findLast(call=>call.command==='extension_settings').args.settings.notifications),true);
+  // Follow apps lists every media app Tuck has seen, all on by default; a switched-off app is saved and reverts on failure
+  await native.evaluate(()=>{window.__mediaApps=[{id:'Spotify.exe',name:'Spotify',follow:true},{id:'chrome.exe',name:'Chrome',follow:true}];});
+  await native.locator('#nav a[data-view="media"]').click();
+  await native.locator('#mediaApps input').first().waitFor({state:'attached'});
+  assert.deepEqual(await native.locator('#mediaApps label').allTextContents(),['Spotify','Chrome'],'Every seen app is listed by name');
+  assert.equal(await native.locator('#mediaApps input:checked').count(),2,'Every app follows the card by default');
+  await native.locator('#mediaApps label',{hasText:'Chrome'}).click();
+  assert.equal(await native.locator('#mediaApps input').nth(1).isChecked(),false,'A switched-off app stays off');
+  assert.deepEqual(await native.evaluate(()=>window.__calls.filter(call=>call.command==='media_app_set_follow').map(call=>call.args)),[{id:'chrome.exe',follow:false}],'The switch saves the app ID and its state');
+  await native.evaluate(()=>{window.__mediaAppFail=true;});
+  await native.locator('#mediaApps label',{hasText:'Spotify'}).click();
+  await native.getByText('Could not change this app. Try again.',{exact:true}).waitFor();
+  assert.equal(await native.locator('#mediaApps input').first().isChecked(),true,'A failed save reverts the switch');
+  await native.evaluate(()=>{window.__mediaAppFail=false; window.__mediaApps=[];});
+  await native.locator('#nav a[data-view="general"]').click();
+  await native.locator('#nav a[data-view="media"]').click();
+  assert.equal(await native.locator('#mediaApps > *').count(),0,'With no apps seen yet the control area is empty');
+  assert.equal(await native.locator('#mediaAppsStatus').textContent(),'','No explanation text fills the empty row');
   // Hiding the Windows flyout defaults on and reports when it turned itself off
   await native.locator('#nav a[data-view="island"]').click();
   await native.locator('#row-hideSystemFlyout').waitFor({state:'visible'});

@@ -12,6 +12,7 @@ pub mod lifecycle;
 pub mod lyrics;
 mod lyrics_match;
 pub mod media;
+mod media_apps;
 mod network_rates;
 pub mod osd_flyout;
 mod package;
@@ -158,6 +159,8 @@ pub fn run() {
             media::media_next,
             media::media_prev,
             media::media_seek,
+            media_apps::media_apps_list,
+            media_apps::media_app_set_follow,
         ])
         .setup(move |app| {
             app.manage(welcome::capture(app.handle()));

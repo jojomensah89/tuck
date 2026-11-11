@@ -1555,7 +1555,21 @@ try {
   assert.doesNotMatch(await native.locator('.transcript').textContent(),/Legacy words/);
   await capturePolish(native,'dictation-recording');
   await native.locator('#isl').screenshot({path:path.join(root,'docs/screens/dictation-recording.png')});
+  // Live words from the stream replace "Listening" and stay provisional until the final text.
+  await native.evaluate(() => window.__emitNative('dictation_state',{revision:11,sessionId:1,status:'recording',transcript:null,liveText:'Fixture: this is a local dictation fixture, release the shortcut',audioLevel:0.5,modelInstalled:true,activeModelLabel:'Base',canInsert:true}));
+  await native.waitForTimeout(300);
+  assert.match(await native.locator('.transcript').textContent(),/release the shortcut/);
+  assert.equal(await native.locator('.transcript').evaluate(el => el.classList.contains('live')),true);
+  await native.locator('#isl').screenshot({path:path.join(root,'docs/screens/dictation-live.png')});
+  await native.keyboard.press('Escape');
+  await native.waitForTimeout(700);
+  await native.locator('#isl').screenshot({path:path.join(root,'docs/screens/dictation-live-collapsed.png')});
+  assert.match(await native.locator('#cc .compact-slot.current').textContent(),/release the shortcut$/);
+  await native.locator('#isl').focus(); await native.keyboard.press('Enter');
+  await native.getByRole('tab',{name:'Tools',exact:true}).click();
+  await native.getByRole('tab',{name:'Dictation',exact:true}).click();
   await dictationEvent(12,'review','Fixture: words ready to insert');
+  assert.equal(await native.locator('.transcript').evaluate(el => el.classList.contains('live')),false);
   assert.equal(await native.getByRole('button',{name:'Insert',exact:true}).isEnabled(),true);
   await capturePolish(native,'dictation-review');
   await native.locator('#isl').screenshot({path:path.join(root,'docs/screens/dictation-review.png')});

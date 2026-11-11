@@ -108,6 +108,8 @@ pub struct DictationSnapshot {
     pub session_id: u64,
     pub revision: u64,
     pub audio_level: f32,
+    /// Provisional words heard so far, until the final text replaces them.
+    pub live_text: Option<String>,
     pub status: String,
     pub model_installed: bool,
     pub model_downloaded_bytes: u64,
@@ -130,6 +132,9 @@ impl Drop for DictationSnapshot {
     fn drop(&mut self) {
         if let Some(transcript) = self.transcript.as_mut() {
             transcript.zeroize();
+        }
+        if let Some(live) = self.live_text.as_mut() {
+            live.zeroize();
         }
     }
 }
@@ -165,6 +170,8 @@ struct Runtime {
     session_id: u64,
     revision: u64,
     audio_level: f32,
+    /// Provisional words from the live stream while recording. Never pasted or kept.
+    live_text: Option<String>,
     recording_target: Option<target::ForegroundTarget>,
     focus_changed: bool,
     selection_generation: u64,
@@ -258,6 +265,7 @@ impl DictationService {
                 session_id: 0,
                 revision: 0,
                 audio_level: 0.0,
+                live_text: None,
                 recording_target: None,
                 focus_changed: false,
                 selection_generation: 0,
@@ -447,6 +455,12 @@ impl DictationService {
             .as_ref()
             .map(|r| (r.session_id, r.revision))
             .unwrap_or_default();
+        let live_text = locked.as_ref().ok().and_then(|r| {
+            ["recording", "processing", "transcribing", "inserting"]
+                .contains(&r.status.as_str())
+                .then(|| r.live_text.clone())
+                .flatten()
+        });
         drop(locked);
         let active = resolution.active.as_ref();
         DictationSnapshot {
@@ -454,6 +468,7 @@ impl DictationService {
             session_id,
             revision,
             audio_level,
+            live_text,
             status,
             model_installed: active.is_some(),
             model_downloaded_bytes: downloaded,
@@ -584,6 +599,32 @@ impl DictationService {
                 None
             }
         }
+    }
+
+    /// Shows the stream's words so far. Only a recording that is still running may change
+    /// them, so a late update can never reappear after the final text or a cancel.
+    fn publish_live_text(&self, text: &str) {
+        if let Ok(mut runtime) = self.runtime.lock() {
+            if runtime.status != "recording"
+                || !runtime.active.as_ref().is_some_and(|a| {
+                    !a.cancel.load(Ordering::Acquire) && !a.stop.load(Ordering::Acquire)
+                })
+            {
+                return;
+            }
+            let text = text.trim();
+            if runtime.live_text.as_deref().unwrap_or("") == text {
+                return;
+            }
+            if let Some(mut old) = runtime.live_text.take() {
+                old.zeroize();
+            }
+            runtime.live_text = (!text.is_empty()).then(|| text.to_owned());
+            runtime.revision += 1;
+        } else {
+            return;
+        }
+        self.emit_state();
     }
 
     fn publish_audio_level(&self, level: f32) {
@@ -759,6 +800,9 @@ impl DictationService {
         if let Some(mut text) = runtime.transcript.take() {
             text.zeroize();
         }
+        if let Some(mut text) = runtime.live_text.take() {
+            text.zeroize();
+        }
         runtime.review_target = None;
         runtime.insertion_uncertain = false;
         runtime.message = None;
@@ -842,7 +886,9 @@ impl DictationService {
             }
             runtime.active = None;
             runtime.recording_target = None;
-
+            if let Some(mut live) = runtime.live_text.take() {
+                live.zeroize();
+            }
             runtime.audio_level = 0.0;
             runtime.status = if review { "review" } else { "idle" }.into();
             runtime.message = reason.clone();
@@ -899,6 +945,9 @@ impl DictationService {
             runtime.audio_level = 0.0;
             runtime.focus_changed = false;
             if let Some(mut text) = runtime.transcript.take() {
+                text.zeroize();
+            }
+            if let Some(mut text) = runtime.live_text.take() {
                 text.zeroize();
             }
         }
@@ -1099,6 +1148,9 @@ impl DictationService {
             return Err("There is no transcript awaiting review".into());
         }
         if let Some(mut text) = runtime.transcript.take() {
+            text.zeroize();
+        }
+        if let Some(mut text) = runtime.live_text.take() {
             text.zeroize();
         }
         runtime.review_target = None;
@@ -2993,6 +3045,39 @@ mod tests {
             )
             .unwrap_err()
             .contains("Wait for the speech engine"));
+    }
+
+    #[test]
+    fn live_words_show_only_while_recording_and_never_outlive_it() {
+        let service = DictationService::new();
+        let stop = Arc::new(AtomicBool::new(false));
+        {
+            let mut runtime = service.runtime.lock().unwrap();
+            runtime.active = Some(ActiveSession {
+                stop: stop.clone(),
+                cancel: Arc::new(AtomicBool::new(false)),
+                mode: RecordingMode::HoldToTalk,
+            });
+            runtime.status = "recording".into();
+        }
+        service.publish_live_text(" hello there ");
+        assert_eq!(
+            service.runtime.lock().unwrap().live_text.as_deref(),
+            Some("hello there")
+        );
+        // After release the stream's late words are ignored; the final text decides.
+        stop.store(true, Ordering::Release);
+        service.publish_live_text("hello there friend");
+        assert_eq!(
+            service.runtime.lock().unwrap().live_text.as_deref(),
+            Some("hello there")
+        );
+        service.clear_active();
+        assert_eq!(service.runtime.lock().unwrap().live_text, None);
+        // Nothing appears when no recording runs.
+        service.runtime.lock().unwrap().status = "idle".into();
+        service.publish_live_text("ghost");
+        assert_eq!(service.runtime.lock().unwrap().live_text, None);
     }
 
     #[test]

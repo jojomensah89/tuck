@@ -48,6 +48,8 @@ export interface DictationSnapshot {
   backend?: string;
   status: 'disabled' | 'idle' | 'starting' | 'recording' | 'transcribing' | 'processing' | 'cancelling' | 'inserting' | 'review' | 'error' | 'modelMissing' | 'downloadingModel';
   audioLevel?: number;
+  /** Provisional words from the live stream; the final text replaces them. */
+  liveText?: string | null;
   transcript: string; error?: string | null; modelReady?: boolean;
   sessionId?: number; revision?: number;
   canInsert?: boolean;

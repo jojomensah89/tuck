@@ -59,3 +59,12 @@ export function selectCompactActivity(
     hasBackgroundActivity: active.some(candidate => candidate.running && candidate !== active[0]),
   };
 }
+
+/** The newest words that fit the collapsed island, cut at a word with a leading ellipsis. */
+export function liveTail(text: string, max = 46): string {
+  const clean = text.trim();
+  if (clean.length <= max) return clean;
+  const cut = clean.slice(-max);
+  const space = cut.indexOf(' ');
+  return `\u2026${space > 0 && space < max - 8 ? cut.slice(space + 1) : cut}`;
+}

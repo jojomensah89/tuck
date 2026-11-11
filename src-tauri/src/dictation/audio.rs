@@ -30,6 +30,8 @@ trait SessionEvents: Sync {
     fn recording(&self);
     fn meter(&self, _level: f32) {}
     fn processing(&self) {}
+    /// The live stream's words so far; empty clears them.
+    fn live_text(&self, _text: &str) {}
 
     fn transcribing(&self);
 }
@@ -233,6 +235,9 @@ impl SessionEvents for AppEvents<'_> {
     }
     fn processing(&self) {
         self.service.session_status("processing");
+    }
+    fn live_text(&self, text: &str) {
+        self.service.publish_live_text(text);
     }
 }
 
@@ -1066,6 +1071,9 @@ mod tests {
             fn transcribing(&self) {
                 *self.transcribing_at.lock().unwrap() = Some(self.started.elapsed().as_secs_f32());
             }
+            fn live_text(&self, text: &str) {
+                println!("live {:.1}s: {text}", self.started.elapsed().as_secs_f32());
+            }
         }
         let model = std::env::var("TUCK_TEST_MODEL").unwrap();
         let wav = std::fs::read(std::env::var("TUCK_TEST_WAV").unwrap()).unwrap();
@@ -1363,6 +1371,15 @@ mod gpu_tests {
     }
 }
 static GPU_FAILED: AtomicBool = AtomicBool::new(false);
+/// GPU streams in a row that missed their deadline. One slow stream is usually a cold
+/// start compiling shaders, not a broken device, so only a second in a row turns it off.
+static GPU_SLOW_STREAK: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+const GPU_SLOW_LIMIT: u8 = 2;
+
+/// Whether a failed stream should turn the GPU off for the rest of the run.
+fn gpu_should_stop(slow: bool, streak: &std::sync::atomic::AtomicU8) -> bool {
+    !slow || streak.fetch_add(1, Ordering::AcqRel) + 1 >= GPU_SLOW_LIMIT
+}
 static BACKEND: Mutex<String> = Mutex::new(String::new());
 pub(super) fn backend_label() -> String {
     BACKEND
@@ -1557,9 +1574,14 @@ impl BufferedBackend for ParakeetEngine {
     fn gpu(&self) -> bool {
         self.gpu
     }
-    fn stream_failed(&mut self, cancel: &AtomicBool) {
-        if self.gpu && !cancel.load(Ordering::Acquire) {
+    fn stream_failed(&mut self, slow: bool, cancel: &AtomicBool) {
+        if self.gpu && !cancel.load(Ordering::Acquire) && gpu_should_stop(slow, &GPU_SLOW_STREAK) {
             GPU_FAILED.store(true, Ordering::Release);
+        }
+    }
+    fn stream_succeeded(&mut self) {
+        if self.gpu {
+            GPU_SLOW_STREAK.store(0, Ordering::Release);
         }
     }
     fn batch(&mut self, audio: &[f32], cancel: &AtomicBool) -> Result<String, String> {
@@ -1748,7 +1770,9 @@ trait BufferedBackend {
     fn gpu(&self) -> bool {
         false
     }
-    fn stream_failed(&mut self, _cancel: &AtomicBool) {}
+    /// `slow` means the stream missed its deadline rather than reporting an error.
+    fn stream_failed(&mut self, _slow: bool, _cancel: &AtomicBool) {}
+    fn stream_succeeded(&mut self) {}
     fn batch(&mut self, audio: &[f32], cancel: &AtomicBool) -> Result<String, String>;
 }
 impl BufferedBackend for transcribe_cpp::Session {
@@ -1802,16 +1826,18 @@ fn buffered_session(
 fn buffered_driver<B: BufferedBackend>(
     session: &mut B,
     jobs: &Receiver<EngineJob>,
-    _events: &dyn SessionEvents,
+    events: &dyn SessionEvents,
     _flags: &EngineFlags,
     cancel: &AtomicBool,
     now: &(impl Fn() -> u64 + Sync),
 ) -> Result<String, String> {
     let gpu = session.gpu();
+    let mut shown = Zeroizing::new(String::new());
     let token = transcribe_cpp::CancelToken::new();
     session.install(&token);
     let done = AtomicBool::new(false);
     let deadline_ms = AtomicU64::new(u64::MAX);
+    let timed_out = AtomicBool::new(false);
     let result = std::thread::scope(|scope| {
         scope.spawn(|| {
             while !done.load(Ordering::Acquire) {
@@ -1820,6 +1846,7 @@ fn buffered_driver<B: BufferedBackend>(
                     break;
                 }
                 if now() >= deadline_ms.load(Ordering::Acquire) {
+                    timed_out.store(true, Ordering::Release);
                     token.cancel();
                 }
                 std::thread::sleep(Duration::from_millis(10));
@@ -1845,8 +1872,20 @@ fn buffered_driver<B: BufferedBackend>(
                             deadline_ms.store(u64::MAX, Ordering::Release);
                             if failed || token.is_cancelled() {
                                 stream = None;
+                                // A broken stream's words may be wrong; the final text decides.
+                                if !shown.is_empty() {
+                                    shown.zeroize();
+                                    events.live_text("");
+                                }
                             } else {
                                 sent += audio.len();
+                                let text = active.text();
+                                let live =
+                                    Zeroizing::new(format!("{}{}", text.committed, text.tentative));
+                                if *live != *shown {
+                                    events.live_text(&live);
+                                    shown = live;
+                                }
                             }
                         }
                     }
@@ -1881,6 +1920,7 @@ fn buffered_driver<B: BufferedBackend>(
             if let Some(text) = streamed.filter(|_| !session.invalid() && !token.is_cancelled()) {
                 #[cfg(test)]
                 eprintln!("buffered stream authoritative (no batch fallback)");
+                session.stream_succeeded();
                 return Ok(text);
             }
             #[cfg(test)]
@@ -1890,7 +1930,7 @@ fn buffered_driver<B: BufferedBackend>(
                 return Err("Dictation cancelled".into());
             }
             if device_failed || token.is_cancelled() {
-                session.stream_failed(cancel);
+                session.stream_failed(timed_out.load(Ordering::Acquire), cancel);
             }
             if cancel.load(Ordering::Acquire) {
                 return Err("Dictation cancelled".into());
@@ -2018,7 +2058,7 @@ mod buffered_tests {
         fn invalid(&self) -> bool {
             false
         }
-        fn stream_failed(&mut self, _cancel: &AtomicBool) {
+        fn stream_failed(&mut self, _slow: bool, _cancel: &AtomicBool) {
             self.poisoned = true;
         }
         fn batch(&mut self, audio: &[f32], cancel: &AtomicBool) -> Result<String, String> {
@@ -2034,6 +2074,24 @@ mod buffered_tests {
             Ok("batch".into())
         }
     }
+    #[test]
+    fn one_slow_gpu_stream_keeps_the_gpu_but_two_in_a_row_stop_it() {
+        let streak = std::sync::atomic::AtomicU8::new(0);
+        assert!(
+            !gpu_should_stop(true, &streak),
+            "a cold start is not a broken GPU"
+        );
+        assert!(
+            gpu_should_stop(true, &streak),
+            "a second slow stream in a row is"
+        );
+        let streak = std::sync::atomic::AtomicU8::new(0);
+        assert!(
+            gpu_should_stop(false, &streak),
+            "a real device error stops it at once"
+        );
+    }
+
     fn driver_flags() -> EngineFlags {
         EngineFlags {
             gpu: AtomicBool::new(false),

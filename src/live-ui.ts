@@ -36,6 +36,9 @@ function makePage(id: string, title: string): HTMLElement {
 }
 const friendlyError = (error: unknown) => error instanceof Error ? error.message : typeof error === 'string' ? error : 'Action failed, try again';
 
+/** Phases that may show the live stream's words before the final text. */
+const LIVE_PHASES: string[] = ['recording', 'processing', 'transcribing', 'inserting'];
+
 export function mountLivePages(onLayout: () => void): {
   media: (state: MediaState, position: number) => void;
   position: (position: number) => void;
@@ -334,7 +337,8 @@ export function mountLivePages(onLayout: () => void): {
     const dotState = (data.error && !['Copied', 'Inserted'].includes(data.error)) || data.status === 'error' ? 'warn' : data.status === 'recording' ? 'live' : ['starting', 'transcribing', 'processing', 'cancelling', 'inserting', 'review'].includes(data.status) ? 'idle' : 'off';
     speechDot.set(dotState, `Offline, ${data.status}`);
     const text = data.status === 'review' ? data.transcript : '';
-    transcript.textContent = text.slice(0, 32000) || (data.status === 'recording' ? 'Listening\u2026' : data.status === 'transcribing' ? 'Transcribing\u2026' : 'Your transcript appears here');
+    const live = LIVE_PHASES.includes(data.status) ? (data.liveText || '') : '';
+    transcript.textContent = text.slice(0, 32000) || live.slice(-32000) || (data.status === 'recording' ? 'Listening\u2026' : data.status === 'transcribing' ? 'Transcribing\u2026' : 'Your transcript appears here');
     if (data.status === 'recording') {
       const meter = node('span', 'dictation-waveform');
       meter.setAttribute('aria-label', 'Microphone level');
@@ -344,7 +348,8 @@ export function mountLivePages(onLayout: () => void): {
       }
       transcript.append(meter);
     }
-    transcript.classList.toggle('placeholder', !text);
+    transcript.classList.toggle('placeholder', !text && !live);
+    transcript.classList.toggle('live', !text && Boolean(live));
     transcript.setAttribute('aria-label', 'Transcript');
     insert.disabled = data.status !== 'review' || data.canInsert === false;
     cancel.disabled = !['starting', 'recording', 'transcribing', 'processing', 'inserting', 'review'].includes(data.status);
@@ -361,7 +366,7 @@ export function mountLivePages(onLayout: () => void): {
       audioLevel: data.audioLevel || 0,
       active,
       title: 'Dictation',
-      text: text.slice(-65),
+      text: (text || live).slice(-65),
       priority: 99,
     } }));
   }

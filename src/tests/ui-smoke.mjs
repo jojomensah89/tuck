@@ -189,6 +189,7 @@ try {
     let serial=0;const callbacks=new Map();const listeners=new Map();
     const state={settings:{notifications:false},shelf:[],notificationStatus:'Disabled',errors:[]};
     window.__nativeState=state;window.__calls=[];
+    window.__placement={display:null,dock:'center',active:'main',displays:[{id:'main',name:'DELL U2723QE',primary:true},{id:'tv',name:'Display 2',primary:false},{id:'side',name:'LG UltraGear 27GL',primary:false}]};
     // Stand-ins for Explorer's thumbnails: a page, a photo, an app icon and a video frame
     window.__fixtureThumb=id=>{
       const kinds={pdf:'page',doc:'word',photo:'photo',exe:'hex',app:'app',video:'frame','video-fixture':'frame','doc-fixture':'page'};
@@ -207,6 +208,8 @@ try {
       window.__calls.push({command,args});
       if(command==='plugin:event|listen'){const ids=listeners.get(args.event)||[];ids.push(args.handler);listeners.set(args.event,ids);return ++serial;}
       if(command==='extension_snapshot')return structuredClone(state);
+      if(command==='phone_start')return {svg:window.__phoneSvg};
+      if(command==='phone_stop')return;
       if(command==='shelf_pick'){state.shelf=[{id:'fixture-file',name:'sample.txt',path:'C:\\\\Fixture\\\\sample.txt',bytes:20}];return;}
       if(command==='shelf_remove'){state.shelf=args.id==null?[]:state.shelf.filter(item=>item.id!==args.id);return null;}
       if(command==='shelf_add'){const added=args.paths.map(p=>({id:`added-${++serial}`,name:p.split(/[\\/]/).pop(),path:p,bytes:48213}));state.shelf.push(...added);return added;}
@@ -219,14 +222,19 @@ try {
         return structuredClone(window.__usageSnapshot || []);
       }
       if(command==='clipboard_get_state')return {enabled:false,persistOnExit:false,items:[]};
+      if(command==='telemetry_now')return window.__telemetry||null;
       if(command==='clipboard_copy' && window.__missingClipboardFile)throw 'File no longer exists';
       if(command==='clipboard_configure')throw 'Fixture atomic save failure';
       if(command==='plugin:updater|check')return null;
       if(command==='installed_usage_providers')return window.__providers || [];
+      if(command==='media_apps_list')return structuredClone(window.__mediaApps || []);
+      if(command==='media_app_set_follow'){if(window.__mediaAppFail)throw 'Could not save media apps';window.__mediaApps=(window.__mediaApps||[]).map(app=>app.id===args.id?{...app,follow:args.follow}:app);return structuredClone(window.__mediaApps);}
       if(command==='set_usage_provider')return null;
       if(command==='get_autostart'||command==='installed_usage_enabled'||command==='fullscreen_now')return false;
       if(command==='volume_step')return {kind:'volume',level:40+args.delta,muted:false};
       if(command==='volume_toggle_mute')return {kind:'volume',level:40,muted:true};
+      if(command==='island_placement_get')return structuredClone(window.__placement);
+      if(command==='island_placement_set'){Object.assign(window.__placement,{display:args.display,dock:args.dock});return structuredClone(window.__placement);}
       if(command==='get_hide_system_flyout')return {enabled:true,state:'waiting',message:null};
       if(command==='set_hide_system_flyout'&&!args.enabled)return {enabled:false,state:'off',message:null};
       if(command==='set_hide_system_flyout')return {enabled:false,state:'unavailable',message:"Turned off: Windows showed its volume flyout several times, but Tuck couldn't find it on this version of Windows"};
@@ -239,6 +247,7 @@ try {
     await settings.addInitScript(names => { window.__providers = ['claude','codex','antigravity'].map(provider => ({provider,installed:names.includes(provider),enabled:false})); }, names);
     await settings.goto('http://tuck.test/settings.html#usage');
     await settings.waitForTimeout(100);
+    await settings.waitForFunction(count=>document.querySelectorAll('#providerSwitches input').length===count,names.length);
     assert.equal(await settings.locator('#providerSwitches input').count(), names.length);
     assert.equal(await settings.locator('#providersEmpty').isVisible(), names.length === 0);
     for (const name of names) {
@@ -297,6 +306,7 @@ try {
     }
     await feedback.close();
   }
+  await context.addInitScript(svg=>{window.__phoneSvg=svg;},await readFile(path.join(root,'src/tests/fixtures/phone-qr.svg'),'utf8'));
   await context.addInitScript(nativeBridge);
   // Update screenshots and assertions use a mocked bridge, never a release installer.
   const updateFixtures = await context.newPage();
@@ -602,6 +612,13 @@ try {
   await native.evaluate(()=>window.dispatchEvent(new CustomEvent('tuck-drop-active',{detail:false})));
   await shelfDrop.click();
   await native.locator('.shelf-tile').waitFor();
+  await native.getByRole('button',{name:'Send to phone',exact:true}).click();
+  await native.getByRole('img',{name:'Scan to download shelf files'}).waitFor();
+  await native.locator('#isl').screenshot({path:path.join(root,'docs/screens/shelf-phone-500.png')});
+  await native.getByRole('button',{name:'Stop',exact:true}).click();
+  assert.equal(await native.locator('.phone-transfer').isVisible(),false);
+  assert.equal(await native.evaluate(()=>window.__calls.some(c=>c.command==='phone_stop')),true);
+
   assert.equal(await native.locator('.shelf-tile .tile-name').textContent(),'sample.txt');
   assert.equal(await native.locator('.shelf-tile .tile-size').textContent(),'20 B');
   assert.equal((await dropBox()).shown,false,'With files the drop target steps aside for the tiles');
@@ -1528,6 +1545,25 @@ try {
   await native.getByText('Activity settings could not be saved',{exact:true}).waitFor();
   assert.equal(await native.locator('#ext-notifications').isChecked(),false);
   assert.equal(await native.evaluate(()=>window.__calls.findLast(call=>call.command==='extension_settings').args.settings.notifications),true);
+  // Follow apps lists every media app Tuck has seen, all on by default; a switched-off app is saved and reverts on failure
+  await native.evaluate(()=>{window.__mediaApps=[{id:'Spotify.exe',name:'Spotify',follow:true},{id:'chrome.exe',name:'Chrome',follow:true}];});
+  await native.locator('#nav a[data-view="media"]').click();
+  await native.locator('#mediaApps input').first().waitFor({state:'attached'});
+  assert.deepEqual(await native.locator('#mediaApps label').allTextContents(),['Spotify','Chrome'],'Every seen app is listed by name');
+  assert.equal(await native.locator('#mediaApps input:checked').count(),2,'Every app follows the card by default');
+  await native.locator('#mediaApps label',{hasText:'Chrome'}).click();
+  assert.equal(await native.locator('#mediaApps input').nth(1).isChecked(),false,'A switched-off app stays off');
+  assert.deepEqual(await native.evaluate(()=>window.__calls.filter(call=>call.command==='media_app_set_follow').map(call=>call.args)),[{id:'chrome.exe',follow:false}],'The switch saves the app ID and its state');
+  await native.evaluate(()=>{window.__mediaAppFail=true;});
+  await native.locator('#mediaApps label',{hasText:'Spotify'}).click();
+  await native.getByText('Could not change this app. Try again.',{exact:true}).waitFor();
+  assert.equal(await native.locator('#mediaApps input').first().isChecked(),true,'A failed save reverts the switch');
+  await native.evaluate(()=>{window.__mediaAppFail=false; window.__mediaApps=[];});
+  await native.locator('#nav a[data-view="general"]').click();
+  await native.locator('#nav a[data-view="media"]').click();
+  await native.waitForFunction(()=>document.querySelectorAll('#mediaApps > *').length===0,null,{timeout:5000}).catch(()=>{});
+  assert.equal(await native.locator('#mediaApps > *').count(),0,'With no apps seen yet the control area is empty');
+  assert.equal(await native.locator('#mediaAppsStatus').textContent(),'','No explanation text fills the empty row');
   // Hiding the Windows flyout defaults on and reports when it turned itself off
   await native.locator('#nav a[data-view="island"]').click();
   await native.locator('#row-hideSystemFlyout').waitFor({state:'visible'});
@@ -1539,6 +1575,35 @@ try {
   await native.locator('#flyoutStatus').filter({hasText:'Turned off'}).waitFor({timeout:2000});
   assert.equal(await native.locator('#hideSystemFlyout').isChecked(),false,'An unavailable flyout turns the setting back off');
   assert.equal(await native.locator('#flyoutStatus').getAttribute('data-kind'),'error');
+  assert.deepEqual(nativeErrors,[]);
+
+  // Island placement: the monitor picker and the dock switch
+  await native.locator('#view-island').waitFor({state:'visible'});
+  assert.deepEqual(await native.locator('#islandDisplay option').allTextContents(),['Primary','Display 2','LG UltraGear 27GL'],'Primary first, then the other monitors by name');
+  assert.equal(await native.locator('#islandDisplay').inputValue(),'');
+  assert.equal(await native.locator('input[name="islandDock"]:checked').getAttribute('value'),'center','Centre by default');
+  assert.equal(await native.locator('#view-island .set-row:is(#row-islandDisplay,#row-islandDock) .row-desc').count(),0,'No explainer text on the placement rows');
+  await native.locator('#islandDisplay').selectOption('side');
+  await native.locator('#row-islandDisplay.saved').waitFor();
+  await native.locator('label:has(input[value="right"])').click();
+  await native.locator('#row-islandDock.saved').waitFor();
+  assert.deepEqual(await native.evaluate(()=>window.__calls.filter(c=>c.command==='island_placement_set').map(c=>c.args)),[
+    {display:{id:'side',name:'LG UltraGear 27GL'},dock:'center'},
+    {display:{id:'side',name:'LG UltraGear 27GL'},dock:'right'},
+  ],'Both controls save at once and remember the monitor by identity');
+  await native.evaluate(()=>window.__emitNative('island-placement',{...window.__placement,displays:window.__placement.displays.filter(d=>d.id!=='side')}));
+  assert.deepEqual(await native.locator('#islandDisplay option').allTextContents(),['Primary','Display 2','LG UltraGear 27GL (not connected)'],'An unplugged choice stays visible');
+  assert.equal(await native.locator('#islandDisplay').inputValue(),'side');
+  await native.evaluate(()=>window.__emitNative('island-placement',window.__placement));
+  await native.setViewportSize({width:1000,height:700});
+  await native.locator('#row-islandDock:not(.saved)').waitFor();
+  await native.locator('#row-islandDisplay:not(.saved)').waitFor();
+  for (const theme of ['dark','light']) {
+    await native.emulateMedia({colorScheme:theme});
+    await native.locator('#view-island .group').first().screenshot({path:path.join(root,`docs/screens/island-placement-${theme}.png`)});
+  }
+  await native.emulateMedia({colorScheme:'dark'});
+  await native.setViewportSize({width:520,height:288});
   assert.deepEqual(nativeErrors,[]);
 
   // Recording never publishes words, including legacy late partial events.
@@ -1664,6 +1729,105 @@ try {
   const floatBox = await motion.locator('#isl').boundingBox();
   assert.ok(floatBox.y===10&&floatBox.y+floatBox.height<=288&&floatBox.height===264,'A floating island fits the native canvas');
   assert.deepEqual(motionErrors,[]);
+  // The island hangs from the side of its window that the dock names
+  const docked = await context.newPage();
+  await docked.bringToFront(); await docked.setViewportSize({width:548,height:288});
+  await docked.goto('http://tuck.test/');
+  await docked.locator('#isl').waitFor();
+  const placeOf = async () => docked.locator('#isl').evaluate(el=>{const box=el.getBoundingClientRect();return {left:Math.round(box.left),right:Math.round(innerWidth-box.right),dock:el.dataset.dock};});
+  await docked.evaluate(()=>{document.body.style.background='#7a7a80';});
+  await docked.waitForFunction(()=>window.__calls.some(c=>c.command==='plugin:event|listen'&&c.args.event==='island-placement'));
+  assert.deepEqual(await placeOf(),{left:168,right:168,dock:'center'},'Centred by default');
+  for (const [dock,expected] of [['left',{left:24,right:312}],['right',{left:312,right:24}],['center',{left:168,right:168}]]) {
+    await docked.evaluate(dock=>window.__emitNative('island-placement',{...window.__placement,dock}),dock);
+    await docked.waitForFunction(dock=>document.getElementById('isl').dataset.dock===dock,dock,{polling:50});
+    await docked.waitForFunction(()=>!document.getElementById('isl').classList.contains('docking'),null,{polling:50});
+    assert.deepEqual(await placeOf(),{...expected,dock},`${dock} dock`);
+    await docked.screenshot({path:path.join(root,`docs/screens/island-dock-${dock}.png`)});
+  }
+  await docked.evaluate(()=>window.__emitNative('island-placement',{...window.__placement,dock:'right'}));
+  await docked.waitForFunction(()=>document.getElementById('isl').dataset.dock==='right',null,{polling:50});
+  await docked.locator('#isl').focus(); await docked.keyboard.press('Enter');
+  await docked.waitForFunction(()=>document.getElementById('isl').dataset.state==='open',null,{polling:50});
+  await docked.waitForTimeout(500);
+  assert.deepEqual(await docked.locator('#isl').evaluate(el=>{const box=el.getBoundingClientRect();return [Math.round(box.width),Math.round(innerWidth-box.right)];}),[500,24],'A docked island grows away from its edge');
+  await docked.close();
+
+  // Stats over fullscreen apps: opt-in strip, sampled once a second and only while it shows
+  const stats = await context.newPage(); const statsErrors = [];
+  stats.on('pageerror', error => statsErrors.push(error.message));
+  await stats.addInitScript(() => {
+    window.__telemetry = { status: 'ready', sampleTimeMs: Date.now(), cpu: { usagePercent: 24.4, frequencyMhz: null }, ram: { totalBytes: 16e9, usedBytes: 8e9, freeBytes: 8e9, usagePercent: 50 },
+      gpus: [{ adapterId: 'a', name: 'GPU', vendor: 'x', usagePercent: 87.6, memoryUsedBytes: null, memoryTotalBytes: null }], history: [], networkDownBps: null, networkUpBps: null };
+    localStorage.setItem('tuck.live.v2', JSON.stringify({ fullscreenStats: true }));
+  });
+  await stats.goto('http://tuck.test/');
+  await stats.waitForFunction(() => window.__calls?.some(call => call.command === 'plugin:event|listen' && call.args.event === 'fullscreen'));
+  const statsCalls = () => stats.evaluate(() => window.__calls.filter(c => c.command === 'telemetry_now').length);
+  const bodyClasses = () => stats.evaluate(() => [...document.body.classList].filter(c => c.startsWith('fullscreen')));
+  await stats.waitForTimeout(1300);
+  assert.equal(await statsCalls(), 0, 'No sampling without a fullscreen app');
+  assert.ok(await stats.evaluate(() => window.__calls.some(c => c.command === 'set_fullscreen_stats' && c.args.enabled === true)), 'Native is told the stats setting at startup');
+  await stats.evaluate(() => window.__emitNative('fullscreen', true));
+  assert.deepEqual(await bodyClasses(), ['fullscreen-stats'], 'A fullscreen app shows the strip instead of hiding the island');
+  await stats.locator('.fullscreen-stat').nth(2).waitFor({ timeout: 3000 });
+  await stats.waitForFunction(() => document.querySelector('.fullscreen-stats-line')?.textContent === 'CPU24%GPU88%RAM50%', null, { timeout: 3000 });
+  assert.equal(await stats.locator('.compact').getAttribute('aria-label'), 'CPU 24%, GPU 88%, Memory 50%');
+  assert.equal(await stats.locator('#isl').getAttribute('data-state'), 'idle');
+  assert.equal(await stats.locator('#isl').evaluate(n => getComputedStyle(n).pointerEvents), 'none', 'The strip is click-through');
+  assert.equal(await stats.locator('#isl').evaluate(n => n.scrollWidth <= n.clientWidth), true, 'Three readings fit the collapsed island');
+  await stats.evaluate(() => { window.__telemetry = { ...window.__telemetry, cpu: { usagePercent: 100 }, gpus: [{ name: 'GPU', usagePercent: 100 }], ram: { totalBytes: 16e9, usedBytes: 16e9, freeBytes: 0, usagePercent: 100 } }; });
+  await stats.waitForFunction(() => document.querySelector('.fullscreen-stats-line')?.textContent === 'CPU100%GPU100%RAM100%', null, { timeout: 3000 });
+  const fullLine = await stats.locator('.fullscreen-stats-line').evaluate(n => n.scrollWidth <= n.clientWidth && n.getBoundingClientRect().right <= n.closest('.island').getBoundingClientRect().right);
+  assert.equal(fullLine, true, 'The widest readings still fit');
+  await stats.locator('#isl').screenshot({ path: path.join(root, 'docs/screens/fullscreen-stats-100.png') });
+  await stats.evaluate(() => { window.__telemetry = { status: 'ready', sampleTimeMs: Date.now(), cpu: { usagePercent: 24.4 }, ram: { totalBytes: 16e9, usedBytes: 8e9, freeBytes: 8e9, usagePercent: 50 }, gpus: [{ name: 'GPU', usagePercent: 87.6 }] }; });
+  await stats.waitForFunction(() => document.querySelector('.fullscreen-stats-line')?.textContent === 'CPU24%GPU88%RAM50%', null, { timeout: 3000 });
+  await stats.locator('#isl').screenshot({ path: path.join(root, 'docs/screens/fullscreen-stats.png') });
+  await stats.evaluate(() => { window.__calls.length = 0; });
+  await stats.waitForTimeout(3300);
+  assert.ok(await statsCalls() <= 4, `Sampling stays at one reading a second (${await statsCalls()} in 3.3s)`);
+  assert.ok(await statsCalls() >= 2, 'Sampling keeps running while the strip shows');
+  await stats.evaluate(() => window.__emitNative('fullscreen', false));
+  assert.deepEqual(await bodyClasses(), [], 'Leaving fullscreen brings the island back');
+  await stats.waitForTimeout(150); await stats.evaluate(() => { window.__calls.length = 0; });
+  await stats.waitForTimeout(1300);
+  assert.equal(await statsCalls(), 0, 'Sampling stops the moment the strip hides');
+  assert.notEqual(await stats.locator('.compact').getAttribute('aria-label'), 'CPU 24%, GPU 88%, Memory 50%');
+  // A peek keeps hiding the island, as it does without this setting
+  await stats.evaluate(() => window.__emitNative('fullscreen', true));
+  await stats.evaluate(() => window.__emitNative('desktop-peek', { title: 'Caps Lock', text: 'On' }));
+  assert.deepEqual(await bodyClasses(), ['fullscreen-hidden'], 'A peek over a fullscreen app stays hidden');
+  await stats.evaluate(() => window.__emitNative('fullscreen', false));
+  // Off: the island hides exactly as before and nothing is sampled
+  await stats.evaluate(() => { window.__calls.length = 0; localStorage.setItem('tuck.live.v2', JSON.stringify({ fullscreenStats: false })); window.dispatchEvent(new StorageEvent('storage', { key: 'tuck.live.v2' })); });
+  await stats.evaluate(() => window.__emitNative('fullscreen', true));
+  assert.deepEqual(await bodyClasses(), ['fullscreen-hidden'], 'With the setting off a fullscreen app hides the island');
+  await stats.waitForTimeout(1300);
+  assert.equal(await statsCalls(), 0, 'Nothing is sampled with the setting off');
+  assert.ok(await stats.evaluate(() => window.__calls.some(c => c.command === 'set_fullscreen_stats' && c.args.enabled === false)), 'Native hears the setting turn off');
+  assert.deepEqual(statsErrors, []);
+  await stats.close();
+
+  // Settings: the switch is off by default, saves with the others and follows "Hide in fullscreen"
+  const statsSettings = await context.newPage(); await statsSettings.setViewportSize({ width: 1000, height: 700 });
+  await statsSettings.goto('http://tuck.test/settings.html#island');
+  const statsSwitch = statsSettings.locator('#fullscreenStats');
+  assert.equal(await statsSwitch.isChecked(), false, 'Stats over fullscreen apps is off by default');
+  assert.equal(await statsSettings.locator('#row-fullscreenStats .row-text').evaluate(n => n.children.length), 1, 'The row is a title and its switch, nothing more');
+  assert.equal(await statsSettings.getByRole('switch', { name: 'Stats over fullscreen apps' }).count(), 1);
+  await statsSwitch.click();
+  assert.equal(await statsSettings.evaluate(() => JSON.parse(localStorage.getItem('tuck.live.v2')).fullscreenStats), true);
+  assert.ok(await statsSettings.evaluate(() => window.__calls.some(c => c.command === 'set_fullscreen_stats' && c.args.enabled === true)));
+  await statsSettings.locator('#fullscreenAutoHide').click();
+  assert.equal(await statsSwitch.isDisabled(), true, 'Without hiding in fullscreen there is nothing to replace');
+  await statsSettings.locator('#fullscreenAutoHide').click();
+  assert.equal(await statsSwitch.isDisabled(), false);
+  await statsSettings.reload();
+  assert.equal(await statsSwitch.isChecked(), true, 'The choice survives a reload');
+  await statsSettings.close();
+
+  // The context clock below is installed for the rest of the run, so nothing that needs timers goes after it
   // The compact clock stays accurate with one minute-aligned timeout, without an interval.
   const idleClock = await context.newPage();
   const minuteEdge = new Date('2026-11-04T12:00:59.900Z');
@@ -1700,6 +1864,13 @@ try {
   await readySettings.screenshot({path:path.join(root,'docs/screens/dictation-ready-settings.png')});
   await readySettings.close();
 
-  console.log('UI smoke passed: geometry, tab rail (keys, wheel edges, swipe, memory), accessibility, keyboard seeking, timers, collapsed media text and its running animations, usage rings, segmented switch, dictation tab, empty states, icon buttons, persistence errors, volume/brightness HUD, wheel and middle-click volume, the pill-sized strip on the open island, queued flyout failure, return to open after HUD, HUD setting, charger-ramp brightness, flyout default-on, shelf, drag hold and previews.');
+  await native.evaluate(() => window.__emitNative('sensors', {muted:true,microphone:['teams.exe'],camera:['camera.exe']}));
+  assert.equal(await native.locator('.sensor-muted').getAttribute('aria-label'), 'Microphone muted');
+  assert.equal(await native.locator('.sensor-microphone').getAttribute('aria-label'), 'Microphone: teams.exe');
+  assert.equal(await native.locator('.sensor-camera').getAttribute('aria-label'), 'Camera: camera.exe');
+  await native.locator('#isl').screenshot({path:path.join(root,'docs/screens/mic-camera-indicators.png')});
+  await native.evaluate(() => window.__emitNative('sensors', {muted:false,microphone:[],camera:[]}));
+  assert.equal(await native.locator('.sensor-indicator').count(), 0);
+  console.log('UI smoke passed: geometry, tab rail (keys, wheel edges, swipe, memory), accessibility, keyboard seeking, timers, collapsed media text and its running animations, usage rings, segmented switch, dictation tab, empty states, icon buttons, persistence errors, volume/brightness HUD, wheel and middle-click volume, the pill-sized strip on the open island, queued flyout failure, return to open after HUD, HUD setting, charger-ramp brightness, flyout default-on, shelf, drag hold and previews, island placement (monitor picker, dock switch and docked island).');
 } finally { await browser.close(); }
 

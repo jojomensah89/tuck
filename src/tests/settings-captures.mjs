@@ -5,7 +5,8 @@ import assert from 'node:assert/strict';
 const phase=process.argv[2]||'after';
 const browser=await chromium.launch({channel:'msedge',headless:true});
 try {const page=await browser.newPage({viewport:{width:1000,height:740},reducedMotion:'reduce'});
-await page.route('http://tuck.test/**',async route=>{const p=new URL(route.request().url()).pathname;try{await route.fulfill({body:await readFile(path.join('dist',p)),contentType:p.endsWith('.html')?'text/html':p.endsWith('.js')?'application/javascript':p.endsWith('.css')?'text/css':'image/svg+xml'});}catch{await route.fulfill({status:404});}});
+const serve=async route=>{const p=new URL(route.request().url()).pathname;try{await route.fulfill({body:await readFile(path.join('dist',p)),contentType:p.endsWith('.html')?'text/html':p.endsWith('.js')?'application/javascript':p.endsWith('.css')?'text/css':'image/svg+xml'});}catch{await route.fulfill({status:404});}};
+await page.route('http://tuck.test/**',serve);
 await page.addInitScript(() => {
  if(location.hash !== '#welcome') return;
  window.__TAURI_INTERNALS__ = { transformCallback: () => 1, async invoke(command) {
@@ -26,6 +27,12 @@ const contrast = await page.evaluate(() => {
  return ['--ink','--ink-2','--ink-3'].flatMap(ink=>['--ground','--panel','--control','--control-hover'].map(bg=>{const a=luminance(ink),b=luminance(bg);return {ink,bg,ratio:(Math.max(a,b)+0.05)/(Math.min(a,b)+0.05)};}));
 });
 if(phase==='after') for(const result of contrast) assert.ok(result.ratio>=4.5,`${theme} ${result.ink} on ${result.bg}: ${result.ratio}`);
+if(view==='privacy') { assert.equal(await page.locator('#sensorIndicator').isChecked(),true); assert.equal(await page.locator('#micShortcut').innerText(),'Ctrl+Alt+M'); await page.screenshot({path:`docs/screens/mic-camera-settings-${theme}.png`,fullPage:true});
+ await page.locator('#sensorIndicator').click(); assert.equal(await page.locator('#sensorIndicator').isChecked(),false);
+ await page.locator('#micShortcutOff').click(); await page.waitForFunction(()=>document.getElementById('micShortcut').textContent==='Off');
+ await page.locator('#micShortcut').click(); await page.keyboard.press('Escape'); assert.equal(await page.locator('#micShortcut').innerText(),'Off');
+ await page.locator('#micShortcut').click(); await page.keyboard.press('Control+Alt+N'); await page.waitForFunction(()=>document.getElementById('micShortcut').textContent==='Ctrl+Alt+N');
+ }
 await page.screenshot({path:`docs/screens/settings-${phase}/${view}-${theme}.png`,fullPage:true});
 if(view==='welcome') {
  assert.equal(await page.locator('#welcome #usage-claude').isChecked(),false);
@@ -51,5 +58,29 @@ if(phase==='after') for(const width of [900,640]) {
  await page.goto(`http://tuck.test/settings.html#${view}`); await page.reload();
  assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth <= innerWidth),true,`${view} ${theme} ${width}: no horizontal overflow`);
  }}
+}
+if(phase==='after') {
+ // Follow apps with three seen players, one switched off; fixture data, not a live player
+ const apps=[{id:'Spotify.exe',name:'Spotify',follow:true},{id:'chrome.exe',name:'Chrome',follow:false},{id:'Microsoft.MicrosoftEdge.Stable_8wekyb3d8bbwe!MSEdge',name:'MSEdge',follow:true}];
+ const media=await browser.newPage({viewport:{width:1000,height:740},reducedMotion:'reduce'});
+ await media.route('http://tuck.test/**',serve);
+ await media.addInitScript(seen => {
+ window.__mediaApps=seen;
+ window.__TAURI_INTERNALS__={transformCallback:()=>1,async invoke(command,args={}){
+ if(command==='media_apps_list') return structuredClone(window.__mediaApps);
+ if(command==='media_app_set_follow'){window.__mediaApps=window.__mediaApps.map(app=>app.id===args.id?{...app,follow:args.follow}:app);return structuredClone(window.__mediaApps);}
+ if(command==='lyrics_status') return {enabled:false};
+ if(command==='get_autostart') return false;
+ if(command==='installed_usage_providers') return [];
+ if(command==='clipboard_get_state') return {enabled:false,persistOnExit:false,items:[]};
+ if(command==='get_hide_system_flyout') return {enabled:false,state:'disabled'};
+ return null;
+ }};
+ },apps);
+ for(const theme of ['light','dark']){await media.emulateMedia({colorScheme:theme});await media.goto('http://tuck.test/settings.html#media');await media.reload();await media.waitForTimeout(200);
+ assert.deepEqual(await media.locator('#mediaApps label').allTextContents(),['Spotify','Chrome','MSEdge'],'Every seen app is listed');
+ assert.equal(await media.locator('#mediaApps input:checked').count(),2,'The switched-off app is unchecked');
+ await media.screenshot({path:`docs/screens/media-apps-${theme}.png`,fullPage:true});}
+ await media.close();
 }
 }finally{await browser.close();}

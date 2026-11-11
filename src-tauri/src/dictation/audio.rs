@@ -592,6 +592,7 @@ fn open_input_stream(
     error_tx: Sender<String>,
     queued_frames: Arc<AtomicUsize>,
 ) -> Result<(Stream, u32), String> {
+    crate::sensors::ensure_unmuted()?;
     let host = cpal::default_host();
     let device = host.default_input_device().ok_or(
         "No microphone is available. Connect or enable an input device in Windows Settings.",

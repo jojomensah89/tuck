@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-11-11
+
+### Added
+- Add global microphone mute and sensor indicators
+- Choose the island's monitor and dock it left, centre or right
+- CPU, GPU and RAM strip over fullscreen apps
+- Choose which media apps drive the music card
+
+### Fixed
+- Memory figure without the WebView2 note
+
 ## [0.3.0] - 2026-11-08
 
 ### Added

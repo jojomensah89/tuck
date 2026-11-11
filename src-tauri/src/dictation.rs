@@ -691,13 +691,11 @@ impl DictationService {
     fn begin(self: &Arc<Self>, mode: RecordingMode) -> Result<(), String> {
         let pressed = std::time::Instant::now();
         self.app()?;
-        if self
-            .runtime
-            .lock()
-            .is_ok_and(|r| r.status == "review" || r.status == "inserting")
-        {
-            return Err("Finish or discard the transcript before starting dictation".into());
+        if self.runtime.lock().is_ok_and(|r| r.status == "inserting") {
+            return Err("Dictation is still inserting the last transcript".into());
         }
+        // A transcript waiting in the island never blocks the next dictation.
+        self.release_waiting_transcript();
         self.repair_missing()?;
         let operation = self
             .settings_operation
@@ -1020,6 +1018,32 @@ impl DictationService {
             .ok_or("There is no model download to cancel")?;
         cancel.store(true, Ordering::Release);
         Ok(())
+    }
+
+    /// Moves a transcript waiting for review onto the clipboard, so starting a new
+    /// dictation loses nothing, and leaves the review state.
+    fn release_waiting_transcript(&self) {
+        let waiting = {
+            let Ok(mut runtime) = self.runtime.lock() else {
+                return;
+            };
+            if runtime.status != "review" {
+                return;
+            }
+            let uncertain = runtime.insertion_uncertain;
+            let text = runtime.transcript.take();
+            runtime.review_target = None;
+            runtime.insertion_uncertain = false;
+            runtime.message = None;
+            runtime.status = "idle".into();
+            runtime.revision += 1;
+            // Text that may already be partly in the app is not copied over the clipboard.
+            text.filter(|_| !uncertain)
+        };
+        if let Some(mut text) = waiting {
+            let _ = self.copy_transcript(&text);
+            text.zeroize();
+        }
     }
 
     fn copy_transcript(&self, text: &str) -> Result<(), String> {
@@ -3078,6 +3102,30 @@ mod tests {
         service.runtime.lock().unwrap().status = "idle".into();
         service.publish_live_text("ghost");
         assert_eq!(service.runtime.lock().unwrap().live_text, None);
+    }
+
+    #[test]
+    fn a_waiting_transcript_never_blocks_the_next_dictation() {
+        let service = DictationService::new();
+        {
+            let mut runtime = service.runtime.lock().unwrap();
+            runtime.status = "review".into();
+            runtime.transcript = Some("hello hello".into());
+            runtime.message = Some("The clipboard changed before paste.".into());
+        }
+        service.release_waiting_transcript();
+        let runtime = service.runtime.lock().unwrap();
+        assert_eq!(runtime.status, "idle");
+        assert_eq!(runtime.transcript, None);
+        assert_eq!(runtime.message, None);
+        drop(runtime);
+        assert!(service
+            .claim_session(
+                Arc::new(AtomicBool::new(false)),
+                Arc::new(AtomicBool::new(false)),
+                RecordingMode::HoldToTalk
+            )
+            .is_ok());
     }
 
     #[test]

@@ -1543,6 +1543,7 @@ try {
   await native.evaluate(()=>{window.__mediaAppFail=false; window.__mediaApps=[];});
   await native.locator('#nav a[data-view="general"]').click();
   await native.locator('#nav a[data-view="media"]').click();
+  await native.waitForFunction(()=>document.querySelectorAll('#mediaApps > *').length===0,null,{timeout:5000}).catch(()=>{});
   assert.equal(await native.locator('#mediaApps > *').count(),0,'With no apps seen yet the control area is empty');
   assert.equal(await native.locator('#mediaAppsStatus').textContent(),'','No explanation text fills the empty row');
   // Hiding the Windows flyout defaults on and reports when it turned itself off

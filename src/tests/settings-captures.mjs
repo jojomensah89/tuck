@@ -26,6 +26,12 @@ const contrast = await page.evaluate(() => {
  return ['--ink','--ink-2','--ink-3'].flatMap(ink=>['--ground','--panel','--control','--control-hover'].map(bg=>{const a=luminance(ink),b=luminance(bg);return {ink,bg,ratio:(Math.max(a,b)+0.05)/(Math.min(a,b)+0.05)};}));
 });
 if(phase==='after') for(const result of contrast) assert.ok(result.ratio>=4.5,`${theme} ${result.ink} on ${result.bg}: ${result.ratio}`);
+if(view==='privacy') { assert.equal(await page.locator('#sensorIndicator').isChecked(),true); assert.equal(await page.locator('#micShortcut').innerText(),'Ctrl+Alt+M'); await page.screenshot({path:`docs/screens/mic-camera-settings-${theme}.png`,fullPage:true});
+ await page.locator('#sensorIndicator').click(); assert.equal(await page.locator('#sensorIndicator').isChecked(),false);
+ await page.locator('#micShortcutOff').click(); await page.waitForFunction(()=>document.getElementById('micShortcut').textContent==='Off');
+ await page.locator('#micShortcut').click(); await page.keyboard.press('Escape'); assert.equal(await page.locator('#micShortcut').innerText(),'Off');
+ await page.locator('#micShortcut').click(); await page.keyboard.press('Control+Alt+N'); await page.waitForFunction(()=>document.getElementById('micShortcut').textContent==='Ctrl+Alt+N');
+ }
 await page.screenshot({path:`docs/screens/settings-${phase}/${view}-${theme}.png`,fullPage:true});
 if(view==='welcome') {
  assert.equal(await page.locator('#welcome #usage-claude').isChecked(),false);

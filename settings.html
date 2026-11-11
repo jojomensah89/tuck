@@ -338,7 +338,10 @@
         <!-- ============ Privacy ============ -->
         <section class="view" id="view-privacy" data-view="privacy" aria-labelledby="h-privacy" hidden>
           <h1 id="h-privacy">Privacy</h1>
-          <p class="lead">Optional monitoring starts off</p>
+          <div class="panel">
+            <div class="set-row" id="row-sensorIndicator"><div class="row-text"><label class="row-title" for="sensorIndicator">Microphone and camera indicator</label></div><input class="switch" type="checkbox" role="switch" id="sensorIndicator" checked></div>
+            <div class="set-row" id="row-micShortcut"><div class="row-text"><label class="row-title" for="micShortcut">Mute microphone</label><p id="sensorError" class="row-desc row-error" role="alert" hidden></p></div><div class="row-actions"><button class="text-field short shortcut-field" id="micShortcut" type="button">Ctrl+Alt+M</button><button class="link-button" id="micShortcutOff" type="button">Turn off</button></div></div>
+          </div>
           <div class="group">
             <h2>What leaves this computer</h2>
             <div class="panel">

@@ -1659,6 +1659,13 @@ try {
   assert.equal(await idleClock.evaluate(() => window.__idleIntervals.size), 0, 'The minute clock does not start an interval');
   await idleClock.close();
 
+  await native.evaluate(() => window.__emitNative('sensors', {muted:true,microphone:['teams.exe'],camera:['camera.exe']}));
+  assert.equal(await native.locator('.sensor-muted').getAttribute('aria-label'), 'Microphone muted');
+  assert.equal(await native.locator('.sensor-microphone').getAttribute('aria-label'), 'Microphone: teams.exe');
+  assert.equal(await native.locator('.sensor-camera').getAttribute('aria-label'), 'Camera: camera.exe');
+  await native.locator('#isl').screenshot({path:path.join(root,'docs/screens/mic-camera-indicators.png')});
+  await native.evaluate(() => window.__emitNative('sensors', {muted:false,microphone:[],camera:[]}));
+  assert.equal(await native.locator('.sensor-indicator').count(), 0);
   console.log('UI smoke passed: geometry, tab rail (keys, wheel edges, swipe, memory), accessibility, keyboard seeking, timers, collapsed media text and its running animations, usage rings, segmented switch, dictation tab, empty states, icon buttons, persistence errors, volume/brightness HUD, wheel and middle-click volume, the pill-sized strip on the open island, queued flyout failure, return to open after HUD, HUD setting, charger-ramp brightness, flyout default-on, shelf, drag hold and previews.');
 } finally { await browser.close(); }
 

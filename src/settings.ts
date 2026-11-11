@@ -40,6 +40,7 @@ function showView(view: string): void {
   if (searching) return;
   for (const section of document.querySelectorAll<HTMLElement>('.view')) section.hidden = section.dataset.view !== view;
   if (view === 'privacy') refreshPrivacy();
+  if (view === 'media') refreshMediaApps();
 }
 
 let searchIndex: SearchEntry[] = [];
@@ -307,6 +308,45 @@ function initNativeToggles(): void {
       setStatus('installedUsageStatus', 'Refresh request failed', 'error');
     } finally { await finish(); }
   });
+}
+
+/* ================= Media apps: which players may drive the card ================= */
+
+interface MediaApp { id: string; name: string; follow: boolean }
+let mediaAppsShown = '';
+
+/** Rebuilds the switches only when the list changes, so keyboard focus survives a toggle. */
+function renderMediaApps(apps: MediaApp[]): void {
+  const key = JSON.stringify(apps);
+  if (key === mediaAppsShown) return;
+  mediaAppsShown = key;
+  $('mediaApps')!.replaceChildren(...apps.map((app, index) => {
+    const row = document.createElement('div'); row.className = 'media-app';
+    const toggle = document.createElement('input'); toggle.type = 'checkbox'; toggle.className = 'switch'; toggle.setAttribute('role', 'switch');
+    toggle.id = `follow-app-${index}`; toggle.checked = app.follow;
+    const label = document.createElement('label'); label.htmlFor = toggle.id; label.textContent = app.name;
+    toggle.addEventListener('change', async () => {
+      toggle.disabled = true;
+      try {
+        const next = await invokeCommand<MediaApp[]>('media_app_set_follow', { id: app.id, follow: toggle.checked });
+        mediaAppsShown = JSON.stringify(next);
+        setStatus('mediaAppsStatus', '');
+        markSaved(toggle);
+      } catch {
+        toggle.checked = !toggle.checked;
+        setStatus('mediaAppsStatus', 'Could not change this app. Try again.', 'error');
+      } finally { toggle.disabled = false; }
+    });
+    row.append(label, toggle);
+    return row;
+  }));
+}
+
+/** Apps are seen while Tuck runs, so the list is read each time the Media page opens. */
+function refreshMediaApps(): void {
+  if (!isTauri()) { setStatus('mediaAppsStatus', 'Available in the desktop app.'); return; }
+  void invokeCommand<MediaApp[]>('media_apps_list').then(apps => { renderMediaApps(apps); setStatus('mediaAppsStatus', ''); })
+    .catch(() => setStatus('mediaAppsStatus', 'Could not read media apps.', 'error'));
 }
 
 function renderReleaseNotes(container: HTMLElement, body: string | undefined): void {

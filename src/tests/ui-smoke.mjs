@@ -612,12 +612,16 @@ try {
   await native.evaluate(()=>window.dispatchEvent(new CustomEvent('tuck-drop-active',{detail:false})));
   await shelfDrop.click();
   await native.locator('.shelf-tile').waitFor();
-  await native.getByRole('button',{name:'Send to phone',exact:true}).click();
-  await native.getByRole('img',{name:'Scan to download shelf files'}).waitFor();
-  await native.locator('#isl').screenshot({path:path.join(root,'docs/screens/shelf-phone-500.png')});
-  await native.getByRole('button',{name:'Stop',exact:true}).click();
-  assert.equal(await native.locator('.phone-transfer').isVisible(),false);
-  assert.equal(await native.evaluate(()=>window.__calls.some(c=>c.command==='phone_stop')),true);
+  if (process.env.VITE_SEND_TO_PHONE === '1') {
+    await native.getByRole('button',{name:'Send to phone',exact:true}).click();
+    await native.getByRole('img',{name:'Scan to download shelf files'}).waitFor();
+    await native.locator('#isl').screenshot({path:path.join(root,'docs/screens/shelf-phone-500.png')});
+    await native.getByRole('button',{name:'Stop',exact:true}).click();
+    assert.equal(await native.locator('.phone-transfer').isVisible(),false);
+    assert.equal(await native.evaluate(()=>window.__calls.some(c=>c.command==='phone_stop')),true);
+  } else {
+    assert.equal(await native.getByRole('button',{name:'Send to phone',exact:true}).count(),0,'Send to phone is left out of release builds');
+  }
 
   assert.equal(await native.locator('.shelf-tile .tile-name').textContent(),'sample.txt');
   assert.equal(await native.locator('.shelf-tile .tile-size').textContent(),'20 B');

@@ -12,4 +12,4 @@ Microphone mute uses Ctrl+Alt+M (change or turn it off in Settings > Privacy). S
 
 Fullscreen: the island hides when an app goes fullscreen on its monitor. Settings > Island > Stats over fullscreen apps (off by default) shows CPU, GPU and RAM on the collapsed island instead. It never takes clicks or focus, reads the same local counters as the System view once a second while it shows, and cannot appear over exclusive-fullscreen games.
 
-Send to phone serves shelf files over HTTP on the local network while the QR view is open. Anyone with the link can download them. Closing the view, Stop, quitting Tuck, or ten minutes ends sharing. No phone app or uploads. Windows Firewall may ask for network access.
+Send to phone is built but left out of releases. Build with the Cargo feature `send-to-phone` and `VITE_SEND_TO_PHONE=1` to include it.

@@ -16,6 +16,7 @@ mod media_apps;
 mod network_rates;
 pub mod osd_flyout;
 mod package;
+#[cfg(feature = "send-to-phone")]
 mod phone;
 pub mod placement;
 mod sensors;
@@ -144,7 +145,9 @@ pub fn run() {
             installed_usage::refresh_installed_usage,
             extensions::extension_snapshot,
             extensions::extension_settings,
+            #[cfg(feature = "send-to-phone")]
             phone::phone_start,
+            #[cfg(feature = "send-to-phone")]
             phone::phone_stop,
             extensions::shelf_add,
             extensions::shelf_pick,
@@ -399,6 +402,7 @@ pub fn run() {
 pub fn run_shutdown_cleanup(app: &AppHandle) {
     #[cfg(windows)]
     file_drop::stop();
+    #[cfg(feature = "send-to-phone")]
     phone::stop();
     lifecycle::stop();
     media::stop();

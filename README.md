@@ -65,3 +65,5 @@ Installers are written to `src-tauri/target/release/bundle/nsis/`.
 ## Licence
 
 [MIT](LICENSE), copyright 2026 Tuck contributors. Third-party components and model weights retain their own terms.
+
+Microphone mute uses Ctrl+Alt+M (change or turn it off in Settings > Privacy). Starting dictation while muted reports ?Microphone is muted?. The optional microphone and camera indicator names apps reported as in use by Windows; it keeps no usage history and sends nothing.

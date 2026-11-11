@@ -1,3 +1,4 @@
+import { mountSensorSettings } from './sensor-settings.js';
 import { beginRefresh } from './refresh-feedback.js';
 import { SVG_ICONS, providerArtwork } from './icons.js';
 import './settings.css';
@@ -457,6 +458,7 @@ document.addEventListener('DOMContentLoaded', () => {
   mountLiveSettings();
   mountPlacementSettings();
   mountPrivacy();
+  mountSensorSettings();
   mountWelcome();
   mountShell();
   refreshPrivacy();

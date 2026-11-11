@@ -863,7 +863,7 @@ function renderCompact(): void {
   }
 
   if (announcement && announcement.until > Date.now() && state === 'peek') {
-    setCompactSlot(cl, 'announcement:leading', 'note', () => compactMarkup(announcement!.text.startsWith('Tuck ') ? SVG_ICONS.installUpdate : SVG_ICONS.note));
+    setCompactSlot(cl, 'announcement:leading', 'note', () => compactMarkup(announcement!.text === 'Microphone muted' ? SVG_ICONS.micOff : announcement!.text === 'Microphone on' ? SVG_ICONS.mic : announcement!.text.startsWith('Tuck ') ? SVG_ICONS.installUpdate : SVG_ICONS.note));
     const changed = setCompactSlot(cc, 'announcement:title', announcement.text, () => compactTitle(announcement!.text));
     setCompactSlot(cr, 'announcement:trailing', 'notification', () => compactIndicator(
       '<span class="peek-indicator"></span>',
@@ -1631,3 +1631,24 @@ usageRefresh.onclick = async () => {
 };
 
 if (isTauri()) void invokeCommand('maybe_show_welcome', { savedPreferences: hadSavedPreferences }).catch(() => {});
+
+interface SensorSnapshot { muted: boolean; microphone: string[]; camera: string[] }
+const sensorIndicators = document.createElement('span');
+sensorIndicators.className = 'sensor-indicators';
+document.querySelector('.compact')!.append(sensorIndicators);
+function paintSensors(data: SensorSnapshot): void {
+  sensorIndicators.replaceChildren();
+  for (const [active, label, kind] of [[data.muted, 'Microphone muted', 'muted'], [data.microphone.length > 0, `Microphone: ${data.microphone.join(', ')}`, 'microphone'], [data.camera.length > 0, `Camera: ${data.camera.join(', ')}`, 'camera']] as const) {
+    if (!active) continue;
+    const indicator = document.createElement('span');
+    indicator.className = `sensor-indicator sensor-${kind}`;
+    indicator.setAttribute('role', 'img'); indicator.setAttribute('aria-label', label); indicator.title = label;
+    if (kind === 'muted') indicator.innerHTML = SVG_ICONS.micOff;
+    sensorIndicators.append(indicator);
+  }
+  sensorIndicators.parentElement!.style.setProperty('--sensor-width', `${sensorIndicators.children.length ? (data.muted ? 14 : 0) + (data.microphone.length ? 6 : 0) + (data.camera.length ? 6 : 0) + sensorIndicators.children.length * 4 : 0}px`);
+}
+void listenToEvent<SensorSnapshot>('sensors', paintSensors);
+void listenToEvent<boolean>('microphone-toggle', muted => showAnnouncement(muted ? 'Microphone muted' : 'Microphone on'));
+void listenToEvent<string>('microphone-error', error => showAnnouncement(error));
+void invokeCommand<SensorSnapshot>('sensor_snapshot').then(data => { if (data) paintSensors(data); }).catch(() => {});

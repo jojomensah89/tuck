@@ -17,6 +17,7 @@ mod network_rates;
 pub mod osd_flyout;
 mod package;
 pub mod placement;
+mod sensors;
 mod service_preferences;
 mod shell_thumbs;
 pub mod system;
@@ -65,7 +66,10 @@ pub fn run() {
         }))
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
-                .with_handler(dictation::handle_shortcut)
+                .with_handler(|app, shortcut, event| {
+                    sensors::handle_shortcut(app, shortcut, event);
+                    dictation::handle_shortcut(app, shortcut, event);
+                })
                 .build(),
         )
         .plugin(tauri_plugin_opener::init())
@@ -79,6 +83,10 @@ pub fn run() {
         .manage(system::PendingUpdateState::default())
         .manage(update::UpdateService::default())
         .invoke_handler(tauri::generate_handler![
+            sensors::sensor_shortcuts_pause,
+            sensors::sensor_settings,
+            sensors::sensor_configure,
+            sensors::sensor_snapshot,
             package::is_store_build,
             package::autostart_status,
             welcome::maybe_show_welcome,
@@ -365,6 +373,7 @@ pub fn run() {
             lyrics::start(&handle);
             telemetry::start(handle.clone());
             osd_flyout::start(handle.clone());
+            sensors::start(handle.clone());
             desktop_signals::start(handle.clone());
             system::start(handle, hit_state_setup);
 

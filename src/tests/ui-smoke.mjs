@@ -1513,6 +1513,7 @@ try {
   await native.evaluate(()=>window.__emitNative('dictation_state',{status:'idle',modelInstalled:true,modelDownloadedBytes:0,activeModelLabel:'Tiny',models:[]}));
   assert.equal(await native.locator('#dictationModelNotice').isHidden(),true,'A cleared notice disappears');
   assert.equal(await native.locator('#dictationShortcutError').isHidden(),true,'A fixed shortcut clears its reason');
+  await native.locator('a[data-view="clipboard"]').click();
   await native.locator('#clipboardEnabled').click();
   await native.getByText('Could not save clipboard settings. Current preferences restored below.',{exact:true}).waitFor();
   assert.equal(await native.locator('#clipboardEnabled').isChecked(),false);
@@ -1678,7 +1679,7 @@ try {
   const readySettings = await context.newPage();
   await readySettings.setViewportSize({width:1000,height:850});
   await readySettings.addInitScript(() => {
-    let settings = {toggleShortcut:'Ctrl+Shift+Space',holdToTalkShortcut:'RightAlt',reviewBeforeInsert:false,keepMicrophoneReady:true};
+    let settings = {toggleShortcut:'Ctrl+Shift+Space',holdToTalkShortcut:'Alt+Alt',reviewBeforeInsert:false,keepMicrophoneReady:true};
     const snapshot = () => ({status:'idle',modelInstalled:false,models:[],settings});
     window.__readySaves = [];
     window.__TAURI_INTERNALS__ = {transformCallback:()=>1, async invoke(command,args) {

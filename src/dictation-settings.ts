@@ -1,5 +1,5 @@
 import { modelHeader, modelsLocked, removeConfirmation, rowButtons, rowMeta, rowProgress, rowStateText, type ModelAction, type ModelButton, type ModelRow } from './dictation-models.js';
-import { displayShortcut, isRightAlt, recordKey, recordRelease, RIGHT_ALT } from './shortcut-recorder.js';
+import { BOTH_ALTS, displayShortcut, isBothAlts, recordKey, recordRelease } from './shortcut-recorder.js';
 import { listenToEvent } from './ipc.js';
 import { nativeAction, nativeService, type DictationSettings, type DictationSnapshot } from './live-services.js';
 import { clearSaved, confirmThen, markSaved, setStatus } from './settings-ui.js';
@@ -22,7 +22,7 @@ export function mountDictationSettings(): void {
   const el = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
   const toggle = (id: string) => el<HTMLInputElement>(id);
   const button = (id: string) => el<HTMLButtonElement>(id);
-  const controls = () => [...SHORTCUT_FIELDS.map(button), button('dictationUseRightAlt'), toggle('dictationReview'), toggle('dictationReady')];
+  const controls = () => [...SHORTCUT_FIELDS.map(button), button('dictationUseBothAlts'), toggle('dictationReview'), toggle('dictationReady')];
 
   let saved: DictationSettings | null = null;
   let latest: DictationSnapshot | null = null;
@@ -51,7 +51,7 @@ export function mountDictationSettings(): void {
     setStatus('dictationStatus', text, text ? 'error' : 'info');
   };
   const applyValues = (data: DictationSettings) => {
-    for (const [field, value] of [['dictationShortcut', data.toggleShortcut || 'Ctrl+Shift+Space'], ['dictationHoldShortcut', data.holdToTalkShortcut || RIGHT_ALT]] as const) {
+    for (const [field, value] of [['dictationShortcut', data.toggleShortcut || 'Ctrl+Shift+Space'], ['dictationHoldShortcut', data.holdToTalkShortcut || BOTH_ALTS]] as const) {
       button(field).dataset.value = value;
       button(field).textContent = displayShortcut(value);
     }
@@ -60,7 +60,7 @@ export function mountDictationSettings(): void {
     toggle('dictationReady').checked = data.keepMicrophoneReady ?? true;
   };
   const syncHoldExtras = () => {
-    button('dictationUseRightAlt').hidden = isRightAlt(button('dictationHoldShortcut').dataset.value ?? '');
+    button('dictationUseBothAlts').hidden = isBothAlts(button('dictationHoldShortcut').dataset.value ?? '');
   };
   const setLocked = (locked: boolean) => { for (const control of controls()) control.disabled = locked; };
   const readValues = (): DictationSettings => ({
@@ -184,10 +184,10 @@ export function mountDictationSettings(): void {
     stopRecording = cancel;
   };
   for (const field of SHORTCUT_FIELDS) button(field).addEventListener('click', () => { void record(field); });
-  button('dictationUseRightAlt').addEventListener('click', () => {
+  button('dictationUseBothAlts').addEventListener('click', () => {
     stopRecording?.();
     const hold = button('dictationHoldShortcut');
-    hold.dataset.value = RIGHT_ALT; hold.textContent = displayShortcut(RIGHT_ALT);
+    hold.dataset.value = BOTH_ALTS; hold.textContent = displayShortcut(BOTH_ALTS);
     void save(hold, 'dictationHoldShortcut');
   });
 

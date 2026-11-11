@@ -19,7 +19,8 @@ function $<T extends HTMLElement = HTMLElement>(id: string): T | null {
 
 /* ================= Shell: views, search, keyboard ================= */
 
-const VIEWS = ['general', 'island', 'media', 'activities', 'tools', 'usage', 'privacy', 'about'];
+// 'tools' is the Dictation page; the id predates the split so old links keep working.
+const VIEWS = ['general', 'island', 'media', 'activities', 'tools', 'clipboard', 'usage', 'privacy', 'about'];
 
 function navLinks(): HTMLAnchorElement[] {
   return [...document.querySelectorAll<HTMLAnchorElement>('#nav a[data-view]')];

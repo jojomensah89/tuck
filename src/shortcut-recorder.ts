@@ -2,6 +2,7 @@
 
 export const DUAL_SHIFT = 'Shift+Shift';
 export const RIGHT_ALT = 'RightAlt';
+export const BOTH_ALTS = 'Alt+Alt';
 
 export interface KeyPress { code: string; ctrl: boolean; alt: boolean; shift: boolean; meta: boolean }
 export type Recorded =
@@ -30,6 +31,11 @@ function modifiers(press: KeyPress): string[] {
 
 /** `pressed` holds the codes currently down, which is the only way to see both Shift keys. */
 export function recordKey(press: KeyPress, pressed: ReadonlySet<string>, allowDualShift: boolean): Recorded {
+  if (pressed.has('AltLeft') && pressed.has('AltRight')) {
+    return allowDualShift
+      ? { kind: 'done', value: BOTH_ALTS }
+      : { kind: 'refused', reason: 'Both Alt keys only work for Hold to talk.' };
+  }
   if (pressed.has('ShiftLeft') && pressed.has('ShiftRight')) {
     return allowDualShift
       ? { kind: 'done', value: DUAL_SHIFT }
@@ -59,6 +65,10 @@ export function recordRelease(code: string, seen: ReadonlySet<string>, allowHold
     : { kind: 'refused', reason: 'Right Alt alone only works for Hold to talk.' };
 }
 
+export function isBothAlts(value: string): boolean {
+  return /^(alt\+alt|bothalts|twoalts|(left|l)alt\+(right|r)alt|(right|r)alt\+(left|l)alt)$/.test(value.toLowerCase().replace(/ /g, ''));
+}
+
 export function isRightAlt(value: string): boolean {
   return /^(rightalt|ralt|altright)$/.test(value.toLowerCase().replace(/ /g, ''));
 }
@@ -70,5 +80,6 @@ export function isDualShift(value: string): boolean {
 export function displayShortcut(value: string): string {
   if (isDualShift(value)) return 'Left + Right Shift';
   if (isRightAlt(value)) return 'Right Alt';
+  if (isBothAlts(value)) return 'Left + Right Alt';
   return value.replace(/\bSuper\b/g, 'Win').replace(/\bArrow(Up|Down|Left|Right)\b/g, '$1').replace(/\bBackquote\b/g, '`');
 }

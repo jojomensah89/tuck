@@ -306,6 +306,12 @@ fn run_session<E: Engine, S>(
         let outcome = capture_loop(&mut capture, &job_tx, &flags, limits, stop, cancel, events);
         let result = match outcome {
             CaptureEnd::Finished(samples) => {
+                let (peak, rms) = crate::dictation::diag::levels(&samples);
+                crate::dictation::diag::log(format!(
+                    "captured: {:.2}s at {} Hz, peak {peak:.1} dBFS, rms {rms:.1} dBFS",
+                    samples.len() as f32 / capture.sample_rate.max(1) as f32,
+                    capture.sample_rate
+                ));
                 events.transcribing();
                 let audio = Zeroizing::new(resample_to_16k(&samples, capture.sample_rate));
                 drop(samples);

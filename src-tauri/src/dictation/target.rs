@@ -446,7 +446,11 @@ mod clipboard {
         let _gate = gate
             .lock()
             .map_err(|_| "Insertion unavailable".to_owned())?;
-        if unsafe { GetClipboardSequenceNumber() } != sequence {
+        let now_sequence = unsafe { GetClipboardSequenceNumber() };
+        if now_sequence != sequence {
+            crate::dictation::diag::log(format!(
+                "paste refused: clipboard sequence {sequence} became {now_sequence}"
+            ));
             return Err("The clipboard changed before paste. Review the transcript."
                 .to_owned()
                 .into());
@@ -456,6 +460,15 @@ mod clipboard {
             && eligible
                 .as_ref()
                 .is_some_and(|target| verify_foreground_target(target).is_ok());
+        crate::dictation::diag::log(format!(
+            "paste: modifiers_released={} target={} editable={} still_foreground={} allowed={allowed}",
+            wait.is_ok(),
+            capture_foreground().is_some(),
+            eligible.is_some(),
+            eligible
+                .as_ref()
+                .is_some_and(|target| verify_foreground_target(target).is_ok()),
+        ));
         let mut uncertain = false;
         if allowed {
             let inputs = [

@@ -4,6 +4,7 @@
 //! `docs/phase-two-dictation.md` for builder, state, command and event setup.
 
 mod audio;
+pub(crate) mod diag;
 mod dual_shift;
 mod model;
 mod target;
@@ -20,13 +21,28 @@ const EVENT_STATE: &str = "dictation_state";
 const EVENT_TRANSCRIPT: &str = "dictation_transcript";
 const EVENT_ERROR: &str = "dictation_error";
 const DEFAULT_TOGGLE: &str = "Ctrl+Shift+Space";
-const DEFAULT_HOLD: &str = "RightAlt";
+const DEFAULT_HOLD: &str = "Alt+Alt";
 const MAX_TRANSCRIPT_BYTES: usize = 64 * 1024;
 const MAX_SETTINGS_BYTES: usize = 64 * 1024;
 /// `settingsVersion` in `dictation.json`. Version 1 migrated `Ctrl+Alt+Space`, version 2
-/// migrated `Shift+Shift`; after that, either value in the file is the owner's own choice.
-const SETTINGS_VERSION: u32 = 2;
+/// `Shift+Shift` and version 3 `RightAlt`, each an earlier default; after that, any of
+/// them in the file is the owner's own choice.
+const SETTINGS_VERSION: u32 = 3;
 const SHORTCUT_PAUSE_LIMIT: std::time::Duration = std::time::Duration::from_secs(30);
+
+pub fn is_both_alts_shortcut(shortcut: &str) -> bool {
+    let s = shortcut.trim().to_lowercase().replace(' ', "");
+    matches!(
+        s.as_str(),
+        "alt+alt"
+            | "bothalts"
+            | "twoalts"
+            | "leftalt+rightalt"
+            | "rightalt+leftalt"
+            | "lalt+ralt"
+            | "ralt+lalt"
+    )
+}
 
 pub fn is_right_alt_shortcut(shortcut: &str) -> bool {
     let s = shortcut.trim().to_lowercase().replace(' ', "");
@@ -35,7 +51,9 @@ pub fn is_right_alt_shortcut(shortcut: &str) -> bool {
 
 /// The modifier-only hold the native monitor watches, if the shortcut is one.
 fn special_hold(shortcut: &str) -> Option<dual_shift::HoldKey> {
-    if is_right_alt_shortcut(shortcut) {
+    if is_both_alts_shortcut(shortcut) {
+        Some(dual_shift::HoldKey::BothAlts)
+    } else if is_right_alt_shortcut(shortcut) {
         Some(dual_shift::HoldKey::RightAlt)
     } else if is_dual_shift_shortcut(shortcut) {
         Some(dual_shift::HoldKey::BothShifts)
@@ -743,6 +761,14 @@ impl DictationService {
                     service.finish_cancelled();
                     return;
                 }
+                match &result {
+                    Ok(text) => diag::log(format!(
+                        "transcribed: {} chars, backend {}",
+                        text.trim().chars().count(),
+                        service.engine_cache.backend()
+                    )),
+                    Err(error) => diag::log(format!("transcription ended: {error}")),
+                }
                 match result {
                     Ok(mut text) => {
                         truncate_utf8(&mut text, MAX_TRANSCRIPT_BYTES);
@@ -876,6 +902,10 @@ impl DictationService {
         }
         let copied = delivered_copy;
         let review = !copied && (settings.review_before_insert || !inserted);
+        diag::log(format!(
+            "delivered: inserted={inserted} copied={copied} review={review} reason={}",
+            reason.as_deref().unwrap_or("-")
+        ));
         if let Ok(mut runtime) = self.runtime.lock() {
             if cancel.load(Ordering::Acquire) {
                 drop(runtime);
@@ -1805,11 +1835,16 @@ fn sync_dual_shift(service: &Arc<DictationService>) {
                 return;
             }
             match change {
-                dual_shift::HoldChange::Pressed => {
-                    let _ = service.begin(RecordingMode::HoldToTalk);
+                dual_shift::HoldChange::Pressed => match service.begin(RecordingMode::HoldToTalk) {
+                    Ok(()) => diag::log("hold pressed: recording"),
+                    Err(error) => diag::log(format!("hold pressed, not started: {error}")),
+                },
+                dual_shift::HoldChange::Released => {
+                    diag::log("hold released");
+                    service.stop_hold();
                 }
-                dual_shift::HoldChange::Released => service.stop_hold(),
                 dual_shift::HoldChange::Unavailable(message) => {
+                    diag::log(format!("hold key unavailable: {message}"));
                     service.set_dual_shift_problem(Some(message));
                 }
                 dual_shift::HoldChange::Available => service.set_dual_shift_problem(None),
@@ -1823,6 +1858,10 @@ fn sync_dual_shift(service: &Arc<DictationService>) {
 pub fn start(app: AppHandle, service: &Arc<DictationService>) -> Result<(), String> {
     if let Ok(mut slot) = service.app.write() {
         *slot = Some(app.clone());
+    }
+    if let Ok(dir) = app.path().app_log_dir() {
+        diag::init(dir);
+        diag::log(format!("start: Tuck {}", env!("CARGO_PKG_VERSION")));
     }
     if let Ok(dir) = service.models_dir() {
         model::sweep_partial_downloads(&dir);
@@ -2017,7 +2056,7 @@ fn validate_settings(settings: &DictationSettings) -> Result<(), String> {
         return Err("Shortcuts must be at most 64 characters".into());
     }
     if special_hold(&settings.toggle_shortcut).is_some() {
-        return Err("Right Alt and both Shift keys only work for Hold to talk.".into());
+        return Err("Alt or Shift keys on their own only work for Hold to talk.".into());
     }
     let toggle = Shortcut::try_from(settings.toggle_shortcut.as_str())
         .map_err(|_| invalid_shortcut_message(&settings.toggle_shortcut))?;
@@ -2100,6 +2139,10 @@ fn parse_settings(bytes: &[u8]) -> (DictationSettings, Option<String>) {
     if settings.settings_version < 2 && is_dual_shift_shortcut(&settings.hold_to_talk_shortcut) {
         settings.hold_to_talk_shortcut = DEFAULT_HOLD.to_owned();
     }
+    // Before version 3 Right Alt alone was the default.
+    if settings.settings_version < 3 && is_right_alt_shortcut(&settings.hold_to_talk_shortcut) {
+        settings.hold_to_talk_shortcut = DEFAULT_HOLD.to_owned();
+    }
     settings.settings_version = SETTINGS_VERSION;
     let mut resets = Vec::new();
     if !bad.is_empty() {
@@ -2119,7 +2162,7 @@ fn parse_settings(bytes: &[u8]) -> (DictationSettings, Option<String>) {
     }
     if validate_settings(&settings).is_err() {
         resets.push(format!(
-            "Hold to talk was \"{}\", now Right Alt",
+            "Hold to talk was \"{}\", now both Alt keys",
             settings.hold_to_talk_shortcut
         ));
         settings.hold_to_talk_shortcut = DEFAULT_HOLD.to_owned();
@@ -3268,23 +3311,32 @@ mod tests {
         assert_eq!(settings.active_model, None);
         assert_eq!(settings.active_model_path, None);
         assert!(settings.review_before_insert);
-        // Both Shift keys was the old default, so it moves to the new one.
-        assert_eq!(settings.hold_to_talk_shortcut, "RightAlt");
+        // Both Shift keys was an old default, so it moves to the new one.
+        assert_eq!(settings.hold_to_talk_shortcut, "Alt+Alt");
     }
 
     #[test]
     fn both_shift_keys_chosen_after_the_migration_stays() {
         let (settings, notice) = parse_settings(
-            br#"{"toggleShortcut":"Ctrl+Shift+Space","holdToTalkShortcut":"Shift+Shift","settingsVersion":2}"#,
+            br#"{"toggleShortcut":"Ctrl+Shift+Space","holdToTalkShortcut":"Shift+Shift","settingsVersion":3}"#,
         );
         assert_eq!(notice, None);
         assert_eq!(settings.hold_to_talk_shortcut, "Shift+Shift");
         let (settings, _) = parse_settings(
             br#"{"toggleShortcut":"Ctrl+Shift+Space","holdToTalkShortcut":"Shift+Shift","settingsVersion":1}"#,
         );
+        assert_eq!(settings.hold_to_talk_shortcut, "Alt+Alt");
+        // Right Alt was the default in version 2, so it moves too; chosen later, it stays.
+        let (settings, _) = parse_settings(
+            br#"{"toggleShortcut":"Ctrl+Shift+Space","holdToTalkShortcut":"RightAlt","settingsVersion":2}"#,
+        );
+        assert_eq!(settings.hold_to_talk_shortcut, "Alt+Alt");
+        let (settings, _) = parse_settings(
+            br#"{"toggleShortcut":"Ctrl+Shift+Space","holdToTalkShortcut":"RightAlt","settingsVersion":3}"#,
+        );
         assert_eq!(settings.hold_to_talk_shortcut, "RightAlt");
-        assert!(needs_version_stamp(br#"{"settingsVersion":1}"#));
-        assert!(!needs_version_stamp(br#"{"settingsVersion":2}"#));
+        assert!(needs_version_stamp(br#"{"settingsVersion":2}"#));
+        assert!(!needs_version_stamp(br#"{"settingsVersion":3}"#));
     }
 
     #[test]
@@ -3292,10 +3344,17 @@ mod tests {
         assert!(is_right_alt_shortcut("RightAlt"));
         assert!(is_right_alt_shortcut("right alt"));
         assert!(!is_right_alt_shortcut("Alt"));
+        assert!(is_both_alts_shortcut("Alt+Alt"));
+        assert!(is_both_alts_shortcut("LeftAlt + RightAlt"));
+        assert!(!is_both_alts_shortcut("Ctrl+Alt"));
         let mut settings = DictationSettings::default();
-        assert_eq!(settings.hold_to_talk_shortcut, "RightAlt");
+        assert_eq!(settings.hold_to_talk_shortcut, "Alt+Alt");
+        assert!(validate_settings(&settings).is_ok());
+        settings.hold_to_talk_shortcut = "RightAlt".into();
         assert!(validate_settings(&settings).is_ok());
         settings.toggle_shortcut = "RightAlt".into();
+        assert!(validate_settings(&settings).is_err());
+        settings.toggle_shortcut = "Alt+Alt".into();
         assert!(validate_settings(&settings).is_err());
     }
 

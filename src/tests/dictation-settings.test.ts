@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { formatSize, islandModelLine, modelHeader, modelsLocked, removeConfirmation, rowButtons, rowMeta, rowProgress, rowStateText, type ModelRow } from '../dictation-models.js';
-import { displayShortcut, DUAL_SHIFT, isDualShift, recordKey, recordRelease, RIGHT_ALT, type KeyPress } from '../shortcut-recorder.js';
+import { BOTH_ALTS, displayShortcut, DUAL_SHIFT, isDualShift, recordKey, recordRelease, RIGHT_ALT, type KeyPress } from '../shortcut-recorder.js';
 
 const row = (over: Partial<ModelRow> = {}): ModelRow => ({ id: 'ggml-base-q5_1.bin', label: 'Base', bytes: 59_707_625, speed: 'Very fast', accuracy: 'Good', note: null, state: 'available', foundIn: null, active: false, ...over });
 const actions = (over: Partial<ModelRow>) => rowButtons(row(over)).map(button => button.action);
@@ -69,6 +69,12 @@ describe('shortcut recorder', () => {
     expect(recordKey(press('ShiftRight', { shift: true }), both, true)).toEqual({ kind: 'done', value: DUAL_SHIFT });
     const refused = recordKey(press('ShiftRight', { shift: true }), both, false);
     expect(refused.kind).toBe('refused');
+  });
+  test('both Alt keys finish a hold shortcut and are refused for start and stop', () => {
+    const both = new Set(['AltLeft', 'AltRight']);
+    expect(recordKey(press('AltRight', { alt: true }), both, true)).toEqual({ kind: 'done', value: BOTH_ALTS });
+    expect(recordKey(press('AltRight', { alt: true }), both, false).kind).toBe('refused');
+    expect(displayShortcut(BOTH_ALTS)).toBe('Left + Right Alt');
   });
   test('Right Alt released on its own is a hold shortcut, never part of a chord', () => {
     expect(recordRelease('AltRight', new Set(['AltRight']), true)).toEqual({ kind: 'done', value: RIGHT_ALT });

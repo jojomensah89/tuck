@@ -109,6 +109,9 @@ pub(crate) fn start_ready_microphone(service: &Arc<DictationService>) {
                         Ok((s, r))
                     }) {
                         Ok((stream, rate)) => {
+                            crate::dictation::diag::log(format!(
+                                "ready microphone open at {rate} Hz"
+                            ));
                             let mut state = owner.state.lock().unwrap();
                             state.blocks.clear();
                             state.rate = rate;
@@ -120,7 +123,12 @@ pub(crate) fn start_ready_microphone(service: &Arc<DictationService>) {
                                 frames,
                             });
                         }
-                        Err(e) => owner.state.lock().unwrap().error = Some(e),
+                        Err(e) => {
+                            crate::dictation::diag::log(format!(
+                                "ready microphone failed to open: {e}"
+                            ));
+                            owner.state.lock().unwrap().error = Some(e);
+                        }
                     }
                 }
             }
@@ -129,6 +137,7 @@ pub(crate) fn start_ready_microphone(service: &Arc<DictationService>) {
             }) = &input
             {
                 if let Ok(e) = erx.try_recv() {
+                    crate::dictation::diag::log(format!("ready microphone stream error: {e}"));
                     owner.state.lock().unwrap().error = Some(e);
                     input = None;
                     continue;
@@ -183,6 +192,14 @@ pub(super) fn timed_capture(
         let state = service.microphone.state.lock().unwrap();
         state.rate != 0 && state.error.is_none()
     };
+    crate::dictation::diag::log(format!(
+        "capture opening: {}",
+        if warm {
+            "ready microphone"
+        } else {
+            "opening microphone now"
+        }
+    ));
     let owner = service.microphone.clone();
     let times = service.capture_times.clone();
     let meter_service = Arc::downgrade(service);

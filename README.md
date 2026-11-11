@@ -14,7 +14,7 @@ Windows 10 or 11 on x64, with Microsoft Edge WebView2 Runtime installed. Offline
 
 ## Features
 
-- Media playback controls and optional lyrics.
+- Media playback controls, optional lyrics, and a choice of which apps drive the card.
 - Offline dictation with Whisper or Parakeet models.
 - Clipboard history, timers, stopwatch, and Pomodoro.
 - Battery and system resource information.

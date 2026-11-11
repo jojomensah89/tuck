@@ -46,7 +46,8 @@ export function mountExtensions():void {
    expiry=window.setTimeout(()=>{void stopTransfer();},600000);
   }catch(error){transfer.textContent=String(error);transfer.append(button('Stop',stopTransfer));}
  },'shelf-phone');
- actions.append(add,send,clear);
+ // Send to phone is kept out of releases; build with VITE_SEND_TO_PHONE=1 to include it
+ actions.append(...(import.meta.env.VITE_SEND_TO_PHONE==='1'?[add,send,clear]:[add,clear]));
  window.addEventListener('tuck-phone-close',()=>{if(!transfer.hidden)void stopTransfer();});
  transfer.addEventListener('keydown',event=>{if(event.key==='Escape'){event.stopPropagation();void stopTransfer().then(()=>send.focus());}});
  new MutationObserver(()=>{if(!transfer.hidden&&page.closest('[inert]'))void stopTransfer();}).observe(document.getElementById('isl')!,{subtree:true,attributes:true,attributeFilter:['inert']});

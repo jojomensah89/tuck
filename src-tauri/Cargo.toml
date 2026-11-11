@@ -16,14 +16,14 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-hyper = { version = "1", features = ["server", "http1"] }
-hyper-util = { version = "0.1", features = ["tokio"] }
-axum = { version = "0.8", default-features = false }
-tokio-util = { version = "0.7", features = ["io"] }
-if-addrs = "0.13"
-getrandom = "0.3"
-subtle = "2"
-qrcode = { version = "0.14", default-features = false, features = ["svg"] }
+hyper = { version = "1", features = ["server", "http1"], optional = true }
+hyper-util = { version = "0.1", features = ["tokio"], optional = true }
+axum = { version = "0.8", default-features = false, optional = true }
+tokio-util = { version = "0.7", features = ["io"], optional = true }
+if-addrs = { version = "0.13", optional = true }
+getrandom = { version = "0.3", optional = true }
+subtle = { version = "2", optional = true }
+qrcode = { version = "0.14", default-features = false, features = ["svg"], optional = true }
 
 tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-opener = "2"
@@ -116,3 +116,7 @@ strip = true
 [patch.crates-io]
 transcribe-cpp-sys = { git = 'https://github.com/anomalyco/transcribe.cpp', rev = 'bcb639faa4c74a2300ba19e30360cb2355b1663a' }
 
+
+[features]
+# Send shelf files to a phone over the local network. Off in releases.
+send-to-phone = ["dep:hyper", "dep:hyper-util", "dep:axum", "dep:tokio-util", "dep:if-addrs", "dep:getrandom", "dep:subtle", "dep:qrcode"]

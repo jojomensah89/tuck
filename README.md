@@ -73,5 +73,3 @@ Dictation keeps the microphone ready by default once a speech model is available
 Windows source builds require the Vulkan SDK (`winget install KhronosGroup.VulkanSDK`). Dot-source `scripts/prepare-native.ps1 -InstallBuildTools` before Cargo commands. CI installs the SDK and SPIRV headers. Installed apps use the graphics driver's Vulkan 1.2 loader, with CPU fallback; do not distribute vulkan-1.dll.
 
 Microphone mute uses Ctrl+Alt+M (change or turn it off in Settings > Privacy). Starting dictation while muted reports ?Microphone is muted?. The optional microphone and camera indicator names apps reported as in use by Windows; it keeps no usage history and sends nothing.
-
-Send to phone serves shelf files over HTTP on the local network while the QR view is open. Anyone with the link can download them. Closing the view, Stop, quitting Tuck, or ten minutes ends sharing. No phone app or uploads. Windows Firewall may ask for network access.

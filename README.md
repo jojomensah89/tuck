@@ -14,7 +14,7 @@ Windows 10 or 11 on x64, with Microsoft Edge WebView2 Runtime installed. Offline
 
 ## Features
 
-- Media playback controls and optional lyrics.
+- Media playback controls, optional lyrics, and a choice of which apps drive the card.
 - Offline dictation with Whisper or Parakeet models.
 - Clipboard history, timers, stopwatch, and Pomodoro.
 - Battery and system resource information.
@@ -29,7 +29,7 @@ Tuck checks for updates about 20 seconds after startup and every six hours. Sett
 
 ## Privacy
 
-Speech recognition runs on your computer. Dictation settings and downloaded models are stored locally. Clipboard history is off by default. When enabled it keeps text, images and file paths, never the contents of copied files. Sensitive content in images is not detected. Private clipboard markers and Tuck's own dictation paste are skipped. History stays in memory and vanishes on exit unless **Keep after restart** is on; then it is saved only in Tuck's app data, bounded to 256 MB including images. Removing a clip deletes its saved data; Clear all deletes unpinned clips and keeps pins. Turning history off deletes all saved clips, including pins. Treat your Windows account and local app data as sensitive.
+Settings > Island > Placement picks the monitor and whether the island sits left, centre or right; both are saved on your computer, by the monitor's device path and name, and the island moves back to the primary monitor while the chosen one is unplugged. Speech recognition runs on your computer. Dictation settings and downloaded models are stored locally. Clipboard history is off by default. When enabled it keeps text, images and file paths, never the contents of copied files. Sensitive content in images is not detected. Private clipboard markers and Tuck's own dictation paste are skipped. History stays in memory and vanishes on exit unless **Keep after restart** is on; then it is saved only in Tuck's app data, bounded to 256 MB including images. Removing a clip deletes its saved data; Clear all deletes unpinned clips and keeps pins. Turning history off deletes all saved clips, including pins. Treat your Windows account and local app data as sensitive.
 
 Tuck is not fully offline. Updates contact GitHub. Optional model downloads contact Hugging Face. Lyrics requests send track details to LRCLIB. Claude and Codex each start off; switches appear only when their executable is found. With Claude on, Tuck asks Claude Code for limits and the client may contact Anthropic; the optional Tuck status-line file is local. With Codex on, Tuck asks its app-server for limits and the client may contact OpenAI. Turning either off cancels its reader and removes its rings. Antigravity is a separate opt-in, off by default. Its switch appears only if `%USERPROFILE%/.gemini/antigravity-acp/acp_token.json` exists (existence only). Turning it on requires confirmation that Tuck reads that sign-in file and contacts Google for quota. This is the only exception to the no-other-app-credential-files rule. Rust reads at most 16 KiB, keeps credentials only during the request, and never writes the file. OAuth refresh goes to oauth2.googleapis.com; quota goes to daily-cloudcode-pa.googleapis.com and cloudcode-pa.googleapis.com, using HTTPS with redirects disabled and timeouts. No userinfo, login or prompts. Turning it off cancels requests, drops secrets and removes the ring. It relies on an undocumented Google service that may stop working. Network speeds use local Windows interface counters only while System is visible in the open island, without network requests.
 
@@ -65,3 +65,7 @@ Installers are written to `src-tauri/target/release/bundle/nsis/`.
 ## Licence
 
 [MIT](LICENSE), copyright 2026 Tuck contributors. Third-party components and model weights retain their own terms.
+
+Microphone mute uses Ctrl+Alt+M (change or turn it off in Settings > Privacy). Starting dictation while muted reports ?Microphone is muted?. The optional microphone and camera indicator names apps reported as in use by Windows; it keeps no usage history and sends nothing.
+
+Send to phone serves shelf files over HTTP on the local network while the QR view is open. Anyone with the link can download them. Closing the view, Stop, quitting Tuck, or ten minutes ends sharing. No phone app or uploads. Windows Firewall may ask for network access.

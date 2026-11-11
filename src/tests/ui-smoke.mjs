@@ -189,6 +189,7 @@ try {
     let serial=0;const callbacks=new Map();const listeners=new Map();
     const state={settings:{notifications:false},shelf:[],notificationStatus:'Disabled',errors:[]};
     window.__nativeState=state;window.__calls=[];
+    window.__placement={display:null,dock:'center',active:'main',displays:[{id:'main',name:'DELL U2723QE',primary:true},{id:'tv',name:'Display 2',primary:false},{id:'side',name:'LG UltraGear 27GL',primary:false}]};
     // Stand-ins for Explorer's thumbnails: a page, a photo, an app icon and a video frame
     window.__fixtureThumb=id=>{
       const kinds={pdf:'page',doc:'word',photo:'photo',exe:'hex',app:'app',video:'frame','video-fixture':'frame','doc-fixture':'page'};
@@ -230,6 +231,8 @@ try {
       if(command==='get_autostart'||command==='installed_usage_enabled'||command==='fullscreen_now')return false;
       if(command==='volume_step')return {kind:'volume',level:40+args.delta,muted:false};
       if(command==='volume_toggle_mute')return {kind:'volume',level:40,muted:true};
+      if(command==='island_placement_get')return structuredClone(window.__placement);
+      if(command==='island_placement_set'){Object.assign(window.__placement,{display:args.display,dock:args.dock});return structuredClone(window.__placement);}
       if(command==='get_hide_system_flyout')return {enabled:true,state:'waiting',message:null};
       if(command==='set_hide_system_flyout'&&!args.enabled)return {enabled:false,state:'off',message:null};
       if(command==='set_hide_system_flyout')return {enabled:false,state:'unavailable',message:"Turned off: Windows showed its volume flyout several times, but Tuck couldn't find it on this version of Windows"};
@@ -1560,6 +1563,35 @@ try {
   assert.equal(await native.locator('#flyoutStatus').getAttribute('data-kind'),'error');
   assert.deepEqual(nativeErrors,[]);
 
+  // Island placement: the monitor picker and the dock switch
+  await native.locator('#view-island').waitFor({state:'visible'});
+  assert.deepEqual(await native.locator('#islandDisplay option').allTextContents(),['Primary','Display 2','LG UltraGear 27GL'],'Primary first, then the other monitors by name');
+  assert.equal(await native.locator('#islandDisplay').inputValue(),'');
+  assert.equal(await native.locator('input[name="islandDock"]:checked').getAttribute('value'),'center','Centre by default');
+  assert.equal(await native.locator('#view-island .set-row:is(#row-islandDisplay,#row-islandDock) .row-desc').count(),0,'No explainer text on the placement rows');
+  await native.locator('#islandDisplay').selectOption('side');
+  await native.locator('#row-islandDisplay.saved').waitFor();
+  await native.locator('label:has(input[value="right"])').click();
+  await native.locator('#row-islandDock.saved').waitFor();
+  assert.deepEqual(await native.evaluate(()=>window.__calls.filter(c=>c.command==='island_placement_set').map(c=>c.args)),[
+    {display:{id:'side',name:'LG UltraGear 27GL'},dock:'center'},
+    {display:{id:'side',name:'LG UltraGear 27GL'},dock:'right'},
+  ],'Both controls save at once and remember the monitor by identity');
+  await native.evaluate(()=>window.__emitNative('island-placement',{...window.__placement,displays:window.__placement.displays.filter(d=>d.id!=='side')}));
+  assert.deepEqual(await native.locator('#islandDisplay option').allTextContents(),['Primary','Display 2','LG UltraGear 27GL (not connected)'],'An unplugged choice stays visible');
+  assert.equal(await native.locator('#islandDisplay').inputValue(),'side');
+  await native.evaluate(()=>window.__emitNative('island-placement',window.__placement));
+  await native.setViewportSize({width:1000,height:700});
+  await native.locator('#row-islandDock:not(.saved)').waitFor();
+  await native.locator('#row-islandDisplay:not(.saved)').waitFor();
+  for (const theme of ['dark','light']) {
+    await native.emulateMedia({colorScheme:theme});
+    await native.locator('#view-island .group').first().screenshot({path:path.join(root,`docs/screens/island-placement-${theme}.png`)});
+  }
+  await native.emulateMedia({colorScheme:'dark'});
+  await native.setViewportSize({width:520,height:288});
+  assert.deepEqual(nativeErrors,[]);
+
   // Recording never publishes words, including legacy late partial events.
   await native.setViewportSize({width:520,height:288});
   await native.goto('http://tuck.test/');
@@ -1669,6 +1701,30 @@ try {
   const floatBox = await motion.locator('#isl').boundingBox();
   assert.ok(floatBox.y===10&&floatBox.y+floatBox.height<=288&&floatBox.height===264,'A floating island fits the native canvas');
   assert.deepEqual(motionErrors,[]);
+  // The island hangs from the side of its window that the dock names
+  const docked = await context.newPage();
+  await docked.bringToFront(); await docked.setViewportSize({width:548,height:288});
+  await docked.goto('http://tuck.test/');
+  await docked.locator('#isl').waitFor();
+  const placeOf = async () => docked.locator('#isl').evaluate(el=>{const box=el.getBoundingClientRect();return {left:Math.round(box.left),right:Math.round(innerWidth-box.right),dock:el.dataset.dock};});
+  await docked.evaluate(()=>{document.body.style.background='#7a7a80';});
+  await docked.waitForFunction(()=>window.__calls.some(c=>c.command==='plugin:event|listen'&&c.args.event==='island-placement'));
+  assert.deepEqual(await placeOf(),{left:168,right:168,dock:'center'},'Centred by default');
+  for (const [dock,expected] of [['left',{left:24,right:312}],['right',{left:312,right:24}],['center',{left:168,right:168}]]) {
+    await docked.evaluate(dock=>window.__emitNative('island-placement',{...window.__placement,dock}),dock);
+    await docked.waitForFunction(dock=>document.getElementById('isl').dataset.dock===dock,dock,{polling:50});
+    await docked.waitForFunction(()=>!document.getElementById('isl').classList.contains('docking'),null,{polling:50});
+    assert.deepEqual(await placeOf(),{...expected,dock},`${dock} dock`);
+    await docked.screenshot({path:path.join(root,`docs/screens/island-dock-${dock}.png`)});
+  }
+  await docked.evaluate(()=>window.__emitNative('island-placement',{...window.__placement,dock:'right'}));
+  await docked.waitForFunction(()=>document.getElementById('isl').dataset.dock==='right',null,{polling:50});
+  await docked.locator('#isl').focus(); await docked.keyboard.press('Enter');
+  await docked.waitForFunction(()=>document.getElementById('isl').dataset.state==='open',null,{polling:50});
+  await docked.waitForTimeout(500);
+  assert.deepEqual(await docked.locator('#isl').evaluate(el=>{const box=el.getBoundingClientRect();return [Math.round(box.width),Math.round(innerWidth-box.right)];}),[500,24],'A docked island grows away from its edge');
+  await docked.close();
+
   // Stats over fullscreen apps: opt-in strip, sampled once a second and only while it shows
   const stats = await context.newPage(); const statsErrors = [];
   stats.on('pageerror', error => statsErrors.push(error.message));
@@ -1743,6 +1799,7 @@ try {
   assert.equal(await statsSwitch.isChecked(), true, 'The choice survives a reload');
   await statsSettings.close();
 
+  // The context clock below is installed for the rest of the run, so nothing that needs timers goes after it
   // The compact clock stays accurate with one minute-aligned timeout, without an interval.
   const idleClock = await context.newPage();
   const minuteEdge = new Date('2026-11-04T12:00:59.900Z');
@@ -1755,6 +1812,6 @@ try {
   assert.equal(await idleClock.evaluate(() => window.__idleIntervals.size), 0, 'The minute clock does not start an interval');
   await idleClock.close();
 
-  console.log('UI smoke passed: geometry, tab rail (keys, wheel edges, swipe, memory), accessibility, keyboard seeking, timers, collapsed media text and its running animations, usage rings, segmented switch, dictation tab, empty states, icon buttons, persistence errors, volume/brightness HUD, wheel and middle-click volume, the pill-sized strip on the open island, queued flyout failure, return to open after HUD, HUD setting, charger-ramp brightness, flyout default-on, shelf, drag hold and previews.');
+  console.log('UI smoke passed: geometry, tab rail (keys, wheel edges, swipe, memory), accessibility, keyboard seeking, timers, collapsed media text and its running animations, usage rings, segmented switch, dictation tab, empty states, icon buttons, persistence errors, volume/brightness HUD, wheel and middle-click volume, the pill-sized strip on the open island, queued flyout failure, return to open after HUD, HUD setting, charger-ramp brightness, flyout default-on, shelf, drag hold and previews, island placement (monitor picker, dock switch and docked island).');
 } finally { await browser.close(); }
 

@@ -102,6 +102,28 @@
         <section class="view" id="view-island" data-view="island" aria-labelledby="h-island" hidden>
           <h1 id="h-island">Island</h1>
           <div class="group">
+            <h2>Placement</h2>
+            <div class="panel">
+              <div class="set-row" id="row-islandDisplay" data-keywords="monitor screen display primary secondary external">
+                <div class="row-text">
+                  <label class="row-title" for="islandDisplay">Display</label>
+                </div>
+                <select id="islandDisplay" class="select" disabled><option value="">Primary</option></select>
+              </div>
+              <div class="set-row" id="row-islandDock" data-keywords="position side edge left right centre center middle dock">
+                <div class="row-text">
+                  <span class="row-title" id="islandDockLabel">Position</span>
+                </div>
+                <div class="segmented" role="radiogroup" aria-labelledby="islandDockLabel">
+                  <label><input type="radio" name="islandDock" value="left" disabled /><span>Left</span></label>
+                  <label><input type="radio" name="islandDock" value="center" checked disabled /><span>Centre</span></label>
+                  <label><input type="radio" name="islandDock" value="right" disabled /><span>Right</span></label>
+                </div>
+              </div>
+              <p class="group-status" id="placementStatus" role="status"></p>
+            </div>
+          </div>
+          <div class="group">
             <h2>Opening and closing</h2>
             <div class="panel">
 

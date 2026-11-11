@@ -1,3 +1,4 @@
+use crate::placement::{Dock, DOCK_INSET};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
@@ -37,8 +38,8 @@ use windows::{
         Foundation::{HWND, POINT, RECT},
         Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_EXTENDED_FRAME_BOUNDS},
         Graphics::Gdi::{
-            GetMonitorInfoW, MonitorFromWindow, HMONITOR, MONITORINFO, MONITOR_DEFAULTTONULL,
-            MONITOR_DEFAULTTOPRIMARY,
+            GetMonitorInfoW, MonitorFromWindow, HMONITOR, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+            MONITOR_DEFAULTTONULL,
         },
         System::{
             Com::{CoInitializeEx, COINIT_MULTITHREADED},
@@ -176,13 +177,47 @@ pub fn compute_hit_bounds(
     hit_h: u32,
     slop_px: f64,
 ) -> HitBounds {
+    compute_dock_hit_bounds(
+        window_pos_x,
+        window_pos_y,
+        window_width,
+        scale_factor,
+        hit_w,
+        hit_h,
+        slop_px,
+        Dock::Center,
+    )
+}
+
+/// Hit bounds for an island that hangs from the middle of its window, or from a side of it
+/// by `DOCK_INSET` logical pixels. `scale_factor` is the island's monitor, so the inset and
+/// the island keep the same physical size on any monitor.
+#[allow(clippy::too_many_arguments)]
+pub fn compute_dock_hit_bounds(
+    window_pos_x: i32,
+    window_pos_y: i32,
+    window_width: u32,
+    scale_factor: f64,
+    hit_w: u32,
+    hit_h: u32,
+    slop_px: f64,
+    dock: Dock,
+) -> HitBounds {
     let (w_css, h_css) = clamp_hit_size(hit_w, hit_h);
     let w_phys = (w_css as f64) * scale_factor;
     let h_phys = (h_css as f64) * scale_factor;
     let slop = slop_px * scale_factor;
+    let inset = (DOCK_INSET as f64) * scale_factor;
+    let window_left = window_pos_x as f64;
+    let window_w = window_width as f64;
 
-    let left = (window_pos_x as f64) + ((window_width as f64) - w_phys) / 2.0 - slop;
-    let right = left + w_phys + 2.0 * slop;
+    let island_left = match dock {
+        Dock::Center => window_left + (window_w - w_phys) / 2.0,
+        Dock::Left => window_left + inset,
+        Dock::Right => window_left + window_w - inset - w_phys,
+    };
+    let left = island_left - slop;
+    let right = island_left + w_phys + slop;
     let top = window_pos_y as f64;
     let bottom = top + h_phys + slop;
 
@@ -279,33 +314,6 @@ pub fn set_island_focusable(hwnd: HWND, focusable: bool) {
     }
 }
 
-/// Centers the Tuck window at the top center of the primary monitor using actual physical coordinates.
-/// Only calls `set_position` if coordinates have changed to avoid recursive `WindowEvent::Moved` loops.
-pub fn center_on_primary_monitor(win: &WebviewWindow) -> Result<(), Box<dyn std::error::Error>> {
-    if let Some(mon) = win
-        .primary_monitor()?
-        .or_else(|| win.current_monitor().ok().flatten())
-    {
-        let size = win.outer_size()?;
-        let mon_pos = mon.position();
-        let mon_size = mon.size();
-        let x = mon_pos.x + (mon_size.width as i32 - size.width as i32) / 2;
-        let y = mon_pos.y;
-        // The OLE integration probe must never overlap the installed island.
-        #[cfg(debug_assertions)]
-        let y = if win.app_handle().config().identifier == "com.jojo.tuck.drop-probe" {
-            y + 400
-        } else {
-            y
-        };
-        let current_pos = win.outer_position()?;
-        if current_pos.x != x || current_pos.y != y {
-            win.set_position(tauri::PhysicalPosition::new(x, y))?;
-        }
-    }
-    Ok(())
-}
-
 #[cfg(windows)]
 pub(crate) fn reassert_topmost(win: &WebviewWindow) {
     if let Ok(raw) = win.hwnd() {
@@ -369,10 +377,11 @@ struct CursorGeometry {
     y: i32,
     width: u32,
     scale: f64,
+    dock: Dock,
 }
 impl CursorGeometry {
     fn bounds(self, hit: &HitState) -> HitBounds {
-        compute_hit_bounds(
+        compute_dock_hit_bounds(
             self.x,
             self.y,
             self.width,
@@ -380,6 +389,7 @@ impl CursorGeometry {
             hit.width.load(Ordering::Acquire),
             hit.height.load(Ordering::Acquire),
             6.0,
+            self.dock,
         )
     }
 }
@@ -473,8 +483,8 @@ pub(crate) fn check_fullscreen(island_hwnd: HWND, settings_hwnd: Option<HWND>) -
             return false;
         }
 
-        // Must be on the same monitor as the Tuck island window
-        let island_mon: HMONITOR = MonitorFromWindow(island_hwnd, MONITOR_DEFAULTTOPRIMARY);
+        // Must be on the same monitor as the Tuck island window, wherever Settings put it
+        let island_mon: HMONITOR = MonitorFromWindow(island_hwnd, MONITOR_DEFAULTTONEAREST);
         let fg_mon: HMONITOR = MonitorFromWindow(fg, MONITOR_DEFAULTTONULL);
         if fg_mon.0.is_null() || fg_mon != island_mon {
             return false;
@@ -701,13 +711,16 @@ pub fn start(app: AppHandle, hit_state: Arc<HitState>) {
                     if let Some(((pos, size), sf)) = geometry {
                         let hit_w = hit_cursor.width.load(Ordering::Relaxed);
                         let hit_h = hit_cursor.height.load(Ordering::Relaxed);
-                        let bounds =
-                            compute_hit_bounds(pos.x, pos.y, size.width, sf, hit_w, hit_h, 6.0);
+                        let dock = crate::placement::current_dock();
+                        let bounds = compute_dock_hit_bounds(
+                            pos.x, pos.y, size.width, sf, hit_w, hit_h, 6.0, dock,
+                        );
                         delivery_geometry = Some(CursorGeometry {
                             x: pos.x,
                             y: pos.y,
                             width: size.width,
                             scale: sf,
+                            dock,
                         });
                         is_hovered = is_point_inside(&bounds, pt.x as f64, pt.y as f64);
                         near = cursor_near(&bounds, pt.x as f64, pt.y as f64, sf);
@@ -1000,6 +1013,7 @@ mod idle_cursor_tests {
             y: 0,
             width: 520,
             scale: 1.0,
+            dock: Dock::Center,
         };
         let hit = HitState::default();
         hit.width.store(500, Ordering::Release);
@@ -1049,6 +1063,62 @@ mod idle_cursor_tests {
             60
         );
     }
+    #[test]
+    fn docked_hit_bounds_follow_the_side_the_island_hangs_from() {
+        // A 520-wide window at x=100, the 212x32 idle pill, no slop, 100% scale
+        let at = |dock| compute_dock_hit_bounds(100, 0, 520, 1.0, 212, 32, 0.0, dock);
+        let inset = DOCK_INSET as f64;
+        assert_eq!(
+            (at(Dock::Center).left, at(Dock::Center).right),
+            (254.0, 466.0)
+        );
+        assert_eq!(
+            (at(Dock::Left).left, at(Dock::Left).right),
+            (100.0 + inset, 312.0 + inset)
+        );
+        assert_eq!(
+            (at(Dock::Right).left, at(Dock::Right).right),
+            (620.0 - inset - 212.0, 620.0 - inset)
+        );
+        // Centre is exactly what the old centred function returned
+        let old = compute_hit_bounds(100, 0, 520, 1.0, 212, 32, 6.0);
+        let new = compute_dock_hit_bounds(100, 0, 520, 1.0, 212, 32, 6.0, Dock::Center);
+        assert_eq!(old, new);
+    }
+
+    #[test]
+    fn the_dock_inset_and_slop_scale_with_the_monitor() {
+        // A 150% monitor at x=1920: canvas 822 physical wide, island 318 physical wide
+        let left = compute_dock_hit_bounds(1920, 0, 822, 1.5, 212, 32, 6.0, Dock::Left);
+        assert_eq!(left.left, 1920.0 + 36.0 - 9.0);
+        assert_eq!(left.right, 1920.0 + 36.0 + 318.0 + 9.0);
+        assert_eq!(left.bottom, 48.0 + 9.0);
+        let right = compute_dock_hit_bounds(3978, 0, 822, 1.5, 212, 32, 6.0, Dock::Right);
+        assert_eq!(right.right, 4800.0 - 36.0 + 9.0);
+        assert_eq!(right.left, 4800.0 - 36.0 - 318.0 - 9.0);
+    }
+
+    #[test]
+    fn docked_hit_bounds_work_left_of_and_above_the_primary_monitor() {
+        // The 125% monitor at (-2560, -300): its left dock window starts at its own origin
+        let bounds = compute_dock_hit_bounds(-2560, -300, 685, 1.25, 500, 264, 6.0, Dock::Left);
+        assert_eq!(bounds.left, -2560.0 + 30.0 - 7.5);
+        assert_eq!(bounds.top, -300.0);
+        assert!(is_point_inside(&bounds, -2500.0, -200.0));
+        assert!(
+            !is_point_inside(&bounds, -2560.0, -200.0),
+            "inside the inset gap"
+        );
+        assert!(
+            !is_point_inside(&bounds, 0.0, -200.0),
+            "the primary monitor is not hit"
+        );
+        // The same point is a hit only on the docked side
+        let right = compute_dock_hit_bounds(-685, -300, 685, 1.25, 212, 32, 6.0, Dock::Right);
+        assert!(is_point_inside(&right, -100.0, -290.0));
+        assert!(!is_point_inside(&right, -600.0, -290.0));
+    }
+
     #[test]
     fn a_resting_cursor_is_sampled_less_and_never_slower_near_the_island() {
         assert_eq!(cursor_poll_ms(false, false), 250);

@@ -33,7 +33,11 @@ Empty states are one calm line in the middle of the area and nothing else (`Noth
 
 Idle is 212x32, or a stable 300x32 while playing media; peek is 300x38; open is `openWidth` x 264 (default 500, range 440-500). Notch ears remain 14px; float has a 10px top gap.
 
-The native window is a fixed, click-through 520x288 canvas (`src-tauri/tauri.conf.json`), and `clamp_hit_size` in `src-tauri/src/system.rs` uses the same limits. That holds the 264px island, the 10px float gap and the shell spring's overshoot of about 12px at both shapes. The native hit area follows the shell, so it is `openWidth` x 264 open, or 274 tall when floating.
+The native window is a fixed, click-through 548x288 canvas (`src-tauri/tauri.conf.json`); `clamp_hit_size` in `src-tauri/src/system.rs` limits hit sizes to the 520x288 island. That holds the 264px island, the 10px float gap and the shell spring's overshoot of about 12px at both shapes. The native hit area follows the shell, so it is `openWidth` x 264 open, or 274 tall when floating.
+
+### Display and dock
+
+Settings > Island > Placement chooses the monitor (Primary, or a connected monitor by its friendly name, then "Display n") and a dock: Left, Centre or Right. The choice lives in `island-placement.json` in the config directory, keyed by the monitor's device path, with its name only to label it while it is unplugged. `src-tauri/src/placement.rs` turns the monitor's rectangle, its own DPI scale and the dock into the window rectangle (pure functions, tested with negative origins and mixed DPI), so the island keeps its physical size on any monitor. The canvas is 548px wide: 500 for the open island, 24 for the dock inset and room for the spring's overshoot. Docked left or right, the window sits flush with the screen edge and the island hangs `--dock-inset` (24px, `DOCK_INSET` in `placement.rs`, one value for the CSS, the hit region and the maths) from that side and grows away from it; centred, it hangs from the middle as before. The island follows at once with no restart. A monitor that is gone sends it to the primary monitor, and it returns when the monitor does. `WM_DISPLAYCHANGE`, DPI changes and window moves re-run the placement. Fullscreen is judged on the island's own monitor, and hit testing, peeks, the HUD and the volume strip are all in the canvas, so they follow without separate positions.
 
 Content box: 16px insets top and bottom, 56px left (8px gutter, 32px rail, 16px gap), 24px right.
 

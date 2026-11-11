@@ -153,7 +153,7 @@ svg.ico.big {
   position: absolute;
   top: var(--top, 0px);
   left: 50%;
-  transform: translateX(-50%);
+  transform: translateX(var(--tx, -50%));
   width: var(--w, 212px);
   height: var(--h, 32px);
   background: var(--surface);
@@ -171,6 +171,19 @@ svg.ico.big {
 
 .island[data-state="idle"] {
   --r: var(--r-idle);
+}
+
+/* Docked: the window sits flush with the screen edge and the island hangs from its side,
+   so it grows away from the edge instead of from the middle */
+.island[data-dock="left"] {
+  --tx: 0px;
+  left: var(--dock-inset);
+}
+
+.island[data-dock="right"] {
+  --tx: 0px;
+  left: auto;
+  right: var(--dock-inset);
 }
 
 .island[data-state="peek"],
@@ -241,8 +254,13 @@ svg.ico.big {
 /* Hidden during full-screen apps */
 body.fullscreen-hidden .island {
   opacity: 0;
-  transform: translateX(-50%) translateY(-120%);
+  transform: translateX(var(--tx, -50%)) translateY(-120%);
   pointer-events: none;
+}
+
+/* The window just moved: the island jumps with it instead of sliding */
+.island.docking {
+  transition: none;
 }
 
 /* The collapsed island stays visible as a stats strip; the app in front keeps every click */

@@ -280,7 +280,7 @@ mod native {
                 return;
             }
             if let Some(win) = self.app.get_webview_window("main") {
-                let _ = crate::system::center_on_primary_monitor(&win);
+                let _ = crate::placement::apply(&win);
                 let _ = win.show();
             }
             self.refresh_fullscreen();
@@ -288,7 +288,7 @@ mod native {
 
         fn refresh_layout(&mut self) {
             if let Some(win) = self.app.get_webview_window("main") {
-                let _ = crate::system::center_on_primary_monitor(&win);
+                let _ = crate::placement::apply(&win);
             }
             if self.island_hidden() {
                 return;
@@ -593,6 +593,9 @@ mod native {
                     LRESULT(0)
                 }
                 WM_DISPLAYCHANGE | WM_SETTINGCHANGE => {
+                    if message == WM_DISPLAYCHANGE {
+                        crate::placement::display_config_changed();
+                    }
                     crate::telemetry::invalidate_adapters();
                     context.refresh_layout();
                     DefWindowProcW(hwnd, message, wparam, lparam)

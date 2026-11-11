@@ -3,6 +3,7 @@ import { SVG_ICONS, providerArtwork } from './icons.js';
 import './settings.css';
 import { mountExtensionSettings } from './extensions.js';
 import { mountLiveSettings } from './live-settings.js';
+import { mountPlacementSettings } from './placement-settings.js';
 import { isTauri, invokeCommand, listenToEvent } from './ipc.js';
 import { STORAGE_KEYS } from './usage.js';
 import { describeResult, filterSettings, isRowHidden, navTarget, type SearchEntry } from './settings-search.js';
@@ -454,6 +455,7 @@ document.addEventListener('DOMContentLoaded', () => {
   initUpdates();
   mountExtensionSettings();
   mountLiveSettings();
+  mountPlacementSettings();
   mountPrivacy();
   mountWelcome();
   mountShell();

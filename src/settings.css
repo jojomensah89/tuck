@@ -468,6 +468,23 @@ h2 {
 .num-field .unit { padding-right: var(--s-3); white-space: nowrap; }
 .num-field input[aria-invalid="true"] { color: var(--warn-ink); }
 
+.select {
+  height: var(--ctl-h);
+  min-width: 200px;
+  max-width: 280px;
+  padding: 0 var(--s-2);
+  border: 0;
+  border-radius: var(--r-md);
+  background: var(--control);
+  color: var(--ink);
+  font: inherit;
+  font-size: var(--t-md);
+  cursor: pointer;
+}
+
+.select:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.select:disabled { opacity: 0.45; cursor: default; }
+
 .segmented {
   display: inline-flex;
   padding: 2px;

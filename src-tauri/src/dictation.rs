@@ -20,13 +20,29 @@ const EVENT_STATE: &str = "dictation_state";
 const EVENT_TRANSCRIPT: &str = "dictation_transcript";
 const EVENT_ERROR: &str = "dictation_error";
 const DEFAULT_TOGGLE: &str = "Ctrl+Shift+Space";
-const DEFAULT_HOLD: &str = "Shift+Shift";
+const DEFAULT_HOLD: &str = "RightAlt";
 const MAX_TRANSCRIPT_BYTES: usize = 64 * 1024;
 const MAX_SETTINGS_BYTES: usize = 64 * 1024;
-/// `settingsVersion` in `dictation.json`. Version 1 means the old default hold shortcut has
-/// been migrated, so a `Ctrl+Alt+Space` in the file is the owner's own choice.
-const SETTINGS_VERSION: u32 = 1;
+/// `settingsVersion` in `dictation.json`. Version 1 migrated `Ctrl+Alt+Space`, version 2
+/// migrated `Shift+Shift`; after that, either value in the file is the owner's own choice.
+const SETTINGS_VERSION: u32 = 2;
 const SHORTCUT_PAUSE_LIMIT: std::time::Duration = std::time::Duration::from_secs(30);
+
+pub fn is_right_alt_shortcut(shortcut: &str) -> bool {
+    let s = shortcut.trim().to_lowercase().replace(' ', "");
+    matches!(s.as_str(), "rightalt" | "ralt" | "altright")
+}
+
+/// The modifier-only hold the native monitor watches, if the shortcut is one.
+fn special_hold(shortcut: &str) -> Option<dual_shift::HoldKey> {
+    if is_right_alt_shortcut(shortcut) {
+        Some(dual_shift::HoldKey::RightAlt)
+    } else if is_dual_shift_shortcut(shortcut) {
+        Some(dual_shift::HoldKey::BothShifts)
+    } else {
+        None
+    }
+}
 
 pub fn is_dual_shift_shortcut(shortcut: &str) -> bool {
     let s = shortcut.trim().to_lowercase().replace(' ', "");
@@ -411,7 +427,7 @@ impl DictationService {
             .as_ref()
             .map(|runtime| {
                 let mut problems = runtime.shortcut_problems.clone();
-                if is_dual_shift_shortcut(&settings.hold_to_talk_shortcut) {
+                if special_hold(&settings.hold_to_talk_shortcut).is_some() {
                     problems.hold.clone_from(&runtime.dual_shift_problem);
                 }
                 (problems, runtime.settings_notice.clone())
@@ -1671,10 +1687,13 @@ fn selection_after_download(
     }
 }
 
-/// Arms the dual-Shift monitor only while it is the configured hold shortcut.
+/// Arms the modifier-only hold monitor only while one is the configured hold shortcut.
 fn sync_dual_shift(service: &Arc<DictationService>) {
-    let enabled = is_dual_shift_shortcut(&service.settings().hold_to_talk_shortcut)
-        && !service.shortcuts_paused.load(Ordering::Acquire);
+    let key = special_hold(&service.settings().hold_to_talk_shortcut);
+    if let Some(key) = key {
+        dual_shift::set_key(key);
+    }
+    let enabled = key.is_some() && !service.shortcuts_paused.load(Ordering::Acquire);
     let service = service.clone();
     dual_shift::set_enabled(enabled, move || {
         Box::new(move |change| {
@@ -1767,7 +1786,7 @@ pub fn register_shortcuts(
     let shortcuts = app.global_shortcut();
     let toggle = Shortcut::try_from(settings.toggle_shortcut.as_str())
         .map_err(|_| invalid_shortcut_message(&settings.toggle_shortcut))?;
-    let hold = if is_dual_shift_shortcut(&settings.hold_to_talk_shortcut) {
+    let hold = if special_hold(&settings.hold_to_talk_shortcut).is_some() {
         None
     } else {
         Some(
@@ -1893,12 +1912,12 @@ fn validate_settings(settings: &DictationSettings) -> Result<(), String> {
     if settings.toggle_shortcut.len() > 64 || settings.hold_to_talk_shortcut.len() > 64 {
         return Err("Shortcuts must be at most 64 characters".into());
     }
-    if is_dual_shift_shortcut(&settings.toggle_shortcut) {
-        return Err("Both Shift keys only work for Hold to talk.".into());
+    if special_hold(&settings.toggle_shortcut).is_some() {
+        return Err("Right Alt and both Shift keys only work for Hold to talk.".into());
     }
     let toggle = Shortcut::try_from(settings.toggle_shortcut.as_str())
         .map_err(|_| invalid_shortcut_message(&settings.toggle_shortcut))?;
-    if is_dual_shift_shortcut(&settings.hold_to_talk_shortcut) {
+    if special_hold(&settings.hold_to_talk_shortcut).is_some() {
         return Ok(());
     }
     let hold = Shortcut::try_from(settings.hold_to_talk_shortcut.as_str())
@@ -1973,6 +1992,10 @@ fn parse_settings(bytes: &[u8]) -> (DictationSettings, Option<String>) {
     if settings.settings_version < 1 && settings.hold_to_talk_shortcut == "Ctrl+Alt+Space" {
         settings.hold_to_talk_shortcut = DEFAULT_HOLD.to_owned();
     }
+    // Before version 2 both Shift keys was the default, so a file holding it never chose it.
+    if settings.settings_version < 2 && is_dual_shift_shortcut(&settings.hold_to_talk_shortcut) {
+        settings.hold_to_talk_shortcut = DEFAULT_HOLD.to_owned();
+    }
     settings.settings_version = SETTINGS_VERSION;
     let mut resets = Vec::new();
     if !bad.is_empty() {
@@ -1981,7 +2004,7 @@ fn parse_settings(bytes: &[u8]) -> (DictationSettings, Option<String>) {
             bad.join(", ")
         ));
     }
-    if is_dual_shift_shortcut(&settings.toggle_shortcut)
+    if special_hold(&settings.toggle_shortcut).is_some()
         || Shortcut::try_from(settings.toggle_shortcut.as_str()).is_err()
     {
         resets.push(format!(
@@ -1992,7 +2015,7 @@ fn parse_settings(bytes: &[u8]) -> (DictationSettings, Option<String>) {
     }
     if validate_settings(&settings).is_err() {
         resets.push(format!(
-            "Hold to talk was \"{}\", now both Shift keys",
+            "Hold to talk was \"{}\", now Right Alt",
             settings.hold_to_talk_shortcut
         ));
         settings.hold_to_talk_shortcut = DEFAULT_HOLD.to_owned();
@@ -2011,9 +2034,11 @@ fn needs_version_stamp(bytes: &[u8]) -> bool {
     serde_json::from_slice::<serde_json::Value>(bytes)
         .ok()
         .and_then(|value| {
-            value
-                .as_object()
-                .map(|map| !map.contains_key("settingsVersion"))
+            value.as_object().map(|map| {
+                map.get("settingsVersion")
+                    .and_then(serde_json::Value::as_u64)
+                    .is_none_or(|version| version < u64::from(SETTINGS_VERSION))
+            })
         })
         .unwrap_or(false)
 }
@@ -3082,7 +3107,35 @@ mod tests {
         assert_eq!(settings.active_model, None);
         assert_eq!(settings.active_model_path, None);
         assert!(settings.review_before_insert);
+        // Both Shift keys was the old default, so it moves to the new one.
+        assert_eq!(settings.hold_to_talk_shortcut, "RightAlt");
+    }
+
+    #[test]
+    fn both_shift_keys_chosen_after_the_migration_stays() {
+        let (settings, notice) = parse_settings(
+            br#"{"toggleShortcut":"Ctrl+Shift+Space","holdToTalkShortcut":"Shift+Shift","settingsVersion":2}"#,
+        );
+        assert_eq!(notice, None);
         assert_eq!(settings.hold_to_talk_shortcut, "Shift+Shift");
+        let (settings, _) = parse_settings(
+            br#"{"toggleShortcut":"Ctrl+Shift+Space","holdToTalkShortcut":"Shift+Shift","settingsVersion":1}"#,
+        );
+        assert_eq!(settings.hold_to_talk_shortcut, "RightAlt");
+        assert!(needs_version_stamp(br#"{"settingsVersion":1}"#));
+        assert!(!needs_version_stamp(br#"{"settingsVersion":2}"#));
+    }
+
+    #[test]
+    fn right_alt_is_a_hold_only_shortcut() {
+        assert!(is_right_alt_shortcut("RightAlt"));
+        assert!(is_right_alt_shortcut("right alt"));
+        assert!(!is_right_alt_shortcut("Alt"));
+        let mut settings = DictationSettings::default();
+        assert_eq!(settings.hold_to_talk_shortcut, "RightAlt");
+        assert!(validate_settings(&settings).is_ok());
+        settings.toggle_shortcut = "RightAlt".into();
+        assert!(validate_settings(&settings).is_err());
     }
 
     #[test]

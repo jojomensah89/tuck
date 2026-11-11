@@ -148,7 +148,7 @@ export function startEmbedDemo(): void {
     dictationStatus = status;
     dispatchMockEvent('dictation_state', {
       status, transcript: status === 'review' ? SAID : '', modelReady: true, activeModelLabel: 'Whisper Base',
-      settings: { toggleShortcut: 'Ctrl+Shift+Space', holdToTalkShortcut: 'Shift+Shift', reviewBeforeInsert: true }, ...extra,
+      settings: { toggleShortcut: 'Ctrl+Shift+Space', holdToTalkShortcut: 'RightAlt', reviewBeforeInsert: true }, ...extra,
     });
   };
   const stopDictation = () => { dictationTimers.forEach(id => window.clearTimeout(id)); dictationTimers = []; };
@@ -193,7 +193,7 @@ export function startEmbedDemo(): void {
         };
       case 'dictation_snapshot':
         return { status: dictationStatus, transcript: dictationStatus === 'review' ? SAID : '', modelReady: true, activeModelLabel: 'Whisper Base',
-          settings: { toggleShortcut: 'Ctrl+Shift+Space', holdToTalkShortcut: 'Shift+Shift', reviewBeforeInsert: true } };
+          settings: { toggleShortcut: 'Ctrl+Shift+Space', holdToTalkShortcut: 'RightAlt', reviewBeforeInsert: true } };
       case 'dictation_toggle': {
         if (dictationStatus === 'recording') { finishRecording(); return undefined; }
         stopDictation();

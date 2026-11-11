@@ -1,6 +1,7 @@
 /** Turns key presses into the shortcut strings the native side accepts. */
 
 export const DUAL_SHIFT = 'Shift+Shift';
+export const RIGHT_ALT = 'RightAlt';
 
 export interface KeyPress { code: string; ctrl: boolean; alt: boolean; shift: boolean; meta: boolean }
 export type Recorded =
@@ -47,11 +48,27 @@ export function recordKey(press: KeyPress, pressed: ReadonlySet<string>, allowDu
   return { kind: 'done', value };
 }
 
+/**
+ * Right Alt pressed and released on its own is the hold shortcut. `seen` is every code
+ * pressed since recording began; AltGr layouts add a fake Left Ctrl to each Right Alt.
+ */
+export function recordRelease(code: string, seen: ReadonlySet<string>, allowHoldKeys: boolean): Recorded | null {
+  if (code !== 'AltRight' || ![...seen].every(key => key === 'AltRight' || key === 'ControlLeft')) return null;
+  return allowHoldKeys
+    ? { kind: 'done', value: RIGHT_ALT }
+    : { kind: 'refused', reason: 'Right Alt alone only works for Hold to talk.' };
+}
+
+export function isRightAlt(value: string): boolean {
+  return /^(rightalt|ralt|altright)$/.test(value.toLowerCase().replace(/ /g, ''));
+}
+
 export function isDualShift(value: string): boolean {
   return /^(shift\+shift|twoshifts?|dualshifts?|(left|l)shift\+(right|r)shift|(right|r)shift\+(left|l)shift)$/.test(value.toLowerCase().replace(/ /g, ''));
 }
 
 export function displayShortcut(value: string): string {
   if (isDualShift(value)) return 'Left + Right Shift';
+  if (isRightAlt(value)) return 'Right Alt';
   return value.replace(/\bSuper\b/g, 'Win').replace(/\bArrow(Up|Down|Left|Right)\b/g, '$1').replace(/\bBackquote\b/g, '`');
 }

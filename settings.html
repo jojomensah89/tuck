@@ -108,14 +108,12 @@
               <div class="set-row" id="row-openDelay" data-keywords="hover wait open timing">
                 <div class="row-text">
                   <label class="row-title" for="openDelay">Expand delay</label>
-                  <p class="row-desc">Wait before opening, from 0 to 2000</p>
                 </div>
                 <span class="num-field"><input id="openDelay" type="number" min="0" max="2000" step="10" inputmode="numeric" /><span class="unit">ms</span></span>
               </div>
               <div class="set-row" id="row-closeDelay" data-keywords="leave wait close timing instant">
                 <div class="row-text">
                   <label class="row-title" for="closeDelay">Collapse delay</label>
-                  <p class="row-desc">Wait after the pointer leaves. 0 collapses instantly</p>
                 </div>
                 <span class="num-field"><input id="closeDelay" type="number" min="0" max="10000" step="10" inputmode="numeric" /><span class="unit">ms</span></span>
               </div>
@@ -141,14 +139,12 @@
               <div class="set-row" id="row-desktopPeeks" data-keywords="wifi bluetooth caps lock charger audio output keyboard language">
                 <div class="row-text">
                   <label class="row-title" for="desktopPeeks">System peeks</label>
-                  <p class="row-desc">Show connection, charger and key changes in the island</p>
                 </div>
                 <input id="desktopPeeks" class="switch" type="checkbox" role="switch" />
               </div>
               <div class="set-row" id="row-levelHud" data-keywords="volume brightness hud level peek sound">
                 <div class="row-text">
                   <label class="row-title" for="levelHud">Volume and brightness HUD</label>
-                  <p class="row-desc">Show volume and brightness changes</p>
                 </div>
                 <input id="levelHud" class="switch" type="checkbox" role="switch" />
               </div>
@@ -156,7 +152,6 @@
               <div class="set-row" id="row-hideSystemFlyout" data-keywords="volume brightness flyout osd hud overlay windows popup hide">
                 <div class="row-text">
                   <label class="row-title" for="hideSystemFlyout">Hide the Windows volume flyout</label>
-                  <p class="row-desc">Restores Windows feedback when the island is hidden or pinned open</p>
                 </div>
                 <input id="hideSystemFlyout" class="switch" type="checkbox" role="switch" />
               </div>
@@ -181,7 +176,6 @@
               <div class="set-row" id="row-compactContent" data-keywords="idle peek collapsed artwork title lyric">
                 <div class="row-text">
                   <span class="row-title" id="compactLabel">Collapsed content</span>
-                  <p class="row-desc">Lyric falls back to the track title</p>
                 </div>
                 <div class="segmented" role="radiogroup" aria-labelledby="compactLabel">
                   <label><input type="radio" name="compactContent" value="artwork" /><span>Artwork</span></label>
@@ -197,7 +191,6 @@
               <div class="set-row" id="row-onlineLyrics" data-keywords="lrclib internet network privacy lookup">
                 <div class="row-text">
                   <label class="row-title" for="onlineLyrics">Online lyrics</label>
-                  <p class="row-desc">Sends the song title, artist and duration to LRCLIB. Some tracks have no lyrics</p>
                 </div>
                 <input id="onlineLyrics" class="switch" type="checkbox" role="switch" disabled />
               </div>
@@ -217,7 +210,6 @@
               <div class="set-row" id="row-ext-notifications" data-keywords="notification toast preview permission">
                 <div class="row-text">
                   <label class="row-title" for="ext-notifications">Notification previews</label>
-                  <p class="row-desc">Mirror Windows notifications in the island. Needs Windows permission</p>
                 </div>
                 <input id="ext-notifications" class="switch" type="checkbox" role="switch" />
               </div>
@@ -245,31 +237,26 @@
           <div class="group">
             <h2>Offline dictation</h2>
             <div class="panel">
-              <p class="panel-note">Audio stays on this computer</p>
               <div class="set-row" id="row-dictationShortcut" data-keywords="dictation shortcut hotkey toggle voice speech">
                 <div class="row-text">
                   <label class="row-title" for="dictationShortcut">Start and stop</label>
-                  <p class="row-desc">Press once to start, again to finish</p>
                   <p class="row-desc row-error" id="dictationShortcutError" role="alert" hidden></p>
                   <button class="link-button" id="dictationShortcutTryAgain" type="button" hidden>Try again</button>
                 </div>
                 <button class="text-field short shortcut-field" id="dictationShortcut" type="button" aria-describedby="dictationShortcutError" disabled>Ctrl+Shift+Space</button>
               </div>
-              <div class="set-row" id="row-dictationHoldShortcut" data-keywords="dictation shortcut hotkey hold push to talk voice shift both">
+              <div class="set-row" id="row-dictationHoldShortcut" data-keywords="dictation shortcut hotkey hold push to talk voice alt right shift">
                 <div class="row-text">
                   <label class="row-title" for="dictationHoldShortcut">Hold to talk</label>
-                  <p class="row-desc">Hold Left + Right Shift, or a hotkey combination</p>
-                  <p class="row-desc" id="dictationFilterKeysNote" hidden>Holding right Shift for 8 seconds can open the Windows Filter Keys prompt unless its shortcut is off</p>
                   <p class="row-desc row-error" id="dictationHoldShortcutError" role="alert" hidden></p>
                   <button class="link-button" id="dictationHoldShortcutTryAgain" type="button" hidden>Try again</button>
-                  <button class="link-button" id="dictationUseBothShifts" type="button" hidden>Use both Shift keys</button>
+                  <button class="link-button" id="dictationUseRightAlt" type="button" hidden>Use Right Alt</button>
                 </div>
-                <button class="text-field short shortcut-field" id="dictationHoldShortcut" type="button" aria-describedby="dictationHoldShortcutError" disabled>Left + Right Shift</button>
+                <button class="text-field short shortcut-field" id="dictationHoldShortcut" type="button" aria-describedby="dictationHoldShortcutError" disabled>Right Alt</button>
               </div>
               <div class="set-row" id="row-dictationReview" data-keywords="dictation review confirm">
                 <div class="row-text">
                   <label class="row-title" for="dictationReview">Review before inserting</label>
-                  <p class="row-desc">Paste into the foreground app using a temporary clipboard copy.</p>
 
                 </div>
                 <input id="dictationReview" class="switch" type="checkbox" role="switch" disabled />
@@ -278,7 +265,6 @@
               <div class="set-row" id="row-dictationReady" data-keywords="dictation microphone ready warm privacy">
                 <div class="row-text">
                   <label class="row-title" for="dictationReady">Keep microphone ready</label>
-                  <p class="row-desc">On keeps the first word and shows microphone use in Windows while Tuck runs. Off opens it only while dictating.</p>
                 </div>
                 <input id="dictationReady" class="switch" type="checkbox" role="switch" checked disabled />
               </div>
@@ -288,7 +274,6 @@
                   <span class="row-title">Speech model</span>
                   <p class="row-desc" id="dictationBackend">CPU (model not loaded)</p>
                   <p class="row-desc" id="dictationSetupStatus" role="status">Reading model status…</p>
-                  <p class="row-desc">Models load only while you dictate</p>
                   <p class="row-desc row-error" id="dictationModelNotice" role="alert" hidden></p>
                 </div>
                 <div class="row-actions">
@@ -306,14 +291,12 @@
               <div class="set-row" id="row-clipboardEnabled" data-keywords="clipboard copy paste history privacy">
                 <div class="row-text">
                   <label class="row-title" for="clipboardEnabled">Keep clipboard history</label>
-                  <p class="row-desc">Off by default; keeps text, images and file paths when on, without detecting sensitive content in images</p>
                 </div>
                 <input id="clipboardEnabled" class="switch" type="checkbox" role="switch" disabled />
               </div>
               <div class="set-row" id="row-clipboardPersist" data-keywords="clipboard save restart persist disk privacy">
                 <div class="row-text">
                   <label class="row-title" for="clipboardPersist">Keep after restart</label>
-                  <p class="row-desc">Saves history in Tuck?s app data; otherwise everything, including pins, stays in memory until exit</p>
                 </div>
                 <input id="clipboardPersist" class="switch" type="checkbox" role="switch" disabled />
               </div>
@@ -333,7 +316,6 @@
               <div class="set-row" id="row-refreshInstalledUsage" data-keywords="refresh limits update">
                 <div class="row-text">
                   <span class="row-title">Refresh limits</span>
-                  <p class="row-desc">Limits also refresh every five minutes</p>
                 </div>
                 <button class="provider-refresh" id="refreshInstalledUsage" type="button" title="Refresh limits" aria-label="Refresh limits"></button>
               </div>
@@ -355,7 +337,6 @@
               <div class="set-row" id="row-privacy-lyrics" data-keywords="privacy lrclib internet lyrics">
                 <div class="row-text">
                   <span class="row-title">Lyrics lookup</span>
-                  <p class="row-desc">Song title, artist and duration, sent to LRCLIB</p>
                 </div>
                 <a class="mirror" href="#media" data-mirror="onlineLyrics" data-focus="onlineLyrics"><span class="mirror-state"></span><svg class="i" aria-hidden="true"><use href="#i-chevron" /></svg></a>
               </div>
@@ -368,7 +349,6 @@
               <div class="set-row" id="row-privacy-clipboard" data-keywords="privacy clipboard history">
                 <div class="row-text">
                   <span class="row-title">Clipboard history</span>
-                  <p class="row-desc">Text, images and file paths stay in memory unless Keep after restart is on; sensitive content in images is not detected</p>
                 </div>
                 <a class="mirror" href="#tools" data-mirror="clipboardEnabled" data-focus="clipboardEnabled"><span class="mirror-state"></span><svg class="i" aria-hidden="true"><use href="#i-chevron" /></svg></a>
               </div>
@@ -376,14 +356,12 @@
               <div class="set-row" id="row-privacy-notifications" data-keywords="privacy notifications">
                 <div class="row-text">
                   <span class="row-title">Notification previews</span>
-                  <p class="row-desc">Read from Windows and shown in the island only</p>
                 </div>
                 <a class="mirror" href="#activities" data-mirror="ext-notifications" data-focus="ext-notifications"><span class="mirror-state"></span><svg class="i" aria-hidden="true"><use href="#i-chevron" /></svg></a>
               </div>
               <div class="set-row" id="row-privacy-installed" data-keywords="privacy claude code codex installed">
                 <div class="row-text">
                   <span class="row-title">Installed app limits</span>
-                  <p class="row-desc">Each enabled client may contact its provider for limits</p>
                 </div>
                 <a class="mirror" href="#usage" data-focus="providerSwitches"><span>Manage</span><svg class="i" aria-hidden="true"><use href="#i-chevron" /></svg></a>
               </div>
@@ -399,7 +377,6 @@
             <span class="about-mark" aria-hidden="true"></span>
             <div>
               <p class="about-name">Tuck <span id="appVersion" class="num">0.1.0</span></p>
-              <p class="row-desc">A notch for Windows: media, live activities, AI usage and quick tools at the top of your screen</p>
             </div>
           </div>
           <div class="group">
@@ -458,7 +435,6 @@
 
         <div class="empty" id="searchEmpty" hidden>
           <p class="empty-title">No settings match</p>
-          <p class="row-desc">Try a word such as lyrics, delay, budget or key</p>
         </div>
       </main>
     </div>

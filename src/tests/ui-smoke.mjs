@@ -1664,7 +1664,7 @@ try {
   const readySettings = await context.newPage();
   await readySettings.setViewportSize({width:1000,height:850});
   await readySettings.addInitScript(() => {
-    let settings = {toggleShortcut:'Ctrl+Shift+Space',holdToTalkShortcut:'Shift+Shift',reviewBeforeInsert:false,keepMicrophoneReady:true};
+    let settings = {toggleShortcut:'Ctrl+Shift+Space',holdToTalkShortcut:'RightAlt',reviewBeforeInsert:false,keepMicrophoneReady:true};
     const snapshot = () => ({status:'idle',modelInstalled:false,models:[],settings});
     window.__readySaves = [];
     window.__TAURI_INTERNALS__ = {transformCallback:()=>1, async invoke(command,args) {

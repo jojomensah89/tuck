@@ -1,4 +1,5 @@
-//! Detects "both Shift keys held" with Raw Input instead of polling.
+//! Detects a held modifier-only shortcut with Raw Input instead of polling: both Alt keys
+//! together, both Shift keys together, or Right Alt alone.
 //!
 //! The monitor thread starts the first time the shortcut is turned on. While the shortcut
 //! is off it blocks in `GetMessageW` with no keyboard registration, so it never wakes.
@@ -34,7 +35,22 @@ enum ShiftKey {
     Right,
 }
 
+/// Which modifier-only hold the monitor watches.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum HoldKey {
+    BothShifts,
+    RightAlt,
+    BothAlts,
+}
+
 const VK_SHIFT_CODE: u16 = 0x10;
+const VK_CONTROL_CODE: u16 = 0x11;
+const VK_MENU_CODE: u16 = 0x12;
+const SCAN_ALT: u16 = 0x38;
+/// Unassigned virtual key. Pressed once during a Right Alt hold so that releasing Alt is
+/// not a lone Alt tap, which would move focus to the foreground app's menu bar.
+#[cfg_attr(not(windows), allow(dead_code))]
+const VK_MASK: u16 = 0xE8;
 const SCAN_LEFT_SHIFT: u16 = 0x2A;
 const SCAN_RIGHT_SHIFT: u16 = 0x36;
 const RI_KEY_BREAK: u16 = 1;
@@ -55,6 +71,28 @@ fn classify_shift(vkey: u16, make_code: u16, flags: u16) -> Option<(ShiftKey, bo
         _ => return None,
     };
     Some((key, flags & RI_KEY_BREAK == 0))
+}
+
+/// A Right Alt event, as (is it Right Alt, went down). Left Alt has no E0 prefix.
+#[cfg_attr(not(any(windows, test)), allow(dead_code))]
+fn classify_right_alt(vkey: u16, make_code: u16, flags: u16) -> Option<bool> {
+    (vkey == VK_MENU_CODE && make_code == SCAN_ALT && flags & RI_KEY_E0 != 0)
+        .then_some(flags & RI_KEY_BREAK == 0)
+}
+
+/// An Alt event, as (is it the right one, went down).
+#[cfg_attr(not(any(windows, test)), allow(dead_code))]
+fn classify_alt(vkey: u16, make_code: u16, flags: u16) -> Option<(bool, bool)> {
+    (vkey == VK_MENU_CODE && make_code == SCAN_ALT)
+        .then_some((flags & RI_KEY_E0 != 0, flags & RI_KEY_BREAK == 0))
+}
+
+/// A key press that means Right Alt is part of a chord, not a hold. Ctrl is left out
+/// because AltGr layouts send a fake Left Ctrl with every Right Alt event, and the mask
+/// key is Tuck's own.
+#[cfg_attr(not(any(windows, test)), allow(dead_code))]
+fn breaks_right_alt_hold(vkey: u16, flags: u16) -> bool {
+    flags & RI_KEY_BREAK == 0 && !matches!(vkey, VK_MENU_CODE | VK_CONTROL_CODE | VK_MASK)
 }
 
 /// How long both keys must stay down. Rolling between Shift keys while typing "USA"
@@ -81,6 +119,16 @@ fn hold_after_keys(hold: Hold, both_down: bool) -> (Hold, Option<HoldChange>) {
     }
 }
 
+/// Another key went down. While arming that makes it a chord such as Right Alt+Tab, so
+/// nothing starts; an established hold keeps recording.
+#[cfg_attr(not(any(windows, test)), allow(dead_code))]
+fn hold_after_other_key(hold: Hold) -> (Hold, Option<HoldChange>) {
+    match hold {
+        Hold::Arming => (Hold::Idle, None),
+        unchanged => (unchanged, None),
+    }
+}
+
 /// The one-shot timer ran out. The keys still count only if they are still down.
 #[cfg_attr(not(any(windows, test)), allow(dead_code))]
 fn hold_after_arm_timer(hold: Hold, both_down: bool) -> (Hold, Option<HoldChange>) {
@@ -95,7 +143,7 @@ fn hold_after_arm_timer(hold: Hold, both_down: bool) -> (Hold, Option<HoldChange
 mod native {
     use super::*;
     use std::sync::{
-        atomic::{AtomicBool, AtomicIsize, Ordering},
+        atomic::{AtomicBool, AtomicIsize, AtomicU8, Ordering},
         Arc, Mutex,
     };
     use windows::{
@@ -106,7 +154,10 @@ mod native {
             },
             System::LibraryLoader::GetModuleHandleW,
             UI::{
-                Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LSHIFT, VK_RSHIFT},
+                Input::KeyboardAndMouse::{
+                    GetAsyncKeyState, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT,
+                    KEYEVENTF_KEYUP, VIRTUAL_KEY, VK_LMENU, VK_LSHIFT, VK_RMENU, VK_RSHIFT,
+                },
                 Input::{
                     GetRawInputData, RegisterRawInputDevices, HRAWINPUT, RAWINPUT, RAWINPUTDEVICE,
                     RAWINPUTHEADER, RIDEV_INPUTSINK, RIDEV_REMOVE, RID_INPUT, RIM_TYPEKEYBOARD,
@@ -133,6 +184,56 @@ mod native {
     static WINDOW: AtomicIsize = AtomicIsize::new(0);
     static WANTED: AtomicBool = AtomicBool::new(false);
     static STARTED: AtomicBool = AtomicBool::new(false);
+    /// 0 watches both Shift keys, 1 Right Alt, 2 both Alt keys.
+    static KEY: AtomicU8 = AtomicU8::new(0);
+
+    pub(in super::super) fn set_key(key: HoldKey) {
+        let value = match key {
+            HoldKey::BothShifts => 0,
+            HoldKey::RightAlt => 1,
+            HoldKey::BothAlts => 2,
+        };
+        KEY.store(value, Ordering::SeqCst);
+    }
+
+    fn key() -> HoldKey {
+        match KEY.load(Ordering::SeqCst) {
+            1 => HoldKey::RightAlt,
+            2 => HoldKey::BothAlts,
+            _ => HoldKey::BothShifts,
+        }
+    }
+
+    fn right_alt_is_down() -> bool {
+        unsafe { GetAsyncKeyState(VK_RMENU.0 as i32) < 0 }
+    }
+
+    fn left_alt_is_down() -> bool {
+        unsafe { GetAsyncKeyState(VK_LMENU.0 as i32) < 0 }
+    }
+
+    fn send_mask_key() {
+        let key = |up: bool| INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 {
+                ki: KEYBDINPUT {
+                    wVk: VIRTUAL_KEY(VK_MASK),
+                    dwFlags: if up {
+                        KEYEVENTF_KEYUP
+                    } else {
+                        Default::default()
+                    },
+                    ..Default::default()
+                },
+            },
+        };
+        unsafe {
+            SendInput(
+                &[key(false), key(true)],
+                std::mem::size_of::<INPUT>() as i32,
+            );
+        }
+    }
 
     #[cfg(test)]
     pub(super) static KEY_EVENTS: std::sync::atomic::AtomicUsize =
@@ -167,7 +268,13 @@ mod native {
 
     impl Monitor {
         fn both_down(&self) -> bool {
-            (self.is_down)(ShiftKey::Left) && (self.is_down)(ShiftKey::Right)
+            match key() {
+                HoldKey::BothShifts => {
+                    (self.is_down)(ShiftKey::Left) && (self.is_down)(ShiftKey::Right)
+                }
+                HoldKey::RightAlt => right_alt_is_down(),
+                HoldKey::BothAlts => left_alt_is_down() && right_alt_is_down(),
+            }
         }
 
         fn apply(&mut self, next: (Hold, Option<HoldChange>)) {
@@ -181,6 +288,9 @@ mod native {
                         }
                         (Hold::Arming, Hold::Held) => {
                             let _ = KillTimer(self.hwnd, ARM_TIMER);
+                            if matches!(key(), HoldKey::RightAlt | HoldKey::BothAlts) {
+                                send_mask_key();
+                            }
                             SetTimer(self.hwnd, HOLD_TIMER, HOLD_RECHECK_MS, None);
                         }
                         (Hold::Arming, Hold::Idle) => {
@@ -224,9 +334,7 @@ mod native {
                 }
                 Err(error) => report(
                     &self.handler,
-                    HoldChange::Unavailable(format!(
-                        "Holding both Shift keys is unavailable: {error}"
-                    )),
+                    HoldChange::Unavailable(format!("This hold shortcut is unavailable: {error}")),
                 ),
             }
             if !wanted {
@@ -237,7 +345,33 @@ mod native {
         fn key_event(&mut self, lparam: LPARAM) {
             #[cfg(test)]
             KEY_EVENTS.fetch_add(1, Ordering::SeqCst);
-            let Some((key, down)) = read_shift_event(lparam) else {
+            let Some((vkey, make_code, flags)) = read_key_event(lparam) else {
+                return;
+            };
+            if key() == HoldKey::BothAlts {
+                if let Some((right, down)) = classify_alt(vkey, make_code, flags) {
+                    // This event is authoritative for its own key; the other comes from the
+                    // live state, so a release this window never saw can't leave it stuck.
+                    let other = if right {
+                        left_alt_is_down()
+                    } else {
+                        right_alt_is_down()
+                    };
+                    self.apply(hold_after_keys(self.hold, down && other));
+                } else if breaks_right_alt_hold(vkey, flags) {
+                    self.apply(hold_after_other_key(self.hold));
+                }
+                return;
+            }
+            if key() == HoldKey::RightAlt {
+                if let Some(down) = classify_right_alt(vkey, make_code, flags) {
+                    self.apply(hold_after_keys(self.hold, down));
+                } else if breaks_right_alt_hold(vkey, flags) {
+                    self.apply(hold_after_other_key(self.hold));
+                }
+                return;
+            }
+            let Some((key, down)) = classify_shift(vkey, make_code, flags) else {
                 return;
             };
             // The event is authoritative for its own key. The other key comes from the
@@ -258,7 +392,7 @@ mod native {
         }
     }
 
-    fn read_shift_event(lparam: LPARAM) -> Option<(ShiftKey, bool)> {
+    fn read_key_event(lparam: LPARAM) -> Option<(u16, u16, u16)> {
         let mut data = RAWINPUT::default();
         let mut size = std::mem::size_of::<RAWINPUT>() as u32;
         let copied = unsafe {
@@ -274,7 +408,7 @@ mod native {
             return None;
         }
         let keyboard = unsafe { data.data.keyboard };
-        classify_shift(keyboard.VKey, keyboard.MakeCode, keyboard.Flags)
+        Some((keyboard.VKey, keyboard.MakeCode, keyboard.Flags))
     }
 
     unsafe extern "system" fn window_proc(
@@ -403,7 +537,7 @@ mod native {
                         report(
                             &thread_handler,
                             HoldChange::Unavailable(format!(
-                                "Holding both Shift keys is unavailable: {error}"
+                                "This hold shortcut is unavailable: {error}"
                             )),
                         );
                     }
@@ -412,9 +546,7 @@ mod native {
                 STARTED.store(false, Ordering::SeqCst);
                 report(
                     &handler,
-                    HoldChange::Unavailable(format!(
-                        "Holding both Shift keys is unavailable: {error}"
-                    )),
+                    HoldChange::Unavailable(format!("This hold shortcut is unavailable: {error}")),
                 );
             }
             return;
@@ -432,7 +564,7 @@ mod native {
 }
 
 #[cfg(windows)]
-pub(super) use native::{set_enabled, stop};
+pub(super) use native::{set_enabled, set_key, stop};
 
 #[cfg(not(windows))]
 pub(super) fn set_enabled(_enabled: bool, _make_handler: impl FnOnce() -> Handler) {}
@@ -440,9 +572,49 @@ pub(super) fn set_enabled(_enabled: bool, _make_handler: impl FnOnce() -> Handle
 #[cfg(not(windows))]
 pub(super) fn stop() {}
 
+#[cfg(not(windows))]
+pub(super) fn set_key(_key: HoldKey) {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn both_alt_keys_are_told_apart() {
+        assert_eq!(classify_alt(0x12, SCAN_ALT, 0), Some((false, true)));
+        assert_eq!(classify_alt(0x12, SCAN_ALT, RI_KEY_E0), Some((true, true)));
+        assert_eq!(
+            classify_alt(0x12, SCAN_ALT, RI_KEY_E0 | RI_KEY_BREAK),
+            Some((true, false))
+        );
+        assert_eq!(classify_alt(0x10, SCAN_LEFT_SHIFT, 0), None);
+    }
+
+    #[test]
+    fn only_the_right_alt_key_counts() {
+        assert_eq!(classify_right_alt(0x12, SCAN_ALT, RI_KEY_E0), Some(true));
+        assert_eq!(
+            classify_right_alt(0x12, SCAN_ALT, RI_KEY_E0 | RI_KEY_BREAK),
+            Some(false)
+        );
+        // Left Alt has no E0 prefix.
+        assert_eq!(classify_right_alt(0x12, SCAN_ALT, 0), None);
+        assert_eq!(classify_right_alt(0x10, SCAN_LEFT_SHIFT, RI_KEY_E0), None);
+    }
+
+    #[test]
+    fn a_chord_with_right_alt_never_starts_dictation() {
+        // Right Alt+Tab: Tab goes down while the hold is still arming.
+        assert!(breaks_right_alt_hold(0x09, 0));
+        assert_eq!(hold_after_other_key(Hold::Arming), (Hold::Idle, None));
+        // Once recording, typing does not end it.
+        assert_eq!(hold_after_other_key(Hold::Held), (Hold::Held, None));
+        // Key releases, Alt repeats, AltGr's fake Ctrl and Tuck's own mask key are not chords.
+        assert!(!breaks_right_alt_hold(0x09, RI_KEY_BREAK));
+        assert!(!breaks_right_alt_hold(0x12, 0));
+        assert!(!breaks_right_alt_hold(0x11, 0));
+        assert!(!breaks_right_alt_hold(VK_MASK, 0));
+    }
 
     #[test]
     fn only_physical_shift_keys_count() {

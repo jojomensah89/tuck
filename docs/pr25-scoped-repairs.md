@@ -1,5 +1,8 @@
 # PR25 scoped repair notes
 
+> Superseded delivery behavior: Dictation now uses temporary clipboard paste into the foreground app, with generation/sequence-guarded restore after about 500 ms. Tuck windows, missing foreground and detected password fields copy instead. Unsupported formats cannot be restored. See docs/dictation-like-hex.md. Historical evidence below describes the prior implementation.
+
+
 ## Behavior
 
 - Final inference releases the narrowed preview WhisperState before creating a fresh state. Multilingual final inference chooses its own language; an opening preview guess (including a confident guess on a silent/short clip) never forces the final language. English-only models use English and skip language detection.

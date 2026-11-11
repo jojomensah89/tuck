@@ -208,3 +208,5 @@ Close that terminal afterwards so the key leaves its environment.
 ### Installer branding
 
 The NSIS installer and uninstaller use Tuck's folded-T icon. Release staging renames the built installer to `Tuck_<version>_Setup.exe` without changing its signed bytes. The signature filename and both updater platform URLs use the same public name. Recovery accepts the legacy `_x64-setup.exe` names for older drafts. Product name, app identifier and install path remain unchanged for existing users.
+
+Windows source builds require the Vulkan SDK (`winget install KhronosGroup.VulkanSDK`). Dot-source `scripts/prepare-native.ps1 -InstallBuildTools` before Cargo commands. CI installs the SDK and SPIRV headers. Installed apps use the graphics driver's Vulkan 1.2 loader, with CPU fallback; do not distribute vulkan-1.dll.

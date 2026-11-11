@@ -1756,6 +1756,16 @@ body:not(:has(#isl[data-state="open"])) .open-announcement { display: none; }
 .keyboard-input .tab-panel { animation: none !important; }
 
 .keyboard-input { animation: none !important; transition: none !important; }
+
+/* Live dictation words: anchored to the end, so overflow trims the oldest words */
+.compact-title.dictation-live {
+  direction: rtl;
+  text-align: right;
+}
+.compact-title.dictation-live .compact-title-track {
+  direction: ltr;
+  unicode-bidi: isolate;
+}
 .sensor-indicators { position: absolute; right: var(--s-3); top: 50%; transform: translateY(-50%); display: inline-flex; align-items: center; gap: var(--s-1); }
 .compact .cr { margin-right: var(--sensor-width, 0px); }
 .sensor-indicator { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }

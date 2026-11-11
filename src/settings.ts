@@ -21,7 +21,8 @@ function $<T extends HTMLElement = HTMLElement>(id: string): T | null {
 
 /* ================= Shell: views, search, keyboard ================= */
 
-const VIEWS = ['general', 'island', 'media', 'activities', 'tools', 'usage', 'privacy', 'about'];
+// 'tools' is the Dictation page; the id predates the split so old links keep working.
+const VIEWS = ['general', 'island', 'media', 'activities', 'tools', 'clipboard', 'usage', 'privacy', 'about'];
 
 function navLinks(): HTMLAnchorElement[] {
   return [...document.querySelectorAll<HTMLAnchorElement>('#nav a[data-view]')];
@@ -501,7 +502,7 @@ function mountWelcome(): void {
     welcome = document.createElement('section'); welcome.className = 'welcome'; welcome.id = 'welcome';
     welcome.innerHTML = '<span class="about-mark" aria-hidden="true"></span><h1 tabindex="-1">Welcome to Tuck</h1><p class="lead">Hover over the island at the top of your screen to open Tuck</p>';
     const moved: { node: HTMLElement; placeholder: Comment }[] = [];
-    for (const [title, ids] of [['', ['row-autostart', 'autostartStatus']], ['Track AI usage', ['providerSwitches', 'providersEmpty', 'installedUsageStatus']], ['Dictation', ['row-dictationModel', 'modelRows', 'dictationStatus', 'dictationRetryRow']]] as [string, string[]][]) {
+    for (const [title, ids] of [['', ['row-autostart', 'autostartStatus']], ['Track AI usage', ['providerSwitches', 'providersEmpty', 'installedUsageStatus']], ['Dictation', ['row-dictationReady', 'row-dictationModel', 'modelRows', 'dictationStatus', 'dictationRetryRow']]] as [string, string[]][]) {
       const group = document.createElement('div'); group.className = 'group';
       if (title) { const heading = document.createElement('h2'); heading.textContent = title; group.append(heading); }
       const panel = document.createElement('div'); panel.className = 'panel'; group.append(panel);

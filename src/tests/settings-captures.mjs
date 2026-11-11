@@ -20,7 +20,7 @@ await page.addInitScript(() => {
  }};
 });
 await mkdir(`docs/screens/settings-${phase}`,{recursive:true});
-for(const theme of ['light','dark']){await page.emulateMedia({colorScheme:theme});for(const view of ['general','island','media','activities','tools','usage','privacy','about',...(phase==='after'?['welcome']:[])]){await page.goto(`http://tuck.test/settings.html#${view}`);await page.reload();await page.waitForTimeout(200);
+for(const theme of ['light','dark']){await page.emulateMedia({colorScheme:theme});for(const view of ['general','island','media','activities','tools','clipboard','usage','privacy','about',...(phase==='after'?['welcome']:[])]){await page.goto(`http://tuck.test/settings.html#${view}`);await page.reload();await page.waitForTimeout(200);
 const contrast = await page.evaluate(() => {
  const style=getComputedStyle(document.documentElement);
  const luminance=token=>{let hex=style.getPropertyValue(token).trim().slice(1);if(hex.length===3) hex=hex.split('').map(c=>c+c).join('');return [0,2,4].map(i=>parseInt(hex.slice(i,i+2),16)/255).map(v=>v<=0.04045?v/12.92:((v+0.055)/1.055)**2.4).reduce((sum,v,i)=>sum+v*[0.2126,0.7152,0.0722][i],0);};
@@ -54,7 +54,7 @@ if(view==='welcome') {
 if(phase==='after') for(const width of [900,640]) {
  await page.setViewportSize({width,height:740});
  for(const theme of ['light','dark']) { await page.emulateMedia({colorScheme:theme});
- for(const view of ['general','island','media','activities','tools','usage','privacy','about']) {
+ for(const view of ['general','island','media','activities','tools','clipboard','usage','privacy','about']) {
  await page.goto(`http://tuck.test/settings.html#${view}`); await page.reload();
  assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth <= innerWidth),true,`${view} ${theme} ${width}: no horizontal overflow`);
  }}

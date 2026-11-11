@@ -4,6 +4,9 @@ use tauri_plugin_opener::OpenerExt;
 
 pub struct FirstRun(pub bool);
 
+/// Written by the installer (not by automatic updates); see `installer-hooks.nsh`.
+const INSTALL_MARKER: &str = "show-welcome";
+
 // Directory entries only: never inspect another application's files or credentials.
 fn pristine(path: &Path) -> bool {
     match fs::read_dir(path) {
@@ -35,8 +38,13 @@ pub async fn maybe_show_welcome(
         .app_config_dir()
         .map_err(|_| "Settings unavailable")?;
     fs::create_dir_all(&dir).map_err(|_| "Settings unavailable")?;
+    // The installer leaves this marker, so a reinstall shows the welcome again even
+    // though settings from an earlier install remain.
+    let installed = dir.join(INSTALL_MARKER);
+    let after_install = installed.exists();
     // Claim before opening: failed writes suppress the screen, never a repeated popup.
-    if !claim(&dir) || !first.0 || saved_preferences {
+    let first_run = claim(&dir) && first.0 && !saved_preferences;
+    if !first_run && !after_install {
         return Ok(());
     }
     #[cfg(windows)]
@@ -49,6 +57,10 @@ pub async fn maybe_show_welcome(
     #[cfg(not(windows))]
     let fullscreen = crate::system::fullscreen_now();
     if fullscreen || service.update_blocker().is_some() {
+        return Ok(());
+    }
+    // Removed before opening, so a failure can never show it on every launch.
+    if after_install && fs::remove_file(&installed).is_err() {
         return Ok(());
     }
     crate::system::open_settings_view_on_main(app, "welcome").await

@@ -1,5 +1,5 @@
 import { modelHeader, modelsLocked, removeConfirmation, rowButtons, rowMeta, rowProgress, rowStateText, type ModelAction, type ModelButton, type ModelRow } from './dictation-models.js';
-import { displayShortcut, DUAL_SHIFT, isDualShift, recordKey } from './shortcut-recorder.js';
+import { BOTH_ALTS, displayShortcut, isBothAlts, recordKey, recordRelease } from './shortcut-recorder.js';
 import { listenToEvent } from './ipc.js';
 import { nativeAction, nativeService, type DictationSettings, type DictationSnapshot } from './live-services.js';
 import { clearSaved, confirmThen, markSaved, setStatus } from './settings-ui.js';
@@ -22,7 +22,7 @@ export function mountDictationSettings(): void {
   const el = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
   const toggle = (id: string) => el<HTMLInputElement>(id);
   const button = (id: string) => el<HTMLButtonElement>(id);
-  const controls = () => [...SHORTCUT_FIELDS.map(button), button('dictationUseBothShifts'), toggle('dictationReview')];
+  const controls = () => [...SHORTCUT_FIELDS.map(button), button('dictationUseBothAlts'), toggle('dictationReview'), toggle('dictationReady')];
 
   let saved: DictationSettings | null = null;
   let latest: DictationSnapshot | null = null;
@@ -51,23 +51,23 @@ export function mountDictationSettings(): void {
     setStatus('dictationStatus', text, text ? 'error' : 'info');
   };
   const applyValues = (data: DictationSettings) => {
-    for (const [field, value] of [['dictationShortcut', data.toggleShortcut || 'Ctrl+Shift+Space'], ['dictationHoldShortcut', data.holdToTalkShortcut || DUAL_SHIFT]] as const) {
+    for (const [field, value] of [['dictationShortcut', data.toggleShortcut || 'Ctrl+Shift+Space'], ['dictationHoldShortcut', data.holdToTalkShortcut || BOTH_ALTS]] as const) {
       button(field).dataset.value = value;
       button(field).textContent = displayShortcut(value);
     }
     syncHoldExtras();
     toggle('dictationReview').checked = data.reviewBeforeInsert;
+    toggle('dictationReady').checked = data.keepMicrophoneReady ?? true;
   };
   const syncHoldExtras = () => {
-    const dual = isDualShift(button('dictationHoldShortcut').dataset.value ?? '');
-    button('dictationUseBothShifts').hidden = dual;
-    el('dictationFilterKeysNote').hidden = !dual;
+    button('dictationUseBothAlts').hidden = isBothAlts(button('dictationHoldShortcut').dataset.value ?? '');
   };
   const setLocked = (locked: boolean) => { for (const control of controls()) control.disabled = locked; };
   const readValues = (): DictationSettings => ({
     toggleShortcut: button('dictationShortcut').dataset.value ?? '',
     holdToTalkShortcut: button('dictationHoldShortcut').dataset.value ?? '',
     reviewBeforeInsert: toggle('dictationReview').checked,
+    keepMicrophoneReady: toggle('dictationReady').checked,
   });
 
   /** Fields start disabled in the HTML. This is the one place they unlock. */
@@ -103,7 +103,7 @@ export function mountDictationSettings(): void {
       renderFieldErrors(); renderGroupStatus();
     }
   };
-  for (const id of ['dictationReview']) toggle(id).addEventListener('change', () => { void save(toggle(id), null); });
+  for (const id of ['dictationReview', 'dictationReady']) toggle(id).addEventListener('change', () => { void save(toggle(id), null); });
 
   /* ---------- Key recorder ---------- */
   const saveWhenReleased = (pressed: Set<string>, commit: () => void) => {
@@ -131,6 +131,7 @@ export function mountDictationSettings(): void {
     try { await nativeAction('dictation_shortcuts_pause', { paused: true }); }
     catch (error) { saveErrors[field] = reason(error, 'Could not listen for keys.'); renderFieldErrors(); return; }
     const pressed = new Set<string>();
+    const seen = new Set<string>();
     let finished = false;
     control.setAttribute('aria-pressed', 'true');
     control.textContent = 'Press keys, Esc to cancel';
@@ -153,7 +154,7 @@ export function mountDictationSettings(): void {
     const onDown = (event: KeyboardEvent) => {
       event.preventDefault(); event.stopPropagation();
       if (event.key === 'Escape' && !event.ctrlKey && !event.altKey && !event.metaKey && !event.shiftKey) { cancel(); return; }
-      pressed.add(event.code);
+      pressed.add(event.code); seen.add(event.code);
       const result = recordKey({ code: event.code, ctrl: event.ctrlKey, alt: event.altKey, shift: event.shiftKey, meta: event.metaKey }, pressed, allowDual);
       if (result.kind === 'partial') { control.textContent = `${result.preview}+…`; return; }
       if (result.kind === 'refused') { setFieldError(field, result.reason); return; }
@@ -164,7 +165,17 @@ export function mountDictationSettings(): void {
       // a recording from the very press that defined the shortcut.
       saveWhenReleased(pressed, () => { void save(control, field); });
     };
-    const onUp = (event: KeyboardEvent) => { event.preventDefault(); pressed.delete(event.code); };
+    const onUp = (event: KeyboardEvent) => {
+      event.preventDefault(); pressed.delete(event.code);
+      const result = recordRelease(event.code, seen, allowDual);
+      if (!result || finished) return;
+      if (result.kind === 'refused') { setFieldError(field, result.reason); seen.clear(); return; }
+      if (result.kind !== 'done') return;
+      end();
+      control.dataset.value = result.value;
+      control.textContent = displayShortcut(result.value);
+      saveWhenReleased(pressed, () => { void save(control, field); });
+    };
     window.addEventListener('keydown', onDown, true);
     window.addEventListener('keyup', onUp, true);
     control.addEventListener('blur', cancel);
@@ -173,10 +184,10 @@ export function mountDictationSettings(): void {
     stopRecording = cancel;
   };
   for (const field of SHORTCUT_FIELDS) button(field).addEventListener('click', () => { void record(field); });
-  button('dictationUseBothShifts').addEventListener('click', () => {
+  button('dictationUseBothAlts').addEventListener('click', () => {
     stopRecording?.();
     const hold = button('dictationHoldShortcut');
-    hold.dataset.value = DUAL_SHIFT; hold.textContent = displayShortcut(DUAL_SHIFT);
+    hold.dataset.value = BOTH_ALTS; hold.textContent = displayShortcut(BOTH_ALTS);
     void save(hold, 'dictationHoldShortcut');
   });
 
@@ -271,6 +282,7 @@ export function mountDictationSettings(): void {
    * result or a typed value, which is what made older errors flash and vanish. */
   const render = (data: DictationSnapshot) => {
     latest = data;
+    el('dictationBackend').textContent = data.backend ?? 'CPU (model not loaded)';
     if (!saved && data.settings) adopt(data);
     el('dictationSetupStatus').textContent = data.scanningModels
       ? `${modelHeader(data.activeModelLabel)}. Looking for models on this computer…`

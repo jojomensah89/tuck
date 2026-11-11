@@ -4,6 +4,7 @@
 //! `docs/phase-two-dictation.md` for builder, state, command and event setup.
 
 mod audio;
+pub(crate) mod diag;
 mod dual_shift;
 mod model;
 mod target;
@@ -20,13 +21,46 @@ const EVENT_STATE: &str = "dictation_state";
 const EVENT_TRANSCRIPT: &str = "dictation_transcript";
 const EVENT_ERROR: &str = "dictation_error";
 const DEFAULT_TOGGLE: &str = "Ctrl+Shift+Space";
-const DEFAULT_HOLD: &str = "Shift+Shift";
+const DEFAULT_HOLD: &str = "Alt+Alt";
 const MAX_TRANSCRIPT_BYTES: usize = 64 * 1024;
 const MAX_SETTINGS_BYTES: usize = 64 * 1024;
-/// `settingsVersion` in `dictation.json`. Version 1 means the old default hold shortcut has
-/// been migrated, so a `Ctrl+Alt+Space` in the file is the owner's own choice.
-const SETTINGS_VERSION: u32 = 1;
+/// `settingsVersion` in `dictation.json`. Version 1 migrated `Ctrl+Alt+Space`, version 2
+/// `Shift+Shift` and version 3 `RightAlt`, each an earlier default; after that, any of
+/// them in the file is the owner's own choice.
+const SETTINGS_VERSION: u32 = 3;
 const SHORTCUT_PAUSE_LIMIT: std::time::Duration = std::time::Duration::from_secs(30);
+
+pub fn is_both_alts_shortcut(shortcut: &str) -> bool {
+    let s = shortcut.trim().to_lowercase().replace(' ', "");
+    matches!(
+        s.as_str(),
+        "alt+alt"
+            | "bothalts"
+            | "twoalts"
+            | "leftalt+rightalt"
+            | "rightalt+leftalt"
+            | "lalt+ralt"
+            | "ralt+lalt"
+    )
+}
+
+pub fn is_right_alt_shortcut(shortcut: &str) -> bool {
+    let s = shortcut.trim().to_lowercase().replace(' ', "");
+    matches!(s.as_str(), "rightalt" | "ralt" | "altright")
+}
+
+/// The modifier-only hold the native monitor watches, if the shortcut is one.
+fn special_hold(shortcut: &str) -> Option<dual_shift::HoldKey> {
+    if is_both_alts_shortcut(shortcut) {
+        Some(dual_shift::HoldKey::BothAlts)
+    } else if is_right_alt_shortcut(shortcut) {
+        Some(dual_shift::HoldKey::RightAlt)
+    } else if is_dual_shift_shortcut(shortcut) {
+        Some(dual_shift::HoldKey::BothShifts)
+    } else {
+        None
+    }
+}
 
 pub fn is_dual_shift_shortcut(shortcut: &str) -> bool {
     let s = shortcut.trim().to_lowercase().replace(' ', "");
@@ -50,6 +84,7 @@ pub struct DictationSettings {
     pub toggle_shortcut: String,
     pub hold_to_talk_shortcut: String,
     pub review_before_insert: bool,
+    pub keep_microphone_ready: bool,
     pub stopped_models: Vec<String>,
     #[serde(default)]
     pub settings_version: u32,
@@ -67,6 +102,7 @@ impl Default for DictationSettings {
             toggle_shortcut: DEFAULT_TOGGLE.to_owned(),
             hold_to_talk_shortcut: DEFAULT_HOLD.to_owned(),
             review_before_insert: false,
+            keep_microphone_ready: true,
             stopped_models: Vec::new(),
             settings_version: SETTINGS_VERSION,
             active_model: None,
@@ -86,9 +122,12 @@ pub struct ShortcutProblems {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct DictationSnapshot {
+    pub backend: String,
     pub session_id: u64,
     pub revision: u64,
     pub audio_level: f32,
+    /// Provisional words heard so far, until the final text replaces them.
+    pub live_text: Option<String>,
     pub status: String,
     pub model_installed: bool,
     pub model_downloaded_bytes: u64,
@@ -111,6 +150,9 @@ impl Drop for DictationSnapshot {
     fn drop(&mut self) {
         if let Some(transcript) = self.transcript.as_mut() {
             transcript.zeroize();
+        }
+        if let Some(live) = self.live_text.as_mut() {
+            live.zeroize();
         }
     }
 }
@@ -146,6 +188,8 @@ struct Runtime {
     session_id: u64,
     revision: u64,
     audio_level: f32,
+    /// Provisional words from the live stream while recording. Never pasted or kept.
+    live_text: Option<String>,
     recording_target: Option<target::ForegroundTarget>,
     focus_changed: bool,
     selection_generation: u64,
@@ -192,6 +236,8 @@ pub struct DictationService {
     focus_observer_busy: Arc<AtomicBool>,
     model_busy: AtomicBool,
     engine_cache: Arc<audio::EngineCache>,
+    microphone: Arc<audio::ReadyMicrophone>,
+    capture_times: Arc<Mutex<(std::time::Instant, Option<std::time::Instant>)>>,
     registered_shortcuts: Mutex<Vec<Shortcut>>,
     settings_operation: Mutex<()>,
     is_shutdown: AtomicBool,
@@ -237,6 +283,7 @@ impl DictationService {
                 session_id: 0,
                 revision: 0,
                 audio_level: 0.0,
+                live_text: None,
                 recording_target: None,
                 focus_changed: false,
                 selection_generation: 0,
@@ -264,6 +311,8 @@ impl DictationService {
             focus_observer_busy: Arc::new(AtomicBool::new(false)),
             model_busy: AtomicBool::new(false),
             engine_cache: Arc::default(),
+            microphone: Arc::default(),
+            capture_times: Arc::new(Mutex::new((std::time::Instant::now(), None))),
             registered_shortcuts: Mutex::new(Vec::new()),
             settings_operation: Mutex::new(()),
             is_shutdown: AtomicBool::new(false),
@@ -404,7 +453,7 @@ impl DictationService {
             .as_ref()
             .map(|runtime| {
                 let mut problems = runtime.shortcut_problems.clone();
-                if is_dual_shift_shortcut(&settings.hold_to_talk_shortcut) {
+                if special_hold(&settings.hold_to_talk_shortcut).is_some() {
                     problems.hold.clone_from(&runtime.dual_shift_problem);
                 }
                 (problems, runtime.settings_notice.clone())
@@ -424,12 +473,20 @@ impl DictationService {
             .as_ref()
             .map(|r| (r.session_id, r.revision))
             .unwrap_or_default();
+        let live_text = locked.as_ref().ok().and_then(|r| {
+            ["recording", "processing", "transcribing", "inserting"]
+                .contains(&r.status.as_str())
+                .then(|| r.live_text.clone())
+                .flatten()
+        });
         drop(locked);
         let active = resolution.active.as_ref();
         DictationSnapshot {
+            backend: self.engine_cache.backend(),
             session_id,
             revision,
             audio_level,
+            live_text,
             status,
             model_installed: active.is_some(),
             model_downloaded_bytes: downloaded,
@@ -562,6 +619,32 @@ impl DictationService {
         }
     }
 
+    /// Shows the stream's words so far. Only a recording that is still running may change
+    /// them, so a late update can never reappear after the final text or a cancel.
+    fn publish_live_text(&self, text: &str) {
+        if let Ok(mut runtime) = self.runtime.lock() {
+            if runtime.status != "recording"
+                || !runtime.active.as_ref().is_some_and(|a| {
+                    !a.cancel.load(Ordering::Acquire) && !a.stop.load(Ordering::Acquire)
+                })
+            {
+                return;
+            }
+            let text = text.trim();
+            if runtime.live_text.as_deref().unwrap_or("") == text {
+                return;
+            }
+            if let Some(mut old) = runtime.live_text.take() {
+                old.zeroize();
+            }
+            runtime.live_text = (!text.is_empty()).then(|| text.to_owned());
+            runtime.revision += 1;
+        } else {
+            return;
+        }
+        self.emit_state();
+    }
+
     fn publish_audio_level(&self, level: f32) {
         if let Ok(mut runtime) = self.runtime.lock() {
             if runtime.status != "recording"
@@ -617,18 +700,20 @@ impl DictationService {
                 service.model_busy.store(false, Ordering::Release);
             }
             service.engine_cache.warming.store(false, Ordering::Release);
+            if can_warm {
+                service.emit_state();
+            }
         });
     }
 
     fn begin(self: &Arc<Self>, mode: RecordingMode) -> Result<(), String> {
+        let pressed = std::time::Instant::now();
         self.app()?;
-        if self
-            .runtime
-            .lock()
-            .is_ok_and(|r| r.status == "review" || r.status == "inserting")
-        {
-            return Err("Finish or discard the transcript before starting dictation".into());
+        if self.runtime.lock().is_ok_and(|r| r.status == "inserting") {
+            return Err("Dictation is still inserting the last transcript".into());
         }
+        // A transcript waiting in the island never blocks the next dictation.
+        self.release_waiting_transcript();
         self.repair_missing()?;
         let operation = self
             .settings_operation
@@ -647,6 +732,7 @@ impl DictationService {
         let cancel = Arc::new(AtomicBool::new(false));
         let original_target = target::capture_foreground();
         self.claim_session(stop.clone(), cancel.clone(), mode)?;
+        self.capture_times.lock().unwrap().0 = pressed;
         {
             let mut r = self.runtime.lock().unwrap();
             r.recording_target = original_target.clone();
@@ -674,6 +760,14 @@ impl DictationService {
                     }
                     service.finish_cancelled();
                     return;
+                }
+                match &result {
+                    Ok(text) => diag::log(format!(
+                        "transcribed: {} chars, backend {}",
+                        text.trim().chars().count(),
+                        service.engine_cache.backend()
+                    )),
+                    Err(error) => diag::log(format!("transcription ended: {error}")),
                 }
                 match result {
                     Ok(mut text) => {
@@ -730,9 +824,13 @@ impl DictationService {
         if let Some(mut text) = runtime.transcript.take() {
             text.zeroize();
         }
+        if let Some(mut text) = runtime.live_text.take() {
+            text.zeroize();
+        }
         runtime.review_target = None;
         runtime.insertion_uncertain = false;
         runtime.message = None;
+        *self.capture_times.lock().unwrap() = (std::time::Instant::now(), None);
         runtime.active = Some(ActiveSession { stop, cancel, mode });
         runtime.session_id += 1;
 
@@ -762,21 +860,6 @@ impl DictationService {
             return;
         }
         let settings = self.settings();
-        let changed = self.runtime.lock().map(|r| r.focus_changed).unwrap_or(true);
-        let safety = original_target
-            .as_ref()
-            .ok_or_else(|| "The original foreground window could not be captured.".to_owned())
-            .and_then(|t| {
-                if changed {
-                    Err("Focus changed during recording".into())
-                } else {
-                    target::verify_foreground_target(t)
-                }
-            })
-            .and_then(|_| match original_target.as_ref() {
-                Some(target) => target::is_editable_target(target),
-                None => Err("The original foreground window could not be captured.".into()),
-            });
         {
             let mut runtime = self.runtime.lock().unwrap();
             if cancel.load(Ordering::Acquire) {
@@ -789,60 +872,40 @@ impl DictationService {
         self.emit_state();
         let mut inserted = false;
         let mut partial_insertion = false;
-        // Review waits only when a usable field is focused at the END. The later
-        // explicit Insert action captures its own fresh target again.
-        let editable_at_end = if settings.review_before_insert {
-            target::capture_foreground().as_ref().is_some_and(|target| {
-                target::verify_foreground_target(target).is_ok()
-                    && target::is_editable_target(target).is_ok()
-            })
-        } else {
-            safety.is_ok()
-        };
-        let mut reason = if settings.review_before_insert && editable_at_end {
-            None
-        } else {
-            safety.err()
-        };
+        let mut reason = None;
+        let mut delivered_copy = false;
         if self.session_cancelled() {
             self.finish_cancelled();
             return;
         }
-        if !settings.review_before_insert && reason.is_none() {
-            if let Some(target) = original_target.as_ref() {
-                match target::insert_unicode(target, text.as_str(), cancel, &self.insertion_gate) {
-                    Ok(()) => {
-                        inserted = true;
-                        reason = Some("Inserted".into());
-                    }
-                    Err(error) => {
-                        partial_insertion = error.may_have_inserted;
-                        reason = Some(error.message);
-                    }
+        if !settings.review_before_insert {
+            match self.paste_transcript(text.as_str(), cancel) {
+                Ok(pasted) => {
+                    inserted = pasted;
+                    delivered_copy = !pasted;
+                    reason = Some(if pasted { "Inserted" } else { "Copied" }.into());
                 }
-            }
-        }
-        let mut copied = false;
-        if should_copy_final(
-            settings.review_before_insert,
-            editable_at_end,
-            inserted,
-            partial_insertion,
-            cancel.load(Ordering::Acquire),
-        ) {
-            let _guard = self.insertion_gate.lock().unwrap();
-            if !cancel.load(Ordering::Acquire) {
-                let result = self.copy_transcript_locked(text.as_str());
-                match result {
-                    Ok(()) => {
-                        copied = true;
+                Err(error) => {
+                    partial_insertion = error.may_have_inserted;
+                    reason = Some(error.message);
+                    // Never strand the words in a waiting transcript that blocks the next
+                    // dictation: leave them on the clipboard instead.
+                    if !partial_insertion
+                        && !cancel.load(Ordering::Acquire)
+                        && self.copy_transcript(text.as_str()).is_ok()
+                    {
+                        delivered_copy = true;
                         reason = Some("Copied".into());
                     }
-                    Err(e) => reason = Some(e),
                 }
             }
         }
+        let copied = delivered_copy;
         let review = !copied && (settings.review_before_insert || !inserted);
+        diag::log(format!(
+            "delivered: inserted={inserted} copied={copied} review={review} reason={}",
+            reason.as_deref().unwrap_or("-")
+        ));
         if let Ok(mut runtime) = self.runtime.lock() {
             if cancel.load(Ordering::Acquire) {
                 drop(runtime);
@@ -851,7 +914,9 @@ impl DictationService {
             }
             runtime.active = None;
             runtime.recording_target = None;
-
+            if let Some(mut live) = runtime.live_text.take() {
+                live.zeroize();
+            }
             runtime.audio_level = 0.0;
             runtime.status = if review { "review" } else { "idle" }.into();
             runtime.message = reason.clone();
@@ -910,10 +975,17 @@ impl DictationService {
             if let Some(mut text) = runtime.transcript.take() {
                 text.zeroize();
             }
+            if let Some(mut text) = runtime.live_text.take() {
+                text.zeroize();
+            }
         }
     }
 
     fn stop(self: &Arc<Self>) -> Result<(), String> {
+        self.stop_at(std::time::Instant::now())
+    }
+
+    fn stop_at(self: &Arc<Self>, released: std::time::Instant) -> Result<(), String> {
         let runtime = self
             .runtime
             .lock()
@@ -922,6 +994,7 @@ impl DictationService {
             .active
             .as_ref()
             .ok_or("Dictation is not recording")?;
+        self.capture_times.lock().unwrap().1.get_or_insert(released);
         if active.stop.swap(true, Ordering::AcqRel) {
             return Err("Dictation is already stopping".into());
         }
@@ -930,6 +1003,7 @@ impl DictationService {
 
     /// Ends the recording only if a hold started it; a toggle recording keeps running.
     fn stop_hold(self: &Arc<Self>) {
+        let released = std::time::Instant::now();
         let holding = self.runtime.lock().is_ok_and(|runtime| {
             runtime
                 .active
@@ -937,7 +1011,7 @@ impl DictationService {
                 .is_some_and(|session| matches!(session.mode, RecordingMode::HoldToTalk))
         });
         if holding {
-            let _ = self.stop();
+            let _ = self.stop_at(released);
         }
     }
 
@@ -976,31 +1050,67 @@ impl DictationService {
         Ok(())
     }
 
-    fn copy_transcript(&self, text: &str, cancel: &AtomicBool) -> Result<(), String> {
-        let _guard = self
-            .insertion_gate
-            .lock()
-            .map_err(|_| "Insertion unavailable")?;
-        if cancel.load(Ordering::Acquire) {
-            return Err("Dictation cancelled".into());
+    /// Moves a transcript waiting for review onto the clipboard, so starting a new
+    /// dictation loses nothing, and leaves the review state.
+    fn release_waiting_transcript(&self) {
+        let waiting = {
+            let Ok(mut runtime) = self.runtime.lock() else {
+                return;
+            };
+            if runtime.status != "review" {
+                return;
+            }
+            let uncertain = runtime.insertion_uncertain;
+            let text = runtime.transcript.take();
+            runtime.review_target = None;
+            runtime.insertion_uncertain = false;
+            runtime.message = None;
+            runtime.status = "idle".into();
+            runtime.revision += 1;
+            // Text that may already be partly in the app is not copied over the clipboard.
+            text.filter(|_| !uncertain)
+        };
+        if let Some(mut text) = waiting {
+            let _ = self.copy_transcript(&text);
+            text.zeroize();
         }
-        self.copy_transcript_locked(text)
     }
-    fn copy_transcript_locked(&self, text: &str) -> Result<(), String> {
+
+    fn copy_transcript(&self, text: &str) -> Result<(), String> {
+        target::copy(text, &self.insertion_gate, self.main_window_handle()?)
+    }
+
+    fn main_window_handle(&self) -> Result<isize, String> {
         #[cfg(windows)]
-        let result = self
-            .app()
-            .and_then(|app| {
-                app.get_webview_window("main")
-                    .ok_or("Main window unavailable".into())
-            })
-            .and_then(|window| window.hwnd().map_err(|e| e.to_string()))
-            .and_then(|owner| {
-                target::copy_final(text, windows::Win32::Foundation::HWND(owner.0 as _))
-            });
+        {
+            Ok(self
+                .app()?
+                .get_webview_window("main")
+                .ok_or_else(|| "Main window unavailable".to_owned())?
+                .hwnd()
+                .map_err(|e| e.to_string())?
+                .0 as isize)
+        }
         #[cfg(not(windows))]
-        let result = target::copy_final(text, ());
-        result
+        Ok(0)
+    }
+
+    fn paste_transcript(
+        &self,
+        text: &str,
+        cancel: &AtomicBool,
+    ) -> Result<bool, target::InsertionFailure> {
+        #[cfg(windows)]
+        let owner = self
+            .app()?
+            .get_webview_window("main")
+            .ok_or_else(|| "Main window unavailable".to_owned())?
+            .hwnd()
+            .map_err(|e| e.to_string())?
+            .0 as isize;
+        #[cfg(not(windows))]
+        let owner = 0;
+        target::paste(text, cancel, &self.insertion_gate, owner)
     }
 
     fn finish_review(self: &Arc<Self>) -> Result<(), String> {
@@ -1029,11 +1139,7 @@ impl DictationService {
             Zeroizing::new(text)
         };
         self.emit_state();
-        let result = deliver_review(
-            target::capture_foreground,
-            |target| target::insert_unicode(&target, &text, &cancel, &self.insertion_gate),
-            || self.copy_transcript(&text, &cancel),
-        );
+        let result = deliver_review(self.paste_transcript(&text, &cancel));
         let copied = matches!(result, Ok(ReviewDelivery::Copied));
         let mut runtime = self
             .runtime
@@ -1096,6 +1202,9 @@ impl DictationService {
             return Err("There is no transcript awaiting review".into());
         }
         if let Some(mut text) = runtime.transcript.take() {
+            text.zeroize();
+        }
+        if let Some(mut text) = runtime.live_text.take() {
             text.zeroize();
         }
         runtime.review_target = None;
@@ -1630,7 +1739,9 @@ impl DictationService {
     }
 
     pub fn shutdown(&self) {
+        self.microphone.shutdown();
         self.is_shutdown.store(true, Ordering::Release);
+        target::shutdown_restore_workers();
         dual_shift::stop();
         let _ = self.cancel();
         // Give a download a moment to delete its part file. If the process wins the race,
@@ -1710,10 +1821,13 @@ fn selection_after_download(
     }
 }
 
-/// Arms the dual-Shift monitor only while it is the configured hold shortcut.
+/// Arms the modifier-only hold monitor only while one is the configured hold shortcut.
 fn sync_dual_shift(service: &Arc<DictationService>) {
-    let enabled = is_dual_shift_shortcut(&service.settings().hold_to_talk_shortcut)
-        && !service.shortcuts_paused.load(Ordering::Acquire);
+    let key = special_hold(&service.settings().hold_to_talk_shortcut);
+    if let Some(key) = key {
+        dual_shift::set_key(key);
+    }
+    let enabled = key.is_some() && !service.shortcuts_paused.load(Ordering::Acquire);
     let service = service.clone();
     dual_shift::set_enabled(enabled, move || {
         Box::new(move |change| {
@@ -1721,11 +1835,16 @@ fn sync_dual_shift(service: &Arc<DictationService>) {
                 return;
             }
             match change {
-                dual_shift::HoldChange::Pressed => {
-                    let _ = service.begin(RecordingMode::HoldToTalk);
+                dual_shift::HoldChange::Pressed => match service.begin(RecordingMode::HoldToTalk) {
+                    Ok(()) => diag::log("hold pressed: recording"),
+                    Err(error) => diag::log(format!("hold pressed, not started: {error}")),
+                },
+                dual_shift::HoldChange::Released => {
+                    diag::log("hold released");
+                    service.stop_hold();
                 }
-                dual_shift::HoldChange::Released => service.stop_hold(),
                 dual_shift::HoldChange::Unavailable(message) => {
+                    diag::log(format!("hold key unavailable: {message}"));
                     service.set_dual_shift_problem(Some(message));
                 }
                 dual_shift::HoldChange::Available => service.set_dual_shift_problem(None),
@@ -1739,6 +1858,10 @@ fn sync_dual_shift(service: &Arc<DictationService>) {
 pub fn start(app: AppHandle, service: &Arc<DictationService>) -> Result<(), String> {
     if let Ok(mut slot) = service.app.write() {
         *slot = Some(app.clone());
+    }
+    if let Ok(dir) = app.path().app_log_dir() {
+        diag::init(dir);
+        diag::log(format!("start: Tuck {}", env!("CARGO_PKG_VERSION")));
     }
     if let Ok(dir) = service.models_dir() {
         model::sweep_partial_downloads(&dir);
@@ -1761,6 +1884,7 @@ pub fn start(app: AppHandle, service: &Arc<DictationService>) -> Result<(), Stri
     }
     sync_dual_shift(service);
     service.repair_missing()?;
+    audio::start_ready_microphone(service);
     service.emit_state();
     Ok(())
 }
@@ -1805,7 +1929,7 @@ pub fn register_shortcuts(
     let shortcuts = app.global_shortcut();
     let toggle = Shortcut::try_from(settings.toggle_shortcut.as_str())
         .map_err(|_| invalid_shortcut_message(&settings.toggle_shortcut))?;
-    let hold = if is_dual_shift_shortcut(&settings.hold_to_talk_shortcut) {
+    let hold = if special_hold(&settings.hold_to_talk_shortcut).is_some() {
         None
     } else {
         Some(
@@ -1931,12 +2055,12 @@ fn validate_settings(settings: &DictationSettings) -> Result<(), String> {
     if settings.toggle_shortcut.len() > 64 || settings.hold_to_talk_shortcut.len() > 64 {
         return Err("Shortcuts must be at most 64 characters".into());
     }
-    if is_dual_shift_shortcut(&settings.toggle_shortcut) {
-        return Err("Both Shift keys only work for Hold to talk.".into());
+    if special_hold(&settings.toggle_shortcut).is_some() {
+        return Err("Alt or Shift keys on their own only work for Hold to talk.".into());
     }
     let toggle = Shortcut::try_from(settings.toggle_shortcut.as_str())
         .map_err(|_| invalid_shortcut_message(&settings.toggle_shortcut))?;
-    if is_dual_shift_shortcut(&settings.hold_to_talk_shortcut) {
+    if special_hold(&settings.hold_to_talk_shortcut).is_some() {
         return Ok(());
     }
     let hold = Shortcut::try_from(settings.hold_to_talk_shortcut.as_str())
@@ -1997,6 +2121,8 @@ fn parse_settings(bytes: &[u8]) -> (DictationSettings, Option<String>) {
             .unwrap_or(defaults.toggle_shortcut),
         hold_to_talk_shortcut: settings_field(&map, "holdToTalkShortcut", &mut bad)
             .unwrap_or(defaults.hold_to_talk_shortcut),
+        keep_microphone_ready: settings_field(&map, "keepMicrophoneReady", &mut bad)
+            .unwrap_or(true),
         review_before_insert: settings_field(&map, "reviewBeforeInsert", &mut bad)
             .unwrap_or(defaults.review_before_insert),
         stopped_models: settings_field(&map, "stoppedModels", &mut bad).unwrap_or_default(),
@@ -2009,6 +2135,14 @@ fn parse_settings(bytes: &[u8]) -> (DictationSettings, Option<String>) {
     if settings.settings_version < 1 && settings.hold_to_talk_shortcut == "Ctrl+Alt+Space" {
         settings.hold_to_talk_shortcut = DEFAULT_HOLD.to_owned();
     }
+    // Before version 2 both Shift keys was the default, so a file holding it never chose it.
+    if settings.settings_version < 2 && is_dual_shift_shortcut(&settings.hold_to_talk_shortcut) {
+        settings.hold_to_talk_shortcut = DEFAULT_HOLD.to_owned();
+    }
+    // Before version 3 Right Alt alone was the default.
+    if settings.settings_version < 3 && is_right_alt_shortcut(&settings.hold_to_talk_shortcut) {
+        settings.hold_to_talk_shortcut = DEFAULT_HOLD.to_owned();
+    }
     settings.settings_version = SETTINGS_VERSION;
     let mut resets = Vec::new();
     if !bad.is_empty() {
@@ -2017,7 +2151,7 @@ fn parse_settings(bytes: &[u8]) -> (DictationSettings, Option<String>) {
             bad.join(", ")
         ));
     }
-    if is_dual_shift_shortcut(&settings.toggle_shortcut)
+    if special_hold(&settings.toggle_shortcut).is_some()
         || Shortcut::try_from(settings.toggle_shortcut.as_str()).is_err()
     {
         resets.push(format!(
@@ -2028,7 +2162,7 @@ fn parse_settings(bytes: &[u8]) -> (DictationSettings, Option<String>) {
     }
     if validate_settings(&settings).is_err() {
         resets.push(format!(
-            "Hold to talk was \"{}\", now both Shift keys",
+            "Hold to talk was \"{}\", now both Alt keys",
             settings.hold_to_talk_shortcut
         ));
         settings.hold_to_talk_shortcut = DEFAULT_HOLD.to_owned();
@@ -2047,9 +2181,11 @@ fn needs_version_stamp(bytes: &[u8]) -> bool {
     serde_json::from_slice::<serde_json::Value>(bytes)
         .ok()
         .and_then(|value| {
-            value
-                .as_object()
-                .map(|map| !map.contains_key("settingsVersion"))
+            value.as_object().map(|map| {
+                map.get("settingsVersion")
+                    .and_then(serde_json::Value::as_u64)
+                    .is_none_or(|version| version < u64::from(SETTINGS_VERSION))
+            })
         })
         .unwrap_or(false)
 }
@@ -2771,6 +2907,7 @@ mod tests {
         service.finish_transcript("discard me".into(), None, &AtomicBool::new(true));
         let snapshot = service.snapshot();
         assert_eq!(snapshot.status, "idle");
+        assert!(!snapshot.backend.is_empty());
         assert!(snapshot.transcript.is_none());
     }
 
@@ -2978,6 +3115,63 @@ mod tests {
     }
 
     #[test]
+    fn live_words_show_only_while_recording_and_never_outlive_it() {
+        let service = DictationService::new();
+        let stop = Arc::new(AtomicBool::new(false));
+        {
+            let mut runtime = service.runtime.lock().unwrap();
+            runtime.active = Some(ActiveSession {
+                stop: stop.clone(),
+                cancel: Arc::new(AtomicBool::new(false)),
+                mode: RecordingMode::HoldToTalk,
+            });
+            runtime.status = "recording".into();
+        }
+        service.publish_live_text(" hello there ");
+        assert_eq!(
+            service.runtime.lock().unwrap().live_text.as_deref(),
+            Some("hello there")
+        );
+        // After release the stream's late words are ignored; the final text decides.
+        stop.store(true, Ordering::Release);
+        service.publish_live_text("hello there friend");
+        assert_eq!(
+            service.runtime.lock().unwrap().live_text.as_deref(),
+            Some("hello there")
+        );
+        service.clear_active();
+        assert_eq!(service.runtime.lock().unwrap().live_text, None);
+        // Nothing appears when no recording runs.
+        service.runtime.lock().unwrap().status = "idle".into();
+        service.publish_live_text("ghost");
+        assert_eq!(service.runtime.lock().unwrap().live_text, None);
+    }
+
+    #[test]
+    fn a_waiting_transcript_never_blocks_the_next_dictation() {
+        let service = DictationService::new();
+        {
+            let mut runtime = service.runtime.lock().unwrap();
+            runtime.status = "review".into();
+            runtime.transcript = Some("hello hello".into());
+            runtime.message = Some("The clipboard changed before paste.".into());
+        }
+        service.release_waiting_transcript();
+        let runtime = service.runtime.lock().unwrap();
+        assert_eq!(runtime.status, "idle");
+        assert_eq!(runtime.transcript, None);
+        assert_eq!(runtime.message, None);
+        drop(runtime);
+        assert!(service
+            .claim_session(
+                Arc::new(AtomicBool::new(false)),
+                Arc::new(AtomicBool::new(false)),
+                RecordingMode::HoldToTalk
+            )
+            .is_ok());
+    }
+
+    #[test]
     fn recording_only_follows_starting() {
         let service = DictationService::new();
         service.session_status("recording");
@@ -3117,7 +3311,51 @@ mod tests {
         assert_eq!(settings.active_model, None);
         assert_eq!(settings.active_model_path, None);
         assert!(settings.review_before_insert);
+        // Both Shift keys was an old default, so it moves to the new one.
+        assert_eq!(settings.hold_to_talk_shortcut, "Alt+Alt");
+    }
+
+    #[test]
+    fn both_shift_keys_chosen_after_the_migration_stays() {
+        let (settings, notice) = parse_settings(
+            br#"{"toggleShortcut":"Ctrl+Shift+Space","holdToTalkShortcut":"Shift+Shift","settingsVersion":3}"#,
+        );
+        assert_eq!(notice, None);
         assert_eq!(settings.hold_to_talk_shortcut, "Shift+Shift");
+        let (settings, _) = parse_settings(
+            br#"{"toggleShortcut":"Ctrl+Shift+Space","holdToTalkShortcut":"Shift+Shift","settingsVersion":1}"#,
+        );
+        assert_eq!(settings.hold_to_talk_shortcut, "Alt+Alt");
+        // Right Alt was the default in version 2, so it moves too; chosen later, it stays.
+        let (settings, _) = parse_settings(
+            br#"{"toggleShortcut":"Ctrl+Shift+Space","holdToTalkShortcut":"RightAlt","settingsVersion":2}"#,
+        );
+        assert_eq!(settings.hold_to_talk_shortcut, "Alt+Alt");
+        let (settings, _) = parse_settings(
+            br#"{"toggleShortcut":"Ctrl+Shift+Space","holdToTalkShortcut":"RightAlt","settingsVersion":3}"#,
+        );
+        assert_eq!(settings.hold_to_talk_shortcut, "RightAlt");
+        assert!(needs_version_stamp(br#"{"settingsVersion":2}"#));
+        assert!(!needs_version_stamp(br#"{"settingsVersion":3}"#));
+    }
+
+    #[test]
+    fn right_alt_is_a_hold_only_shortcut() {
+        assert!(is_right_alt_shortcut("RightAlt"));
+        assert!(is_right_alt_shortcut("right alt"));
+        assert!(!is_right_alt_shortcut("Alt"));
+        assert!(is_both_alts_shortcut("Alt+Alt"));
+        assert!(is_both_alts_shortcut("LeftAlt + RightAlt"));
+        assert!(!is_both_alts_shortcut("Ctrl+Alt"));
+        let mut settings = DictationSettings::default();
+        assert_eq!(settings.hold_to_talk_shortcut, "Alt+Alt");
+        assert!(validate_settings(&settings).is_ok());
+        settings.hold_to_talk_shortcut = "RightAlt".into();
+        assert!(validate_settings(&settings).is_ok());
+        settings.toggle_shortcut = "RightAlt".into();
+        assert!(validate_settings(&settings).is_err());
+        settings.toggle_shortcut = "Alt+Alt".into();
+        assert!(validate_settings(&settings).is_err());
     }
 
     #[test]
@@ -3259,6 +3497,16 @@ mod tests {
     }
 
     #[test]
+    fn microphone_ready_defaults_on_and_false_round_trips() {
+        let (legacy, _) = parse_settings(br#"{"settingsVersion":1}"#);
+        assert!(legacy.keep_microphone_ready);
+        let (disabled, _) = parse_settings(br#"{"settingsVersion":1,"keepMicrophoneReady":false}"#);
+        assert!(!disabled.keep_microphone_ready);
+        let bytes = serde_json::to_vec(&disabled).unwrap();
+        assert_eq!(parse_settings(&bytes).0, disabled);
+    }
+
+    #[test]
     fn an_unreadable_settings_file_reports_why() {
         let (settings, notice) = parse_settings(b"{ not json");
         assert_eq!(settings, DictationSettings::default());
@@ -3397,38 +3645,21 @@ mod tests {
     }
 }
 
-fn should_copy_final(
-    review: bool,
-    editable: bool,
-    inserted: bool,
-    uncertain: bool,
-    cancelled: bool,
-) -> bool {
-    (!review || !editable) && !inserted && !uncertain && !cancelled
-}
 #[derive(Debug, PartialEq)]
 enum ReviewDelivery {
     Typed,
     Copied,
 }
-fn deliver_review<T>(
-    capture: impl FnOnce() -> Option<T>,
-    insert: impl FnOnce(T) -> Result<(), target::InsertionFailure>,
-    copy: impl FnOnce() -> Result<(), String>,
+fn deliver_review(
+    result: Result<bool, target::InsertionFailure>,
 ) -> Result<ReviewDelivery, target::InsertionFailure> {
-    let insertion = capture()
-        .ok_or_else(|| target::InsertionFailure {
-            message: "No editable control is focused".into(),
-            may_have_inserted: false,
-        })
-        .and_then(insert);
-    match insertion {
-        Ok(()) => Ok(ReviewDelivery::Typed),
-        Err(e) if e.may_have_inserted => Err(e),
-        Err(_) => copy()
-            .map(|_| ReviewDelivery::Copied)
-            .map_err(target::InsertionFailure::from),
-    }
+    result.map(|pasted| {
+        if pasted {
+            ReviewDelivery::Typed
+        } else {
+            ReviewDelivery::Copied
+        }
+    })
 }
 #[cfg(test)]
 mod final_delivery_tests {
@@ -3503,17 +3734,6 @@ mod final_delivery_tests {
     }
 
     #[test]
-    fn delivery_decisions_cover_review_and_clipboard() {
-        for review in [false, true] {
-            assert!(should_copy_final(review, false, false, false, false));
-            assert!(!should_copy_final(review, true, true, false, false));
-            assert!(!should_copy_final(review, false, false, true, false));
-            assert!(!should_copy_final(review, false, false, false, true));
-        }
-        assert!(!should_copy_final(true, true, false, false, false));
-        assert!(should_copy_final(false, true, false, false, false));
-    }
-    #[test]
     fn legacy_review_preference_survives_without_preview_contract() {
         let settings: DictationSettings = serde_json::from_value(
             serde_json::json!({"reviewBeforeInsert":true,"partialPreview":true}),
@@ -3547,52 +3767,17 @@ mod final_delivery_tests {
     }
 
     #[test]
-    fn review_inserts_into_the_current_field_after_focus_moves() {
-        let original = 1;
-        let current = 2;
-        assert_ne!(original, current);
-        assert_eq!(
-            deliver_review(
-                || Some(current),
-                |target| {
-                    assert_eq!(target, 2);
-                    Ok(())
-                },
-                || panic!("unexpected copy")
-            )
-            .unwrap(),
-            ReviewDelivery::Typed
-        );
-    }
-    #[test]
-    fn review_without_target_or_with_rejected_target_copies() {
-        assert_eq!(
-            deliver_review(|| None::<()>, |_| panic!("no target"), || Ok(())).unwrap(),
-            ReviewDelivery::Copied
-        );
-        assert_eq!(
-            deliver_review(
-                || Some(()),
-                |_| Err("Password or noneditable control".to_owned().into()),
-                || Ok(())
-            )
-            .unwrap(),
-            ReviewDelivery::Copied
-        );
-        assert!(deliver_review(
-            || Some(()),
-            |_| Err(target::InsertionFailure {
-                message: "partial".into(),
+    fn review_uses_paste_outcome_and_retains_errors() {
+        assert_eq!(deliver_review(Ok(true)).unwrap(), ReviewDelivery::Typed);
+        assert_eq!(deliver_review(Ok(false)).unwrap(), ReviewDelivery::Copied);
+        assert!(deliver_review(Err("Clipboard changed".to_owned().into())).is_err());
+        assert!(
+            deliver_review(Err(target::InsertionFailure {
+                message: "partial shortcut".into(),
                 may_have_inserted: true
-            }),
-            || panic!("unsafe copy")
-        )
-        .is_err());
-        assert!(deliver_review(
-            || None::<()>,
-            |_| unreachable!(),
-            || Err("Clipboard busy".into())
-        )
-        .is_err());
+            }))
+            .unwrap_err()
+            .may_have_inserted
+        );
     }
 }

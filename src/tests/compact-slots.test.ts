@@ -1,6 +1,7 @@
 import './setup.js';
 import { describe, expect, it } from 'bun:test';
 import {
+  liveTail,
   compactScrollMs,
   compactShellWidth,
   selectCompactActivity,
@@ -104,5 +105,16 @@ describe('collapsed one-shot scroll', () => {
     expect(compactScrollMs(10, false)).toBe(2000);
     expect(compactScrollMs(210, false)).toBe(5000);
     expect(compactScrollMs(5000, false)).toBe(12000);
+  });
+});
+
+describe('live dictation line', () => {
+  it('keeps the newest words, cut at a word', () => {
+    expect(liveTail('short line')).toBe('short line');
+    const tail = liveTail('one two three four five six seven eight nine ten eleven twelve thirteen');
+    expect(tail.startsWith('…')).toBe(true);
+    expect(tail.endsWith('twelve thirteen')).toBe(true);
+    expect(tail.length).toBeLessThanOrEqual(47);
+    expect(tail.slice(1).startsWith(' ')).toBe(false);
   });
 });

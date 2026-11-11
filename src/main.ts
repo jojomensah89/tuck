@@ -29,7 +29,7 @@ import { batteryGlyph, SVG_ICONS } from './icons.js';
 import { activitiesManager } from './activities.js';
 import { renderUsageRings } from './usage-rings.js';
 import { activityProgress, batteryTone, createRing, formatSpan } from './rings.js';
-import { compactScrollMs, compactShellWidth, selectCompactActivity, type CompactActivityCandidate } from './compact-slots.js';
+import { compactScrollMs, compactShellWidth, liveTail, selectCompactActivity, type CompactActivityCandidate } from './compact-slots.js';
 import { formatClockTime } from './time-format.js';
 import { FULLSCREEN_STATS_WIDTH, FullscreenStatsSampler, fullscreenStats, fullscreenStatsVisible } from './fullscreen-stats.js';
 import { nativeService, type TelemetrySnapshot } from './live-services.js';
@@ -989,7 +989,15 @@ function renderCompact(): void {
     const recording = external.phase === 'recording';
     const phaseLabel = recording ? 'Dictation recording' : external.phase === 'transcribing' ? 'Transcribing' : external.phase === 'processing' ? 'Processing' : external.phase === 'cancelling' ? 'Cancelling' : external.phase === 'starting' ? 'Starting' : external.phase === 'inserting' ? 'Inserting' : 'Review transcript';
     const line = external.text || (recording ? '' : `${phaseLabel}\u2026`);
-    if (recording && !external.text) {
+    const live = external.text && ['recording', 'processing', 'transcribing', 'inserting'].includes(external.phase);
+    if (live) {
+      // Updated in place, newest words kept in view, so the line grows without a cross-fade.
+      setCompactSlot(cc, 'dictation:live', external.text, () => {
+        const preview = compactTitle(liveTail(external.text));
+        preview.classList.add('dictation-phase', 'dictation-live');
+        return preview;
+      });
+    } else if (recording && !external.text) {
       const level = external.audioLevel;
       setCompactSlot(cc, 'dictation:waveform', String(level), () => compactMarkup(
         `<span class="dictation-waveform" aria-label="Listening"><i style="height:${2 + level * 8}px"></i><i style="height:${2 + level * 16}px"></i><i style="height:${2 + level * 12}px"></i><i style="height:${2 + level * 16}px"></i><i style="height:${2 + level * 8}px"></i></span>`));

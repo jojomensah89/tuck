@@ -1509,6 +1509,8 @@ try {
   assert.match(await native.locator('#dictationSetupStatus').textContent(),/Use an existing model or download/);
   await native.setViewportSize({width:1000,height:850});
   await native.screenshot({path:path.join(root,'docs/screens/model-reuse-settings.png')});
+  assert.equal(await native.locator('#dictationReady').isChecked(), true);
+  await native.screenshot({path:path.join(root,'docs/screens/dictation-ready-settings.png')});
   await native.setViewportSize({width:520,height:288});
   await native.evaluate(()=>window.__emitNative('dictation_state',{status:'review',modelInstalled:true,modelDownloadedBytes:0,activeModelLabel:'Tiny',models:[{id:'ggml-tiny.bin',label:'Tiny',bytes:77691713,speed:'Fastest',accuracy:'Lower',note:null,state:'installed',foundIn:null,active:true},{id:'ggml-base.bin',label:'Base (full size)',bytes:147951465,speed:'Very fast',accuracy:'Good',note:null,state:'found',foundIn:'podcli',active:false}]}));
   assert.equal(await native.locator('.model-row[data-id="ggml-tiny.bin"] button',{hasText:'Remove'}).isDisabled(),true,'Review must be discarded before model removal');
@@ -1528,6 +1530,7 @@ try {
   await native.evaluate(()=>window.__emitNative('dictation_state',{status:'idle',modelInstalled:true,modelDownloadedBytes:0,activeModelLabel:'Tiny',models:[]}));
   assert.equal(await native.locator('#dictationModelNotice').isHidden(),true,'A cleared notice disappears');
   assert.equal(await native.locator('#dictationShortcutError').isHidden(),true,'A fixed shortcut clears its reason');
+  await native.locator('a[data-view="clipboard"]').click();
   await native.locator('#clipboardEnabled').click();
   await native.getByText('Could not save clipboard settings. Current preferences restored below.',{exact:true}).waitFor();
   assert.equal(await native.locator('#clipboardEnabled').isChecked(),false);
@@ -1618,7 +1621,21 @@ try {
   assert.doesNotMatch(await native.locator('.transcript').textContent(),/Legacy words/);
   await capturePolish(native,'dictation-recording');
   await native.locator('#isl').screenshot({path:path.join(root,'docs/screens/dictation-recording.png')});
+  // Live words from the stream replace "Listening" and stay provisional until the final text.
+  await native.evaluate(() => window.__emitNative('dictation_state',{revision:11,sessionId:1,status:'recording',transcript:null,liveText:'Fixture: this is a local dictation fixture, release the shortcut',audioLevel:0.5,modelInstalled:true,activeModelLabel:'Base',canInsert:true}));
+  await native.waitForTimeout(300);
+  assert.match(await native.locator('.transcript').textContent(),/release the shortcut/);
+  assert.equal(await native.locator('.transcript').evaluate(el => el.classList.contains('live')),true);
+  await native.locator('#isl').screenshot({path:path.join(root,'docs/screens/dictation-live.png')});
+  await native.keyboard.press('Escape');
+  await native.waitForTimeout(700);
+  await native.locator('#isl').screenshot({path:path.join(root,'docs/screens/dictation-live-collapsed.png')});
+  assert.match(await native.locator('#cc .compact-slot.current').textContent(),/release the shortcut$/);
+  await native.locator('#isl').focus(); await native.keyboard.press('Enter');
+  await native.getByRole('tab',{name:'Tools',exact:true}).click();
+  await native.getByRole('tab',{name:'Dictation',exact:true}).click();
   await dictationEvent(12,'review','Fixture: words ready to insert');
+  assert.equal(await native.locator('.transcript').evaluate(el => el.classList.contains('live')),false);
   assert.equal(await native.getByRole('button',{name:'Insert',exact:true}).isEnabled(),true);
   await capturePolish(native,'dictation-review');
   await native.locator('#isl').screenshot({path:path.join(root,'docs/screens/dictation-review.png')});
@@ -1822,6 +1839,30 @@ try {
   assert.notEqual(await idleClock.locator('.compact').innerText(), beforeMinute, 'Collapsed clock advances at the next minute');
   assert.equal(await idleClock.evaluate(() => window.__idleIntervals.size), 0, 'The minute clock does not start an interval');
   await idleClock.close();
+
+  const readySettings = await context.newPage();
+  await readySettings.setViewportSize({width:1000,height:850});
+  await readySettings.addInitScript(() => {
+    let settings = {toggleShortcut:'Ctrl+Shift+Space',holdToTalkShortcut:'Alt+Alt',reviewBeforeInsert:false,keepMicrophoneReady:true};
+    const snapshot = () => ({status:'idle',modelInstalled:false,models:[],settings});
+    window.__readySaves = [];
+    window.__TAURI_INTERNALS__ = {transformCallback:()=>1, async invoke(command,args) {
+      if(command === 'dictation_get_state') return snapshot();
+      if(command === 'dictation_set_settings') { settings = args.settings; window.__readySaves.push(settings.keepMicrophoneReady); return snapshot(); }
+      return null;
+    }};
+  });
+  await readySettings.goto('http://tuck.test/settings.html#tools');
+  await readySettings.locator('#dictationReady:enabled').waitFor();
+  assert.equal(await readySettings.locator('#dictationReady').isChecked(),true);
+  await readySettings.locator('#dictationReady').click();
+  await readySettings.waitForFunction(()=>window.__readySaves.length===1);
+  assert.equal(await readySettings.locator('#dictationReady').isChecked(),false);
+  await readySettings.locator('#dictationReady:enabled').click();
+  await readySettings.waitForFunction(()=>window.__readySaves.length===2);
+  assert.deepEqual(await readySettings.evaluate(()=>window.__readySaves),[false,true]);
+  await readySettings.screenshot({path:path.join(root,'docs/screens/dictation-ready-settings.png')});
+  await readySettings.close();
 
   await native.evaluate(() => window.__emitNative('sensors', {muted:true,microphone:['teams.exe'],camera:['camera.exe']}));
   assert.equal(await native.locator('.sensor-muted').getAttribute('aria-label'), 'Microphone muted');

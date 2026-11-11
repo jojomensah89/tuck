@@ -131,6 +131,8 @@ Reduced motion: all durations and delays go to zero, nothing slides, scales or l
 
 ## Rules
 
+**No explainer text.** Do not add grey description lines under setting titles, notes above groups or panels, taglines, or hint lines. A row is its title and its control. Text under a title is allowed only for an error, a live status that changes (download progress, update status, the dictation device line), or data such as a model's size. If a setting needs a sentence to be understood, rename it or change the control. This applies to the island too. The owner removed every such line on 2026-11-11; do not add them back.
+
 Consistent SVG icons; overflow-only marquee; tabular times; visible focus for the keyboard only; state-synchronized ARIA and inert hidden layers. Chromium matches `:focus-visible` after a mouse click whenever script moves focus (the island focusing itself on open and close, Tauri's `set_focus`, a list putting focus back after it re-renders), so island focus rings also need the last input to have been a key (`.keyboard-input`, set on keydown, cleared on pointer and wheel input). Lists only put focus back after a re-render for the keyboard. Real system and provider state always wins over illustrative content. The browser demo is explicitly labeled, with a badge pinned to the bottom-right of the window, below the island, so it never covers content.
 
 ## Update alerts

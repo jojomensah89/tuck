@@ -113,7 +113,7 @@ pub(super) const CATALOG: &[CatalogEntry] = &[
         "4b50b6dd862bf6e346929aaf4f5eaacec003bfa3f56462d6c874b41ef2f38795",
         "Not measured",
         "Not measured",
-        Some("English only. CPU performance and peak memory not measured on this computer."),
+        Some("English only. Uses a Vulkan GPU when available, with automatic CPU fallback."),
         2048,
     ),
     offered(

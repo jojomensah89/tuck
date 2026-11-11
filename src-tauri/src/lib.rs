@@ -25,6 +25,8 @@ pub mod system;
 pub mod telemetry;
 mod update;
 pub mod usage;
+#[cfg(windows)]
+mod vulkan;
 mod welcome;
 
 use std::sync::atomic::Ordering;
@@ -47,6 +49,8 @@ fn set_hit(hit_state: State<'_, Arc<system::HitState>>, w: u32, h: u32) {
 }
 
 pub fn run() {
+    #[cfg(windows)]
+    vulkan::check();
     let dictation_service = Arc::new(dictation::DictationService::new());
     let clipboard_service = Arc::new(clipboard_history::ClipboardHistoryService::new());
     let dictation_setup = dictation_service.clone();
@@ -350,10 +354,10 @@ pub fn run() {
                         WindowEvent::ScaleFactorChanged { .. } | WindowEvent::Moved(_) => {
                             let _ = placement::apply(&win_clone);
                         }
-                        WindowEvent::DragDrop(event) => {
+                        WindowEvent::DragDrop(_event) => {
                             #[cfg(debug_assertions)]
                             if std::env::var_os("TUCK_DROP_TRACE").is_some() {
-                                eprintln!("drop-event {event:?}");
+                                eprintln!("drop-event {_event:?}");
                             }
                         }
                         WindowEvent::Focused(false) =>

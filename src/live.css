@@ -439,3 +439,8 @@
 .clipboard-row.missing .clipboard-file-name { color: var(--ink-2); }
 
 .clipboard-list { position: relative; }
+
+/* Provisional words while recording; the final text replaces them */
+.transcript.live {
+  color: var(--ink-2);
+}

@@ -336,3 +336,8 @@
     transform: none;
   }
 }
+
+.phone-transfer { position:absolute; inset:0; z-index:4; background:var(--surface, #000); display:flex; align-items:center; justify-content:center; gap:var(--s-4); }
+.phone-transfer[hidden] { display:none; }
+.phone-qr { background:white; padding:var(--s-2); border-radius:var(--r-md); }
+.phone-qr svg { display:block; width:160px; height:160px; }

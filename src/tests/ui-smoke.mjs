@@ -207,6 +207,8 @@ try {
       window.__calls.push({command,args});
       if(command==='plugin:event|listen'){const ids=listeners.get(args.event)||[];ids.push(args.handler);listeners.set(args.event,ids);return ++serial;}
       if(command==='extension_snapshot')return structuredClone(state);
+      if(command==='phone_start')return {svg:window.__phoneSvg};
+      if(command==='phone_stop')return;
       if(command==='shelf_pick'){state.shelf=[{id:'fixture-file',name:'sample.txt',path:'C:\\\\Fixture\\\\sample.txt',bytes:20}];return;}
       if(command==='shelf_remove'){state.shelf=args.id==null?[]:state.shelf.filter(item=>item.id!==args.id);return null;}
       if(command==='shelf_add'){const added=args.paths.map(p=>({id:`added-${++serial}`,name:p.split(/[\\/]/).pop(),path:p,bytes:48213}));state.shelf.push(...added);return added;}
@@ -239,6 +241,7 @@ try {
     await settings.addInitScript(names => { window.__providers = ['claude','codex','antigravity'].map(provider => ({provider,installed:names.includes(provider),enabled:false})); }, names);
     await settings.goto('http://tuck.test/settings.html#usage');
     await settings.waitForTimeout(100);
+    await settings.waitForFunction(count=>document.querySelectorAll('#providerSwitches input').length===count,names.length);
     assert.equal(await settings.locator('#providerSwitches input').count(), names.length);
     assert.equal(await settings.locator('#providersEmpty').isVisible(), names.length === 0);
     for (const name of names) {
@@ -297,6 +300,7 @@ try {
     }
     await feedback.close();
   }
+  await context.addInitScript(svg=>{window.__phoneSvg=svg;},await readFile(path.join(root,'src/tests/fixtures/phone-qr.svg'),'utf8'));
   await context.addInitScript(nativeBridge);
   // Update screenshots and assertions use a mocked bridge, never a release installer.
   const updateFixtures = await context.newPage();
@@ -602,6 +606,13 @@ try {
   await native.evaluate(()=>window.dispatchEvent(new CustomEvent('tuck-drop-active',{detail:false})));
   await shelfDrop.click();
   await native.locator('.shelf-tile').waitFor();
+  await native.getByRole('button',{name:'Send to phone',exact:true}).click();
+  await native.getByRole('img',{name:'Scan to download shelf files'}).waitFor();
+  await native.locator('#isl').screenshot({path:path.join(root,'docs/screens/shelf-phone-500.png')});
+  await native.getByRole('button',{name:'Stop',exact:true}).click();
+  assert.equal(await native.locator('.phone-transfer').isVisible(),false);
+  assert.equal(await native.evaluate(()=>window.__calls.some(c=>c.command==='phone_stop')),true);
+
   assert.equal(await native.locator('.shelf-tile .tile-name').textContent(),'sample.txt');
   assert.equal(await native.locator('.shelf-tile .tile-size').textContent(),'20 B');
   assert.equal((await dropBox()).shown,false,'With files the drop target steps aside for the tiles');

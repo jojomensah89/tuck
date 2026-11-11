@@ -46,7 +46,7 @@ static STORAGE: OnceLock<PathBuf> = OnceLock::new();
 fn state() -> &'static Mutex<Snapshot> {
     STATE.get_or_init(|| Mutex::new(Snapshot::default()))
 }
-fn snapshot() -> Snapshot {
+pub(crate) fn snapshot() -> Snapshot {
     state().lock().unwrap_or_else(|p| p.into_inner()).clone()
 }
 fn ensure(window: &WebviewWindow, settings_only: bool) -> Result<(), String> {

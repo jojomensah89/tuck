@@ -20,6 +20,7 @@ const WAVE_FAR = '<path d="M14.5 5.25a6.75 6.75 0 0 1 0 9.5"/>';
 const PAUSE = '<rect class="f" x="5.25" y="4.5" width="3" height="11" rx="1"/><rect class="f" x="11.75" y="4.5" width="3" height="11" rx="1"/>';
 
 export const SVG_ICONS = {
+  phone: ico('<rect x="5" y="2" width="10" height="16" rx="2"/><path d="M9 15h2"/>'),
   download: ico('<path d="M10 4v12m-5-5 5 5 5-5"/>'),
   upload: ico('<path d="M10 16V4m-5 5 5-5 5 5"/>'),
   bolt: ico('<path class="f" d="M11 2.75 4.75 11H10l-1 6.25L15.25 9H10z"/>', 'bolt'),

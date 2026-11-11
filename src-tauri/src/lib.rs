@@ -15,6 +15,7 @@ pub mod media;
 mod network_rates;
 pub mod osd_flyout;
 mod package;
+mod phone;
 mod service_preferences;
 mod shell_thumbs;
 pub mod system;
@@ -129,6 +130,8 @@ pub fn run() {
             installed_usage::refresh_installed_usage,
             extensions::extension_snapshot,
             extensions::extension_settings,
+            phone::phone_start,
+            phone::phone_stop,
             extensions::shelf_add,
             extensions::shelf_pick,
             extensions::shelf_remove,
@@ -375,6 +378,7 @@ pub fn run() {
 pub fn run_shutdown_cleanup(app: &AppHandle) {
     #[cfg(windows)]
     file_drop::stop();
+    phone::stop();
     lifecycle::stop();
     media::stop();
     desktop_signals::stop();

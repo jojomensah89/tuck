@@ -33,7 +33,23 @@ export function mountExtensions():void {
  const actions=el('div');actions.dataset.sectionActions='extensions';
  const add=iconButton('Add files',SVG_ICONS.plus,()=>invoke('shelf_pick'),'shelf-add');
  const clear=button('Clear',()=>invoke('shelf_remove',{id:null}),'shelf-clear');clear.className='text-btn';clear.title='Remove all files from the shelf';clear.setAttribute('aria-label','Clear shelf');
- actions.append(add,clear);
+ const transfer=el('div','','phone-transfer');transfer.hidden=true;
+ let generation=0, expiry=0;
+ const stopTransfer=async()=>{generation++;window.clearTimeout(expiry);transfer.hidden=true;transfer.replaceChildren();shelf.inert=false;drop.inert=false;await invoke('phone_stop');};
+ const send=iconButton('Send to phone',SVG_ICONS.phone,async()=>{
+  const version=++generation;transfer.hidden=false;shelf.inert=true;drop.inert=true;transfer.textContent='Starting';
+  try {
+   const result=await invoke<{svg:string}>('phone_start');
+   if(version!==generation){await invoke('phone_stop');return;}
+   transfer.replaceChildren();const qr=el('div','','phone-qr');qr.innerHTML=result.svg;qr.setAttribute('role','img');qr.setAttribute('aria-label','Scan to download shelf files');
+   const stop=button('Stop',stopTransfer);stop.className='text-btn';transfer.append(qr,stop);stop.focus();
+   expiry=window.setTimeout(()=>{void stopTransfer();},600000);
+  }catch(error){transfer.textContent=String(error);transfer.append(button('Stop',stopTransfer));}
+ },'shelf-phone');
+ actions.append(add,send,clear);
+ window.addEventListener('tuck-phone-close',()=>{if(!transfer.hidden)void stopTransfer();});
+ transfer.addEventListener('keydown',event=>{if(event.key==='Escape'){event.stopPropagation();void stopTransfer().then(()=>send.focus());}});
+ new MutationObserver(()=>{if(!transfer.hidden&&page.closest('[inert]'))void stopTransfer();}).observe(document.getElementById('isl')!,{subtree:true,attributes:true,attributeFilter:['inert']});
  // The one drop target: it fills an empty shelf, and covers the tiles while a file is dragged over
  const drop=button('',()=>invoke('shelf_pick'),'shelf-drop');drop.className='shelf-drop';drop.innerHTML=SVG_ICONS.tray;
  const dropText=el('span','Drop files here','drop-text');drop.append(dropText,el('span','Drag out anytime · click to open','drop-hint'));
@@ -57,7 +73,7 @@ export function mountExtensions():void {
  // Width changes (the open width setting, the island opening) are the only other time the edges move
  new ResizeObserver(syncArrows).observe(list);
  status=el('p','','ext-status');status.setAttribute('role','status');
- page.append(actions,drop,shelf,status);container.append(page);
+ page.append(actions,drop,shelf,status,transfer);container.append(page);
 
  const thumbs=new ThumbnailMemo(id=>invoke<Thumb|null>('shelf_thumbnail',{id}).then(thumb=>thumb??{kind:'none'}));
  const tiles=new Map<string,HTMLElement>();

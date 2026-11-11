@@ -67,3 +67,5 @@ Installers are written to `src-tauri/target/release/bundle/nsis/`.
 [MIT](LICENSE), copyright 2026 Tuck contributors. Third-party components and model weights retain their own terms.
 
 Microphone mute uses Ctrl+Alt+M (change or turn it off in Settings > Privacy). Starting dictation while muted reports ?Microphone is muted?. The optional microphone and camera indicator names apps reported as in use by Windows; it keeps no usage history and sends nothing.
+
+Send to phone serves shelf files over HTTP on the local network while the QR view is open. Anyone with the link can download them. Closing the view, Stop, quitting Tuck, or ten minutes ends sharing. No phone app or uploads. Windows Firewall may ask for network access.

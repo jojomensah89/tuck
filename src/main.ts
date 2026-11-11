@@ -375,6 +375,7 @@ function setState(next: IslandState): void {
   isl.style.setProperty('--open-w', `${livePreferences.openWidth}px`);
   isl.style.width = `${w}px`;
   isl.style.height = `${h}px`;
+  if(next !== 'open') window.dispatchEvent(new Event('tuck-phone-close'));
   isl.dataset.state = next;
   if (isTauri()) void invokeCommand('island_activity', { active: next !== 'idle' || hoverInside });
   syncIdleTimers();

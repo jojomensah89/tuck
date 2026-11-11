@@ -8,6 +8,7 @@ import { mountTabRail } from './tab-rail.js';
 import { embedRequested, startEmbedDemo } from './demo.js';
 import { claimUpdateVersion } from './update-alert.js';
 import { subscribeUpdate, startBackgroundUpdateScheduler } from './updater.js';
+import { cacheDock, normalizePlacement, readCachedDock, type Dock } from './island-placement.js';
 import './live.css';
 import {
   isTauri,
@@ -234,6 +235,32 @@ window.addEventListener('storage', (e) => {
     applyShape(e.newValue as ShapeStyle);
   }
 });
+
+/* ================= Dock: left, centre or right of the island's monitor ================= */
+
+/** Rust moves the window; this only decides which side of it the island hangs from. */
+function applyDock(dock: Dock): void {
+  if (isl.dataset.dock === dock) return;
+  const first = isl.dataset.dock === undefined;
+  // The window and the island move together, so the island must not slide across the canvas
+  if (!first) isl.classList.add('docking');
+  isl.dataset.dock = dock;
+  cacheDock(dock);
+  // A timer, not a frame callback: a hidden island gets no frames, and must not stay without transitions
+  if (!first) window.setTimeout(() => isl.classList.remove('docking'), 80);
+}
+
+applyDock(readCachedDock());
+if (isTauri()) {
+  runAction(invokeCommand('island_placement_get').then(value => {
+    const placement = normalizePlacement(value);
+    if (placement) applyDock(placement.dock);
+  }), 'Read island position');
+  void listenToEvent('island-placement', value => {
+    const placement = normalizePlacement(value);
+    if (placement) applyDock(placement.dock);
+  });
+}
 
 /* ================= State Machine ================= */
 

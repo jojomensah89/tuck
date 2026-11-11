@@ -21,6 +21,8 @@ pub(crate) fn cursor_poll_ms(near: bool, moved: bool) -> u64 {
 
 static FULLSCREEN: AtomicBool = AtomicBool::new(false);
 static FULLSCREEN_AUTO_HIDE: AtomicBool = AtomicBool::new(true);
+/// Opt-in: the collapsed island stays up as a stats strip while a fullscreen app is in front.
+static FULLSCREEN_STATS: AtomicBool = AtomicBool::new(false);
 static CURSOR_PAUSE_REASONS: AtomicU8 = AtomicU8::new(0);
 static CURSOR_GATE: std::sync::LazyLock<(std::sync::Mutex<()>, std::sync::Condvar)> =
     std::sync::LazyLock::new(|| (std::sync::Mutex::new(()), std::sync::Condvar::new()));
@@ -577,6 +579,21 @@ pub(crate) fn set_fullscreen_auto_hide(app: AppHandle, enabled: bool) -> Result<
     Ok(())
 }
 
+#[tauri::command]
+pub(crate) fn set_fullscreen_stats(app: AppHandle, enabled: bool) -> Result<(), String> {
+    FULLSCREEN_STATS.store(enabled, Ordering::Relaxed);
+    if !crate::lifecycle::request_refresh() {
+        refresh_window_state(&app);
+    }
+    Ok(())
+}
+
+/// The island stays above other windows unless it is hidden for a fullscreen app. With the
+/// stats strip on, it keeps its place in front of a borderless fullscreen window too.
+pub(crate) fn keeps_topmost(hidden_for_fullscreen: bool, stats_strip: bool) -> bool {
+    !hidden_for_fullscreen || stats_strip
+}
+
 /// Re-evaluates fullscreen auto-hide. Returns true while the island is hidden for fullscreen.
 pub(crate) fn refresh_window_state(app: &AppHandle) -> bool {
     let Some(win) = app.get_webview_window("main") else {
@@ -601,8 +618,9 @@ pub(crate) fn refresh_window_state(app: &AppHandle) -> bool {
     set_cursor_pause(CURSOR_PAUSE_FULLSCREEN, hidden);
     if hidden {
         let _ = win.set_ignore_cursor_events(true);
-    } else {
-        #[cfg(windows)]
+    }
+    #[cfg(windows)]
+    if keeps_topmost(hidden, FULLSCREEN_STATS.load(Ordering::Relaxed)) {
         reassert_topmost(&win);
     }
     if hidden != previous {
@@ -968,6 +986,13 @@ pub(crate) fn restart_after_failed_update(app: AppHandle) {
 #[cfg(test)]
 mod idle_cursor_tests {
     use super::*;
+    #[test]
+    fn island_leaves_the_top_only_when_hidden_without_the_stats_strip() {
+        assert!(keeps_topmost(false, false));
+        assert!(keeps_topmost(false, true));
+        assert!(!keeps_topmost(true, false));
+        assert!(keeps_topmost(true, true));
+    }
     #[test]
     fn queued_reconciliation_uses_latest_css_hit_size() {
         let geometry = CursorGeometry {

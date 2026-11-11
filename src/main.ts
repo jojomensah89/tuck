@@ -30,6 +30,8 @@ import { renderUsageRings } from './usage-rings.js';
 import { activityProgress, batteryTone, createRing, formatSpan } from './rings.js';
 import { compactScrollMs, compactShellWidth, selectCompactActivity, type CompactActivityCandidate } from './compact-slots.js';
 import { formatClockTime } from './time-format.js';
+import { FULLSCREEN_STATS_WIDTH, FullscreenStatsSampler, fullscreenStats, fullscreenStatsVisible } from './fullscreen-stats.js';
+import { nativeService, type TelemetrySnapshot } from './live-services.js';
 import {
   AnnouncementQueue,
   HUD_ANNOUNCE_QUIET_MS,
@@ -294,6 +296,38 @@ interface ExternalActivityState {
 }
 const externalActivities = new Map<string, ExternalActivityState>();
 
+/* ================= Stats over fullscreen apps ================= */
+
+/** Native reports a fullscreen app in front; with "Hide in fullscreen" off it never does. */
+let fullscreenActive = false;
+let fullscreenReading: TelemetrySnapshot | null = null;
+const fullscreenSampler = new FullscreenStatsSampler({
+  read: () => nativeService<TelemetrySnapshot>('telemetry_snapshot'),
+  onSample: reading => { fullscreenReading = reading; renderCompact(); },
+});
+
+function fullscreenStatsShown(): boolean {
+  return fullscreenStatsVisible({ enabled: livePreferences.fullscreenStats, fullscreen: fullscreenActive, state });
+}
+
+/** Hides the island for a fullscreen app, or swaps in the stats strip; sampling runs only while it shows. */
+function syncFullscreen(): void {
+  const strip = fullscreenStatsShown();
+  document.body.classList.toggle('fullscreen-stats', strip);
+  document.body.classList.toggle('fullscreen-hidden', fullscreenActive && !strip);
+  if (strip) fullscreenSampler.start();
+  else {
+    fullscreenSampler.stop();
+    fullscreenReading = null;
+  }
+}
+
+function setFullscreen(active: boolean): void {
+  fullscreenActive = active;
+  syncFullscreen();
+  if (active || state === 'idle') renderCompact();
+}
+
 function setState(next: IslandState): void {
   if (state === 'open' && next !== 'open' && isTauri()) runAction(invokeCommand('deactivate_island'), 'Restore desktop interaction');
   if (next !== 'open') keyboardMode = false;
@@ -301,8 +335,9 @@ function setState(next: IslandState): void {
   // The value still reaches the status region; only the painted strip goes
   if (next !== 'open') delete levelStrip.dataset.on;
   state = next;
+  syncFullscreen();
   syncFlyoutPause();
-  if (next === 'idle') idleWidth = compactShellWidth(selectCompactActivity(compactCandidates()).primary, livePreferences.compactContent);
+  if (next === 'idle') idleWidth = fullscreenStatsShown() ? FULLSCREEN_STATS_WIDTH : compactShellWidth(selectCompactActivity(compactCandidates()).primary, livePreferences.compactContent);
   const [w, h] = next === 'open'
     ? [livePreferences.openWidth, SIZES.open[1]]
     : next === 'idle'
@@ -407,6 +442,7 @@ window.addEventListener('storage', event => {
   if (event.key !== LIVE_SETTINGS_KEY) return;
   livePreferences = readPreferences();
   if (isTauri()) void invokeCommand('set_fullscreen_auto_hide', { enabled: livePreferences.fullscreenAutoHide });
+  if (isTauri()) void invokeCommand('set_fullscreen_stats', { enabled: livePreferences.fullscreenStats });
   document.querySelector('.page.media')?.classList.toggle('with-lyrics', livePreferences.lyricsOpen);
   document.querySelector<HTMLButtonElement>('button[aria-label="Toggle lyrics"], .media-tools button')?.setAttribute('aria-pressed', String(livePreferences.lyricsOpen));
   setState(state);
@@ -775,6 +811,19 @@ function syncIdleWidth(width: number): void {
   runAction(setHit(hit.w, hit.h), 'Update island bounds');
 }
 
+function buildFullscreenStats(cells: ReturnType<typeof fullscreenStats>): HTMLElement {
+  const line = document.createElement('span');
+  line.className = 'fullscreen-stats-line';
+  line.setAttribute('aria-hidden', 'true');
+  for (const cell of cells) {
+    const stat = document.createElement('span');
+    stat.className = 'fullscreen-stat';
+    stat.append(compactText(cell.label, 'fullscreen-stat-label'), compactText(cell.text, 'compact-metric'));
+    line.append(stat);
+  }
+  return line;
+}
+
 function renderCompact(): void {
   const cl = $('cl');
   const cc = $('cc');
@@ -803,13 +852,24 @@ function renderCompact(): void {
   const selection = selectCompactActivity(compactCandidates());
   const primary = selection.primary;
 
-  const mediaText = primary?.kind === 'media' && livePreferences.compactContent !== 'artwork';
-  isl.toggleAttribute('data-compact-text', mediaText || primary?.kind === 'dictation');
-  const closedWidth = compactShellWidth(primary, livePreferences.compactContent);
+  const strip = fullscreenStatsShown();
+  const mediaText = !strip && primary?.kind === 'media' && livePreferences.compactContent !== 'artwork';
+  isl.toggleAttribute('data-compact-text', mediaText || (!strip && primary?.kind === 'dictation'));
+  const closedWidth = strip ? FULLSCREEN_STATS_WIDTH : compactShellWidth(primary, livePreferences.compactContent);
   if (state === 'idle') syncIdleWidth(closedWidth);
   if (closedWidth !== pillStrip.width) {
     pillStrip = { ...pillStrip, width: closedWidth };
     isl.style.setProperty('--pill-w', `${closedWidth}px`);
+  }
+
+  if (strip) {
+    const cells = fullscreenStats(fullscreenReading);
+    const signature = cells.map(cell => cell.text).join(' ');
+    setCompactSlot(cl, 'fullscreen-stats:leading', '', () => compactText(''));
+    setCompactSlot(cc, 'fullscreen-stats:center', signature, () => buildFullscreenStats(cells));
+    setCompactSlot(cr, 'fullscreen-stats:trailing', '', () => compactText(''));
+    setLabel(compact, cells.map(cell => cell.spoken).join(', '));
+    return;
   }
 
   if (!primary) {
@@ -1405,9 +1465,7 @@ void subscribeUpdate(update => {
 });
 startBackgroundUpdateScheduler();
 void listenToEvent<boolean>('hover', (inside) => onHover(inside));
-void listenToEvent<boolean>('fullscreen', (hidden) => {
-  document.body.classList.toggle('fullscreen-hidden', hidden);
-});
+void listenToEvent<boolean>('fullscreen', setFullscreen);
 void listenToEvent<MediaState>('media', (payload) => onMediaUpdate(payload));
 void listenToEvent<PowerState>('power', (payload) => {
   const previous = powerState;
@@ -1504,8 +1562,9 @@ if (!isTauri() && !embed) {
 
 if (isTauri()) {
   runAction(invokeCommand('set_fullscreen_auto_hide', { enabled: livePreferences.fullscreenAutoHide }), 'Apply fullscreen preference');
+  runAction(invokeCommand('set_fullscreen_stats', { enabled: livePreferences.fullscreenStats }), 'Apply fullscreen stats preference');
   runAction(invokeCommand<MediaState>('media_now').then(onMediaUpdate), 'Read media session');
-  runAction(invokeCommand<boolean>('fullscreen_now').then(hidden => document.body.classList.toggle('fullscreen-hidden', hidden)), 'Read fullscreen state');
+  runAction(invokeCommand<boolean>('fullscreen_now').then(setFullscreen), 'Read fullscreen state');
   // A failure before this listener existed is still pending natively
   runAction(invokeCommand<FlyoutStatus>('get_hide_system_flyout').then(onFlyoutStatus), 'Read flyout state');
 }

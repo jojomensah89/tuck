@@ -219,6 +219,7 @@ try {
         return structuredClone(window.__usageSnapshot || []);
       }
       if(command==='clipboard_get_state')return {enabled:false,persistOnExit:false,items:[]};
+      if(command==='telemetry_now')return window.__telemetry||null;
       if(command==='clipboard_copy' && window.__missingClipboardFile)throw 'File no longer exists';
       if(command==='clipboard_configure')throw 'Fixture atomic save failure';
       if(command==='plugin:updater|check')return null;
@@ -1668,6 +1669,80 @@ try {
   const floatBox = await motion.locator('#isl').boundingBox();
   assert.ok(floatBox.y===10&&floatBox.y+floatBox.height<=288&&floatBox.height===264,'A floating island fits the native canvas');
   assert.deepEqual(motionErrors,[]);
+  // Stats over fullscreen apps: opt-in strip, sampled once a second and only while it shows
+  const stats = await context.newPage(); const statsErrors = [];
+  stats.on('pageerror', error => statsErrors.push(error.message));
+  await stats.addInitScript(() => {
+    window.__telemetry = { status: 'ready', sampleTimeMs: Date.now(), cpu: { usagePercent: 24.4, frequencyMhz: null }, ram: { totalBytes: 16e9, usedBytes: 8e9, freeBytes: 8e9, usagePercent: 50 },
+      gpus: [{ adapterId: 'a', name: 'GPU', vendor: 'x', usagePercent: 87.6, memoryUsedBytes: null, memoryTotalBytes: null }], history: [], networkDownBps: null, networkUpBps: null };
+    localStorage.setItem('tuck.live.v2', JSON.stringify({ fullscreenStats: true }));
+  });
+  await stats.goto('http://tuck.test/');
+  await stats.waitForFunction(() => window.__calls?.some(call => call.command === 'plugin:event|listen' && call.args.event === 'fullscreen'));
+  const statsCalls = () => stats.evaluate(() => window.__calls.filter(c => c.command === 'telemetry_now').length);
+  const bodyClasses = () => stats.evaluate(() => [...document.body.classList].filter(c => c.startsWith('fullscreen')));
+  await stats.waitForTimeout(1300);
+  assert.equal(await statsCalls(), 0, 'No sampling without a fullscreen app');
+  assert.ok(await stats.evaluate(() => window.__calls.some(c => c.command === 'set_fullscreen_stats' && c.args.enabled === true)), 'Native is told the stats setting at startup');
+  await stats.evaluate(() => window.__emitNative('fullscreen', true));
+  assert.deepEqual(await bodyClasses(), ['fullscreen-stats'], 'A fullscreen app shows the strip instead of hiding the island');
+  await stats.locator('.fullscreen-stat').nth(2).waitFor({ timeout: 3000 });
+  await stats.waitForFunction(() => document.querySelector('.fullscreen-stats-line')?.textContent === 'CPU24%GPU88%RAM50%', null, { timeout: 3000 });
+  assert.equal(await stats.locator('.compact').getAttribute('aria-label'), 'CPU 24%, GPU 88%, Memory 50%');
+  assert.equal(await stats.locator('#isl').getAttribute('data-state'), 'idle');
+  assert.equal(await stats.locator('#isl').evaluate(n => getComputedStyle(n).pointerEvents), 'none', 'The strip is click-through');
+  assert.equal(await stats.locator('#isl').evaluate(n => n.scrollWidth <= n.clientWidth), true, 'Three readings fit the collapsed island');
+  await stats.evaluate(() => { window.__telemetry = { ...window.__telemetry, cpu: { usagePercent: 100 }, gpus: [{ name: 'GPU', usagePercent: 100 }], ram: { totalBytes: 16e9, usedBytes: 16e9, freeBytes: 0, usagePercent: 100 } }; });
+  await stats.waitForFunction(() => document.querySelector('.fullscreen-stats-line')?.textContent === 'CPU100%GPU100%RAM100%', null, { timeout: 3000 });
+  const fullLine = await stats.locator('.fullscreen-stats-line').evaluate(n => n.scrollWidth <= n.clientWidth && n.getBoundingClientRect().right <= n.closest('.island').getBoundingClientRect().right);
+  assert.equal(fullLine, true, 'The widest readings still fit');
+  await stats.locator('#isl').screenshot({ path: path.join(root, 'docs/screens/fullscreen-stats-100.png') });
+  await stats.evaluate(() => { window.__telemetry = { status: 'ready', sampleTimeMs: Date.now(), cpu: { usagePercent: 24.4 }, ram: { totalBytes: 16e9, usedBytes: 8e9, freeBytes: 8e9, usagePercent: 50 }, gpus: [{ name: 'GPU', usagePercent: 87.6 }] }; });
+  await stats.waitForFunction(() => document.querySelector('.fullscreen-stats-line')?.textContent === 'CPU24%GPU88%RAM50%', null, { timeout: 3000 });
+  await stats.locator('#isl').screenshot({ path: path.join(root, 'docs/screens/fullscreen-stats.png') });
+  await stats.evaluate(() => { window.__calls.length = 0; });
+  await stats.waitForTimeout(3300);
+  assert.ok(await statsCalls() <= 4, `Sampling stays at one reading a second (${await statsCalls()} in 3.3s)`);
+  assert.ok(await statsCalls() >= 2, 'Sampling keeps running while the strip shows');
+  await stats.evaluate(() => window.__emitNative('fullscreen', false));
+  assert.deepEqual(await bodyClasses(), [], 'Leaving fullscreen brings the island back');
+  await stats.waitForTimeout(150); await stats.evaluate(() => { window.__calls.length = 0; });
+  await stats.waitForTimeout(1300);
+  assert.equal(await statsCalls(), 0, 'Sampling stops the moment the strip hides');
+  assert.notEqual(await stats.locator('.compact').getAttribute('aria-label'), 'CPU 24%, GPU 88%, Memory 50%');
+  // A peek keeps hiding the island, as it does without this setting
+  await stats.evaluate(() => window.__emitNative('fullscreen', true));
+  await stats.evaluate(() => window.__emitNative('desktop-peek', { title: 'Caps Lock', text: 'On' }));
+  assert.deepEqual(await bodyClasses(), ['fullscreen-hidden'], 'A peek over a fullscreen app stays hidden');
+  await stats.evaluate(() => window.__emitNative('fullscreen', false));
+  // Off: the island hides exactly as before and nothing is sampled
+  await stats.evaluate(() => { window.__calls.length = 0; localStorage.setItem('tuck.live.v2', JSON.stringify({ fullscreenStats: false })); window.dispatchEvent(new StorageEvent('storage', { key: 'tuck.live.v2' })); });
+  await stats.evaluate(() => window.__emitNative('fullscreen', true));
+  assert.deepEqual(await bodyClasses(), ['fullscreen-hidden'], 'With the setting off a fullscreen app hides the island');
+  await stats.waitForTimeout(1300);
+  assert.equal(await statsCalls(), 0, 'Nothing is sampled with the setting off');
+  assert.ok(await stats.evaluate(() => window.__calls.some(c => c.command === 'set_fullscreen_stats' && c.args.enabled === false)), 'Native hears the setting turn off');
+  assert.deepEqual(statsErrors, []);
+  await stats.close();
+
+  // Settings: the switch is off by default, saves with the others and follows "Hide in fullscreen"
+  const statsSettings = await context.newPage(); await statsSettings.setViewportSize({ width: 1000, height: 700 });
+  await statsSettings.goto('http://tuck.test/settings.html#island');
+  const statsSwitch = statsSettings.locator('#fullscreenStats');
+  assert.equal(await statsSwitch.isChecked(), false, 'Stats over fullscreen apps is off by default');
+  assert.equal(await statsSettings.locator('#row-fullscreenStats .row-text').evaluate(n => n.children.length), 1, 'The row is a title and its switch, nothing more');
+  assert.equal(await statsSettings.getByRole('switch', { name: 'Stats over fullscreen apps' }).count(), 1);
+  await statsSwitch.click();
+  assert.equal(await statsSettings.evaluate(() => JSON.parse(localStorage.getItem('tuck.live.v2')).fullscreenStats), true);
+  assert.ok(await statsSettings.evaluate(() => window.__calls.some(c => c.command === 'set_fullscreen_stats' && c.args.enabled === true)));
+  await statsSettings.locator('#fullscreenAutoHide').click();
+  assert.equal(await statsSwitch.isDisabled(), true, 'Without hiding in fullscreen there is nothing to replace');
+  await statsSettings.locator('#fullscreenAutoHide').click();
+  assert.equal(await statsSwitch.isDisabled(), false);
+  await statsSettings.reload();
+  assert.equal(await statsSwitch.isChecked(), true, 'The choice survives a reload');
+  await statsSettings.close();
+
   // The compact clock stays accurate with one minute-aligned timeout, without an interval.
   const idleClock = await context.newPage();
   const minuteEdge = new Date('2026-11-04T12:00:59.900Z');

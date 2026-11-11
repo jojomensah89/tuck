@@ -152,6 +152,7 @@ pub fn run() {
             system::fullscreen_now,
             system::get_fullscreen_auto_hide,
             system::set_fullscreen_auto_hide,
+            system::set_fullscreen_stats,
             system::get_autostart,
             system::set_autostart,
             media::media_now,

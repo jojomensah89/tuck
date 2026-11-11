@@ -245,6 +245,17 @@ body.fullscreen-hidden .island {
   pointer-events: none;
 }
 
+/* The collapsed island stays visible as a stats strip; the app in front keeps every click */
+body.fullscreen-stats .island {
+  pointer-events: none;
+}
+
+/* Three readings use the whole width, so the empty side slots give theirs up */
+body.fullscreen-stats .compact {
+  grid-template-columns: 0 minmax(0, 1fr) 0;
+  gap: 0;
+}
+
 /* ================= Compact Layer (Idle & Peek) ================= */
 
 .compact {
@@ -375,6 +386,26 @@ body.fullscreen-hidden .island {
 .compact-time {
   font-size: var(--t-sm);
   font-weight: var(--w-medium);
+}
+
+.fullscreen-stats-line {
+  display: inline-flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: var(--s-2);
+  width: 100%;
+  white-space: nowrap;
+}
+
+.fullscreen-stat {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--s-1);
+}
+
+.fullscreen-stat-label {
+  color: var(--ink-2);
+  font-size: var(--t-xs);
 }
 
 .compact-indicator,

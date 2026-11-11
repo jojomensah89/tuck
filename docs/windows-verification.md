@@ -78,9 +78,9 @@ interface PowerState {
    - System tray menu includes **"Open island"** item.
    - When triggered, `system::open_island` dynamically removes `WS_EX_NOACTIVATE` (`set_island_focusable(hwnd, true)`), removes cursor pass-through, focuses the window, and emits `open-island`.
    - On `WindowEvent::Focused(false)`, `WS_EX_NOACTIVATE` is immediately restored so the window returns to non-activating behavior.
-3. **Monitor Centering & Resize Loop Prevention**:
-   - `center_on_primary_monitor` compares current physical position before calling `set_position`, preventing recursive `WindowEvent::Moved` loops.
-   - 2-second background check detects monitor resolution or placement changes and realigns when necessary.
+3. **Monitor Placement & Resize Loop Prevention**:
+   - `placement::apply` computes the window rectangle from the chosen monitor (`placement::island_rect`: the monitor's rectangle, its own DPI scale and the dock) and compares it with the window's current rectangle before it moves anything, preventing recursive `WindowEvent::Moved` loops. Position and size move in one `SetWindowPos` call.
+   - `WM_DISPLAYCHANGE`, `WM_SETTINGCHANGE`, `WindowEvent::Moved` and `ScaleFactorChanged` re-run it, so a monitor that was unplugged falls back to the primary monitor and the island returns when it is plugged in again.
 
 ---
 
@@ -96,7 +96,8 @@ interface PowerState {
 - [ ] Click-through: Mouse clicks pass through the transparent region around the island to background applications.
 - [ ] Hover expansion: Moving cursor over island triggers `hover: true` and transitions from `idle` to `peek`.
 - [ ] SMTC Media integration: Media title, artist, playback controls, and artwork sync with active player (Spotify, Chrome, VLC).
-- [ ] Fullscreen suppression: Playing a borderless or fullscreen game on primary monitor hides the island.
+- [ ] Fullscreen suppression: Playing a borderless or fullscreen game on the island's monitor hides the island.
+- [ ] Placement: Settings > Island > Display and Position move the island at once, on a second monitor at another DPI scale, left of or above the primary monitor, and back to the primary monitor when the chosen one is unplugged.
 - [ ] Tray interaction: Right-clicking tray icon displays "Open island", "Settings...", and "Quit Tuck".
 - [ ] Keyboard entry route: Selecting "Open island" focuses island, handles Arrow/Enter keys, and re-locks focus on blur.
 - [ ] Autostart toggle: Toggling autostart in Settings updates `HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run`.

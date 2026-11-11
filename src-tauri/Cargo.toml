@@ -49,6 +49,7 @@ tauri-plugin-global-shortcut = "2.4"
 tauri-plugin-single-instance = "2"
 
 [target.'cfg(windows)'.dependencies]
+winreg = "0.55"
 drag = "=2.1.1"
 windows-core = "0.58"
 webview2-com = "0.39"
@@ -60,6 +61,7 @@ features = [
   "implement",
   "Win32_Storage_Packaging_Appx",
   "ApplicationModel",
+  "Management_Deployment",
   "UI_Notifications",
   "UI_Notifications_Management",
   "Foundation",
@@ -67,6 +69,7 @@ features = [
   "Media_Control",
   "Storage_Streams",
   "Win32_Foundation",
+  "Win32_Devices_Display",
   "Win32_Security_Credentials",
   "Win32_Graphics_Dwm",
   "Win32_Graphics_Gdi",
@@ -91,6 +94,7 @@ features = [
   "Win32_NetworkManagement_WiFi",
   "Win32_NetworkManagement_IpHelper",
   "Win32_NetworkManagement_Ndis",
+  "Win32_UI_HiDpi",
   "Win32_UI_Shell",
   "Win32_UI_Input",
   "Win32_UI_Shell_PropertiesSystem",

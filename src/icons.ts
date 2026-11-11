@@ -27,6 +27,7 @@ export const SVG_ICONS = {
   lyrics: ico('<path d="M4.75 3.75h10.5a1.5 1.5 0 0 1 1.5 1.5v7a1.5 1.5 0 0 1-1.5 1.5H9.5l-3.75 3v-3h-1a1.5 1.5 0 0 1-1.5-1.5v-7a1.5 1.5 0 0 1 1.5-1.5z"/><path d="M6.75 7.25h6.5M6.75 10.25h4"/>', 'lyrics-ico'),
   note: ico('<path d="M7.75 14.5V4.75l8.5-2v9.75"/><circle cx="5.75" cy="14.5" r="2"/><circle cx="14.25" cy="12.5" r="2"/>'),
   clock: ico('<circle cx="10" cy="10" r="7.25"/><path d="M10 6v4l2.75 1.75"/>'),
+  micOff: ico('<path d="M3 3l14 14M7.5 7.5v1.75a2.5 2.5 0 0 0 4.1 1.9M7.5 3.5A2.5 2.5 0 0 1 12.5 5v2.5M4.75 9.5a5.25 5.25 0 0 0 8.8 3.8M15.25 9.5a5.3 5.3 0 0 1-.4 2M10 14.75v2.5"/>'),
   mic: ico('<rect x="7.5" y="2.75" width="5" height="9" rx="2.5"/><path d="M4.75 9.5a5.25 5.25 0 0 0 10.5 0M10 14.75v2.5"/>'),
   play: ico(PLAY),
   pause: ico(PAUSE),

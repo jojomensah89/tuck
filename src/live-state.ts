@@ -7,6 +7,8 @@ export function newRequestId(): string {
 export interface LivePreferences {
   hoverExpand: boolean; openDelayMs: number; closeDelayMs: number; pinned: boolean;
   fullscreenAutoHide: boolean;
+  /** A fullscreen app in front shows CPU, GPU and RAM on the collapsed island instead of hiding it */
+  fullscreenStats: boolean;
   compactContent: 'artwork' | 'title' | 'lyrics'; lyricsOpen: boolean; openWidth: number;
   desktopPeeks: boolean;
   /** Volume and brightness changes from outside the island show the HUD */
@@ -22,7 +24,7 @@ export const PREFS_VERSION = 2;
 export const DEFAULT_LIVE_PREFERENCES: LivePreferences = {
   hoverExpand: true, openDelayMs: 180, closeDelayMs: 0, pinned: false,
   compactContent: 'lyrics', lyricsOpen: true, openWidth: 500,
-  desktopPeeks: true, levelHud: true, fullscreenAutoHide: true, lastTab: DEFAULT_TAB, lyricsOffsets: [], prefsVersion: PREFS_VERSION,
+  desktopPeeks: true, levelHud: true, fullscreenAutoHide: true, fullscreenStats: false, lastTab: DEFAULT_TAB, lyricsOffsets: [], prefsVersion: PREFS_VERSION,
 };
 export interface LyricsOffsetPreference { key: string; offsetMs: number }
 export const MAX_LYRIC_OFFSETS = 128;
@@ -49,6 +51,7 @@ export function normalizePreferences(input: unknown): LivePreferences {
     // Before this setting existed, System peeks also carried the level peeks
     levelHud: typeof p.levelHud === 'boolean' ? p.levelHud : p.desktopPeeks !== false,
     fullscreenAutoHide: p.fullscreenAutoHide !== false,
+    fullscreenStats: p.fullscreenStats === true,
     openDelayMs: bounded(p.openDelayMs, 180, 0, 2000),
     // Settings saved before version 2 that still hold the old 900ms default move to instant once
     closeDelayMs: bounded(

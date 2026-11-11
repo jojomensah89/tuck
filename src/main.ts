@@ -8,6 +8,7 @@ import { mountTabRail } from './tab-rail.js';
 import { embedRequested, startEmbedDemo } from './demo.js';
 import { claimUpdateVersion } from './update-alert.js';
 import { subscribeUpdate, startBackgroundUpdateScheduler } from './updater.js';
+import { cacheDock, normalizePlacement, readCachedDock, type Dock } from './island-placement.js';
 import './live.css';
 import {
   isTauri,
@@ -30,6 +31,8 @@ import { renderUsageRings } from './usage-rings.js';
 import { activityProgress, batteryTone, createRing, formatSpan } from './rings.js';
 import { compactScrollMs, compactShellWidth, selectCompactActivity, type CompactActivityCandidate } from './compact-slots.js';
 import { formatClockTime } from './time-format.js';
+import { FULLSCREEN_STATS_WIDTH, FullscreenStatsSampler, fullscreenStats, fullscreenStatsVisible } from './fullscreen-stats.js';
+import { nativeService, type TelemetrySnapshot } from './live-services.js';
 import {
   AnnouncementQueue,
   HUD_ANNOUNCE_QUIET_MS,
@@ -235,6 +238,32 @@ window.addEventListener('storage', (e) => {
   }
 });
 
+/* ================= Dock: left, centre or right of the island's monitor ================= */
+
+/** Rust moves the window; this only decides which side of it the island hangs from. */
+function applyDock(dock: Dock): void {
+  if (isl.dataset.dock === dock) return;
+  const first = isl.dataset.dock === undefined;
+  // The window and the island move together, so the island must not slide across the canvas
+  if (!first) isl.classList.add('docking');
+  isl.dataset.dock = dock;
+  cacheDock(dock);
+  // A timer, not a frame callback: a hidden island gets no frames, and must not stay without transitions
+  if (!first) window.setTimeout(() => isl.classList.remove('docking'), 80);
+}
+
+applyDock(readCachedDock());
+if (isTauri()) {
+  runAction(invokeCommand('island_placement_get').then(value => {
+    const placement = normalizePlacement(value);
+    if (placement) applyDock(placement.dock);
+  }), 'Read island position');
+  void listenToEvent('island-placement', value => {
+    const placement = normalizePlacement(value);
+    if (placement) applyDock(placement.dock);
+  });
+}
+
 /* ================= State Machine ================= */
 
 let state: IslandState = 'idle';
@@ -294,6 +323,38 @@ interface ExternalActivityState {
 }
 const externalActivities = new Map<string, ExternalActivityState>();
 
+/* ================= Stats over fullscreen apps ================= */
+
+/** Native reports a fullscreen app in front; with "Hide in fullscreen" off it never does. */
+let fullscreenActive = false;
+let fullscreenReading: TelemetrySnapshot | null = null;
+const fullscreenSampler = new FullscreenStatsSampler({
+  read: () => nativeService<TelemetrySnapshot>('telemetry_snapshot'),
+  onSample: reading => { fullscreenReading = reading; renderCompact(); },
+});
+
+function fullscreenStatsShown(): boolean {
+  return fullscreenStatsVisible({ enabled: livePreferences.fullscreenStats, fullscreen: fullscreenActive, state });
+}
+
+/** Hides the island for a fullscreen app, or swaps in the stats strip; sampling runs only while it shows. */
+function syncFullscreen(): void {
+  const strip = fullscreenStatsShown();
+  document.body.classList.toggle('fullscreen-stats', strip);
+  document.body.classList.toggle('fullscreen-hidden', fullscreenActive && !strip);
+  if (strip) fullscreenSampler.start();
+  else {
+    fullscreenSampler.stop();
+    fullscreenReading = null;
+  }
+}
+
+function setFullscreen(active: boolean): void {
+  fullscreenActive = active;
+  syncFullscreen();
+  if (active || state === 'idle') renderCompact();
+}
+
 function setState(next: IslandState): void {
   if (state === 'open' && next !== 'open' && isTauri()) runAction(invokeCommand('deactivate_island'), 'Restore desktop interaction');
   if (next !== 'open') keyboardMode = false;
@@ -301,8 +362,9 @@ function setState(next: IslandState): void {
   // The value still reaches the status region; only the painted strip goes
   if (next !== 'open') delete levelStrip.dataset.on;
   state = next;
+  syncFullscreen();
   syncFlyoutPause();
-  if (next === 'idle') idleWidth = compactShellWidth(selectCompactActivity(compactCandidates()).primary, livePreferences.compactContent);
+  if (next === 'idle') idleWidth = fullscreenStatsShown() ? FULLSCREEN_STATS_WIDTH : compactShellWidth(selectCompactActivity(compactCandidates()).primary, livePreferences.compactContent);
   const [w, h] = next === 'open'
     ? [livePreferences.openWidth, SIZES.open[1]]
     : next === 'idle'
@@ -408,6 +470,7 @@ window.addEventListener('storage', event => {
   if (event.key !== LIVE_SETTINGS_KEY) return;
   livePreferences = readPreferences();
   if (isTauri()) void invokeCommand('set_fullscreen_auto_hide', { enabled: livePreferences.fullscreenAutoHide });
+  if (isTauri()) void invokeCommand('set_fullscreen_stats', { enabled: livePreferences.fullscreenStats });
   document.querySelector('.page.media')?.classList.toggle('with-lyrics', livePreferences.lyricsOpen);
   document.querySelector<HTMLButtonElement>('button[aria-label="Toggle lyrics"], .media-tools button')?.setAttribute('aria-pressed', String(livePreferences.lyricsOpen));
   setState(state);
@@ -776,6 +839,19 @@ function syncIdleWidth(width: number): void {
   runAction(setHit(hit.w, hit.h), 'Update island bounds');
 }
 
+function buildFullscreenStats(cells: ReturnType<typeof fullscreenStats>): HTMLElement {
+  const line = document.createElement('span');
+  line.className = 'fullscreen-stats-line';
+  line.setAttribute('aria-hidden', 'true');
+  for (const cell of cells) {
+    const stat = document.createElement('span');
+    stat.className = 'fullscreen-stat';
+    stat.append(compactText(cell.label, 'fullscreen-stat-label'), compactText(cell.text, 'compact-metric'));
+    line.append(stat);
+  }
+  return line;
+}
+
 function renderCompact(): void {
   const cl = $('cl');
   const cc = $('cc');
@@ -788,7 +864,7 @@ function renderCompact(): void {
   }
 
   if (announcement && announcement.until > Date.now() && state === 'peek') {
-    setCompactSlot(cl, 'announcement:leading', 'note', () => compactMarkup(announcement!.text.startsWith('Tuck ') ? SVG_ICONS.installUpdate : SVG_ICONS.note));
+    setCompactSlot(cl, 'announcement:leading', 'note', () => compactMarkup(announcement!.text === 'Microphone muted' ? SVG_ICONS.micOff : announcement!.text === 'Microphone on' ? SVG_ICONS.mic : announcement!.text.startsWith('Tuck ') ? SVG_ICONS.installUpdate : SVG_ICONS.note));
     const changed = setCompactSlot(cc, 'announcement:title', announcement.text, () => compactTitle(announcement!.text));
     setCompactSlot(cr, 'announcement:trailing', 'notification', () => compactIndicator(
       '<span class="peek-indicator"></span>',
@@ -804,13 +880,24 @@ function renderCompact(): void {
   const selection = selectCompactActivity(compactCandidates());
   const primary = selection.primary;
 
-  const mediaText = primary?.kind === 'media' && livePreferences.compactContent !== 'artwork';
-  isl.toggleAttribute('data-compact-text', mediaText || primary?.kind === 'dictation');
-  const closedWidth = compactShellWidth(primary, livePreferences.compactContent);
+  const strip = fullscreenStatsShown();
+  const mediaText = !strip && primary?.kind === 'media' && livePreferences.compactContent !== 'artwork';
+  isl.toggleAttribute('data-compact-text', mediaText || (!strip && primary?.kind === 'dictation'));
+  const closedWidth = strip ? FULLSCREEN_STATS_WIDTH : compactShellWidth(primary, livePreferences.compactContent);
   if (state === 'idle') syncIdleWidth(closedWidth);
   if (closedWidth !== pillStrip.width) {
     pillStrip = { ...pillStrip, width: closedWidth };
     isl.style.setProperty('--pill-w', `${closedWidth}px`);
+  }
+
+  if (strip) {
+    const cells = fullscreenStats(fullscreenReading);
+    const signature = cells.map(cell => cell.text).join(' ');
+    setCompactSlot(cl, 'fullscreen-stats:leading', '', () => compactText(''));
+    setCompactSlot(cc, 'fullscreen-stats:center', signature, () => buildFullscreenStats(cells));
+    setCompactSlot(cr, 'fullscreen-stats:trailing', '', () => compactText(''));
+    setLabel(compact, cells.map(cell => cell.spoken).join(', '));
+    return;
   }
 
   if (!primary) {
@@ -1406,9 +1493,7 @@ void subscribeUpdate(update => {
 });
 startBackgroundUpdateScheduler();
 void listenToEvent<boolean>('hover', (inside) => onHover(inside));
-void listenToEvent<boolean>('fullscreen', (hidden) => {
-  document.body.classList.toggle('fullscreen-hidden', hidden);
-});
+void listenToEvent<boolean>('fullscreen', setFullscreen);
 void listenToEvent<MediaState>('media', (payload) => onMediaUpdate(payload));
 void listenToEvent<PowerState>('power', (payload) => {
   const previous = powerState;
@@ -1505,8 +1590,9 @@ if (!isTauri() && !embed) {
 
 if (isTauri()) {
   runAction(invokeCommand('set_fullscreen_auto_hide', { enabled: livePreferences.fullscreenAutoHide }), 'Apply fullscreen preference');
+  runAction(invokeCommand('set_fullscreen_stats', { enabled: livePreferences.fullscreenStats }), 'Apply fullscreen stats preference');
   runAction(invokeCommand<MediaState>('media_now').then(onMediaUpdate), 'Read media session');
-  runAction(invokeCommand<boolean>('fullscreen_now').then(hidden => document.body.classList.toggle('fullscreen-hidden', hidden)), 'Read fullscreen state');
+  runAction(invokeCommand<boolean>('fullscreen_now').then(setFullscreen), 'Read fullscreen state');
   // A failure before this listener existed is still pending natively
   runAction(invokeCommand<FlyoutStatus>('get_hide_system_flyout').then(onFlyoutStatus), 'Read flyout state');
 }
@@ -1546,3 +1632,24 @@ usageRefresh.onclick = async () => {
 };
 
 if (isTauri()) void invokeCommand('maybe_show_welcome', { savedPreferences: hadSavedPreferences }).catch(() => {});
+
+interface SensorSnapshot { muted: boolean; microphone: string[]; camera: string[] }
+const sensorIndicators = document.createElement('span');
+sensorIndicators.className = 'sensor-indicators';
+document.querySelector('.compact')!.append(sensorIndicators);
+function paintSensors(data: SensorSnapshot): void {
+  sensorIndicators.replaceChildren();
+  for (const [active, label, kind] of [[data.muted, 'Microphone muted', 'muted'], [data.microphone.length > 0, `Microphone: ${data.microphone.join(', ')}`, 'microphone'], [data.camera.length > 0, `Camera: ${data.camera.join(', ')}`, 'camera']] as const) {
+    if (!active) continue;
+    const indicator = document.createElement('span');
+    indicator.className = `sensor-indicator sensor-${kind}`;
+    indicator.setAttribute('role', 'img'); indicator.setAttribute('aria-label', label); indicator.title = label;
+    if (kind === 'muted') indicator.innerHTML = SVG_ICONS.micOff;
+    sensorIndicators.append(indicator);
+  }
+  sensorIndicators.parentElement!.style.setProperty('--sensor-width', `${sensorIndicators.children.length ? (data.muted ? 14 : 0) + (data.microphone.length ? 6 : 0) + (data.camera.length ? 6 : 0) + sensorIndicators.children.length * 4 : 0}px`);
+}
+void listenToEvent<SensorSnapshot>('sensors', paintSensors);
+void listenToEvent<boolean>('microphone-toggle', muted => showAnnouncement(muted ? 'Microphone muted' : 'Microphone on'));
+void listenToEvent<string>('microphone-error', error => showAnnouncement(error));
+void invokeCommand<SensorSnapshot>('sensor_snapshot').then(data => { if (data) paintSensors(data); }).catch(() => {});

@@ -468,6 +468,23 @@ h2 {
 .num-field .unit { padding-right: var(--s-3); white-space: nowrap; }
 .num-field input[aria-invalid="true"] { color: var(--warn-ink); }
 
+.select {
+  height: var(--ctl-h);
+  min-width: 200px;
+  max-width: 280px;
+  padding: 0 var(--s-2);
+  border: 0;
+  border-radius: var(--r-md);
+  background: var(--control);
+  color: var(--ink);
+  font: inherit;
+  font-size: var(--t-md);
+  cursor: pointer;
+}
+
+.select:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.select:disabled { opacity: 0.45; cursor: default; }
+
 .segmented {
   display: inline-flex;
   padding: 2px;
@@ -775,3 +792,8 @@ body.welcoming .sidebar { visibility: hidden; }
 .provider-refresh svg.ico { width: var(--i-md); height: var(--i-md); fill: none; stroke: currentColor; stroke-width: 1.5px; stroke-linecap: round; stroke-linejoin: round; }
 .provider-refresh svg.ico path { vector-effect: non-scaling-stroke; }
 #providerSwitches svg.ico.brand-mark { background: none; }
+
+/* Follow apps: one switch per remembered media app, right-aligned in the row's control area. */
+.media-apps { display: grid; justify-items: end; gap: var(--s-2); min-width: 0; max-width: 100%; }
+.media-app { display: flex; align-items: center; gap: var(--s-4); min-width: 0; max-width: 100%; }
+.media-app label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: var(--w-medium); }

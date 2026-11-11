@@ -413,13 +413,16 @@ mod clipboard {
                     if !restored {
                         let _ = EmptyClipboard();
                     }
+                    drop(opened);
                     *history = GetClipboardSequenceNumber();
                 }
                 return Err(error.message.into());
             }
         }
-        let sequence = unsafe { GetClipboardSequenceNumber() };
+        // Closing the clipboard bumps the sequence number again (Windows adds the synthesized
+        // text formats then), so it is read only once the clipboard is closed.
         drop(opened);
+        let sequence = unsafe { GetClipboardSequenceNumber() };
         *history = sequence;
         let generation = state.register(Some(previous), before, sequence);
         drop(history);
@@ -539,7 +542,7 @@ mod clipboard {
         let mut history = crate::clipboard_history::DICTATION_CLIPBOARD
             .lock()
             .unwrap_or_else(|p| p.into_inner());
-        let Ok(_opened) = open(owner) else {
+        let Ok(opened) = open(owner) else {
             return RestoreAttempt::Retry;
         };
         if !restore_allowed(state.generation, generation, state.sequence, unsafe {
@@ -555,6 +558,8 @@ mod clipboard {
         };
         let result = unsafe { replace(&items(snapshot)) };
         // Tuck's own history skips this write, and a retry still recognises the clipboard as ours.
+        // Read after closing: closing bumps the sequence number.
+        drop(opened);
         let sequence = unsafe { GetClipboardSequenceNumber() };
         *history = sequence;
         match result {
@@ -568,6 +573,29 @@ mod clipboard {
                 RestoreAttempt::Retry
             }
         }
+    }
+    /// Leaves `text` on the clipboard for the owner to paste, with no restore. Used when an
+    /// automatic paste could not happen, so the words are never lost.
+    pub(super) fn copy(text: &str, owner: isize, gate: &Mutex<()>) -> Result<(), String> {
+        let _gate = gate
+            .lock()
+            .map_err(|_| "Insertion unavailable".to_owned())?;
+        let mut state = RESTORE.lock().unwrap_or_else(|p| p.into_inner());
+        let mut history = crate::clipboard_history::DICTATION_CLIPBOARD
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        // A pending restore would put the old clipboard back over these words.
+        state.generation = state.generation.wrapping_add(1);
+        state.original = None;
+        state.sequence = None;
+        let opened = open(owner)?;
+        let units = Zeroizing::new(text.encode_utf16().chain(Some(0)).collect::<Vec<_>>());
+        let bytes =
+            unsafe { std::slice::from_raw_parts(units.as_ptr() as *const u8, units.len() * 2) };
+        let result = unsafe { replace(&[(13, bytes)]) };
+        drop(opened);
+        *history = unsafe { GetClipboardSequenceNumber() };
+        result.map_err(|error| error.message)
     }
     fn modifiers_held() -> bool {
         use windows::Win32::UI::Input::KeyboardAndMouse::*;
@@ -802,6 +830,14 @@ pub(super) fn shutdown_restore_workers() {
 }
 #[cfg(not(windows))]
 pub(super) fn shutdown_restore_workers() {}
+#[cfg(windows)]
+pub(super) fn copy(text: &str, gate: &Mutex<()>, owner: isize) -> Result<(), String> {
+    clipboard::copy(text, owner, gate)
+}
+#[cfg(not(windows))]
+pub(super) fn copy(_: &str, _: &Mutex<()>, _: isize) -> Result<(), String> {
+    Err("Windows required".to_owned())
+}
 #[cfg(not(windows))]
 pub(super) fn paste(
     _: &str,

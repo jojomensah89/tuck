@@ -820,6 +820,15 @@ impl DictationService {
                 Err(error) => {
                     partial_insertion = error.may_have_inserted;
                     reason = Some(error.message);
+                    // Never strand the words in a waiting transcript that blocks the next
+                    // dictation: leave them on the clipboard instead.
+                    if !partial_insertion
+                        && !cancel.load(Ordering::Acquire)
+                        && self.copy_transcript(text.as_str()).is_ok()
+                    {
+                        delivered_copy = true;
+                        reason = Some("Copied".into());
+                    }
                 }
             }
         }
@@ -962,6 +971,25 @@ impl DictationService {
             .ok_or("There is no model download to cancel")?;
         cancel.store(true, Ordering::Release);
         Ok(())
+    }
+
+    fn copy_transcript(&self, text: &str) -> Result<(), String> {
+        target::copy(text, &self.insertion_gate, self.main_window_handle()?)
+    }
+
+    fn main_window_handle(&self) -> Result<isize, String> {
+        #[cfg(windows)]
+        {
+            Ok(self
+                .app()?
+                .get_webview_window("main")
+                .ok_or_else(|| "Main window unavailable".to_owned())?
+                .hwnd()
+                .map_err(|e| e.to_string())?
+                .0 as isize)
+        }
+        #[cfg(not(windows))]
+        Ok(0)
     }
 
     fn paste_transcript(

@@ -16,6 +16,12 @@ describe('live island state', () => {
     expect(normalizePreferences({}).fullscreenAutoHide).toBe(true);
     expect(normalizePreferences({ fullscreenAutoHide: false }).fullscreenAutoHide).toBe(false);
   });
+  test('shows stats over fullscreen apps only when asked, and old settings files load without it', () => {
+    expect(normalizePreferences({}).fullscreenStats).toBe(false);
+    expect(normalizePreferences({ fullscreenAutoHide: false }).fullscreenStats).toBe(false);
+    expect(normalizePreferences({ fullscreenStats: true }).fullscreenStats).toBe(true);
+    expect(normalizePreferences({ fullscreenStats: 'yes' as never }).fullscreenStats).toBe(false);
+  });
   test('migrates collapsed content without losing an existing title choice', () => {
     expect(normalizePreferences({}).compactContent).toBe('lyrics');
     expect(normalizePreferences({ compactContent: 'title' }).compactContent).toBe('title');

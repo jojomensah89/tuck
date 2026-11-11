@@ -12,7 +12,7 @@ Source: supplied notch-island-build-guide.md. User confirmed on 2026-11-02: spec
 | Idle 212 by 32, hover peek 300 by 38, open 440 by 180; close timing | UI / PR 1 | Rendered state and geometry smoke |
 | Hanging notch with concave ears; floating pill with 10 pixel gap; live persistent style choice | UI / PR 1 | Settings and storage smoke |
 | Spring open, quick close, page motion, reduced motion, SVG icons, focus rings | UI / PR 1 | CSS inspection and rendered smoke |
-| DPI-aware cursor hit testing; outside click-through; primary display repositioning | Native / PR 3 | Geometry tests at 100/125/150/200 percent and negative origins; native smoke |
+| DPI-aware cursor hit testing; outside click-through; chosen-display placement with left, centre and right docks | Native / PR 3 | Geometry tests at 100/125/150/200 percent and negative origins; native smoke |
 | Fullscreen hiding and click-through on the island monitor | Native / PR 3 | Rectangle tests plus fullscreen native smoke |
 | Real SMTC title, artist, artwork with retries, accent, overflow marquee, playback, previous/next and seeking | UI + Native / PRs 1 and 3 | Runtime tests, native compile, real-player smoke |
 | Today clock/date, battery/AC, charging, low and unknown states | UI + Native / PRs 1 and 3 | Power parsing tests and native smoke |

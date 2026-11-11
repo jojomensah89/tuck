@@ -12,9 +12,11 @@ pub mod lifecycle;
 pub mod lyrics;
 mod lyrics_match;
 pub mod media;
+mod media_apps;
 mod network_rates;
 pub mod osd_flyout;
 mod package;
+pub mod placement;
 mod sensors;
 mod service_preferences;
 mod shell_thumbs;
@@ -149,6 +151,8 @@ pub fn run() {
             usage::refresh_usage,
             desktop_signals::volume_step,
             desktop_signals::volume_toggle_mute,
+            placement::island_placement_get,
+            placement::island_placement_set,
             osd_flyout::get_hide_system_flyout,
             osd_flyout::set_hide_system_flyout,
             osd_flyout::set_flyout_island_pause,
@@ -159,6 +163,7 @@ pub fn run() {
             system::fullscreen_now,
             system::get_fullscreen_auto_hide,
             system::set_fullscreen_auto_hide,
+            system::set_fullscreen_stats,
             system::get_autostart,
             system::set_autostart,
             media::media_now,
@@ -166,6 +171,8 @@ pub fn run() {
             media::media_next,
             media::media_prev,
             media::media_seek,
+            media_apps::media_apps_list,
+            media_apps::media_app_set_follow,
         ])
         .setup(move |app| {
             app.manage(welcome::capture(app.handle()));
@@ -309,8 +316,9 @@ pub fn run() {
 
             // Setup Main Island Window
             if let Some(main_win) = app.get_webview_window("main") {
-                // Initial center on primary monitor physical origin
-                let _ = system::center_on_primary_monitor(&main_win);
+                // Initial placement on the saved monitor and dock (primary, centred by default)
+                placement::init(&handle);
+                let _ = placement::apply(&main_win);
 
                 #[cfg(windows)]
                 if let Ok(hwnd) = main_win.hwnd() {
@@ -324,7 +332,7 @@ pub fn run() {
                 let _ = main_win.set_ignore_cursor_events(true);
                 let _ = main_win.show();
 
-                // Listen for scale and display changes to keep centered, and handle keyboard focus restore
+                // Listen for scale and position changes to keep the island where it was placed, and handle keyboard focus restore
                 let win_clone = main_win.clone();
                 main_win.on_window_event(move |event| {
                     if matches!(
@@ -337,7 +345,7 @@ pub fn run() {
                     }
                     match event {
                         WindowEvent::ScaleFactorChanged { .. } | WindowEvent::Moved(_) => {
-                            let _ = system::center_on_primary_monitor(&win_clone);
+                            let _ = placement::apply(&win_clone);
                         }
                         WindowEvent::DragDrop(event) => {
                             #[cfg(debug_assertions)]

@@ -12,6 +12,7 @@ export function mountLiveSettings(): void {
   const prefs = readPreferences();
   input('pinOpen').checked = prefs.pinned;
   input('fullscreenAutoHide').checked = prefs.fullscreenAutoHide;
+  input('fullscreenStats').checked = prefs.fullscreenStats; input('fullscreenStats').disabled = !prefs.fullscreenAutoHide;
   input('lyricsOpen').checked = prefs.lyricsOpen; input('desktopPeeks').checked = prefs.desktopPeeks;
   input('levelHud').checked = prefs.levelHud;
   for (const radio of compact()) radio.checked = radio.value === prefs.compactContent;
@@ -37,7 +38,7 @@ export function mountLiveSettings(): void {
       return;
     }
     const next = normalizePreferences({ pinned: input('pinOpen').checked,
-      fullscreenAutoHide: input('fullscreenAutoHide').checked,
+      fullscreenAutoHide: input('fullscreenAutoHide').checked, fullscreenStats: input('fullscreenStats').checked,
       lyricsOpen: input('lyricsOpen').checked, desktopPeeks: input('desktopPeeks').checked, levelHud: input('levelHud').checked,
       compactContent: compact().find(radio => radio.checked)?.value ?? 'lyrics',
       openDelayMs: Number(input('openDelay').value), closeDelayMs: Number(input('closeDelay').value), openWidth: Number(input('openWidth').value),
@@ -45,6 +46,8 @@ export function mountLiveSettings(): void {
     try {
       localStorage.setItem(LIVE_SETTINGS_KEY, JSON.stringify(next));
       window.dispatchEvent(new StorageEvent('storage', { key: LIVE_SETTINGS_KEY, newValue: JSON.stringify(next) }));
+      input('fullscreenStats').disabled = !next.fullscreenAutoHide;
+      void nativeAction('set_fullscreen_stats', { enabled: next.fullscreenStats }).catch(() => {});
       void nativeAction('set_fullscreen_auto_hide', { enabled: next.fullscreenAutoHide }).catch(() => {
         setStatus('interactionStatus', 'Fullscreen preference will apply when the desktop app is available.');
       });
@@ -55,7 +58,7 @@ export function mountLiveSettings(): void {
       setStatus(statusFor(changed.id), 'Could not save settings. Check available storage and try again.', 'error');
     }
   };
-  for (const id of ['pinOpen', 'fullscreenAutoHide', 'lyricsOpen', 'desktopPeeks', 'levelHud']) input(id).addEventListener('change', () => savePreferences(input(id)));
+  for (const id of ['pinOpen', 'fullscreenAutoHide', 'fullscreenStats', 'lyricsOpen', 'desktopPeeks', 'levelHud']) input(id).addEventListener('change', () => savePreferences(input(id)));
   for (const radio of compact()) radio.addEventListener('change', () => savePreferences(radio));
   for (const id of numbers) onCommit(input(id), () => savePreferences(input(id)));
 

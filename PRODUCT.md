@@ -1,6 +1,6 @@
 # Tuck
 
-A local Windows 10/11 utility that places an interactive black notch or floating pill at the top of the primary display. It provides media transport, time and power status, live activities, AI usage information and a screen snip action and file shelf without taking focus during ordinary mouse use.
+A local Windows 10/11 utility that places an interactive black notch or floating pill at the top of a display you choose, on the left, in the middle or on the right (the primary display, in the middle, by default). It provides media transport, time and power status, live activities, AI usage information and a screen snip action and file shelf without taking focus during ordinary mouse use.
 
 The approved product and visual direction is the user-supplied Notch build guide, adapted to the existing Tuck Tauri 2 and Vite/TypeScript scaffold. This delivery includes the specified Windows app and v1 features. Later ideas live in docs/feature-matrix.md.
 
@@ -9,3 +9,5 @@ Privacy: Claude and Codex each start off; switches appear only when their execut
 Clipboard privacy: History is off by default. When on, Tuck keeps text, images and file paths, never copied file contents. Sensitive content in images is not detected. Private clipboard formats and Tuck's own dictation paste are skipped. Everything, including pins, stays in memory and vanishes on exit unless Keep after restart is on. Persistence writes only to Tuck's app data with a 256 MB cap. Remove deletes that clip's data; Clear all deletes unpinned clips and keeps pins; turning history off deletes everything. Capture remains event-driven, with bounded retries and no idle polling.
 
 Microphone mute uses Ctrl+Alt+M (change or turn it off in Settings > Privacy). Starting dictation while muted reports ?Microphone is muted?. The optional microphone and camera indicator names apps reported as in use by Windows; it keeps no usage history and sends nothing.
+
+Fullscreen: the island hides when an app goes fullscreen on its monitor. Settings > Island > Stats over fullscreen apps (off by default) shows CPU, GPU and RAM on the collapsed island instead. It never takes clicks or focus, reads the same local counters as the System view once a second while it shows, and cannot appear over exclusive-fullscreen games.

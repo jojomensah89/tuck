@@ -1,6 +1,6 @@
 [package]
 name = "tuck"
-version = "0.3.0"
+version = "0.4.0"
 description = "A desktop island for Windows media controls, dictation, and local tools."
 authors = ["Tuck contributors"]
 license = "MIT"

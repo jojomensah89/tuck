@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-11-19
+
+### Added
+- Choose the island's monitor and dock it left, centre or right with mixed-DPI positioning
+- CPU, GPU and RAM telemetry strip over fullscreen applications
+- Choose which media apps drive the music card and controls
+- Dictation updates: hold Right Alt (or Left Alt + Right Alt) to dictate, live speech transcription in the open and collapsed island, and direct paste delivery to focused text fields with automatic clipboard history protection
+- Global microphone mute toggle (Ctrl+Alt+M) and privacy sensor indicators
+- Separate Dictation and Clipboard settings pages
+- Microsoft Store (MSIX) packaging support
+
+### Fixed
+- Memory figure on website without the WebView2 note
+- Dictation paste delivery race conditions and first-run welcome flow after install
+
 ## [0.3.0] - 2026-11-08
 
 ### Added

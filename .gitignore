@@ -33,3 +33,7 @@ artifacts/
 site/island/
 .playwright-mcp/
 site/walkthroughs/
+
+# Vulkan SDK that CI's install-vulkan-sdk step unpacks into the workspace
+/VULKAN_SDK/
+/vulkan_sdk.exe

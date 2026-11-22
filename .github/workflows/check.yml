@@ -19,9 +19,15 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
+      # Cached CMake builds record the MSVC path, which changes with the runner image
+      - name: Read runner image
+        id: image
+        shell: bash
+        run: echo "version=${ImageVersion:-unknown}" >> "$GITHUB_OUTPUT"
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+          key: image-${{ steps.image.outputs.version }}
       - name: Install Vulkan SDK
         uses: humbletim/install-vulkan-sdk@30ba978f977e81b72d091fc8888feb1fb26f9aff # v1.2
         with:

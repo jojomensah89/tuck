@@ -186,9 +186,12 @@ verify_live() {
 # runner would crash on any PC without it. Fails the release instead of shipping that.
 verify_cpu_baseline() {
   # Cargo 1.100 moved OUT_DIR from build/<pkg>-<hash>/out to build/<pkg>/<hash>/out; match both.
-  local caches=() cache setting
-  mapfile -t caches < <(find src-tauri/target/release/build -path '*/whisper-rs-sys*/out/build/CMakeCache.txt' 2>/dev/null)
-  [ "${#caches[@]}" -gt 0 ] || die "No whisper.cpp build found to check the CPU baseline of."
+  local build=src-tauri/target/release/build found caches=() cache setting
+  [ -d "$build" ] || die "No whisper.cpp build found to check the CPU baseline of."
+  # A failed search could skip a cache, so any find error fails the release.
+  found=$(find "$build" -path '*/whisper-rs-sys*/out/build/CMakeCache.txt') || die "Could not search $build for the whisper.cpp build."
+  [ -n "$found" ] || die "No whisper.cpp build found to check the CPU baseline of."
+  mapfile -t caches <<< "$found"
   for cache in "${caches[@]}"; do
     for setting in GGML_NATIVE:BOOL=OFF GGML_AVX2:BOOL=ON GGML_AVX512:BOOL=OFF; do
       grep -qx "$setting" "$cache" || die "$cache does not have $setting."

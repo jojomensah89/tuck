@@ -90,7 +90,7 @@ Tuck includes an in-app updater powered by `@tauri-apps/plugin-updater`.
 
 ## CPU requirement
 
-Releases set `GGML_NATIVE=OFF`, so the speech engine targets AVX2 rather than whichever CPU the build machine has. Without this, a release built on an AVX-512 runner would crash on PCs without it. AVX2 covers most PCs from about 2013 onward; dictation will not run on older CPUs. The `Confirm the CPU baseline` step fails the release if these settings ever stop applying, and the build job has its own cache key because `whisper-rs-sys` does not rebuild when this variable changes.
+Releases set `GGML_NATIVE=OFF`, so the speech engine targets AVX2 rather than whichever CPU the build machine has. Without this, a release built on an AVX-512 runner would crash on PCs without it. AVX2 covers most PCs from about 2013 onward; dictation will not run on older CPUs. The `Confirm the CPU baseline` step fails the release if these settings ever stop applying, and the build job has its own cache key because `whisper-rs-sys` does not rebuild when this variable changes. Both Rust cache keys also include the runner image version, because a cached CMake build keeps the MSVC compiler path, and that path disappears when the image updates MSVC.
 
 ## 3. First release
 
